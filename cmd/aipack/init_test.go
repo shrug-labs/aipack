@@ -19,17 +19,19 @@ func TestInit_HappyPath_WritesFiles(t *testing.T) {
 		t.Fatalf("init exit=%d, stderr=%q", code, stderr)
 	}
 
+	// sync-config.yaml: verify it is loadable and has expected defaults.
+	// Exact byte comparison is not used because init now auto-fetches the
+	// default registry, which appends registry_sources to the file.
 	syncCfgPath := filepath.Join(configDir, "sync-config.yaml")
-	profPath := filepath.Join(configDir, "profiles", "default.yaml")
-
-	gotSync, err := os.ReadFile(syncCfgPath)
+	sc, err := config.LoadSyncConfig(syncCfgPath)
 	if err != nil {
-		t.Fatalf("read sync-config: %v", err)
+		t.Fatalf("load sync-config: %v", err)
 	}
-	if string(gotSync) != string(config.InitSyncConfigBytes) {
-		t.Fatalf("sync-config contents mismatch\n--- got\n%s\n--- want\n%s", string(gotSync), string(config.InitSyncConfigBytes))
+	if sc.Defaults.Profile != "default" {
+		t.Errorf("sync-config defaults.profile = %q, want default", sc.Defaults.Profile)
 	}
 
+	profPath := filepath.Join(configDir, "profiles", "default.yaml")
 	gotProf, err := os.ReadFile(profPath)
 	if err != nil {
 		t.Fatalf("read profile: %v", err)
@@ -107,12 +109,13 @@ func TestInit_ForceOverwrites(t *testing.T) {
 		t.Fatalf("init exit=%d, stderr=%q", code, stderr)
 	}
 
-	gotSync, err := os.ReadFile(syncCfgPath)
+	// sync-config.yaml: verify it is loadable and has expected defaults.
+	sc, err := config.LoadSyncConfig(syncCfgPath)
 	if err != nil {
-		t.Fatalf("read sync-config: %v", err)
+		t.Fatalf("load sync-config: %v", err)
 	}
-	if string(gotSync) != string(config.InitSyncConfigBytes) {
-		t.Fatalf("sync-config contents mismatch\n--- got\n%s\n--- want\n%s", string(gotSync), string(config.InitSyncConfigBytes))
+	if sc.Defaults.Profile != "default" {
+		t.Errorf("sync-config defaults.profile = %q, want default", sc.Defaults.Profile)
 	}
 
 	gotProf, err := os.ReadFile(profPath)

@@ -178,3 +178,65 @@ func TestEnsureCloneWith_FetchFails(t *testing.T) {
 		t.Fatal("expected error when fetch fails")
 	}
 }
+
+func TestCheckGit_Available(t *testing.T) {
+	t.Parallel()
+	// git should be available in the test environment.
+	if err := CheckGit(); err != nil {
+		t.Fatalf("CheckGit: %v", err)
+	}
+}
+
+func TestGitErrorHint_AuthFailure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		output string
+		args   []string
+		want   string
+	}{
+		{
+			output: "fatal: could not read Username for 'https://example.com': terminal prompts disabled",
+			args:   []string{"clone", "--depth", "1", "https://example.com/repo.git", "/tmp/x"},
+			want:   "HTTPS git requires credentials",
+		},
+		{
+			output: "fatal: Authentication failed for 'https://example.com/repo.git'",
+			args:   []string{"clone", "https://example.com/repo.git", "/tmp/x"},
+			want:   "HTTPS git requires credentials",
+		},
+		{
+			output: "fatal: Authentication failed",
+			args:   []string{"clone", "git@example.com:org/repo.git", "/tmp/x"},
+			want:   "SSH key or credential",
+		},
+		{
+			output: "xcrun: error: invalid active developer path",
+			args:   []string{"clone", "https://example.com/repo.git"},
+			want:   "Xcode Command Line Tools",
+		},
+		{
+			output: "ssh: connect to host bitbucket.example.com port 22: Operation timed out\nfatal: Could not read from remote repository.",
+			args:   []string{"clone", "--depth", "1", "git@bitbucket.example.com:proj/repo.git", "/tmp/x"},
+			want:   "port 7999",
+		},
+		{
+			output: "ssh: connect to host bitbucket.example.com port 22: Connection timed out",
+			args:   []string{"clone", "git@bitbucket.example.com:proj/repo.git", "/tmp/x"},
+			want:   "ssh://git@bitbucket.example.com:7999",
+		},
+		{
+			output: "normal git error: repository not found",
+			args:   []string{"clone", "https://example.com/repo.git"},
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		got := gitErrorHint(tt.output, tt.args)
+		if tt.want == "" && got != "" {
+			t.Errorf("gitErrorHint(%q, ...) = %q, want empty", tt.output, got)
+		}
+		if tt.want != "" && !strings.Contains(got, tt.want) {
+			t.Errorf("gitErrorHint(%q, ...) = %q, want substring %q", tt.output, got, tt.want)
+		}
+	}
+}

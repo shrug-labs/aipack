@@ -640,6 +640,155 @@ packs:
 }
 
 // ---------------------------------------------------------------------------
+// RegistrySources tests
+// ---------------------------------------------------------------------------
+
+func TestRegistrySources_Empty(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	sources, err := RegistrySources(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Errorf("expected 0 sources, got %d", len(sources))
+	}
+}
+
+func TestRegistrySources_WithCachedAndUncached(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Configure two sources, only cache one.
+	sc := config.SyncConfig{SchemaVersion: 1}
+	sc.RegistrySources = []config.RegistrySourceEntry{
+		{Name: "cached-src", URL: "https://example.com/a.yaml"},
+		{Name: "uncached-src", URL: "https://example.com/b.yaml"},
+	}
+	config.SaveSyncConfig(config.SyncConfigPath(dir), sc)
+
+	cachedYAML := `schema_version: 1
+packs:
+  pack-a:
+    repo: https://github.com/org/a
+`
+	os.MkdirAll(config.RegistriesCacheDir(dir), 0o700)
+	os.WriteFile(config.SourceCachePath(dir, "cached-src"), []byte(cachedYAML), 0o600)
+
+	sources, err := RegistrySources(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(sources))
+	}
+	if sources[0].Name != "cached-src" || !sources[0].Cached {
+		t.Errorf("source 0: name=%q cached=%v, want cached-src/true", sources[0].Name, sources[0].Cached)
+	}
+	if sources[1].Name != "uncached-src" || sources[1].Cached {
+		t.Errorf("source 1: name=%q cached=%v, want uncached-src/false", sources[1].Name, sources[1].Cached)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RegistryAddSource tests
+// ---------------------------------------------------------------------------
+
+func TestRegistryAddSource_AddsToSyncConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	var buf bytes.Buffer
+	err := RegistryAddSource(RegistryAddSourceRequest{
+		ConfigDir: dir,
+		URL:       "git@github.com:org/tools.git",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("loading sync-config: %v", err)
+	}
+	if len(sc.RegistrySources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sc.RegistrySources))
+	}
+	src := sc.RegistrySources[0]
+	if src.Name != "tools" {
+		t.Errorf("source Name = %q, want tools", src.Name)
+	}
+	if src.URL != "git@github.com:org/tools.git" {
+		t.Errorf("source URL = %q", src.URL)
+	}
+	if src.Ref != "main" {
+		t.Errorf("source Ref = %q, want main (default for git URL)", src.Ref)
+	}
+}
+
+func TestRegistryAddSource_CustomName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	var buf bytes.Buffer
+	err := RegistryAddSource(RegistryAddSourceRequest{
+		ConfigDir: dir,
+		URL:       "https://example.com/registry.yaml",
+		Name:      "my-team",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sc, _ := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if sc.RegistrySources[0].Name != "my-team" {
+		t.Errorf("source Name = %q, want my-team", sc.RegistrySources[0].Name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Installed marker tests
+// ---------------------------------------------------------------------------
+
+func TestRegistryList_ShowsInstalledFlag(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create a local registry with two packs.
+	localYAML := `schema_version: 1
+packs:
+  installed-pack:
+    repo: https://github.com/org/installed
+    description: An installed pack
+  available-pack:
+    repo: https://github.com/org/available
+    description: Not installed
+`
+	os.WriteFile(filepath.Join(dir, "registry.yaml"), []byte(localYAML), 0o600)
+
+	// Simulate one pack being installed.
+	os.MkdirAll(filepath.Join(dir, "packs", "installed-pack"), 0o755)
+
+	results, err := RegistryList(RegistryListRequest{ConfigDir: dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	for _, r := range results {
+		if r.Name == "installed-pack" && !r.Installed {
+			t.Errorf("installed-pack should be marked as installed")
+		}
+		if r.Name == "available-pack" && r.Installed {
+			t.Errorf("available-pack should not be marked as installed")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Deep index tests
 // ---------------------------------------------------------------------------
 

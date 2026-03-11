@@ -365,17 +365,48 @@ aipack registry search openshift
 aipack registry search api --json
 ```
 
+### registry sources
+
+Lists all configured registry sources from sync-config, showing name, URL, git ref, and cache status.
+
+```bash
+aipack registry sources
+aipack registry sources --json
+```
+
+### registry add
+
+Adds a registry source to sync-config without fetching it. The source will be fetched on the next `registry fetch`. Both HTTPS and SSH URLs are supported.
+
+```bash
+# Add an SSH source (recommended — avoids credential prompts)
+aipack registry add git@bitbucket.example.com:TEAM/tools.git
+
+# Add an HTTPS source
+aipack registry add https://bitbucket.example.com/scm/TEAM/tools.git
+
+# Add with explicit ref and path
+aipack registry add https://github.com/org/tools.git \
+  --ref main --path packs/registry.yaml
+
+# Add with a custom name
+aipack registry add git@github.com:org/tools.git --name team-tools
+```
+
 ### registry fetch
 
 Fetches remote registries and caches them locally. Each source is cached as a separate file and saved to `registry_sources` in sync-config for future fetches.
 
 With an explicit URL, fetches that single source. Without a URL, fetches all configured sources (or the compiled-in default from `shrug-labs/aipack`).
 
-Git detection: URL ending in `.git` → git mode (defaults: `ref=main`, `path=registry.yaml`). `--ref` provided → git mode. Otherwise → HTTP GET.
+Git detection: URL ending in `.git` → git mode (defaults: `ref=main`, `path=registry.yaml`). `git@host:path` or `ssh://` → git mode. `--ref` provided → git mode. Otherwise → HTTP GET.
 
 ```bash
-# Fetch from a git repo (auto-detected from .git suffix)
+# Fetch from a git repo (HTTPS)
 aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git
+
+# Fetch from a git repo (SSH — avoids credential prompts)
+aipack registry fetch git@bitbucket.example.com:TEAM/tools.git
 
 # Fetch with explicit ref and path
 aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git \
@@ -396,7 +427,7 @@ aipack registry fetch --deep
 Removes a registry source from sync-config and deletes its cache file.
 
 ```bash
-aipack registry remove ocm-ops-tools
+aipack registry remove my-tools
 ```
 
 ## Discovery (search index)

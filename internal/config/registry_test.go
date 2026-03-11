@@ -130,11 +130,14 @@ func TestDeriveSourceName(t *testing.T) {
 		want string
 	}{
 		{"https://github.com/shrug-labs/aipack.git", "aipack"},
-		{"https://bitbucket.example.com/scm/OCICM/ocm-ops-tools.git", "ocm-ops-tools"},
+		{"https://bitbucket.example.com/scm/TEAM/my-tools.git", "my-tools"},
 		{"https://example.com/my-team/registry.yaml", "my-team"},
 		{"https://example.com/registry.yaml", "example"},
 		{"https://example.com/tools.git/", "tools"},
 		{"https://registry.example.com/registry.yaml", "example"}, // hostname starting with "registry" skips that label
+		{"git@bitbucket.example.com:TEAM/my-tools.git", "my-tools"},
+		{"git@github.com:org/repo.git", "repo"},
+		{"ssh://git@github.com/org/repo.git", "repo"},
 	}
 	for _, tt := range tests {
 		if got := DeriveSourceName(tt.url); got != tt.want {
@@ -184,6 +187,10 @@ func TestIsGitURL(t *testing.T) {
 		{"https://example.com/registry.yaml", "", false},
 		{"https://example.com/registry.yaml", "main", true},
 		{"https://example.com/repo", "v1.0", true},
+		{"git@bitbucket.example.com:TEAM/tools.git", "", true},
+		{"git@github.com:org/repo.git", "", true},
+		{"ssh://git@bitbucket.example.com/TEAM/tools.git", "", true},
+		{"ssh://git@github.com/org/repo", "", true},
 	}
 	for _, tt := range tests {
 		if got := IsGitURL(tt.url, tt.ref); got != tt.want {

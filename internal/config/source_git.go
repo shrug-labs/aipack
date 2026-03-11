@@ -6,9 +6,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
+
+// CheckGit verifies that the git binary is available and returns an actionable
+// error when it is missing (e.g. Xcode CLT not installed on macOS).
+func CheckGit() error {
+	_, err := exec.LookPath("git")
+	if err != nil {
+		if runtime.GOOS == "darwin" {
+			return fmt.Errorf("git not found: install Xcode Command Line Tools with: xcode-select --install")
+		}
+		return fmt.Errorf("git not found: install git from https://git-scm.com/downloads")
+	}
+	return nil
+}
 
 // EnsureClone clones a repo into dir (using the real git binary) if .git is not already present.
 func EnsureClone(repoURL, dir, ref string) error {
@@ -21,6 +35,9 @@ func EnsureCloneWith(repoURL, dir, ref string, runGitFn func(args ...string) err
 }
 
 func ensureClone(repoURL string, dir string, ref string, runGitFn func(args ...string) error) error {
+	if err := CheckGit(); err != nil {
+		return err
+	}
 	if st, err := os.Stat(filepath.Join(dir, ".git")); err == nil && st.IsDir() {
 		if ref != "" {
 			return checkoutRef(dir, ref, runGitFn)
@@ -93,7 +110,65 @@ func runGit(args ...string) error {
 		return fmt.Errorf("git %s timed out after 2m", strings.Join(args, " "))
 	}
 	if err != nil {
-		return fmt.Errorf("git %s failed: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
+		msg := strings.TrimSpace(string(out))
+		hint := gitErrorHint(msg, args)
+		if hint != "" {
+			return fmt.Errorf("git %s failed: %s\n\n%s", strings.Join(args, " "), msg, hint)
+		}
+		return fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
 	}
 	return nil
+}
+
+// gitErrorHint returns an actionable hint for common git failures.
+func gitErrorHint(output string, args []string) string {
+	lower := strings.ToLower(output)
+
+	// Xcode CLT missing (macOS stub git).
+	if strings.Contains(lower, "xcrun") || strings.Contains(lower, "xcode-select") ||
+		strings.Contains(lower, "command line tools") {
+		return "hint: install Xcode Command Line Tools: xcode-select --install"
+	}
+
+	// SSH connection timeout — common with Bitbucket Server on non-standard ports.
+	if strings.Contains(lower, "operation timed out") ||
+		strings.Contains(lower, "connection timed out") {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "git@") && strings.Contains(arg, ":") && !strings.Contains(arg, "://") {
+				// SCP-style URL defaults to port 22; Bitbucket Server typically uses 7999.
+				host := arg[len("git@"):]
+				if idx := strings.Index(host, ":"); idx >= 0 {
+					host = host[:idx]
+				}
+				return "hint: SSH connection timed out on port 22. Bitbucket Server often uses port 7999.\n" +
+					"  Try: ssh://git@" + host + ":7999/<project>/<repo>.git\n" +
+					"  Or add to ~/.ssh/config:\n" +
+					"    Host " + host + "\n" +
+					"      Port 7999"
+			}
+		}
+	}
+
+	// Authentication / credential failures.
+	if strings.Contains(lower, "could not read username") ||
+		strings.Contains(lower, "terminal prompts disabled") ||
+		strings.Contains(lower, "authentication failed") ||
+		strings.Contains(lower, "invalid credentials") ||
+		strings.Contains(lower, "authorization failed") ||
+		strings.Contains(lower, "http basic:") ||
+		strings.Contains(lower, "403") ||
+		strings.Contains(lower, "401") {
+		// Check if an HTTPS URL is in the args.
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "https://") || strings.HasPrefix(arg, "http://") {
+				return "hint: HTTPS git requires credentials. Try one of:\n" +
+					"  - Use SSH URL instead: git@<host>:<project>/<repo>.git\n" +
+					"  - Configure a credential helper: git config --global credential.helper osxkeychain\n" +
+					"  - Set up a personal access token"
+			}
+		}
+		return "hint: git authentication failed. Check your SSH key or credential configuration."
+	}
+
+	return ""
 }

@@ -84,15 +84,13 @@ Building from source requires Go 1.24+.
 ### First Use
 
 ```bash
-# Initialize config directory and default profile
+# Initialize config directory, default profile, and fetch the public registry
 aipack init
 
-# Fetch the public pack catalog (may be empty in early releases)
-aipack registry fetch
-
-# Install a pack from a local directory or git URL
+# Install a pack from a local directory, git URL, or registry name
 aipack pack install ./my-team-pack
 aipack pack install --url https://github.com/org/team-pack.git
+aipack pack install my-team-pack    # looks up name in registry
 
 # Preview what would change
 aipack sync --dry-run
@@ -155,7 +153,7 @@ Sync is non-destructive by default. Modified files show a unified diff and are s
 | `aipack save` | Capture harness config back into packs |
 | `aipack pack install/list/show/update/delete` | Pack lifecycle management |
 | `aipack profile create/set/show/list` | Profile management |
-| `aipack registry fetch/list/search/remove` | Discover and manage pack registries |
+| `aipack registry add/fetch/list/search/sources/remove` | Discover and manage pack registries |
 | `aipack search` | Full-text search across all installed packs |
 | `aipack render` | Generate portable pack output |
 | `aipack doctor` | Validate config health and detect drift |
@@ -176,10 +174,13 @@ Sync is non-destructive by default. Modified files show a unified diff and are s
 
 aipack supports multiple registry sources. Each source is cached locally and fetched independently.
 
+- `aipack registry add <url>` configures a source without fetching (useful offline or for setup scripts).
 - `aipack registry fetch <url>` fetches a single source and saves it for future use.
 - `aipack registry fetch` (bare) fetches all configured sources.
+- `aipack registry sources` lists configured sources and their cache status.
 - Sources are saved to `registry_sources` in `sync-config.yaml` and cached in `~/.config/aipack/registries/`.
-- Git repos are auto-detected from `.git` suffix, or use `--ref` and `--path` for explicit git coordinates.
+- Both HTTPS and SSH git URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts.
+- Git repos are auto-detected from `.git` suffix, `git@` prefix, `ssh://` scheme, or `--ref`/`--path` flags.
 - The compiled-in default points at `registry.yaml` in `shrug-labs/aipack` and is used when no sources are configured.
 - Even without registry entries, pack installs work via direct paths and `aipack pack install --url ...`.
 

@@ -89,6 +89,9 @@ func FetchFileViaGitWith(repoURL, ref, filePath string, runGitFn func(args ...st
 }
 
 func fetchFileViaGit(repoURL, ref, filePath string, runGitFn func(args ...string) error) ([]byte, error) {
+	if err := CheckGit(); err != nil {
+		return nil, err
+	}
 	tmp, err := os.MkdirTemp("", "aipack-fetch-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir: %w", err)
@@ -174,8 +177,13 @@ func LoadMergedRegistry(configDir string) (Registry, error) {
 func DeriveSourceName(rawURL string) string {
 	u := strings.TrimSuffix(rawURL, "/")
 
-	// Strip scheme (https://, ssh://, etc.)
-	if idx := strings.Index(u, "://"); idx >= 0 {
+	// Handle SCP-style SSH URLs: git@host:org/repo.git → org/repo.git
+	if strings.HasPrefix(u, "git@") {
+		if idx := strings.Index(u, ":"); idx >= 0 {
+			u = u[idx+1:]
+		}
+	} else if idx := strings.Index(u, "://"); idx >= 0 {
+		// Strip scheme (https://, ssh://, etc.)
 		u = u[idx+3:]
 	}
 
@@ -230,10 +238,22 @@ func UniqueSourceName(derived, url string, existing []RegistrySourceEntry) strin
 }
 
 // IsGitURL returns true if the URL should use git-based fetch.
-// A URL is considered a git URL if it ends with ".git" or if a ref is provided.
+// A URL is considered a git URL if it ends with ".git", uses an SSH scheme
+// or SCP-style syntax (git@host:path), or if a ref is provided.
 func IsGitURL(rawURL, ref string) bool {
 	if ref != "" {
 		return true
 	}
-	return strings.HasSuffix(rawURL, ".git")
+	if strings.HasSuffix(rawURL, ".git") {
+		return true
+	}
+	// SCP-style SSH: git@host:org/repo
+	if strings.HasPrefix(rawURL, "git@") && strings.Contains(rawURL, ":") {
+		return true
+	}
+	// Explicit SSH scheme.
+	if strings.HasPrefix(rawURL, "ssh://") {
+		return true
+	}
+	return false
 }

@@ -24,7 +24,8 @@ type RegistryListRequest struct {
 
 // RegistrySearchResult describes a pack found in the registry.
 type RegistrySearchResult struct {
-	Name string `json:"name"`
+	Name      string `json:"name"`
+	Installed bool   `json:"installed"`
 	config.RegistryEntry
 }
 
@@ -34,7 +35,9 @@ func RegistryList(req RegistryListRequest) ([]RegistrySearchResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return registryEntriesToResults(reg), nil
+	results := registryEntriesToResults(reg)
+	markInstalled(results, req.ConfigDir)
+	return results, nil
 }
 
 // RegistrySearch returns packs whose name or description match the query (case-insensitive substring).
@@ -44,6 +47,7 @@ func RegistrySearch(req RegistryListRequest, query string) ([]RegistrySearchResu
 		return nil, err
 	}
 	all := registryEntriesToResults(reg)
+	markInstalled(all, req.ConfigDir)
 	q := strings.ToLower(query)
 	var matched []RegistrySearchResult
 	for _, r := range all {
@@ -74,6 +78,87 @@ func loadRegistryForRequest(req RegistryListRequest) (config.Registry, error) {
 	}
 	// Default — merged view from local + cached sources.
 	return config.LoadMergedRegistry(req.ConfigDir)
+}
+
+// RegistrySourceInfo describes a configured registry source for display.
+type RegistrySourceInfo struct {
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	Ref    string `json:"ref,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Cached bool   `json:"cached"`
+}
+
+// RegistrySources returns all configured registry sources.
+func RegistrySources(configDir string) ([]RegistrySourceInfo, error) {
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if err != nil {
+		return nil, fmt.Errorf("loading sync-config: %w", err)
+	}
+	result := make([]RegistrySourceInfo, 0, len(sc.RegistrySources))
+	for _, src := range sc.RegistrySources {
+		cachePath := config.SourceCachePath(configDir, src.Name)
+		_, statErr := os.Stat(cachePath)
+		result = append(result, RegistrySourceInfo{
+			Name:   src.Name,
+			URL:    src.URL,
+			Ref:    src.Ref,
+			Path:   src.Path,
+			Cached: statErr == nil,
+		})
+	}
+	return result, nil
+}
+
+// RegistryAddSourceRequest holds the inputs for adding a registry source without fetching.
+type RegistryAddSourceRequest struct {
+	ConfigDir string
+	URL       string
+	Ref       string
+	Path      string
+	Name      string
+}
+
+// RegistryAddSource adds a registry source to sync-config without fetching it.
+// The source can be fetched later with `registry fetch`.
+func RegistryAddSource(req RegistryAddSourceRequest, stdout io.Writer) error {
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
+	if err != nil {
+		return fmt.Errorf("loading sync-config: %w", err)
+	}
+
+	isGit := config.IsGitURL(req.URL, req.Ref)
+	ref := req.Ref
+	filePath := req.Path
+	if isGit {
+		if ref == "" {
+			ref = config.DefaultRegistryRef
+		}
+		if filePath == "" {
+			filePath = config.DefaultRegistryPath
+		}
+	}
+
+	name := req.Name
+	if name == "" {
+		derived := config.DeriveSourceName(req.URL)
+		name = config.UniqueSourceName(derived, req.URL, sc.RegistrySources)
+	}
+
+	upsertRegistrySource(&sc, config.RegistrySourceEntry{
+		Name: name,
+		URL:  req.URL,
+		Ref:  ref,
+		Path: filePath,
+	})
+
+	if err := config.SaveSyncConfig(config.SyncConfigPath(req.ConfigDir), sc); err != nil {
+		return fmt.Errorf("saving sync-config: %w", err)
+	}
+
+	fmt.Fprintf(stdout, "Added registry source %q (%s)\n", name, req.URL)
+	fmt.Fprintln(stdout, "Run 'aipack registry fetch' to fetch pack listings.")
+	return nil
 }
 
 // RegistryFetchRequest holds the inputs for fetching a remote registry.
@@ -535,4 +620,16 @@ func registryEntriesToResults(reg config.Registry) []RegistrySearchResult {
 		return results[i].Name < results[j].Name
 	})
 	return results
+}
+
+// markInstalled sets the Installed flag for packs that exist in the packs directory.
+func markInstalled(results []RegistrySearchResult, configDir string) {
+	if configDir == "" {
+		return
+	}
+	packsDir := PacksDir(configDir)
+	for i := range results {
+		_, err := os.Stat(filepath.Join(packsDir, results[i].Name))
+		results[i].Installed = err == nil
+	}
 }

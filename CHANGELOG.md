@@ -6,6 +6,26 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.5.0]
+
+### Added
+
+- **SSH URL support**: `registry fetch`, `registry add`, and `pack install` now detect `git@host:path` SCP-style and `ssh://` URLs as git sources, avoiding HTTPS credential prompts.
+- **`registry add <url>`**: Configure a registry source without fetching — useful offline or in setup scripts.
+- **`registry sources`**: List configured registry sources with cache status. Supports `--json` output.
+- **`pack install --ref`**: Override the git ref when installing from URL or registry name.
+- **`[installed]` markers**: `registry list` and `registry search` now indicate which packs are already installed.
+- **`aipack init` auto-fetches registry**: Initialization now fetches the default registry so packs are discoverable immediately.
+- **`aipack doctor` git check**: New `git_available` warning check detects missing git or Xcode Command Line Tools on macOS.
+- **Actionable git error hints**: Common failures (HTTPS auth, SSH timeout on port 22, Xcode CLT missing) now include specific remediation steps.
+- **Installer git warning**: `install.sh` warns if git is not available and suggests `xcode-select --install` on macOS.
+
+### Changed
+
+- `registry fetch` help and docs updated with SSH examples and `ssh://` scheme documentation.
+- `registry remove` help now references `registry sources` for listing.
+- README "First Use" section updated: `aipack init` auto-fetches, added registry-name install example.
+
 ## [0.4.0]
 
 ### Added

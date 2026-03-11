@@ -66,6 +66,7 @@ func (c *PackCreateCmd) Run(g *Globals) error {
 type PackInstallCmd struct {
 	Path       string `arg:"" optional:"" help:"Local directory path or registry pack name"`
 	URL        string `help:"Clone pack from a git-accessible repository or pack.json URL" name:"url"`
+	Ref        string `help:"Git ref (branch/tag) to checkout when cloning" name:"ref"`
 	Name       string `help:"Override the pack name from pack.json" name:"name"`
 	ConfigDir  string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Registry   string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
@@ -97,8 +98,14 @@ Examples:
   # Clone a pack from a URL
   aipack pack install --url https://github.com/org/pack-repo
 
+  # Clone from a specific branch
+  aipack pack install --url git@host:org/repo.git --ref feature-branch
+
   # Install a pack by registry name
   aipack pack install my-team-pack
+
+  # Install a registry pack from a specific branch
+  aipack pack install my-team-pack --ref develop
 
   # Install without registering in any profile
   aipack pack install ./my-pack --no-register
@@ -156,6 +163,7 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 	}
 	if c.URL != "" {
 		req.URL = c.URL
+		req.Ref = c.Ref
 	} else if c.Path != "" && isRegistryName(c.Path) {
 		// Not a local path — try registry lookup.
 		regReq := app.RegistryListRequest{
@@ -178,7 +186,11 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 		}
 		req.URL = entry.Repo
 		req.SubPath = entry.Path
-		req.Ref = entry.Ref
+		if c.Ref != "" {
+			req.Ref = c.Ref
+		} else {
+			req.Ref = entry.Ref
+		}
 		if req.Name == "" {
 			req.Name = c.Path // use the registry key as the pack name
 		}

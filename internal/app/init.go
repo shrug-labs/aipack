@@ -15,10 +15,13 @@ import (
 type InitRequest struct {
 	ConfigDir string
 	Force     bool
+
+	// RegistryFetchFn overrides how git-based registry fetch works (for testing).
+	RegistryFetchFn func(repo, ref, path string) ([]byte, error)
 }
 
 // RunInit initializes the user's config directory with a sync-config.yaml and
-// an empty default profile.
+// an empty default profile, then fetches the default registry.
 func RunInit(req InitRequest, stdout io.Writer) error {
 	if strings.TrimSpace(req.ConfigDir) == "" {
 		return fmt.Errorf("config dir is required")
@@ -49,6 +52,17 @@ func RunInit(req InitRequest, stdout io.Writer) error {
 	registryPath := filepath.Join(req.ConfigDir, "registry.yaml")
 	if err := writeInitFile(registryPath, config.InitRegistryBytes, req.Force, stdout); err != nil {
 		return err
+	}
+
+	// Auto-fetch the default registry so packs are discoverable immediately.
+	fmt.Fprintln(stdout, "\nFetching default registry...")
+	fetchReq := RegistryFetchRequest{ConfigDir: req.ConfigDir}
+	if req.RegistryFetchFn != nil {
+		fetchReq.GitFetchFn = req.RegistryFetchFn
+	}
+	if err := RegistryFetch(fetchReq, stdout); err != nil {
+		fmt.Fprintf(stdout, "warning: registry fetch failed: %v\n", err)
+		fmt.Fprintln(stdout, "Run 'aipack registry fetch' to retry later.")
 	}
 
 	return nil

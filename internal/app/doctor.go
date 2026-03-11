@@ -114,6 +114,9 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	syncCheck.Details = map[string]any{"config_dir": configDir, "path": syncCfgPath}
 	add(syncCheck)
 
+	// git availability (warning-only — registry fetch and pack install need git)
+	add(doctorCheckGit())
+
 	// unregistered packs (warning-only, does not block subsequent checks)
 	add(doctorCheckUnregisteredPacks(configDir, syncCfg))
 
@@ -231,6 +234,21 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	rep.OK = true
 	rep.Status = "ok"
 	return rep
+}
+
+// doctorCheckGit verifies git is available. Registry fetch and pack install
+// require git for cloning, and on macOS git requires Xcode Command Line Tools.
+func doctorCheckGit() CheckResult {
+	check := CheckResult{Name: "git_available", Severity: "warning", Status: "pass", OK: true}
+	if err := config.CheckGit(); err != nil {
+		check.Status = "warn"
+		check.OK = false
+		check.Message = err.Error()
+		check.Remediation = "Install git to enable registry fetch and pack install from git URLs"
+		return check
+	}
+	check.Message = "git available"
+	return check
 }
 
 func doctorSkippedCheck(name string, reason string) CheckResult {

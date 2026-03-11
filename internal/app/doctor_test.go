@@ -64,6 +64,24 @@ func TestDoctorSkippedCheck(t *testing.T) {
 	}
 }
 
+func TestDoctorCheckGit_Available(t *testing.T) {
+	t.Parallel()
+	// On any CI or dev machine with git installed, this should pass.
+	cr := doctorCheckGit()
+	if !cr.OK {
+		t.Skipf("git not available in this environment: %s", cr.Message)
+	}
+	if cr.Name != "git_available" {
+		t.Errorf("Name = %q, want %q", cr.Name, "git_available")
+	}
+	if cr.Status != "pass" {
+		t.Errorf("Status = %q, want %q", cr.Status, "pass")
+	}
+	if cr.Severity != "warning" {
+		t.Errorf("Severity = %q, want %q", cr.Severity, "warning")
+	}
+}
+
 func TestDoctorCheckUnregisteredPacks_AllRegistered(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

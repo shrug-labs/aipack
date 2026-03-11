@@ -11,10 +11,12 @@ import (
 )
 
 type RegistryCmd struct {
-	List   RegistryListCmd   `cmd:"" help:"List all packs available in the registry"`
-	Search RegistrySearchCmd `cmd:"" help:"Search for packs by name or description"`
-	Fetch  RegistryFetchCmd  `cmd:"" help:"Fetch remote registry sources and cache them locally"`
-	Remove RegistryRemoveCmd `cmd:"" help:"Remove a registry source"`
+	List    RegistryListCmd    `cmd:"" help:"List all packs available in the registry"`
+	Search  RegistrySearchCmd  `cmd:"" help:"Search for packs by name or description"`
+	Fetch   RegistryFetchCmd   `cmd:"" help:"Fetch remote registry sources and cache them locally"`
+	Sources RegistrySourcesCmd `cmd:"" help:"List configured registry sources"`
+	Add     RegistryAddCmd     `cmd:"" help:"Add a registry source without fetching"`
+	Remove  RegistryRemoveCmd  `cmd:"" help:"Remove a registry source"`
 }
 
 func (c *RegistryCmd) Help() string {
@@ -23,7 +25,13 @@ names to source repositories, enabling discovery and installation.
 
 The unified registry view merges:
   1. Local entries from ~/.config/aipack/registry.yaml (highest priority)
-  2. Cached remote sources in ~/.config/aipack/registries/ (in source order)`
+  2. Cached remote sources in ~/.config/aipack/registries/ (in source order)
+
+Common workflow:
+  aipack registry add <url>       # configure a source
+  aipack registry fetch           # fetch all sources
+  aipack registry list            # see available packs
+  aipack pack install <name>      # install a pack by name`
 }
 
 // --- registry list ---
@@ -154,14 +162,18 @@ sources in registry_sources (or the compiled-in default).
 
 Git detection:
   - URL ending in .git → git mode (defaults: ref=main, path=registry.yaml)
+  - git@host:path or ssh:// → git mode
   - --ref provided → git mode
   - Otherwise → HTTP GET
 
 Examples:
-  # Fetch from a git repo (auto-detected from .git suffix)
+  # Fetch from a git repo (HTTPS)
   aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git
 
-  # Fetch from a git repo with explicit ref and path
+  # Fetch from a git repo (SSH — avoids HTTPS credential prompts)
+  aipack registry fetch git@bitbucket.example.com:TEAM/tools.git
+
+  # Fetch with explicit ref and path
   aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git \
     --ref team/ai-runbooks --path ai-runbooks/registry.yaml
 
@@ -171,7 +183,7 @@ Examples:
   # Fetch all configured sources
   aipack registry fetch
 
-See also: registry list, registry search, registry remove`
+See also: registry list, registry search, registry sources, registry add`
 }
 
 func (c *RegistryFetchCmd) Run(g *Globals) error {
@@ -215,13 +227,13 @@ func (c *RegistryRemoveCmd) Help() string {
 	return `Removes a registry source from sync-config and deletes its cached file.
 
 Examples:
-  # Remove a source
-  aipack registry remove ocm-ops-tools
+  # List configured sources
+  aipack registry sources
 
-  # List sources to see available names
-  aipack registry fetch  (sources are shown in output)
+  # Remove a source by name
+  aipack registry remove my-tools
 
-See also: registry fetch, registry list`
+See also: registry sources, registry fetch, registry add`
 }
 
 func (c *RegistryRemoveCmd) Run(g *Globals) error {
@@ -236,13 +248,133 @@ func (c *RegistryRemoveCmd) Run(g *Globals) error {
 	}, g.Stdout)
 }
 
+// --- registry sources ---
+
+type RegistrySourcesCmd struct {
+	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	JSON      bool   `help:"Emit machine-readable JSON array" name:"json"`
+}
+
+func (c *RegistrySourcesCmd) Help() string {
+	return `Lists all configured registry sources from sync-config, showing name, URL,
+git ref, and whether a cached copy exists.
+
+Examples:
+  # List configured sources
+  aipack registry sources
+
+  # Machine-readable JSON output
+  aipack registry sources --json
+
+See also: registry add, registry fetch, registry remove`
+}
+
+func (c *RegistrySourcesCmd) Run(g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	if err != nil {
+		return err
+	}
+
+	sources, err := app.RegistrySources(cfgDir)
+	if err != nil {
+		return err
+	}
+
+	if c.JSON {
+		if sources == nil {
+			sources = []app.RegistrySourceInfo{}
+		}
+		return cmdutil.WriteJSON(g.Stdout, sources)
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintln(g.Stdout, "No registry sources configured.")
+		fmt.Fprintln(g.Stdout, "Add one with: aipack registry add <url>")
+		return nil
+	}
+
+	for _, src := range sources {
+		status := "not fetched"
+		if src.Cached {
+			status = "cached"
+		}
+		fmt.Fprintf(g.Stdout, "  %s (%s)\n", src.Name, status)
+		details := []string{src.URL}
+		if src.Ref != "" {
+			details = append(details, "ref: "+src.Ref)
+		}
+		if src.Path != "" {
+			details = append(details, "path: "+src.Path)
+		}
+		fmt.Fprintf(g.Stdout, "    %s\n", strings.Join(details, ", "))
+	}
+	return nil
+}
+
+// --- registry add ---
+
+type RegistryAddCmd struct {
+	URL       string `arg:"" help:"URL of the registry source (git repo or HTTP)"`
+	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	Ref       string `help:"Git ref (branch/tag) — implies git-based fetch" name:"ref"`
+	Path      string `help:"File path within git repo (default: registry.yaml)" name:"path"`
+	Name      string `help:"Source name for caching (default: derived from URL)" name:"name"`
+}
+
+func (c *RegistryAddCmd) Help() string {
+	return `Adds a registry source to sync-config without fetching it. The source
+will be fetched on the next 'aipack registry fetch'.
+
+Use this when you want to configure a source for later, or when you are
+offline and just want to record the URL.
+
+Both HTTPS and SSH URLs are supported:
+  - HTTPS: https://bitbucket.example.com/scm/TEAM/tools.git
+  - SSH:   git@bitbucket.example.com:TEAM/tools.git
+
+Examples:
+  # Add an SSH source (recommended — avoids credential prompts)
+  aipack registry add git@bitbucket.example.com:TEAM/tools.git
+
+  # Add an HTTPS source
+  aipack registry add https://bitbucket.example.com/scm/TEAM/tools.git
+
+  # Add with explicit ref and path
+  aipack registry add https://github.com/org/tools.git \
+    --ref main --path packs/registry.yaml
+
+  # Add with a custom name
+  aipack registry add git@github.com:org/tools.git --name team-tools
+
+See also: registry fetch, registry sources, registry remove`
+}
+
+func (c *RegistryAddCmd) Run(g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	if err != nil {
+		return err
+	}
+
+	return app.RegistryAddSource(app.RegistryAddSourceRequest{
+		ConfigDir: cfgDir,
+		URL:       c.URL,
+		Ref:       c.Ref,
+		Path:      c.Path,
+		Name:      c.Name,
+	}, g.Stdout)
+}
+
 func printRegistryResults(g *Globals, results []app.RegistrySearchResult) {
 	for _, r := range results {
+		installed := ""
+		if r.Installed {
+			installed = " [installed]"
+		}
 		desc := ""
 		if r.Description != "" {
 			desc = " — " + r.Description
 		}
-		fmt.Fprintf(g.Stdout, "  %s%s\n", r.Name, desc)
+		fmt.Fprintf(g.Stdout, "  %s%s%s\n", r.Name, installed, desc)
 		details := []string{r.Repo}
 		if r.Path != "" {
 			details = append(details, "path: "+r.Path)

@@ -204,3 +204,13 @@ case ":$PATH:" in
 	*":$TARGET_BIN_DIR:"*) ;;
 	*) log "Add ${TARGET_BIN_DIR} to your PATH if it is not already present." ;;
 esac
+
+# Warn if git is not available — required for pack install and registry fetch.
+if ! command -v git >/dev/null 2>&1; then
+	log ""
+	log "WARNING: git is not installed. aipack requires git for pack management."
+	case "$(detect_os)" in
+		darwin) log "  Install Xcode Command Line Tools: xcode-select --install" ;;
+		*)      log "  Install git: https://git-scm.com/downloads" ;;
+	esac
+fi
