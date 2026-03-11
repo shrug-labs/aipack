@@ -68,138 +68,248 @@ func RegistryLookup(req RegistryListRequest, name string) (config.RegistryEntry,
 }
 
 func loadRegistryForRequest(req RegistryListRequest) (config.Registry, error) {
-	scDefault := ""
-	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
-	if err == nil {
-		scDefault = sc.Defaults.Registry
+	if req.RegistryPath != "" {
+		// Explicit path override — single file mode.
+		return config.LoadRegistry(req.RegistryPath)
 	}
-	path := config.ResolveRegistryPath(req.RegistryPath, scDefault, req.ConfigDir)
-	return config.LoadRegistry(path)
+	// Default — merged view from local + cached sources.
+	return config.LoadMergedRegistry(req.ConfigDir)
 }
 
-// RegistryFetchRequest holds the inputs for fetching and merging a remote registry.
+// RegistryFetchRequest holds the inputs for fetching a remote registry.
 type RegistryFetchRequest struct {
-	ConfigDir    string
-	RegistryPath string // explicit override for local registry path
-	URL          string // explicit URL override; empty = resolve from sync-config
-	Prune        bool   // remove local entries not present in the fetched registry
+	ConfigDir string
+	URL       string // explicit URL; empty = fetch all known sources
+	Ref       string // git ref (branch/tag); presence implies git-based fetch
+	Path      string // file path within repo (git only); default: registry.yaml
+	Name      string // explicit source name; empty = derive from URL
+	Prune     bool   // deprecated: cached registries are always overwritten
 
-	// FetchFn overrides how bytes are fetched from a URL. If nil, uses HTTP GET.
-	// Only used when fetching via URL (explicit or sync-config). Git-based
-	// fetch (the compiled-in default) does not use this.
+	// FetchFn overrides how bytes are fetched from an HTTP URL (for testing).
 	FetchFn func(url string) ([]byte, error)
 
 	// GitFetchFn overrides how a file is fetched via git (for testing).
-	// Signature: (repo, ref, path) → bytes. If nil, uses real git clone.
 	GitFetchFn func(repo, ref, path string) ([]byte, error)
 }
 
-// RegistryFetch fetches a remote registry and merges it into the local registry.
+// RegistryFetch fetches remote registries and caches them locally.
+// With an explicit URL, fetches that single source and saves it to sync-config.
+// Without a URL, fetches all sources in registry_sources (or the compiled-in default).
 func RegistryFetch(req RegistryFetchRequest, stdout io.Writer) error {
-	// 1. Load sync-config once for URL and registry path resolution.
-	var sc config.SyncConfig
-	if loaded, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir)); err == nil {
-		sc = loaded
+	if req.Prune {
+		fmt.Fprintln(stdout, "note: --prune is no longer needed; cached registries are kept in sync automatically")
 	}
 
-	// 2. Resolve the source: explicit URL > sync-config registry_url > compiled-in git default
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
+	if err != nil {
+		return fmt.Errorf("loading sync-config: %w", err)
+	}
+
+	if req.URL != "" {
+		if _, err := registryFetchOne(req, &sc, stdout); err != nil {
+			return err
+		}
+		return config.SaveSyncConfig(config.SyncConfigPath(req.ConfigDir), sc)
+	}
+
+	// Multi-source: fetch all known sources.
+	sources := sc.RegistrySources
+
+	// Backward compat: if no sources but defaults.registry_url is set, use it.
+	if len(sources) == 0 && sc.Defaults.RegistryURL != "" {
+		sources = []config.RegistrySourceEntry{{
+			Name: config.DeriveSourceName(sc.Defaults.RegistryURL),
+			URL:  sc.Defaults.RegistryURL,
+		}}
+	}
+
+	// No sources at all: use compiled-in default.
+	if len(sources) == 0 {
+		sources = []config.RegistrySourceEntry{{
+			Name: config.DeriveSourceName(config.DefaultRegistryRepo),
+			URL:  config.DefaultRegistryRepo,
+			Ref:  config.DefaultRegistryRef,
+			Path: config.DefaultRegistryPath,
+		}}
+	}
+
+	var totalPacks, succeeded int
+	for _, src := range sources {
+		oneReq := RegistryFetchRequest{
+			ConfigDir:  req.ConfigDir,
+			URL:        src.URL,
+			Ref:        src.Ref,
+			Path:       src.Path,
+			Name:       src.Name,
+			FetchFn:    req.FetchFn,
+			GitFetchFn: req.GitFetchFn,
+		}
+		n, err := registryFetchOne(oneReq, &sc, stdout)
+		if err != nil {
+			fmt.Fprintf(stdout, "warning: %s: %v\n", src.Name, err)
+			continue
+		}
+		succeeded++
+		totalPacks += n
+	}
+
+	if succeeded == 0 {
+		return fmt.Errorf("all %d registry source(s) failed to fetch", len(sources))
+	}
+
+	// Save sync-config once after all sources are processed.
+	if err := config.SaveSyncConfig(config.SyncConfigPath(req.ConfigDir), sc); err != nil {
+		return fmt.Errorf("saving sync-config: %w", err)
+	}
+
+	if len(sources) > 1 {
+		fmt.Fprintf(stdout, "%d source(s), %d total pack(s)\n", len(sources), totalPacks)
+	}
+	return nil
+}
+
+// registryFetchOne fetches a single registry source, caches it, and upserts it
+// into the in-memory sync-config. The caller is responsible for saving sync-config.
+// Returns the number of packs in the fetched registry.
+func registryFetchOne(req RegistryFetchRequest, sc *config.SyncConfig, stdout io.Writer) (int, error) {
 	url := req.URL
-	if url == "" {
-		url = sc.Defaults.RegistryURL
+	ref := req.Ref
+	filePath := req.Path
+
+	// Apply defaults for git URLs. For HTTP URLs, ref and filePath stay empty —
+	// the upsert writes them with omitempty, and re-fetch identifies the source
+	// as HTTP because IsGitURL(url, "") returns false.
+	isGit := config.IsGitURL(url, ref)
+	if isGit {
+		if ref == "" {
+			ref = config.DefaultRegistryRef
+		}
+		if filePath == "" {
+			filePath = config.DefaultRegistryPath
+		}
 	}
 
-	// 3. Fetch the remote registry
+	// Resolve source name.
+	name := req.Name
+	if name == "" {
+		derived := config.DeriveSourceName(url)
+		name = config.UniqueSourceName(derived, url, sc.RegistrySources)
+	}
+
+	// Fetch remote registry bytes.
 	var data []byte
-	var source string
 	var err error
 
-	if url != "" {
-		// URL-based fetch (explicit or from sync-config).
-		source = url
+	if isGit {
+		gitFetchFn := req.GitFetchFn
+		if gitFetchFn == nil {
+			gitFetchFn = config.FetchFileViaGit
+		}
+		data, err = gitFetchFn(url, ref, filePath)
+	} else {
 		fetchFn := req.FetchFn
 		if fetchFn == nil {
 			fetchFn = config.FetchRegistryFromURL
 		}
 		data, err = fetchFn(url)
-	} else {
-		// Git-based fetch using compiled-in default coordinates.
-		source = config.DefaultRegistryRepo
-		gitFetchFn := req.GitFetchFn
-		if gitFetchFn == nil {
-			gitFetchFn = config.FetchFileViaGit
-		}
-		data, err = gitFetchFn(config.DefaultRegistryRepo, config.DefaultRegistryRef, config.DefaultRegistryPath)
 	}
 	if err != nil {
-		return fmt.Errorf("fetching registry from %s: %w", source, err)
+		return 0, fmt.Errorf("fetching registry from %s: %w", url, err)
 	}
 
-	// 4. Parse and validate
+	// Parse and validate.
 	remote, err := config.ParseRegistry(data)
 	if err != nil {
-		return fmt.Errorf("parsing remote registry: %w", err)
+		return 0, fmt.Errorf("parsing remote registry from %s: %w", url, err)
 	}
 
-	// 5. Resolve local registry path
-	localPath := config.ResolveRegistryPath(req.RegistryPath, sc.Defaults.Registry, req.ConfigDir)
-
-	// 6. Load or create local registry, merge
-	local, err := config.LoadRegistry(localPath)
+	// Write cache file.
+	cacheDir := config.RegistriesCacheDir(req.ConfigDir)
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return 0, fmt.Errorf("creating registries cache dir: %w", err)
+	}
+	cachePath := config.SourceCachePath(req.ConfigDir, name)
+	out, err := yaml.Marshal(&remote)
 	if err != nil {
-		// Local doesn't exist or is invalid — start fresh
-		local = config.Registry{
-			SchemaVersion: config.RegistrySchemaVersion,
-			Packs:         make(map[string]config.RegistryEntry),
-		}
+		return 0, fmt.Errorf("marshalling registry: %w", err)
+	}
+	if err := util.WriteFileAtomicWithPerms(cachePath, out, 0o700, 0o600); err != nil {
+		return 0, fmt.Errorf("writing cached registry: %w", err)
 	}
 
-	added := 0
-	for name, entry := range remote.Packs {
-		if _, exists := local.Packs[name]; !exists {
-			local.Packs[name] = entry
-			added++
-		}
-	}
+	// Upsert source in sync-config (caller saves).
+	upsertRegistrySource(sc, config.RegistrySourceEntry{
+		Name: name,
+		URL:  url,
+		Ref:  ref,
+		Path: filePath,
+	})
 
-	pruned := 0
-	var prunedNames []string
-	if req.Prune {
-		for name := range local.Packs {
-			if _, exists := remote.Packs[name]; !exists {
-				delete(local.Packs, name)
-				prunedNames = append(prunedNames, name)
-				pruned++
-			}
-		}
-	}
-
-	// 7. Write the merged registry
-	out, err := yaml.Marshal(&local)
-	if err != nil {
-		return fmt.Errorf("marshalling registry: %w", err)
-	}
-	if err := util.WriteFileAtomicWithPerms(localPath, out, 0o700, 0o600); err != nil {
-		return fmt.Errorf("writing registry: %w", err)
-	}
-
-	// 8. Update the search index with registry entries (best-effort).
-	if err := indexRegistryEntries(local, req.ConfigDir); err != nil {
+	// Update search index (best-effort).
+	if err := indexRegistryEntries(remote, req.ConfigDir); err != nil {
 		fmt.Fprintf(stdout, "warning: index update failed: %v\n", err)
 	}
 
-	// 8b. Remove pruned packs from the search index (best-effort).
-	if len(prunedNames) > 0 {
-		if err := pruneIndexEntries(prunedNames, req.ConfigDir); err != nil {
-			fmt.Fprintf(stdout, "warning: index prune failed: %v\n", err)
+	fmt.Fprintf(stdout, "%s: %d pack(s) (from %s)\n", name, len(remote.Packs), url)
+	return len(remote.Packs), nil
+}
+
+// upsertRegistrySource adds or updates a source in the sync-config sources list.
+func upsertRegistrySource(sc *config.SyncConfig, src config.RegistrySourceEntry) {
+	for i, existing := range sc.RegistrySources {
+		if existing.Name == src.Name || existing.URL == src.URL {
+			sc.RegistrySources[i] = src
+			return
+		}
+	}
+	sc.RegistrySources = append(sc.RegistrySources, src)
+}
+
+// RegistryRemoveRequest holds the inputs for removing a registry source.
+type RegistryRemoveRequest struct {
+	ConfigDir string
+	Name      string // source name to remove
+}
+
+// RegistryRemove removes a registry source from sync-config and deletes its cache file.
+func RegistryRemove(req RegistryRemoveRequest, stdout io.Writer) error {
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
+	if err != nil {
+		return fmt.Errorf("loading sync-config: %w", err)
+	}
+
+	found := false
+	filtered := make([]config.RegistrySourceEntry, 0, len(sc.RegistrySources))
+	for _, src := range sc.RegistrySources {
+		if src.Name == req.Name {
+			found = true
+			continue
+		}
+		filtered = append(filtered, src)
+	}
+	if !found {
+		return fmt.Errorf("registry source %q not found", req.Name)
+	}
+
+	sc.RegistrySources = filtered
+	if err := config.SaveSyncConfig(config.SyncConfigPath(req.ConfigDir), sc); err != nil {
+		return fmt.Errorf("saving sync-config: %w", err)
+	}
+
+	cachePath := config.SourceCachePath(req.ConfigDir, req.Name)
+
+	// Remove packs from the search index before deleting the cache file (best-effort).
+	if cached, loadErr := config.LoadRegistry(cachePath); loadErr == nil {
+		if pruneErr := pruneIndexEntries(cached, req.ConfigDir); pruneErr != nil {
+			fmt.Fprintf(stdout, "warning: index cleanup failed: %v\n", pruneErr)
 		}
 	}
 
-	// 9. Summary
-	if pruned > 0 {
-		fmt.Fprintf(stdout, "Fetched registry from %s: %d new, %d pruned, %d total\n", source, added, pruned, len(local.Packs))
-	} else {
-		fmt.Fprintf(stdout, "Fetched registry from %s: %d new pack(s), %d total\n", source, added, len(local.Packs))
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(stdout, "warning: could not remove cache file: %v\n", err)
 	}
+
+	fmt.Fprintf(stdout, "Removed registry source %q\n", req.Name)
 	return nil
 }
 
@@ -227,15 +337,15 @@ func indexRegistryEntries(reg config.Registry, configDir string) error {
 	return db.UpdateRegistryPacks(packs)
 }
 
-// pruneIndexEntries removes pruned packs from the search index.
-func pruneIndexEntries(names []string, configDir string) error {
+// pruneIndexEntries removes packs from the search index that belong to a registry.
+func pruneIndexEntries(reg config.Registry, configDir string) error {
 	db, err := openIndexDB(configDir, "")
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	for _, name := range names {
+	for name := range reg.Packs {
 		if err := db.DeletePack(name); err != nil {
 			return err
 		}

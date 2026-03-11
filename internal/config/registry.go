@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -119,4 +120,120 @@ func ResolveRegistryPath(flagVal, scDefault, configDir string) string {
 		return scDefault
 	}
 	return filepath.Join(configDir, "registry.yaml")
+}
+
+// RegistriesCacheDir returns the directory for cached remote registries.
+func RegistriesCacheDir(configDir string) string {
+	return filepath.Join(configDir, "registries")
+}
+
+// SourceCachePath returns the cache file path for a named registry source.
+func SourceCachePath(configDir, name string) string {
+	return filepath.Join(RegistriesCacheDir(configDir), name+".yaml")
+}
+
+// LoadMergedRegistry loads the local registry and all cached source registries,
+// producing a unified in-memory view. Local entries have highest priority,
+// followed by sources in registry_sources list order. First-seen wins for
+// pack name conflicts.
+func LoadMergedRegistry(configDir string) (Registry, error) {
+	merged := Registry{
+		SchemaVersion: RegistrySchemaVersion,
+		Packs:         make(map[string]RegistryEntry),
+	}
+
+	// 1. Local registry (highest priority).
+	localPath := filepath.Join(configDir, "registry.yaml")
+	if local, err := LoadRegistry(localPath); err == nil {
+		for name, entry := range local.Packs {
+			merged.Packs[name] = entry
+		}
+	}
+
+	// 2. Cached source registries in list order.
+	sc, _ := LoadSyncConfig(SyncConfigPath(configDir))
+	for _, src := range sc.RegistrySources {
+		cachePath := SourceCachePath(configDir, src.Name)
+		cached, err := LoadRegistry(cachePath)
+		if err != nil {
+			continue
+		}
+		for name, entry := range cached.Packs {
+			if _, exists := merged.Packs[name]; !exists {
+				merged.Packs[name] = entry
+			}
+		}
+	}
+
+	return merged, nil
+}
+
+// DeriveSourceName extracts a short source name from a URL.
+// Strips trailing .git/.yaml/.yml suffixes. If the result is "registry"
+// or a hostname, walks up the path to find a meaningful component.
+func DeriveSourceName(rawURL string) string {
+	u := strings.TrimSuffix(rawURL, "/")
+
+	// Strip scheme (https://, ssh://, etc.)
+	if idx := strings.Index(u, "://"); idx >= 0 {
+		u = u[idx+3:]
+	}
+
+	parts := strings.Split(u, "/")
+	// Walk from the end to find a meaningful path component.
+	for i := len(parts) - 1; i >= 0; i-- {
+		name := parts[i]
+		name = strings.TrimSuffix(name, ".git")
+		name = strings.TrimSuffix(name, ".yaml")
+		name = strings.TrimSuffix(name, ".yml")
+		if name == "" || name == "registry" {
+			continue
+		}
+		// If this is the hostname (first component), extract a meaningful
+		// domain label. Skip labels that would produce "registry" (the
+		// string we're trying to avoid) — e.g. "registry.example.com".
+		if i == 0 && strings.Contains(name, ".") {
+			hostParts := strings.Split(name, ".")
+			for _, label := range hostParts {
+				if label != "" && label != "registry" {
+					return label
+				}
+			}
+		}
+		return name
+	}
+	return "registry"
+}
+
+// UniqueSourceName returns a source name that doesn't collide with existing
+// source names (unless the URL matches). If the derived name collides with
+// a source that has a different URL, a numeric suffix is appended.
+func UniqueSourceName(derived, url string, existing []RegistrySourceEntry) string {
+	for _, src := range existing {
+		if src.URL == url {
+			return src.Name
+		}
+	}
+	taken := make(map[string]bool)
+	for _, src := range existing {
+		taken[src.Name] = true
+	}
+	if !taken[derived] {
+		return derived
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", derived, i)
+		if !taken[candidate] {
+			return candidate
+		}
+	}
+}
+
+// IsGitURL returns true if the URL should use git-based fetch.
+// A URL is considered a git URL if it ends with ".git" or if a ref is provided.
+func IsGitURL(rawURL, ref string) bool {
+	if ref != "" {
+		return true
+	}
+	return strings.HasSuffix(rawURL, ".git")
 }

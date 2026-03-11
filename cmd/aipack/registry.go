@@ -7,27 +7,30 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 type RegistryCmd struct {
 	List   RegistryListCmd   `cmd:"" help:"List all packs available in the registry"`
 	Search RegistrySearchCmd `cmd:"" help:"Search for packs by name or description"`
-	Fetch  RegistryFetchCmd  `cmd:"" help:"Fetch and merge a remote registry into the local registry"`
+	Fetch  RegistryFetchCmd  `cmd:"" help:"Fetch remote registry sources and cache them locally"`
+	Remove RegistryRemoveCmd `cmd:"" help:"Remove a registry source"`
 }
 
 func (c *RegistryCmd) Help() string {
-	return `Browse and search the pack registry. The registry is a YAML file that maps
-pack names to their source repositories, enabling discovery and installation.
+	return `Browse, search, and manage pack registry sources. The registry maps pack
+names to source repositories, enabling discovery and installation.
 
-By default, the registry is loaded from ~/.config/aipack/registry.yaml.
-Use --registry to override with a different file path.`
+The unified registry view merges:
+  1. Local entries from ~/.config/aipack/registry.yaml (highest priority)
+  2. Cached remote sources in ~/.config/aipack/registries/ (in source order)`
 }
 
 // --- registry list ---
 
 type RegistryListCmd struct {
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Registry  string `help:"Path to registry YAML file" name:"registry" type:"path"`
+	Registry  string `help:"Path to registry YAML file (single-file mode)" name:"registry" type:"path"`
 	JSON      bool   `help:"Emit machine-readable JSON array" name:"json"`
 }
 
@@ -36,10 +39,10 @@ func (c *RegistryListCmd) Help() string {
 source repo, and subdirectory path (if applicable).
 
 Examples:
-  # List all registry packs
+  # List all registry packs (local + cached sources)
   aipack registry list
 
-  # Use a specific registry file
+  # Use a specific registry file (single-file mode)
   aipack registry list --registry /path/to/registry.yaml
 
   # Machine-readable JSON output
@@ -82,7 +85,7 @@ func (c *RegistryListCmd) Run(g *Globals) error {
 type RegistrySearchCmd struct {
 	Query     string `arg:"" help:"Search term to match against pack names and descriptions"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Registry  string `help:"Path to registry YAML file" name:"registry" type:"path"`
+	Registry  string `help:"Path to registry YAML file (single-file mode)" name:"registry" type:"path"`
 	JSON      bool   `help:"Emit machine-readable JSON array" name:"json"`
 }
 
@@ -132,58 +135,105 @@ func (c *RegistrySearchCmd) Run(g *Globals) error {
 // --- registry fetch ---
 
 type RegistryFetchCmd struct {
-	URL       string `arg:"" optional:"" help:"URL to fetch registry YAML from (default: sync-config defaults.registry_url)"`
+	URL       string `arg:"" optional:"" help:"URL to fetch registry from (git repo or HTTP)"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Registry  string `help:"Path to local registry YAML file to merge into" name:"registry" type:"path"`
-	Prune     bool   `help:"Remove local entries not present in the fetched registry" name:"prune"`
+	Ref       string `help:"Git ref (branch/tag) — implies git-based fetch" name:"ref"`
+	Path      string `help:"File path within git repo (default: registry.yaml)" name:"path"`
+	Name      string `help:"Source name for caching (default: derived from URL)" name:"name"`
+	Prune     bool   `help:"Deprecated: cached registries are always kept in sync" name:"prune"`
 	Deep      bool   `help:"Clone each registry pack and index resource-level frontmatter for search" name:"deep"`
 }
 
 func (c *RegistryFetchCmd) Help() string {
-	return `Fetches a registry YAML from a remote URL and merges its entries into the
-local registry. Existing entries are preserved (never overwritten). With --prune,
-local entries not present in the fetched registry are removed.
+	return `Fetches a remote registry and caches it locally. Each source is cached as a
+separate file in ~/.config/aipack/registries/ and saved to sync-config for
+future fetches.
 
-Source resolution order:
-  1. Explicit URL argument (fetched via HTTP)
-  2. defaults.registry_url in sync-config (fetched via HTTP)
-  3. Compiled-in default (fetched via git clone, uses your git credentials)
+With an explicit URL, fetches that single source. Without a URL, fetches all
+sources in registry_sources (or the compiled-in default).
+
+Git detection:
+  - URL ending in .git → git mode (defaults: ref=main, path=registry.yaml)
+  - --ref provided → git mode
+  - Otherwise → HTTP GET
 
 Examples:
-  # Fetch from an explicit URL
+  # Fetch from a git repo (auto-detected from .git suffix)
+  aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git
+
+  # Fetch from a git repo with explicit ref and path
+  aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git \
+    --ref team/ai-runbooks --path ai-runbooks/registry.yaml
+
+  # Fetch from an HTTP URL
   aipack registry fetch https://example.com/registry.yaml
 
-  # Fetch using the URL configured in sync-config
+  # Fetch all configured sources
   aipack registry fetch
 
-  # Fetch and remove entries no longer in the remote registry
-  aipack registry fetch --prune
-
-See also: registry list, registry search`
+See also: registry list, registry search, registry remove`
 }
 
 func (c *RegistryFetchCmd) Run(g *Globals) error {
+	// Validate: --path requires git mode.
+	if c.Path != "" && c.URL != "" && !config.IsGitURL(c.URL, c.Ref) {
+		return fmt.Errorf("--path requires a git URL (ending in .git) or --ref")
+	}
+
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
 	}
 
 	if err := app.RegistryFetch(app.RegistryFetchRequest{
-		ConfigDir:    cfgDir,
-		RegistryPath: c.Registry,
-		URL:          c.URL,
-		Prune:        c.Prune,
+		ConfigDir: cfgDir,
+		URL:       c.URL,
+		Ref:       c.Ref,
+		Path:      c.Path,
+		Name:      c.Name,
+		Prune:     c.Prune,
 	}, g.Stdout); err != nil {
 		return err
 	}
 
 	if c.Deep {
 		return app.RegistryDeepIndex(app.RegistryDeepIndexRequest{
-			ConfigDir:    cfgDir,
-			RegistryPath: c.Registry,
+			ConfigDir: cfgDir,
 		}, g.Stdout)
 	}
 	return nil
+}
+
+// --- registry remove ---
+
+type RegistryRemoveCmd struct {
+	Name      string `arg:"" help:"Name of the registry source to remove"`
+	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+}
+
+func (c *RegistryRemoveCmd) Help() string {
+	return `Removes a registry source from sync-config and deletes its cached file.
+
+Examples:
+  # Remove a source
+  aipack registry remove ocm-ops-tools
+
+  # List sources to see available names
+  aipack registry fetch  (sources are shown in output)
+
+See also: registry fetch, registry list`
+}
+
+func (c *RegistryRemoveCmd) Run(g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	if err != nil {
+		return err
+	}
+
+	return app.RegistryRemove(app.RegistryRemoveRequest{
+		ConfigDir: cfgDir,
+		Name:      c.Name,
+	}, g.Stdout)
 }
 
 func printRegistryResults(g *Globals, results []app.RegistrySearchResult) {

@@ -124,18 +124,13 @@ Profiles select which packs to sync and how. Stored as YAML under `~/.config/aip
 
 ```yaml
 # ~/.config/aipack/profiles/default.yaml
-schema: v1
-sources:
-  my-team-pack:
-    path: ~/.config/aipack/packs/my-team-pack
-  personal:
-    path: ~/.config/aipack/packs/personal
+schema_version: 2
 packs:
   - name: my-team-pack
   - name: personal
 ```
 
-Multiple packs compose in profile order. Conflicts are detected and surfaced.
+Packs are referenced by name and resolved from `~/.config/aipack/packs/<name>/`. Multiple packs compose in profile order. Conflicts are detected and surfaced.
 
 ### Sync
 
@@ -160,7 +155,7 @@ Sync is non-destructive by default. Modified files show a unified diff and are s
 | `aipack save` | Capture harness config back into packs |
 | `aipack pack install/list/show/update/delete` | Pack lifecycle management |
 | `aipack profile create/set/show/list` | Profile management |
-| `aipack registry fetch/list/search` | Discover and install community packs |
+| `aipack registry fetch/list/search/remove` | Discover and manage pack registries |
 | `aipack search` | Full-text search across all installed packs |
 | `aipack render` | Generate portable pack output |
 | `aipack doctor` | Validate config health and detect drift |
@@ -177,12 +172,16 @@ Sync is non-destructive by default. Modified files show a unified diff and are s
 - `VERSION` is the source of truth for the release line.
 - Release process details live in [`RELEASING.md`](./RELEASING.md), and shipped user-facing changes are tracked in [`CHANGELOG.md`](./CHANGELOG.md).
 
-## Public Registry
+## Registry
 
-- `aipack registry fetch` resolves in this order: explicit URL, `defaults.registry_url` from `sync-config.yaml`, then the compiled-in public catalog.
-- The compiled-in catalog points at `registry.yaml` in `shrug-labs/aipack`.
-- Early public releases may ship an empty but valid catalog while public starter packs are still being published.
-- Even without catalog entries, pack installs work via direct paths and `aipack pack install --url ...`.
+aipack supports multiple registry sources. Each source is cached locally and fetched independently.
+
+- `aipack registry fetch <url>` fetches a single source and saves it for future use.
+- `aipack registry fetch` (bare) fetches all configured sources.
+- Sources are saved to `registry_sources` in `sync-config.yaml` and cached in `~/.config/aipack/registries/`.
+- Git repos are auto-detected from `.git` suffix, or use `--ref` and `--path` for explicit git coordinates.
+- The compiled-in default points at `registry.yaml` in `shrug-labs/aipack` and is used when no sources are configured.
+- Even without registry entries, pack installs work via direct paths and `aipack pack install --url ...`.
 
 ## Building
 

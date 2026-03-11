@@ -167,8 +167,7 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 			// Auto-fetch registry and retry once.
 			fmt.Fprintln(g.Stderr, "Fetching registry...")
 			fetchErr := app.RegistryFetch(app.RegistryFetchRequest{
-				ConfigDir:    cfgDir,
-				RegistryPath: c.Registry,
+				ConfigDir: cfgDir,
 			}, io.Discard)
 			if fetchErr == nil {
 				entry, err = app.RegistryLookup(regReq, c.Path)

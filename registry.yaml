@@ -1,2 +1,12 @@
 schema_version: 1
-packs: {}
+packs:
+  aipack-core:
+    repo: https://github.com/shrug-labs/packs.git
+    path: aipack-core
+    description: Meta-governance pack for authoring, reviewing, and maintaining aipack content
+    owner: shrug-labs
+  essentials:
+    repo: https://github.com/shrug-labs/packs.git
+    path: essentials
+    description: Harness-neutral developer discipline — debugging, TDD, planning, code review, and knowledge management
+    owner: shrug-labs

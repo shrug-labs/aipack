@@ -13,6 +13,15 @@ import (
 
 const SyncConfigSchemaVersion = 1
 
+// RegistrySourceEntry describes a remote registry source for fetching.
+// Ref presence implies git-based fetch; otherwise HTTP GET.
+type RegistrySourceEntry struct {
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
+	Ref  string `yaml:"ref,omitempty"`  // git ref (branch/tag); presence implies git-based fetch
+	Path string `yaml:"path,omitempty"` // file path within repo (git only); default: registry.yaml
+}
+
 // InstalledPackMeta records the origin and install method for a pack.
 type InstalledPackMeta struct {
 	Origin      string `yaml:"origin"`                // abs path or URL
@@ -34,7 +43,8 @@ type SyncConfig struct {
 		Registry    string   `yaml:"registry,omitempty"`
 		RegistryURL string   `yaml:"registry_url,omitempty"`
 	} `yaml:"defaults"`
-	InstalledPacks map[string]InstalledPackMeta `yaml:"installed_packs,omitempty"`
+	InstalledPacks  map[string]InstalledPackMeta `yaml:"installed_packs,omitempty"`
+	RegistrySources []RegistrySourceEntry        `yaml:"registry_sources,omitempty"`
 }
 
 // DefaultConfigDir returns the default config directory (~/.config/aipack).

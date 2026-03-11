@@ -4,16 +4,15 @@ Generic tool reference for `aipack` — the pack sync engine. This covers sync c
 
 ## Profiles
 
-Profiles live in `${HOME}/.config/aipack/profiles/<name>.yaml` (schema v1). A profile selects which packs, content vectors, MCP servers, and harness settings to sync.
+Profiles live in `${HOME}/.config/aipack/profiles/<name>.yaml` (schema v2). A profile selects which packs, content vectors, MCP servers, and harness settings to sync.
 
 Key concepts:
 
-- **Sources** map pack names to locations (local path, `{env:VAR}` expansion, or git URL)
-- **Packs** select which sources to enable and which vectors to include/exclude
+- **Packs** select which installed packs to enable and which vectors to include/exclude
 - **Settings** select which pack provides base harness config templates per harness
 - **Overrides** allow a later pack to replace an earlier pack's content ID
 
-For a profile example, see the Quick Start in `README.md`.
+Packs are referenced by name and resolved from `~/.config/aipack/packs/<name>/`. For a profile example, see the Quick Start in `README.md`.
 
 ### Profile layering
 
@@ -339,7 +338,7 @@ aipack profile set ocm
 
 ### profile show
 
-Loads and fully resolves a profile — sources, packs with content inventories, MCP servers, and settings.
+Loads and fully resolves a profile — packs with content inventories, MCP servers, and settings.
 
 ```bash
 aipack profile show
@@ -350,11 +349,14 @@ aipack profile show --profile-path /path/to/profile.yaml
 
 ## Registry
 
-The registry is a YAML file mapping pack names to source repositories. Default location: `~/.config/aipack/registry.yaml`.
+The registry maps pack names to source repositories. The unified view merges:
+
+1. **Local entries** from `~/.config/aipack/registry.yaml` (highest priority, manual edits)
+2. **Cached remote sources** in `~/.config/aipack/registries/` (in source order from sync-config)
 
 ### registry list / registry search
 
-Browse or search the registry by name/description.
+Browse or search the merged registry by name/description.
 
 ```bash
 aipack registry list
@@ -365,13 +367,36 @@ aipack registry search api --json
 
 ### registry fetch
 
-Fetches a registry YAML from a remote URL and merges it into the local registry. Existing entries are preserved. Source resolution: explicit URL arg → `defaults.registry_url` in sync-config → compiled-in default public catalog from `shrug-labs/aipack`. Early public releases may ship an empty but valid catalog. Use `--deep` to clone each registry pack and build the resource-level search index.
+Fetches remote registries and caches them locally. Each source is cached as a separate file and saved to `registry_sources` in sync-config for future fetches.
+
+With an explicit URL, fetches that single source. Without a URL, fetches all configured sources (or the compiled-in default from `shrug-labs/aipack`).
+
+Git detection: URL ending in `.git` → git mode (defaults: `ref=main`, `path=registry.yaml`). `--ref` provided → git mode. Otherwise → HTTP GET.
 
 ```bash
-aipack registry fetch
+# Fetch from a git repo (auto-detected from .git suffix)
+aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git
+
+# Fetch with explicit ref and path
+aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git \
+  --ref team/ai-runbooks --path ai-runbooks/registry.yaml
+
+# Fetch from an HTTP URL
 aipack registry fetch https://example.com/registry.yaml
-aipack registry fetch --prune    # remove entries not in remote
-aipack registry fetch --deep     # clone + deep-index resources
+
+# Fetch all configured sources
+aipack registry fetch
+
+# Deep-index for resource-level search
+aipack registry fetch --deep
+```
+
+### registry remove
+
+Removes a registry source from sync-config and deletes its cache file.
+
+```bash
+aipack registry remove ocm-ops-tools
 ```
 
 ## Discovery (search index)
