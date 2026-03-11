@@ -15,12 +15,12 @@ const SyncConfigSchemaVersion = 1
 
 // InstalledPackMeta records the origin and install method for a pack.
 type InstalledPackMeta struct {
-	Origin           string `yaml:"origin"`                      // abs path or URL
-	Method           string `yaml:"method"`                      // "link", "copy", "clone"
-	InstalledAt      string `yaml:"installed_at"`                // RFC3339
-	Ref        string `yaml:"ref,omitempty"`         // git ref (URL only)
-	SubPath    string `yaml:"sub_path,omitempty"`    // subdirectory within cloned repo
-	CommitHash string `yaml:"commit_hash,omitempty"` // git HEAD SHA at install/update time
+	Origin      string `yaml:"origin"`                // abs path or URL
+	Method      string `yaml:"method"`                // "link", "copy", "clone"
+	InstalledAt string `yaml:"installed_at"`          // RFC3339
+	Ref         string `yaml:"ref,omitempty"`         // git ref (URL only)
+	SubPath     string `yaml:"sub_path,omitempty"`    // subdirectory within cloned repo
+	CommitHash  string `yaml:"commit_hash,omitempty"` // git HEAD SHA at install/update time
 }
 
 // SyncConfig is user-level configuration (one level above profiles).

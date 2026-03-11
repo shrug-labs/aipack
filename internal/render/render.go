@@ -115,4 +115,3 @@ func validateOutDir(profile domain.Profile, outDirAbs string) error {
 	}
 	return nil
 }
-
