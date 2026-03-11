@@ -1,0 +1,180 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestEnsureCloneWith_FreshClone(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+	var calls []string
+	mock := func(args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		// Simulate git clone creating .git dir.
+		if len(args) >= 1 && args[0] == "clone" {
+			if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := EnsureCloneWith("https://example.com/repo.git", dir, "", mock); err != nil {
+		t.Fatalf("EnsureCloneWith: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 git call, got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "clone") {
+		t.Fatalf("expected clone call, got: %s", calls[0])
+	}
+}
+
+func TestEnsureCloneWith_FreshCloneWithRef(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+	var calls []string
+	mock := func(args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) >= 1 && args[0] == "clone" {
+			if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := EnsureCloneWith("https://example.com/repo.git", dir, "v1.0", mock); err != nil {
+		t.Fatalf("EnsureCloneWith: %v", err)
+	}
+	// --branch succeeds: single clone call.
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 git call, got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "--branch v1.0") {
+		t.Fatalf("expected --branch clone, got: %s", calls[0])
+	}
+}
+
+func TestEnsureCloneWith_FreshCloneWithRef_Fallback(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+	var calls []string
+	mock := func(args ...string) error {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		// --branch fails (e.g. commit SHA), plain clone succeeds.
+		if strings.Contains(call, "--branch") {
+			return fmt.Errorf("remote branch not found")
+		}
+		if len(args) >= 1 && args[0] == "clone" {
+			if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := EnsureCloneWith("https://example.com/repo.git", dir, "abc123", mock); err != nil {
+		t.Fatalf("EnsureCloneWith: %v", err)
+	}
+	// --branch fails + clone + fetch + checkout = 4 calls.
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 git calls, got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "--branch") {
+		t.Fatalf("expected --branch attempt first, got: %s", calls[0])
+	}
+	if !strings.Contains(calls[2], "fetch") {
+		t.Fatalf("expected fetch call, got: %s", calls[2])
+	}
+}
+
+func TestEnsureCloneWith_AlreadyCloned(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Pre-create .git to simulate existing clone.
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	mock := func(args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+
+	if err := EnsureCloneWith("https://example.com/repo.git", dir, "", mock); err != nil {
+		t.Fatalf("EnsureCloneWith: %v", err)
+	}
+	// No git calls — already cloned, no ref.
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 git calls, got %d: %v", len(calls), calls)
+	}
+}
+
+func TestEnsureCloneWith_AlreadyClonedWithRef(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	mock := func(args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+
+	if err := EnsureCloneWith("https://example.com/repo.git", dir, "main", mock); err != nil {
+		t.Fatalf("EnsureCloneWith: %v", err)
+	}
+	// fetch + checkout = 2 calls (skip clone).
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 git calls, got %d: %v", len(calls), calls)
+	}
+}
+
+func TestEnsureCloneWith_CloneFails(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+	mock := func(args ...string) error {
+		return fmt.Errorf("git failed")
+	}
+
+	err := EnsureCloneWith("https://example.com/repo.git", dir, "", mock)
+	if err == nil {
+		t.Fatal("expected error when clone fails")
+	}
+	if !strings.Contains(err.Error(), "git failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureCloneWith_FetchFails(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+	mock := func(args ...string) error {
+		call := strings.Join(args, " ")
+		// --branch fails, plain clone succeeds, fetch fails.
+		if strings.Contains(call, "--branch") {
+			return fmt.Errorf("remote branch not found")
+		}
+		if len(args) >= 1 && args[0] == "clone" {
+			return os.MkdirAll(filepath.Join(dir, ".git"), 0o755)
+		}
+		if strings.Contains(call, "fetch") {
+			return fmt.Errorf("fetch failed")
+		}
+		return nil
+	}
+
+	err := EnsureCloneWith("https://example.com/repo.git", dir, "v1.0", mock)
+	if err == nil {
+		t.Fatal("expected error when fetch fails")
+	}
+}
