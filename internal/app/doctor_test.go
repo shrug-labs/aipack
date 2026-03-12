@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 func TestDoctorExtractEnvRefNames_Single(t *testing.T) {
@@ -262,6 +264,190 @@ func TestDoctorCheckPackDrift_CopySameVersion(t *testing.T) {
 	cr := doctorCheckPackDrift(dir, syncCfg)
 	if !cr.OK {
 		t.Errorf("OK = false, want true (same version = no drift)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ledger health tests
+// ---------------------------------------------------------------------------
+
+func TestDoctorCheckLedgerHealth_NoLedger(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cr := doctorCheckLedgerHealth(dir, nil, false)
+	if !cr.OK {
+		t.Errorf("OK = false, want true (no ledger dir)")
+	}
+	if cr.Message != "no ledger directory" {
+		t.Errorf("Message = %q", cr.Message)
+	}
+}
+
+func TestDoctorCheckLedgerHealth_OrphanedEntries(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ledgerDir := filepath.Join(dir, "ledger")
+	os.MkdirAll(ledgerDir, 0o755)
+
+	// Create a real file for one entry, leave the other orphaned.
+	realFile := filepath.Join(dir, "exists.md")
+	os.WriteFile(realFile, []byte("x"), 0o600)
+
+	lg := domain.NewLedger()
+	lg.Managed[realFile] = domain.Entry{SourcePack: "mypack", Digest: "abc"}
+	lg.Managed["/nonexistent/path/rule.md"] = domain.Entry{SourcePack: "mypack", Digest: "def"}
+	engine.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
+
+	// Without fix: reports but doesn't change.
+	cr := doctorCheckLedgerHealth(dir, nil, false)
+	if cr.OK {
+		t.Errorf("OK = true, want false (has orphans)")
+	}
+	if cr.Details["orphaned"] != 1 {
+		t.Errorf("orphaned = %v, want 1", cr.Details["orphaned"])
+	}
+
+	// With fix: prunes orphan.
+	cr = doctorCheckLedgerHealth(dir, nil, true)
+	if !cr.OK {
+		t.Errorf("OK = false, want true after fix")
+	}
+	if !cr.Fixed {
+		t.Error("Fixed = false, want true")
+	}
+
+	// Verify ledger was actually modified.
+	lg2, _, _ := engine.LoadLedger(filepath.Join(ledgerDir, "test.json"))
+	if _, ok := lg2.Managed["/nonexistent/path/rule.md"]; ok {
+		t.Error("orphaned entry still in ledger after fix")
+	}
+	if _, ok := lg2.Managed[realFile]; !ok {
+		t.Error("valid entry was incorrectly removed")
+	}
+}
+
+func TestDoctorCheckLedgerHealth_MissingSourcePack(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ledgerDir := filepath.Join(dir, "ledger")
+	os.MkdirAll(ledgerDir, 0o755)
+
+	realFile := filepath.Join(dir, "rule.md")
+	os.WriteFile(realFile, []byte("x"), 0o600)
+
+	lg := domain.NewLedger()
+	lg.Managed[realFile] = domain.Entry{SourcePack: "", Digest: "abc"}
+	engine.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
+
+	singlePack := []config.ResolvedPack{{Name: "only-pack"}}
+
+	// Without fix: reports.
+	cr := doctorCheckLedgerHealth(dir, singlePack, false)
+	if cr.OK {
+		t.Errorf("OK = true, want false")
+	}
+	if cr.Details["missing_source_pack"] != 1 {
+		t.Errorf("missing_source_pack = %v, want 1", cr.Details["missing_source_pack"])
+	}
+
+	// With fix and single pack: fills it in.
+	cr = doctorCheckLedgerHealth(dir, singlePack, true)
+	if !cr.Fixed {
+		t.Error("Fixed = false, want true")
+	}
+
+	lg2, _, _ := engine.LoadLedger(filepath.Join(ledgerDir, "test.json"))
+	if lg2.Managed[realFile].SourcePack != "only-pack" {
+		t.Errorf("SourcePack = %q, want only-pack", lg2.Managed[realFile].SourcePack)
+	}
+}
+
+func TestDoctorCheckLedgerHealth_MissingSourcePackMultiplePacks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ledgerDir := filepath.Join(dir, "ledger")
+	os.MkdirAll(ledgerDir, 0o755)
+
+	realFile := filepath.Join(dir, "rule.md")
+	os.WriteFile(realFile, []byte("x"), 0o600)
+
+	lg := domain.NewLedger()
+	lg.Managed[realFile] = domain.Entry{SourcePack: "", Digest: "abc"}
+	engine.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
+
+	multiplePacks := []config.ResolvedPack{{Name: "a"}, {Name: "b"}}
+
+	// With fix and multiple packs: can't auto-fill, reports but doesn't fix.
+	cr := doctorCheckLedgerHealth(dir, multiplePacks, true)
+	if cr.Fixed {
+		t.Error("Fixed = true, want false (ambiguous)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manifest drift tests
+// ---------------------------------------------------------------------------
+
+func TestDoctorCheckManifestDrift_NoDrift(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packRoot := filepath.Join(dir, "packs", "mypack")
+	os.MkdirAll(filepath.Join(packRoot, "rules"), 0o755)
+	os.WriteFile(filepath.Join(packRoot, "rules", "alpha.md"), []byte("x"), 0o600)
+
+	packs := []config.ResolvedPack{{
+		Name: "mypack",
+		Root: packRoot,
+		Manifest: config.PackManifest{
+			Rules: []string{"alpha"},
+		},
+	}}
+	cr := doctorCheckManifestDrift(dir, packs)
+	if !cr.OK {
+		t.Errorf("OK = false, want true (no drift)")
+	}
+}
+
+func TestDoctorCheckManifestDrift_Undeclared(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packRoot := filepath.Join(dir, "packs", "mypack")
+	os.MkdirAll(filepath.Join(packRoot, "rules"), 0o755)
+	os.WriteFile(filepath.Join(packRoot, "rules", "alpha.md"), []byte("x"), 0o600)
+	os.WriteFile(filepath.Join(packRoot, "rules", "beta.md"), []byte("x"), 0o600)
+
+	packs := []config.ResolvedPack{{
+		Name: "mypack",
+		Root: packRoot,
+		Manifest: config.PackManifest{
+			Rules: []string{"alpha"}, // beta is on disk but not declared
+		},
+	}}
+	cr := doctorCheckManifestDrift(dir, packs)
+	if cr.OK {
+		t.Errorf("OK = true, want false (undeclared content)")
+	}
+	if cr.Status != "warn" {
+		t.Errorf("Status = %q, want warn", cr.Status)
+	}
+}
+
+func TestDoctorCheckManifestDrift_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packRoot := filepath.Join(dir, "packs", "mypack")
+	os.MkdirAll(filepath.Join(packRoot, "rules"), 0o755)
+
+	packs := []config.ResolvedPack{{
+		Name: "mypack",
+		Root: packRoot,
+		Manifest: config.PackManifest{
+			Rules: []string{"ghost"}, // declared but not on disk
+		},
+	}}
+	cr := doctorCheckManifestDrift(dir, packs)
+	if cr.OK {
+		t.Errorf("OK = true, want false (missing content)")
 	}
 }
 

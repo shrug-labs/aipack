@@ -20,11 +20,13 @@ const DoctorSchemaVersion = 1
 type CheckResult struct {
 	Name        string         `json:"name"`
 	OK          bool           `json:"ok"`
-	Status      string         `json:"status"` // pass|fail|skip
+	Status      string         `json:"status"` // pass|fail|skip|warn|fixed
 	Severity    string         `json:"severity"`
 	Message     string         `json:"message,omitempty"`
 	Remediation string         `json:"remediation,omitempty"`
 	Details     map[string]any `json:"details,omitempty"`
+	Fixed       bool           `json:"fixed,omitempty"`
+	FixAction   string         `json:"fix_action,omitempty"`
 }
 
 // DoctorReport is the full doctor output.
@@ -86,6 +88,7 @@ type DoctorRequest struct {
 	ProfileName string
 	Home        string // $HOME — threaded explicitly for testability
 	Status      bool   // populate Ecosystem in the report
+	Fix         bool   // auto-fix safe issues
 }
 
 // RunDoctor executes all doctor diagnostic checks and returns a report.
@@ -231,8 +234,22 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	pathsCheck.Message = "MCP server paths OK"
 	add(pathsCheck)
 
+	// Ledger health checks (warning-level, fixable).
+	add(doctorCheckLedgerHealth(configDir, resolvedPacks, req.Fix))
+
+	// Manifest/disk drift check (warning-level, informational).
+	add(doctorCheckManifestDrift(configDir, resolvedPacks))
+
+	// Recompute overall OK: only critical failures set OK=false.
 	rep.OK = true
 	rep.Status = "ok"
+	for _, c := range rep.Checks {
+		if !c.OK && c.Severity == "critical" {
+			rep.OK = false
+			rep.Status = "fail"
+			break
+		}
+	}
 	return rep
 }
 
@@ -660,4 +677,220 @@ func buildEcosystemStatus(packs []config.ResolvedPack, settingsPack, profileName
 		es.Packs = append(es.Packs, ps)
 	}
 	return es
+}
+
+// ---------------------------------------------------------------------------
+// Ledger health check
+// ---------------------------------------------------------------------------
+
+// doctorCheckLedgerHealth scans all ledger files for orphaned entries (paths
+// that no longer exist on disk) and entries with missing SourcePack. With fix=true,
+// prunes orphans and fills SourcePack when a single pack is resolved.
+func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix bool) CheckResult {
+	check := CheckResult{Name: "ledger_health", Severity: "warning", Status: "pass", OK: true}
+
+	ledgerDir := filepath.Join(configDir, "ledger")
+	entries, err := os.ReadDir(ledgerDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			check.Message = "no ledger directory"
+			return check
+		}
+		check.Status = "warn"
+		check.OK = false
+		check.Message = fmt.Sprintf("cannot read ledger directory: %s", err)
+		return check
+	}
+
+	// Determine the single pack name for SourcePack fill (if unambiguous).
+	singlePack := ""
+	if len(packs) == 1 {
+		singlePack = packs[0].Name
+	}
+
+	totalOrphaned := 0
+	totalMissingSP := 0
+	totalFixed := 0
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(ledgerDir, e.Name())
+		lg, warn, lerr := engine.LoadLedger(path)
+		if lerr != nil || warn != "" {
+			continue
+		}
+
+		modified := false
+		fileFixes := 0
+		for k, entry := range lg.Managed {
+			// Check for orphaned entries.
+			if _, serr := os.Lstat(k); os.IsNotExist(serr) {
+				totalOrphaned++
+				if fix {
+					delete(lg.Managed, k)
+					modified = true
+					fileFixes++
+				}
+				continue
+			}
+			// Check for missing SourcePack.
+			if entry.SourcePack == "" {
+				totalMissingSP++
+				if fix && singlePack != "" {
+					entry.SourcePack = singlePack
+					lg.Managed[k] = entry
+					modified = true
+					fileFixes++
+				}
+			}
+		}
+		if fix && modified {
+			if serr := engine.SaveLedger(path, lg, false); serr != nil {
+				fileFixes = 0 // save failed: none of this file's fixes persisted
+			}
+		}
+		totalFixed += fileFixes
+	}
+
+	issues := totalOrphaned + totalMissingSP
+	if issues == 0 {
+		check.Message = "ledger entries healthy"
+		return check
+	}
+
+	check.Status = "warn"
+	check.OK = false
+	check.Details = map[string]any{}
+
+	parts := []string{}
+	if totalOrphaned > 0 {
+		parts = append(parts, fmt.Sprintf("%d orphaned entries", totalOrphaned))
+		check.Details["orphaned"] = totalOrphaned
+	}
+	if totalMissingSP > 0 {
+		parts = append(parts, fmt.Sprintf("%d missing SourcePack", totalMissingSP))
+		check.Details["missing_source_pack"] = totalMissingSP
+	}
+	check.Message = strings.Join(parts, ", ")
+
+	if fix && totalFixed > 0 {
+		check.Fixed = true
+		check.FixAction = fmt.Sprintf("fixed %d entries", totalFixed)
+		check.Status = "fixed"
+		check.OK = true
+	} else {
+		check.Remediation = "Run 'aipack doctor --fix' to auto-repair, or 'aipack sync' to rebuild the ledger"
+	}
+	return check
+}
+
+// ---------------------------------------------------------------------------
+// Manifest / disk drift check
+// ---------------------------------------------------------------------------
+
+// doctorCheckManifestDrift compares each pack's manifest-declared content
+// against what actually exists on disk. Reports files on disk not in the
+// manifest ("undeclared") and manifest entries with no corresponding file
+// ("missing"). This is informational only — no auto-fix.
+type driftItem struct {
+	Pack      string `json:"pack"`
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	DriftType string `json:"drift_type"` // "undeclared" or "missing"
+}
+
+func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack) CheckResult {
+	check := CheckResult{Name: "manifest_drift", Severity: "warning", Status: "pass", OK: true}
+
+	var drifts []driftItem
+
+	for _, rp := range packs {
+		packRoot := rp.Root
+		manifest := rp.Manifest
+
+		// Check each content vector.
+		type vectorCheck struct {
+			kind     string
+			dir      string
+			suffix   string
+			declared []string
+		}
+		checks := []vectorCheck{
+			{"rules", filepath.Join(packRoot, "rules"), ".md", manifest.Rules},
+			{"agents", filepath.Join(packRoot, "agents"), ".md", manifest.Agents},
+			{"workflows", filepath.Join(packRoot, "workflows"), ".md", manifest.Workflows},
+		}
+
+		for _, vc := range checks {
+			onDisk, err := config.DiscoverIDs(vc.dir, vc.suffix)
+			if err != nil {
+				continue
+			}
+			drifts = appendDrift(drifts, rp.Name, vc.kind, onDisk, vc.declared)
+		}
+
+		// Skills.
+		onDiskSkills, err := config.DiscoverSkills(filepath.Join(packRoot, "skills"))
+		if err == nil {
+			drifts = appendDrift(drifts, rp.Name, "skills", onDiskSkills, manifest.Skills)
+		}
+	}
+
+	if len(drifts) == 0 {
+		check.Message = "no manifest drift detected"
+		return check
+	}
+
+	check.Status = "warn"
+	check.OK = false
+
+	undeclared := 0
+	missing := 0
+	for _, d := range drifts {
+		if d.DriftType == "undeclared" {
+			undeclared++
+		} else {
+			missing++
+		}
+	}
+
+	parts := []string{}
+	if undeclared > 0 {
+		parts = append(parts, fmt.Sprintf("%d on disk but not in manifest", undeclared))
+	}
+	if missing > 0 {
+		parts = append(parts, fmt.Sprintf("%d in manifest but not on disk", missing))
+	}
+	check.Message = strings.Join(parts, ", ")
+	check.Remediation = "Update pack.json to match disk, or remove nil content fields to enable auto-discovery"
+	check.Details = map[string]any{"drift": drifts}
+
+	return check
+}
+
+func toStringSet(items []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		set[item] = struct{}{}
+	}
+	return set
+}
+
+// appendDrift compares onDisk vs declared IDs and appends drift items.
+func appendDrift(drifts []driftItem, pack, kind string, onDisk, declared []string) []driftItem {
+	declaredSet := toStringSet(declared)
+	diskSet := toStringSet(onDisk)
+	for _, id := range onDisk {
+		if _, ok := declaredSet[id]; !ok {
+			drifts = append(drifts, driftItem{Pack: pack, Kind: kind, ID: id, DriftType: "undeclared"})
+		}
+	}
+	for _, id := range declared {
+		if _, ok := diskSet[id]; !ok {
+			drifts = append(drifts, driftItem{Pack: pack, Kind: kind, ID: id, DriftType: "missing"})
+		}
+	}
+	return drifts
 }

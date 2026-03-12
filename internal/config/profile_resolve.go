@@ -63,6 +63,9 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 		if packRoot == "" {
 			return nil, "", fmt.Errorf("pack %q root could not be resolved", packName)
 		}
+		if err := DiscoverContent(&manifest, packRoot); err != nil {
+			return nil, "", fmt.Errorf("pack %q content discovery: %w", packName, err)
+		}
 		if err := validatePackInventory(packName, packRoot, manifest); err != nil {
 			return nil, "", err
 		}
@@ -242,33 +245,65 @@ func resolveVector(packName string, label string, inventory []string, sel Vector
 		if len(include) == 0 {
 			return inv, nil
 		}
-		for _, v := range include {
-			if _, ok := invSet[v]; !ok {
-				return nil, fmt.Errorf("pack %q %s include references unknown id %q", packName, label, v)
-			}
-		}
-		return include, nil
+		return expandSelectors(packName, label, "include", include, inv, invSet)
 	}
 	if sel.Exclude == nil {
 		return inv, nil
 	}
 	exclude := normalizeList(*sel.Exclude)
-	for _, v := range exclude {
-		if _, ok := invSet[v]; !ok {
-			return nil, fmt.Errorf("pack %q %s exclude references unknown id %q", packName, label, v)
-		}
+	matched, err := expandSelectors(packName, label, "exclude", exclude, inv, invSet)
+	if err != nil {
+		return nil, err
 	}
-	excludeSet := map[string]struct{}{}
-	for _, v := range exclude {
-		excludeSet[v] = struct{}{}
+	matchedSet := map[string]struct{}{}
+	for _, v := range matched {
+		matchedSet[v] = struct{}{}
 	}
 	out := make([]string, 0, len(inv))
 	for _, v := range inv {
-		if _, ok := excludeSet[v]; ok {
+		if _, ok := matchedSet[v]; ok {
 			continue
 		}
 		out = append(out, v)
 	}
+	return out, nil
+}
+
+// isGlobPattern reports whether s contains glob metacharacters.
+func isGlobPattern(s string) bool {
+	return strings.ContainsAny(s, "*?[")
+}
+
+// expandSelectors resolves a list of selectors (exact IDs or glob patterns)
+// against the inventory. Exact IDs must exist; glob patterns may match zero items.
+func expandSelectors(packName, label, direction string, selectors, inv []string, invSet map[string]struct{}) ([]string, error) {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, sel := range selectors {
+		if isGlobPattern(sel) {
+			for _, id := range inv {
+				matched, merr := filepath.Match(sel, id)
+				if merr != nil {
+					return nil, fmt.Errorf("pack %q %s %s: invalid glob %q: %w", packName, label, direction, sel, merr)
+				}
+				if matched {
+					if _, ok := seen[id]; !ok {
+						seen[id] = struct{}{}
+						out = append(out, id)
+					}
+				}
+			}
+		} else {
+			if _, ok := invSet[sel]; !ok {
+				return nil, fmt.Errorf("pack %q %s %s references unknown id %q", packName, label, direction, sel)
+			}
+			if _, ok := seen[sel]; !ok {
+				seen[sel] = struct{}{}
+				out = append(out, sel)
+			}
+		}
+	}
+	sort.Strings(out)
 	return out, nil
 }
 

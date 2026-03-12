@@ -26,6 +26,7 @@ type cliCore struct {
 	Save   SaveCmd   `cmd:"" group:"Sync/Save:" help:"Save harness content back to source packs"`
 	Clean  CleanCmd  `cmd:"" group:"Sync/Save:" help:"Remove all managed files from harness locations"`
 
+	Install  InstallCmd  `cmd:"" group:"Pack Management:" help:"Install a pack from a local path, URL, or registry name"`
 	Pack     PackCmd     `cmd:"" group:"Pack Management:" help:"Manage installed packs"`
 	Registry RegistryCmd `cmd:"" group:"Pack Management:" help:"Browse and search the pack registry"`
 	Profile  ProfileCmd  `cmd:"" group:"Profile Management:" help:"Manage sync profiles"`

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/util"
 
 	"gopkg.in/yaml.v3"
@@ -620,6 +621,167 @@ func packDeregister(profilePath, packName string) bool {
 	}
 	_ = util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600)
 	return true
+}
+
+// PackRename renames a pack across all config: directory, manifest, sync-config,
+// profiles, and ledger files. Rolls back the directory rename on failure.
+func PackRename(configDir, oldName, newName string, stdout io.Writer) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if oldName == "" || newName == "" {
+		return fmt.Errorf("old and new pack names are required")
+	}
+	if oldName == newName {
+		return fmt.Errorf("old and new names are the same")
+	}
+	if strings.ContainsAny(newName, "/\\\x00") || strings.Contains(newName, "..") {
+		return fmt.Errorf("invalid pack name %q", newName)
+	}
+
+	packsDir := PacksDir(configDir)
+	oldDir := filepath.Join(packsDir, oldName)
+	newDir := filepath.Join(packsDir, newName)
+
+	if _, err := os.Lstat(oldDir); os.IsNotExist(err) {
+		return fmt.Errorf("pack %q is not installed", oldName)
+	}
+	if _, err := os.Lstat(newDir); err == nil {
+		return fmt.Errorf("pack %q already exists", newName)
+	}
+
+	// 1. Rename directory.
+	if err := os.Rename(oldDir, newDir); err != nil {
+		return fmt.Errorf("renaming pack directory: %w", err)
+	}
+	rollback := func() { _ = os.Rename(newDir, oldDir) }
+
+	// 2. Update pack.json name field.
+	manifestPath := filepath.Join(newDir, "pack.json")
+	manifest, err := config.LoadPackManifest(manifestPath)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("loading manifest after rename: %w", err)
+	}
+	manifest.Name = newName
+	if err := config.SavePackManifest(manifestPath, manifest); err != nil {
+		rollback()
+		return fmt.Errorf("saving manifest: %w", err)
+	}
+
+	// 3. Update sync-config.
+	if err := packRenameInSyncConfig(configDir, oldName, newName); err != nil {
+		rollback()
+		return fmt.Errorf("updating sync-config: %w", err)
+	}
+
+	// 4. Update all profiles.
+	packRenameInAllProfiles(configDir, oldName, newName, stdout)
+
+	// 5. Update all ledger files.
+	packRenameInAllLedgers(configDir, oldName, newName, stdout)
+
+	fmt.Fprintf(stdout, "Renamed pack %q → %q\n", oldName, newName)
+	return nil
+}
+
+func packRenameInSyncConfig(configDir, oldName, newName string) error {
+	scPath := config.SyncConfigPath(configDir)
+	sc, err := config.LoadSyncConfig(scPath)
+	if err != nil {
+		return err
+	}
+	if sc.InstalledPacks == nil {
+		return nil
+	}
+	meta, ok := sc.InstalledPacks[oldName]
+	if !ok {
+		return nil
+	}
+	delete(sc.InstalledPacks, oldName)
+	sc.InstalledPacks[newName] = meta
+	return config.SaveSyncConfig(scPath, sc)
+}
+
+func packRenameInAllProfiles(configDir, oldName, newName string, stdout io.Writer) {
+	profilesDir := filepath.Join(configDir, "profiles")
+	names, err := config.ListProfileNames(profilesDir)
+	if err != nil {
+		return
+	}
+	for _, name := range names {
+		profilePath := filepath.Join(profilesDir, name+".yaml")
+		if packRenameInProfile(profilePath, oldName, newName) {
+			fmt.Fprintf(stdout, "Updated profile %q: %s → %s\n", name, oldName, newName)
+		}
+	}
+}
+
+func packRenameInProfile(profilePath, oldName, newName string) bool {
+	cfg, err := config.LoadProfile(profilePath)
+	if err != nil {
+		return false
+	}
+	modified := false
+	for i := range cfg.Packs {
+		if cfg.Packs[i].Name == oldName {
+			cfg.Packs[i].Name = newName
+			modified = true
+		}
+	}
+	if !modified {
+		return false
+	}
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		return false
+	}
+	_ = util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600)
+	return true
+}
+
+func packRenameInAllLedgers(configDir, oldName, newName string, stdout io.Writer) {
+	ledgerDir := filepath.Join(configDir, "ledger")
+	entries, err := os.ReadDir(ledgerDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(ledgerDir, e.Name())
+		updated, lerr := packRenameInLedger(path, oldName, newName)
+		if lerr != nil {
+			fmt.Fprintf(stdout, "Warning: ledger %s: %s\n", e.Name(), lerr)
+		} else if updated {
+			fmt.Fprintf(stdout, "Updated ledger %q: %s → %s\n", e.Name(), oldName, newName)
+		}
+	}
+}
+
+func packRenameInLedger(path, oldName, newName string) (bool, error) {
+	lg, warn, err := engine.LoadLedger(path)
+	if err != nil {
+		return false, fmt.Errorf("load: %w", err)
+	}
+	if warn != "" {
+		return false, fmt.Errorf("load warning: %s", warn)
+	}
+	modified := false
+	for k, entry := range lg.Managed {
+		if entry.SourcePack == oldName {
+			entry.SourcePack = newName
+			lg.Managed[k] = entry
+			modified = true
+		}
+	}
+	if !modified {
+		return false, nil
+	}
+	if err := engine.SaveLedger(path, lg, false); err != nil {
+		return false, fmt.Errorf("save: %w", err)
+	}
+	return true, nil
 }
 
 // extractSubtree copies the subtree at cloneDir/subPath into a new temp dir

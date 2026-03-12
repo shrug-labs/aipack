@@ -17,12 +17,16 @@ type DoctorCmd struct {
 	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
 	JSON        bool   `help:"Emit machine-readable JSON report instead of human-readable text" name:"json"`
 	Status      bool   `help:"Show ecosystem status: profile, packs, content vectors, and totals" name:"status"`
+	Fix         bool   `help:"Auto-fix safe issues (prune orphaned ledger entries, fill missing SourcePack)" name:"fix"`
 }
 
 func (c *DoctorCmd) Help() string {
-	return `Read-only diagnostic command. Runs preflight checks: sync-config exists and
-parses, profile loads, pack manifests are valid, MCP server binary paths exist,
-and required environment variables are set. Does not modify any files.
+	return `Diagnostic command. Runs preflight checks: sync-config exists and parses,
+profile loads, pack manifests are valid, MCP server binary paths exist,
+required environment variables are set, and ledger health.
+
+Without --fix, the command is read-only. With --fix, it auto-repairs safe
+issues: prunes orphaned ledger entries, fills missing SourcePack fields.
 
 Exit code 0 if all checks pass, 1 if any check fails.
 
@@ -30,14 +34,14 @@ Examples:
   # Run default checks
   aipack doctor
 
+  # Auto-fix safe issues
+  aipack doctor --fix
+
   # Check a specific profile
   aipack doctor --profile prod
 
   # Machine-readable JSON output
   aipack doctor --profile default --json
-
-  # Use a profile file directly
-  aipack doctor --profile-path /path/to/profile.yaml
 
   # Show ecosystem status (profile, packs, content vectors)
   aipack doctor --status
@@ -52,6 +56,7 @@ func (c *DoctorCmd) Run(g *Globals) error {
 		ProfileName: c.Profile,
 		Home:        os.Getenv("HOME"),
 		Status:      c.Status,
+		Fix:         c.Fix,
 	})
 
 	if c.JSON {
@@ -95,6 +100,10 @@ func printDoctorHuman(rep app.DoctorReport, stdout io.Writer, stderr io.Writer) 
 	}
 	for _, c := range rep.Checks {
 		if c.Status == "pass" {
+			continue
+		}
+		if c.Fixed {
+			fmt.Fprintf(stdout, "- %s: %s [FIXED: %s]\n", c.Name, c.Message, c.FixAction)
 			continue
 		}
 		fmt.Fprintf(stderr, "- %s: %s\n", c.Name, c.Message)

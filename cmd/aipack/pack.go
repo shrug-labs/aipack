@@ -18,6 +18,7 @@ type PackCmd struct {
 	Install PackInstallCmd `cmd:"" help:"Install a pack from a local directory path or remote URL"`
 	Delete  PackDeleteCmd  `cmd:"" help:"Delete an installed pack from the packs directory"`
 	Update  PackUpdateCmd  `cmd:"" help:"Update installed pack(s) to latest version from their origin"`
+	Rename  PackRenameCmd  `cmd:"" help:"Rename an installed pack across all config"`
 	Add     PackAddCmd     `cmd:"" help:"Add an installed pack to the active profile"`
 	Remove  PackRemoveCmd  `cmd:"" help:"Remove a pack from the active profile"`
 	List    PackListCmd    `cmd:"" help:"List all installed packs with their install method and origin"`
@@ -350,6 +351,32 @@ func (c *PackDeleteCmd) Run(g *Globals) error {
 		return err
 	}
 	return nil
+}
+
+// --- pack rename ---
+
+type PackRenameCmd struct {
+	OldName   string `arg:"" help:"Current name of the installed pack"`
+	NewName   string `arg:"" help:"New name for the pack"`
+	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+}
+
+func (c *PackRenameCmd) Help() string {
+	return `Renames an installed pack across all configuration: the pack directory,
+pack.json manifest, sync-config, all profiles, and all ledger files.
+
+Examples:
+  aipack pack rename old-name new-name
+
+See also: pack list, pack show`
+}
+
+func (c *PackRenameCmd) Run(g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	if err != nil {
+		return err
+	}
+	return app.PackRename(cfgDir, c.OldName, c.NewName, g.Stdout)
 }
 
 // --- pack add (profile) ---

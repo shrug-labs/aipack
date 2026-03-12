@@ -225,6 +225,256 @@ func TestResolveProfile_MCPSelectionErrors(t *testing.T) {
 	}
 }
 
+func TestResolveProfile_AutoDiscover(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Install a pack with NO content fields in the manifest (nil),
+	// but with content files on disk.
+	manifest := PackManifest{
+		SchemaVersion: 1,
+		Name:          "disco",
+		Version:       "1",
+		Root:          ".",
+		// Rules, Agents, Workflows, Skills are all nil
+		MCP: MCPPack{Servers: map[string]MCPDefaults{}},
+	}
+	installPackForResolveTest(t, root, "disco", manifest, map[string]string{
+		"rules/auto-rule.md":         "---\nname: auto-rule\n---\nbody\n",
+		"agents/auto-agent.md":       "---\nname: auto-agent\n---\nbody\n",
+		"skills/auto-skill/SKILL.md": "---\nname: auto-skill\n---\nbody\n",
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "disco", Enabled: BoolPtr(true)}},
+	}
+	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	p := packs[0]
+	if len(p.Rules) != 1 || p.Rules[0] != "auto-rule" {
+		t.Fatalf("Rules = %v, want [auto-rule]", p.Rules)
+	}
+	if len(p.Agents) != 1 || p.Agents[0] != "auto-agent" {
+		t.Fatalf("Agents = %v, want [auto-agent]", p.Agents)
+	}
+	if len(p.Skills) != 1 || p.Skills[0] != "auto-skill" {
+		t.Fatalf("Skills = %v, want [auto-skill]", p.Skills)
+	}
+}
+
+func TestResolveProfile_AutoDiscoverWithExclude(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Pack with nil rules — auto-discover finds both, then profile excludes one.
+	manifest := PackManifest{
+		SchemaVersion: 1,
+		Name:          "filtered",
+		Version:       "1",
+		Root:          ".",
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}
+	installPackForResolveTest(t, root, "filtered", manifest, map[string]string{
+		"rules/keep.md": "---\nname: keep\n---\nbody\n",
+		"rules/drop.md": "---\nname: drop\n---\nbody\n",
+	})
+
+	exclude := []string{"drop"}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "filtered",
+			Enabled: BoolPtr(true),
+			Rules:   VectorSelector{Exclude: &exclude},
+		}},
+	}
+	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs[0].Rules) != 1 || packs[0].Rules[0] != "keep" {
+		t.Fatalf("Rules = %v, want [keep]", packs[0].Rules)
+	}
+}
+
+func TestResolveProfile_GlobInclude(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	installPackForResolveTest(t, root, "globs", PackManifest{
+		SchemaVersion: 1,
+		Name:          "globs",
+		Version:       "1",
+		Root:          ".",
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/anti-slop.md":     "---\nname: anti-slop\n---\nbody\n",
+		"rules/anti-bloat.md":    "---\nname: anti-bloat\n---\nbody\n",
+		"rules/user-baseline.md": "---\nname: user-baseline\n---\nbody\n",
+		"rules/verification.md":  "---\nname: verification\n---\nbody\n",
+	})
+
+	// Include using glob pattern: only anti-* rules
+	include := []string{"anti-*"}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "globs",
+			Enabled: BoolPtr(true),
+			Rules:   VectorSelector{Include: &include},
+		}},
+	}
+	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	rules := packs[0].Rules
+	if len(rules) != 2 || rules[0] != "anti-bloat" || rules[1] != "anti-slop" {
+		t.Fatalf("Rules = %v, want [anti-bloat anti-slop]", rules)
+	}
+}
+
+func TestResolveProfile_GlobExclude(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	installPackForResolveTest(t, root, "globex", PackManifest{
+		SchemaVersion: 1,
+		Name:          "globex",
+		Version:       "1",
+		Root:          ".",
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/anti-slop.md":     "---\nname: anti-slop\n---\nbody\n",
+		"rules/anti-bloat.md":    "---\nname: anti-bloat\n---\nbody\n",
+		"rules/user-baseline.md": "---\nname: user-baseline\n---\nbody\n",
+	})
+
+	// Exclude using glob pattern: drop all anti-* rules
+	exclude := []string{"anti-*"}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "globex",
+			Enabled: BoolPtr(true),
+			Rules:   VectorSelector{Exclude: &exclude},
+		}},
+	}
+	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	rules := packs[0].Rules
+	if len(rules) != 1 || rules[0] != "user-baseline" {
+		t.Fatalf("Rules = %v, want [user-baseline]", rules)
+	}
+}
+
+func TestResolveProfile_GlobMixedWithExact(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	installPackForResolveTest(t, root, "mixed", PackManifest{
+		SchemaVersion: 1,
+		Name:          "mixed",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta", "gamma", "anti-slop"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md":     "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":      "---\nname: beta\n---\nbody\n",
+		"rules/gamma.md":     "---\nname: gamma\n---\nbody\n",
+		"rules/anti-slop.md": "---\nname: anti-slop\n---\nbody\n",
+	})
+
+	// Mix exact ID and glob in include
+	include := []string{"alpha", "anti-*"}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:  "mixed",
+			Rules: VectorSelector{Include: &include},
+		}},
+	}
+	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	rules := packs[0].Rules
+	if len(rules) != 2 || rules[0] != "alpha" || rules[1] != "anti-slop" {
+		t.Fatalf("Rules = %v, want [alpha anti-slop]", rules)
+	}
+}
+
+func TestResolveProfile_GlobNoMatch_NoError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	installPackForResolveTest(t, root, "nomatch", PackManifest{
+		SchemaVersion: 1,
+		Name:          "nomatch",
+		Version:       "1",
+		Root:          ".",
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
+	})
+
+	// Glob that matches nothing — should not error
+	exclude := []string{"experimental-*"}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:  "nomatch",
+			Rules: VectorSelector{Exclude: &exclude},
+		}},
+	}
+	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("expected no error for zero-match glob, got %v", err)
+	}
+	if len(packs[0].Rules) != 1 || packs[0].Rules[0] != "alpha" {
+		t.Fatalf("Rules = %v, want [alpha]", packs[0].Rules)
+	}
+}
+
+func TestResolveProfile_ExactUnknown_StillErrors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	installPackForResolveTest(t, root, "exacterr", PackManifest{
+		SchemaVersion: 1,
+		Name:          "exacterr",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"alpha"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
+	})
+
+	// Exact unknown ID should still error (backward compat)
+	include := []string{"nonexistent"}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:  "exacterr",
+			Rules: VectorSelector{Include: &include},
+		}},
+	}
+	_, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err == nil || !strings.Contains(err.Error(), `unknown id "nonexistent"`) {
+		t.Fatalf("expected unknown id error, got %v", err)
+	}
+}
+
 func installPackForResolveTest(t *testing.T, configDir string, packName string, manifest PackManifest, files map[string]string) {
 	t.Helper()
 	packRoot := filepath.Join(configDir, "packs", packName)

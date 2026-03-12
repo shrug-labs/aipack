@@ -1047,23 +1047,23 @@ func sortedMapKeys[V any](m map[string]V) []string {
 }
 
 func buildPackManifest(packDir string, version string, servers map[string]domain.MCPServer, allowedTools map[string][]string) (config.PackManifest, error) {
-	agents, err := listIDsWithSuffix(filepath.Join(packDir, "agents"), ".md")
+	agents, err := config.DiscoverIDs(filepath.Join(packDir, "agents"), ".md")
 	if err != nil {
 		return config.PackManifest{}, err
 	}
-	rules, err := listIDsWithSuffix(filepath.Join(packDir, "rules"), ".md")
+	rules, err := config.DiscoverIDs(filepath.Join(packDir, "rules"), ".md")
 	if err != nil {
 		return config.PackManifest{}, err
 	}
-	workflows, err := listIDsWithSuffix(filepath.Join(packDir, "workflows"), ".md")
+	workflows, err := config.DiscoverIDs(filepath.Join(packDir, "workflows"), ".md")
 	if err != nil {
 		return config.PackManifest{}, err
 	}
-	skills, err := listSkillIDs(filepath.Join(packDir, "skills"))
+	skills, err := config.DiscoverSkills(filepath.Join(packDir, "skills"))
 	if err != nil {
 		return config.PackManifest{}, err
 	}
-	mcpIDs, err := listIDsWithSuffix(filepath.Join(packDir, "mcp"), ".json")
+	mcpIDs, err := config.DiscoverIDs(filepath.Join(packDir, "mcp"), ".json")
 	if err != nil {
 		return config.PackManifest{}, err
 	}
@@ -1113,58 +1113,6 @@ func detectConfigHarnessPlugins(packDir string) map[string][]string {
 		out[string(domain.HarnessOpenCode)] = []string{"oh-my-opencode.json"}
 	}
 	return out
-}
-
-func listIDsWithSuffix(dir string, suffix string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	lowerSuffix := strings.ToLower(suffix)
-	out := []string{}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		lowerName := strings.ToLower(name)
-		if !strings.HasSuffix(lowerName, lowerSuffix) {
-			continue
-		}
-		base := name[:len(name)-len(suffix)]
-		if base != "" {
-			out = append(out, base)
-		}
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
-func listSkillIDs(skillsDir string) ([]string, error) {
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	out := []string{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		path := filepath.Join(skillsDir, e.Name(), "SKILL.md")
-		st, err := os.Stat(path)
-		if err != nil || !st.Mode().IsRegular() {
-			continue
-		}
-		out = append(out, e.Name())
-	}
-	sort.Strings(out)
-	return out, nil
 }
 
 func scanSnapshotForSecrets(packDir string) []string {
