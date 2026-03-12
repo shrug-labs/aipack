@@ -6,6 +6,24 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.6.0]
+
+### Added
+
+- **Git archive install**: `pack install --url` now uses `git archive --remote` for selective fetch (manifest + declared content only), with automatic fallback to shallow clone when the remote doesn't support it. New install method `"archive"` recorded in metadata.
+- **`pack install --path`**: Install a pack from a subdirectory within a git repo.
+- **`pack install --seed`**: Opt-in flag to apply bundled registries and profiles from remote packs. Without `--seed`, candidates are printed but not applied.
+- **Pack name sanitization**: Pack names containing `..`, `/`, `\`, or null bytes are rejected.
+- **MCP server warning**: `pack install` prints a warning when a pack defines MCP servers, listing server names and tool counts.
+- **Content integrity tracking**: `.aipack-integrity.json` records SHA256 hashes at install time; `pack update` shows a file-level diff of changes.
+- **`pack update` archive support**: Packs installed via archive are re-fetched using the same two-phase method with content-change detection.
+
+### Changed
+
+- `CopyDir` rejects symlinks in pack content (previously followed them silently).
+- Tar extraction validates entries: rejects symlinks, hard links, path traversal, and enforces per-file (1MB) and total (50MB) size limits.
+- Remote installs no longer auto-seed bundled registries and profiles. Use `--seed` to apply, or review the preview output. Local path installs retain auto-seed behavior.
+
 ## [0.5.0]
 
 ### Added

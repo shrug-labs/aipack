@@ -47,7 +47,7 @@ func TestSaveSyncConfig_RoundTrip(t *testing.T) {
 	cfg.InstalledPacks = map[string]InstalledPackMeta{
 		"my-pack": {
 			Origin:      "https://github.com/example/my-pack",
-			Method:      "clone",
+			Method:      MethodClone,
 			InstalledAt: "2025-06-15T12:00:00Z",
 			Ref:         "main",
 		},
@@ -71,7 +71,7 @@ func TestSaveSyncConfig_RoundTrip(t *testing.T) {
 	if meta.Origin != "https://github.com/example/my-pack" {
 		t.Fatalf("origin = %q", meta.Origin)
 	}
-	if meta.Method != "clone" {
+	if meta.Method != MethodClone {
 		t.Fatalf("method = %q", meta.Method)
 	}
 	if meta.Ref != "main" {

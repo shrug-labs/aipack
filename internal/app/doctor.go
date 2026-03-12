@@ -550,7 +550,7 @@ func doctorCheckPackDrift(configDir string, syncCfg config.SyncConfig) CheckResu
 		packDir := filepath.Join(packsDir, name)
 
 		switch meta.Method {
-		case "clone":
+		case config.MethodClone:
 			// Compare recorded commit hash against current git HEAD in pack dir.
 			if meta.CommitHash == "" {
 				continue
@@ -568,7 +568,7 @@ func doctorCheckPackDrift(configDir string, syncCfg config.SyncConfig) CheckResu
 					Reason:        "git HEAD differs from recorded commit_hash",
 				})
 			}
-		case "copy":
+		case config.MethodCopy:
 			// Compare installed version against origin's pack.json version (local paths only).
 			if meta.Origin == "" || !filepath.IsAbs(meta.Origin) {
 				continue

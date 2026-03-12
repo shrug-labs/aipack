@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -68,8 +70,13 @@ func LoadPackManifest(path string) (PackManifest, error) {
 	if err != nil {
 		return PackManifest{}, err
 	}
+	return ParsePackManifest(b)
+}
+
+// ParsePackManifest unmarshals and validates a pack manifest from raw JSON bytes.
+func ParsePackManifest(data []byte) (PackManifest, error) {
 	var m PackManifest
-	if err := json.Unmarshal(b, &m); err != nil {
+	if err := json.Unmarshal(data, &m); err != nil {
 		return PackManifest{}, err
 	}
 	if m.SchemaVersion <= 0 {
@@ -82,6 +89,51 @@ func LoadPackManifest(path string) (PackManifest, error) {
 		return PackManifest{}, fmt.Errorf("pack manifest root must be set")
 	}
 	return m, nil
+}
+
+// ContentPaths returns all file and directory paths declared by the manifest,
+// relative to the pack root. Skills use trailing "/" to indicate directories.
+// Always includes "pack.json" itself.
+func (m PackManifest) ContentPaths() []string {
+	paths := []string{"pack.json"}
+
+	for _, id := range m.Rules {
+		paths = append(paths, domain.ContentRules.PrimaryRelPath(id))
+	}
+	for _, id := range m.Agents {
+		paths = append(paths, domain.ContentAgents.PrimaryRelPath(id))
+	}
+	for _, id := range m.Workflows {
+		paths = append(paths, domain.ContentWorkflows.PrimaryRelPath(id))
+	}
+	for _, id := range m.Skills {
+		// Trailing "/" so git archive fetches the entire directory recursively.
+		paths = append(paths, filepath.ToSlash(filepath.Join(domain.ContentSkills.DirName(), id))+"/")
+	}
+	for _, id := range m.Prompts {
+		paths = append(paths, filepath.ToSlash(filepath.Join("prompts", id+".md")))
+	}
+	for name := range m.MCP.Servers {
+		paths = append(paths, filepath.ToSlash(filepath.Join("mcp", name+".json")))
+	}
+	for _, p := range m.Profiles {
+		paths = append(paths, p)
+	}
+	for _, p := range m.Registries {
+		paths = append(paths, p)
+	}
+	for harness, files := range m.Configs.HarnessSettings {
+		for _, f := range files {
+			paths = append(paths, filepath.ToSlash(filepath.Join("configs", harness, f)))
+		}
+	}
+	for harness, files := range m.Configs.HarnessPlugins {
+		for _, f := range files {
+			paths = append(paths, filepath.ToSlash(filepath.Join("configs", harness, f)))
+		}
+	}
+
+	return paths
 }
 
 // SavePackManifest writes a pack manifest to disk as formatted JSON.

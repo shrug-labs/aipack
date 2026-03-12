@@ -247,23 +247,43 @@ aipack pack create ./path/to/dir --name custom-pack-name
 Installs a pack into `~/.config/aipack/packs/<name>/`. Supports three sources:
 
 - **Local path** (symlinked by default, `--copy` for full copy)
-- **URL** (`--url https://...` — cloned via git)
-- **Registry name** (bare name like `my-team-pack` — looked up in registry, then cloned)
+- **URL** (`--url` — fetched via `git archive` with automatic fallback to shallow clone)
+- **Registry name** (bare name like `my-team-pack` — looked up in registry, then fetched)
+
+Remote packs are fetched using a two-phase process: first the manifest (`pack.json`) is retrieved to determine declared content, then only the declared files are fetched. This avoids downloading the full repository. When the remote doesn't support `git archive --remote` (e.g. GitHub), aipack falls back to a shallow clone automatically.
+
+Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts.
 
 By default, auto-registers the pack as a source in the active profile. Use `--no-register` to skip, or `--profile <name>` to target a specific profile.
 
+Packs that bundle registries or profiles print a preview of what would be seeded. Use `--seed` to apply them, or review the output and seed manually.
+
 ```bash
+# Local installs
 aipack pack install ./my-pack
 aipack pack install ./my-pack --copy --name custom-name
-aipack pack install --url https://github.com/org/pack-repo
-aipack pack install my-team-pack              # registry name
+
+# Remote installs (HTTPS and SSH)
+aipack pack install --url https://github.com/org/pack-repo.git
+aipack pack install --url git@github.com:org/pack-repo.git --ref main
+
+# Subdirectory within a mono-repo
+aipack pack install --url https://github.com/org/shared-repo.git --path team-pack
+
+# Registry name
+aipack pack install my-team-pack
+
+# Apply bundled registries and profiles
+aipack pack install --url https://github.com/org/repo.git --path team-pack --seed
+
+# Profile and registration control
 aipack pack install ./my-pack --no-register
 aipack pack install ./my-pack --profile production
 ```
 
 ### pack list
 
-Lists all installed packs with name, install method (link/copy/clone), version, origin, and broken-link status.
+Lists all installed packs with name, install method (link/copy/clone/archive), version, origin, and broken-link status.
 
 ```bash
 aipack pack list
@@ -289,7 +309,7 @@ aipack pack delete my-pack
 
 ### pack update
 
-Updates installed pack(s) to latest version from their origin. For git-cloned packs, runs `git pull`. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
+Updates installed pack(s) to latest version from their origin. For archive-installed packs, re-fetches declared content and shows a file-level diff of changes. For git-cloned packs, runs `git pull`. For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
 
 ```bash
 aipack pack update my-pack
@@ -333,7 +353,7 @@ aipack profile delete staging
 Sets the active profile by updating `defaults.profile` in `sync-config.yaml`.
 
 ```bash
-aipack profile set ocm
+aipack profile set my-team
 ```
 
 ### profile show

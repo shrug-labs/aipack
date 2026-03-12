@@ -177,13 +177,13 @@ func TestProbePackURL_BitbucketServerBrowseSubdirPack(t *testing.T) {
 	}
 }
 
-func TestProbePackURL_OCIDevOpsDetailsURL(t *testing.T) {
+func TestProbePackURL_CloudDevOpsDetailsURL(t *testing.T) {
 	t.Parallel()
-	info, err := ProbePackURL("https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-phoenix-1%2Cdevops_scm_central")
+	info, err := ProbePackURL("https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-region-1%2Cdevops_scm_central")
 	if err != nil {
 		t.Fatalf("ProbePackURL: %v", err)
 	}
-	if info.RepoURL != "https://devops.scmservice.us-phoenix-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
+	if info.RepoURL != "https://devops.scmservice.us-region-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
 		t.Fatalf("RepoURL = %q", info.RepoURL)
 	}
 	if info.PackURL != "" {
@@ -191,11 +191,11 @@ func TestProbePackURL_OCIDevOpsDetailsURL(t *testing.T) {
 	}
 }
 
-func TestProbePackURL_OCIDevOpsDetailsURL_MissingRegion(t *testing.T) {
+func TestProbePackURL_CloudDevOpsDetailsURL_MissingRegion(t *testing.T) {
 	t.Parallel()
 	_, err := ProbePackURL("https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details")
 	if err == nil {
-		t.Fatal("expected error for OCI DevOps details URL without _ctx region")
+		t.Fatal("expected error for Cloud DevOps details URL without _ctx region")
 	}
 }
 
@@ -288,24 +288,24 @@ func TestInferBitbucketCloneURL_UnsupportedHost(t *testing.T) {
 	}
 }
 
-func TestInferOCIDevOpsCloneURL_Details(t *testing.T) {
+func TestInferCloudDevOpsCloneURL_Details(t *testing.T) {
 	t.Parallel()
-	got, ok := inferOCIDevOpsCloneURL("https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-phoenix-1%2Cdevops_scm_central")
+	got, ok := inferOCIDevOpsCloneURL("https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-region-1%2Cdevops_scm_central")
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	if got != "https://devops.scmservice.us-phoenix-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
+	if got != "https://devops.scmservice.us-region-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-func TestInferOCIDevOpsCloneURL_ExistingSCMServiceURL(t *testing.T) {
+func TestInferCloudDevOpsCloneURL_ExistingSCMServiceURL(t *testing.T) {
 	t.Parallel()
-	got, ok := inferOCIDevOpsCloneURL("https://devops.scmservice.us-phoenix-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo")
+	got, ok := inferOCIDevOpsCloneURL("https://devops.scmservice.us-region-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo")
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	if got != "https://devops.scmservice.us-phoenix-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
+	if got != "https://devops.scmservice.us-region-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
 		t.Fatalf("got %q", got)
 	}
 }

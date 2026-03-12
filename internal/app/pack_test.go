@@ -235,7 +235,7 @@ func TestPackList_AfterAdd(t *testing.T) {
 	if entries[0].Name != "test-pack" {
 		t.Fatalf("name = %q, want %q", entries[0].Name, "test-pack")
 	}
-	if entries[0].Method != "link" {
+	if entries[0].Method != config.MethodLink {
 		t.Fatalf("expected method=link, got %q", entries[0].Method)
 	}
 	if entries[0].Version != "1.0.0" {
@@ -440,7 +440,7 @@ func TestPackAdd_URL_GenericRepository_SkipsPackURLProbe(t *testing.T) {
 	}
 }
 
-func TestPackAdd_URL_OCIDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
+func TestPackAdd_URL_CloudDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	writeSeedSyncConfig(t, configDir)
@@ -455,7 +455,7 @@ func TestPackAdd_URL_OCIDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
 		return nil
 	}
 	err := PackAdd(PackAddRequest{
-		URL:       "https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-phoenix-1%2Cdevops_scm_central",
+		URL:       "https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-region-1%2Cdevops_scm_central",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  gitFn,
@@ -464,7 +464,7 @@ func TestPackAdd_URL_OCIDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PackAdd URL: %v", err)
 	}
-	if cloneURL != "https://devops.scmservice.us-phoenix-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
+	if cloneURL != "https://devops.scmservice.us-region-1.example.internal/namespaces/demo-ns/projects/TEAM/repositories/demo-repo" {
 		t.Fatalf("clone URL = %q", cloneURL)
 	}
 }
@@ -662,8 +662,8 @@ func TestPackAdd_URL_RecordsOriginInSyncConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("expected my-pack in InstalledPacks")
 	}
-	if meta.Method != "clone" {
-		t.Fatalf("method = %q, want %q", meta.Method, "clone")
+	if meta.Method != config.MethodClone {
+		t.Fatalf("method = %q, want %q", meta.Method, config.MethodClone)
 	}
 	if meta.Origin != "https://github.com/example/my-pack" {
 		t.Fatalf("origin = %q, want URL", meta.Origin)
@@ -700,8 +700,8 @@ func TestPackAdd_PathRecordsOriginInSyncConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("expected test-pack in InstalledPacks")
 	}
-	if meta.Method != "link" {
-		t.Fatalf("method = %q, want %q", meta.Method, "link")
+	if meta.Method != config.MethodLink {
+		t.Fatalf("method = %q, want %q", meta.Method, config.MethodLink)
 	}
 	if meta.Origin != packDir {
 		t.Fatalf("origin = %q, want %q", meta.Origin, packDir)
@@ -821,8 +821,8 @@ func TestPackList_ShowsOriginInfo(t *testing.T) {
 	if entries[0].Origin != packDir {
 		t.Fatalf("origin = %q, want %q", entries[0].Origin, packDir)
 	}
-	if entries[0].Method != "link" {
-		t.Fatalf("method = %q, want %q", entries[0].Method, "link")
+	if entries[0].Method != config.MethodLink {
+		t.Fatalf("method = %q, want %q", entries[0].Method, config.MethodLink)
 	}
 }
 
@@ -1092,7 +1092,7 @@ func TestPackShow_HappyPath(t *testing.T) {
 	if entry.Version != "1.0.0" {
 		t.Fatalf("version = %q, want 1.0.0", entry.Version)
 	}
-	if entry.Method != "link" {
+	if entry.Method != config.MethodLink {
 		t.Fatalf("method = %q, want link", entry.Method)
 	}
 	if entry.Origin != packDir {
@@ -1139,7 +1139,7 @@ func TestPackList_BrokenSymlink(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-	if entries[0].Method != "link" {
+	if entries[0].Method != config.MethodLink {
 		t.Fatalf("expected method=link, got %q", entries[0].Method)
 	}
 	// The target was deleted; verify the path is retained but the target is gone.
@@ -1210,8 +1210,8 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 	if entries[0].Name != "lifecycle-pack" {
 		t.Fatalf("PackList: name = %q, want %q", entries[0].Name, "lifecycle-pack")
 	}
-	if entries[0].Method != "copy" {
-		t.Fatalf("PackList: method = %q, want %q", entries[0].Method, "copy")
+	if entries[0].Method != config.MethodCopy {
+		t.Fatalf("PackList: method = %q, want %q", entries[0].Method, config.MethodCopy)
 	}
 	if entries[0].Version != "1.0.0" {
 		t.Fatalf("PackList: version = %q, want %q", entries[0].Version, "1.0.0")
@@ -1232,8 +1232,8 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 	if results[0].Status != "updated" {
 		t.Fatalf("PackUpdate: status = %q, want %q", results[0].Status, "updated")
 	}
-	if results[0].Method != "copy" {
-		t.Fatalf("PackUpdate: method = %q, want %q", results[0].Method, "copy")
+	if results[0].Method != config.MethodCopy {
+		t.Fatalf("PackUpdate: method = %q, want %q", results[0].Method, config.MethodCopy)
 	}
 
 	// --- Step 4: Show — verify details ---
@@ -1247,8 +1247,8 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 	if showEntry.Version != "1.0.0" {
 		t.Fatalf("PackShow: version = %q, want %q", showEntry.Version, "1.0.0")
 	}
-	if showEntry.Method != "copy" {
-		t.Fatalf("PackShow: method = %q, want %q", showEntry.Method, "copy")
+	if showEntry.Method != config.MethodCopy {
+		t.Fatalf("PackShow: method = %q, want %q", showEntry.Method, config.MethodCopy)
 	}
 	if len(showEntry.Rules) == 0 {
 		t.Fatal("PackShow: expected at least one rule")
@@ -1388,12 +1388,13 @@ func TestPackUpdate_Clone_MergesPackRegistry(t *testing.T) {
 		return nil
 	}
 
-	// Install via URL (clone).
+	// Install via URL (clone) with --seed to enable registry seeding.
 	var out bytes.Buffer
 	err := PackAdd(PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
+		Seed:      true,
 		RunGitFn:  fakeGit,
 		URLOKFn:   func(string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1406,7 +1407,7 @@ func TestPackUpdate_Clone_MergesPackRegistry(t *testing.T) {
 	regPath := filepath.Join(configDir, "registry.yaml")
 	reg, err := config.LoadRegistry(regPath)
 	if err != nil {
-		t.Fatalf("LoadRegistry after add: %v", err)
+		t.Fatalf("LoadRegistry after add: reading registry: %v", err)
 	}
 	if _, ok := reg.Packs["bundled-pack"]; !ok {
 		t.Fatal("expected bundled-pack in registry after add")
@@ -1611,5 +1612,66 @@ func TestPackShow_IncludesCommitHash(t *testing.T) {
 	}
 	if entry.CommitHash != fakeHash1 {
 		t.Fatalf("commit_hash = %q, want %q", entry.CommitHash, fakeHash1)
+	}
+}
+
+func TestValidatePackName(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{"my-pack", "test_pack", "pack123"}
+	for _, name := range valid {
+		if err := validatePackName(name); err != nil {
+			t.Errorf("validatePackName(%q) unexpected error: %v", name, err)
+		}
+	}
+
+	invalid := []struct {
+		name string
+		desc string
+	}{
+		{"../evil", "parent traversal"},
+		{"../../.claude/rules/pwned", "deep traversal"},
+		{"path/traversal", "forward slash"},
+		{"back\\slash", "backslash"},
+		{"null\x00byte", "null byte"},
+	}
+	for _, tc := range invalid {
+		if err := validatePackName(tc.name); err == nil {
+			t.Errorf("validatePackName(%q) [%s] expected error, got nil", tc.name, tc.desc)
+		}
+	}
+}
+
+func TestPackWarnMCPServers(t *testing.T) {
+	t.Parallel()
+	manifest := config.PackManifest{
+		MCP: config.MCPPack{
+			Servers: map[string]config.MCPDefaults{
+				"jira":      {DefaultAllowedTools: []string{"get_issue", "search"}},
+				"bitbucket": {DefaultAllowedTools: []string{"list_repos"}},
+			},
+		},
+	}
+	var out bytes.Buffer
+	packWarnMCPServers(manifest, &out)
+	output := out.String()
+	if !strings.Contains(output, "WARNING") {
+		t.Error("expected WARNING in output")
+	}
+	if !strings.Contains(output, "jira (2 tools)") {
+		t.Errorf("expected 'jira (2 tools)' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "bitbucket (1 tool)") {
+		t.Errorf("expected 'bitbucket (1 tool)' in output, got: %s", output)
+	}
+}
+
+func TestPackWarnMCPServers_NoServers(t *testing.T) {
+	t.Parallel()
+	manifest := config.PackManifest{}
+	var out bytes.Buffer
+	packWarnMCPServers(manifest, &out)
+	if out.Len() > 0 {
+		t.Errorf("expected no output for pack without MCP servers, got: %s", out.String())
 	}
 }

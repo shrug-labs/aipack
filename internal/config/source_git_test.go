@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -238,5 +240,96 @@ func TestGitErrorHint_AuthFailure(t *testing.T) {
 		if tt.want != "" && !strings.Contains(got, tt.want) {
 			t.Errorf("gitErrorHint(%q, ...) = %q, want substring %q", tt.output, got, tt.want)
 		}
+	}
+}
+
+func TestGitArchiveFilesWith_Success(t *testing.T) {
+	t.Parallel()
+	wantData := []byte("fake-tar-data")
+	var capturedArgs []string
+	mock := func(args ...string) ([]byte, error) {
+		capturedArgs = args
+		return wantData, nil
+	}
+	got, err := GitArchiveFilesWith("git@example.com:org/repo.git", "main", []string{"pack.json", "rules/"}, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(got, wantData) {
+		t.Fatalf("got %q, want %q", got, wantData)
+	}
+	wantArgs := []string{"archive", "--remote=git@example.com:org/repo.git", "main", "pack.json", "rules/"}
+	if len(capturedArgs) != len(wantArgs) {
+		t.Fatalf("args = %v, want %v", capturedArgs, wantArgs)
+	}
+	for i, w := range wantArgs {
+		if capturedArgs[i] != w {
+			t.Fatalf("arg[%d] = %q, want %q", i, capturedArgs[i], w)
+		}
+	}
+}
+
+func TestGitArchiveFilesWith_DefaultRef(t *testing.T) {
+	t.Parallel()
+	var capturedArgs []string
+	mock := func(args ...string) ([]byte, error) {
+		capturedArgs = args
+		return []byte("data"), nil
+	}
+	_, err := GitArchiveFilesWith("git@example.com:org/repo.git", "", []string{"file.txt"}, mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Empty ref should default to "HEAD"
+	if len(capturedArgs) < 3 {
+		t.Fatalf("expected at least 3 args, got %v", capturedArgs)
+	}
+	if capturedArgs[2] != "HEAD" {
+		t.Fatalf("ref arg = %q, want %q", capturedArgs[2], "HEAD")
+	}
+}
+
+func TestGitArchiveFilesWith_ArchiveNotSupported(t *testing.T) {
+	t.Parallel()
+	mock := func(args ...string) ([]byte, error) {
+		return nil, ErrArchiveNotSupported
+	}
+	_, err := GitArchiveFilesWith("https://github.com/org/repo.git", "main", []string{"file.txt"}, mock)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrArchiveNotSupported) {
+		t.Fatalf("got %v, want ErrArchiveNotSupported", err)
+	}
+}
+
+func TestGitArchiveFilesWith_ArchivePathNotFound(t *testing.T) {
+	t.Parallel()
+	mock := func(args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("%w: pathspec 'rules/missing.md' did not match", ErrArchivePathNotFound)
+	}
+	_, err := GitArchiveFilesWith("git@example.com:org/repo.git", "main", []string{"rules/missing.md"}, mock)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrArchivePathNotFound) {
+		t.Fatalf("got %v, want ErrArchivePathNotFound", err)
+	}
+	if errors.Is(err, ErrArchiveNotSupported) {
+		t.Fatal("should not be ErrArchiveNotSupported for path-not-found errors")
+	}
+}
+
+func TestGitArchiveFilesWith_GenericError(t *testing.T) {
+	t.Parallel()
+	mock := func(args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("git archive failed: something went wrong")
+	}
+	_, err := GitArchiveFilesWith("git@example.com:org/repo.git", "main", []string{"file.txt"}, mock)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if errors.Is(err, ErrArchiveNotSupported) {
+		t.Fatal("should not be ErrArchiveNotSupported for generic errors")
 	}
 }

@@ -1,27 +1,37 @@
 package config
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
+var checkGitOnce sync.Once
+var checkGitErr error
+
 // CheckGit verifies that the git binary is available and returns an actionable
 // error when it is missing (e.g. Xcode CLT not installed on macOS).
+// The result is cached after the first call.
 func CheckGit() error {
-	_, err := exec.LookPath("git")
-	if err != nil {
-		if runtime.GOOS == "darwin" {
-			return fmt.Errorf("git not found: install Xcode Command Line Tools with: xcode-select --install")
+	checkGitOnce.Do(func() {
+		_, err := exec.LookPath("git")
+		if err != nil {
+			if runtime.GOOS == "darwin" {
+				checkGitErr = fmt.Errorf("git not found: install Xcode Command Line Tools with: xcode-select --install")
+			} else {
+				checkGitErr = fmt.Errorf("git not found: install git from https://git-scm.com/downloads")
+			}
 		}
-		return fmt.Errorf("git not found: install git from https://git-scm.com/downloads")
-	}
-	return nil
+	})
+	return checkGitErr
 }
 
 // EnsureClone clones a repo into dir (using the real git binary) if .git is not already present.
@@ -100,24 +110,104 @@ func RunGit(args ...string) error {
 }
 
 func runGit(args ...string) error {
+	_, err := runGitCore(args...)
+	return err
+}
+
+// ErrArchiveNotSupported indicates the remote does not support git archive --remote.
+var ErrArchiveNotSupported = errors.New("remote does not support git archive --remote")
+
+// ErrArchivePathNotFound indicates git archive failed because a requested path
+// does not exist in the repo. This usually means the pack manifest (pack.json)
+// declares content that hasn't been committed.
+var ErrArchivePathNotFound = errors.New("archive path not found")
+
+// GitArchiveFiles fetches specific files/directories from a remote git repo
+// using `git archive --remote`. Returns the raw tar stream as bytes.
+// Caller is responsible for extracting and validating the archive content.
+//
+// The ref defaults to "HEAD" if empty. Paths are passed directly to git archive.
+// Directory paths are fetched recursively by git archive.
+//
+// Returns ErrArchiveNotSupported if the remote does not support git archive.
+func GitArchiveFiles(repoURL, ref string, paths []string) ([]byte, error) {
+	return gitArchiveFiles(repoURL, ref, paths, runGitOutput)
+}
+
+// GitArchiveFilesWith is like GitArchiveFiles but accepts a custom git runner for testing.
+func GitArchiveFilesWith(repoURL, ref string, paths []string, runFn func(args ...string) ([]byte, error)) ([]byte, error) {
+	return gitArchiveFiles(repoURL, ref, paths, runFn)
+}
+
+func gitArchiveFiles(repoURL, ref string, paths []string, runFn func(args ...string) ([]byte, error)) ([]byte, error) {
+	if err := CheckGit(); err != nil {
+		return nil, err
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+	args := []string{"archive", "--remote=" + repoURL, ref}
+	args = append(args, paths...)
+	return runFn(args...)
+}
+
+// runGitCore runs a git command with shared setup (timeout, env, error formatting)
+// and returns stdout bytes. Both runGit and runGitOutput delegate to this.
+func runGitCore(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	// Prevent git from prompting for credentials in non-interactive contexts.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("git %s timed out after 2m", strings.Join(args, " "))
+		return nil, fmt.Errorf("git %s timed out after 2m", strings.Join(args, " "))
 	}
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
 		hint := gitErrorHint(msg, args)
 		if hint != "" {
-			return fmt.Errorf("git %s failed: %s\n\n%s", strings.Join(args, " "), msg, hint)
+			return nil, fmt.Errorf("git %s failed: %s\n\n%s", strings.Join(args, " "), msg, hint)
 		}
-		return fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
+		return nil, fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
 	}
-	return nil
+	return stdout.Bytes(), nil
+}
+
+// runGitOutput runs a git command and returns its stdout as bytes.
+// Adds archive-specific error classification on top of runGitCore.
+func runGitOutput(args ...string) ([]byte, error) {
+	out, err := runGitCore(args...)
+	if err != nil {
+		return nil, classifyArchiveError(err)
+	}
+	return out, nil
+}
+
+// classifyArchiveError maps generic git errors to archive-specific sentinel errors.
+func classifyArchiveError(err error) error {
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "operation not supported") ||
+		strings.Contains(lower, "does not appear to support") {
+		return ErrArchiveNotSupported
+	}
+	// "archiver died" can mean the remote doesn't support archive, OR a
+	// pathspec didn't match. A missing file is a content error (pack.json
+	// declares files not in the repo), not a capability error.
+	if strings.Contains(lower, "archiver died") {
+		if strings.Contains(lower, "pathspec") {
+			return fmt.Errorf("%w: %s", ErrArchivePathNotFound, msg)
+		}
+		return ErrArchiveNotSupported
+	}
+	return err
 }
 
 // gitErrorHint returns an actionable hint for common git failures.

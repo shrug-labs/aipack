@@ -2,6 +2,7 @@ package util
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,22 +60,26 @@ func IgnoredName(name string) bool {
 // CopyDir recursively copies src to dst, using atomic writes with
 // 0o700 directory and 0o600 file permissions. Skips ignored names.
 func CopyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if IgnoredName(info.Name()) {
-			if info.IsDir() {
+		if IgnoredName(d.Name()) {
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
+		}
+		// WalkDir does not follow symlinks, so Type includes ModeSymlink.
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink not allowed in pack content: %s", path)
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
-		if info.IsDir() {
+		if d.IsDir() {
 			return os.MkdirAll(target, 0o700)
 		}
 		data, err := os.ReadFile(path)

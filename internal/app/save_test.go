@@ -52,12 +52,12 @@ func TestScanBytesForSecrets_AKIA(t *testing.T) {
 	}
 }
 
-func TestScanBytesForSecrets_OCID(t *testing.T) {
+func TestScanBytesForSecrets_CloudResourceID(t *testing.T) {
 	t.Parallel()
 	input := []byte(`resource = "ocid1.instance.oc1.phx.abc123"`)
 	findings := scanBytesForSecrets(input)
 	if len(findings) == 0 {
-		t.Fatal("expected findings for OCI resource ID, got none")
+		t.Fatal("expected findings for cloud resource ID, got none")
 	}
 	found := false
 	for _, f := range findings {

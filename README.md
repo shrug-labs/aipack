@@ -99,6 +99,35 @@ aipack sync --dry-run
 aipack sync
 ```
 
+### Team Onboarding (Recommended)
+
+When a team publishes a pack in a shared repo, the ideal install path bootstraps
+everything from the team pack itself — profiles, registry entries, and dependency
+packs:
+
+```bash
+# 1. Install the team pack from the shared repo.
+#    --seed applies bundled profiles and registry entries from the pack.
+#    Auto-creates ~/.config/aipack/ if needed.
+aipack pack install --url https://github.com/org/shared-repo.git \
+  --path team-pack --ref main --seed
+
+# 2. Activate the team profile (seeded by the pack in step 1).
+aipack profile set my-team
+
+# 3. Install dependency packs from the seeded registry.
+#    These register in the active profile (my-team), not default.
+aipack pack install aipack-core
+aipack pack install essentials
+
+# 4. Sync to your harness.
+aipack sync --harness claudecode --scope global
+```
+
+This pattern lets teams ship a single install command that bootstraps profiles,
+registries, and pack dependencies — new team members run four commands and are
+fully configured.
+
 ## Key Concepts
 
 ### Packs

@@ -65,24 +65,30 @@ func (c *PackCreateCmd) Run(g *Globals) error {
 
 type PackInstallCmd struct {
 	Path       string `arg:"" optional:"" help:"Local directory path or registry pack name"`
-	URL        string `help:"Clone pack from a git-accessible repository or pack.json URL" name:"url"`
-	Ref        string `help:"Git ref (branch/tag) to checkout when cloning" name:"ref"`
+	URL        string `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
+	Ref        string `help:"Git ref (branch/tag) to fetch" name:"ref"`
+	SubPath    string `help:"Subdirectory within the repo where the pack lives" name:"path"`
 	Name       string `help:"Override the pack name from pack.json" name:"name"`
 	ConfigDir  string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Registry   string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
 	Profile    string `help:"Profile to register pack source in (default: sync-config defaults.profile, then 'default')" name:"profile"`
 	NoRegister bool   `help:"Do not auto-register pack as a source in any profile" name:"no-register"`
 	Copy       bool   `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
+	Seed       bool   `help:"Apply bundled registries and profiles from remote packs (preview-only by default)" name:"seed"`
 }
 
 func (c *PackInstallCmd) Help() string {
 	return `Installs a pack into ~/.config/aipack/packs/<name>/. Local directory packs are
-symlinked by default; use --copy to make a full copy instead. URL packs
-are cloned via git.
+symlinked by default; use --copy to make a full copy instead. Remote packs
+are fetched via git archive (selective fetch of declared files only) with
+automatic fallback to shallow clone when the remote doesn't support archive.
 
 If the argument is not a local directory path and not a URL, it is treated as
 a registry pack name. The registry is consulted to resolve the name to a
-repository URL (and optional subdirectory path), then the pack is cloned.
+repository URL (and optional subdirectory path), then the pack is fetched.
+
+Both HTTPS and SSH URLs are supported. SSH URLs work with git archive on
+servers that support it (e.g. Bitbucket Server).
 
 By default, the pack is registered as a source in the profile specified by
 --profile (or the sync-config default profile, or "default"). Use --no-register
@@ -95,11 +101,17 @@ Examples:
   # Install a local pack via copy with a custom name
   aipack pack install ./my-pack --copy --name custom-name
 
-  # Clone a pack from a URL
+  # Install from an HTTPS URL
   aipack pack install --url https://github.com/org/pack-repo
 
-  # Clone from a specific branch
-  aipack pack install --url git@host:org/repo.git --ref feature-branch
+  # Install from an SSH URL
+  aipack pack install --url ssh://git@bitbucket.example.com:7999/proj/repo.git --ref main
+
+  # Install a pack from a subdirectory within a repo
+  aipack pack install --url ssh://git@bb:7999/proj/repo.git --path my-pack
+
+  # Install from an SCP-style SSH URL with ref and subdirectory
+  aipack pack install --url git@host:org/repo.git --ref feature-branch --path packs/my-pack
 
   # Install a pack by registry name
   aipack pack install my-team-pack
@@ -126,7 +138,7 @@ func (c *PackInstallCmd) Validate() error {
 		return fmt.Errorf("pack install requires a path argument, --url, or a registry pack name")
 	}
 	if hasURL && c.Copy {
-		return fmt.Errorf("--copy is not valid with --url (URL packs are always cloned)")
+		return fmt.Errorf("--copy is not valid with --url (URL packs are fetched remotely)")
 	}
 	return nil
 }
@@ -160,10 +172,12 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 		Name:      c.Name,
 		Register:  !c.NoRegister,
 		Profile:   profile,
+		Seed:      c.Seed,
 	}
 	if c.URL != "" {
 		req.URL = c.URL
 		req.Ref = c.Ref
+		req.SubPath = c.SubPath
 	} else if c.Path != "" && isRegistryName(c.Path) {
 		// Not a local path — try registry lookup.
 		regReq := app.RegistryListRequest{
@@ -214,7 +228,7 @@ type PackListCmd struct {
 
 func (c *PackListCmd) Help() string {
 	return `Lists all packs installed under ~/.config/aipack/packs/, showing name, install
-method (link/copy/clone), version, origin URL, and broken-link status.
+method (link/copy/remote), version, origin URL, and broken-link status.
 
 Examples:
   # List installed packs
@@ -249,7 +263,7 @@ func (c *PackListCmd) Run(g *Globals) error {
 		}
 		var out []jsonEntry
 		for _, e := range entries {
-			isLink := e.Method == "link"
+			isLink := e.Method == config.MethodLink
 			brokenLink := isLink && !util.PathExists(e.Path)
 			out = append(out, jsonEntry{
 				Name:       e.Name,
@@ -281,7 +295,7 @@ func (c *PackListCmd) Run(g *Globals) error {
 			origin = " (from " + e.Origin + ")"
 		}
 		broken := ""
-		if e.Method == "link" && !util.PathExists(e.Path) {
+		if e.Method == config.MethodLink && !util.PathExists(e.Path) {
 			broken = " [BROKEN LINK]"
 		}
 		fmt.Fprintf(g.Stdout, "  %s (%s)%s -> %s%s%s\n", e.Name, e.Method, ver, e.Path, origin, broken)
@@ -403,8 +417,9 @@ type PackUpdateCmd struct {
 
 func (c *PackUpdateCmd) Help() string {
 	return `Updates installed pack(s) to the latest version from their origin. For
-git-cloned packs, runs git pull. For symlinked packs, re-validates the link
-target. For copied packs, re-copies from the recorded origin.
+remote packs, re-fetches from the origin (archive or clone). For symlinked
+packs, re-validates the link target. For copied packs, re-copies from the
+recorded origin.
 
 Exactly one of <name> or --all is required.
 

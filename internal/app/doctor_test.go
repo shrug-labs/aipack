@@ -171,7 +171,7 @@ func TestDoctorCheckPackDrift_NoDrift(t *testing.T) {
 	dir := t.TempDir()
 	syncCfg := config.SyncConfig{
 		InstalledPacks: map[string]config.InstalledPackMeta{
-			"alpha": {Method: "link"},
+			"alpha": {Method: config.MethodLink},
 		},
 	}
 	// link packs never drift
@@ -199,7 +199,7 @@ func TestDoctorCheckPackDrift_CopyVersionDrift(t *testing.T) {
 
 	syncCfg := config.SyncConfig{
 		InstalledPacks: map[string]config.InstalledPackMeta{
-			"mypack": {Method: "copy", Origin: originDir},
+			"mypack": {Method: config.MethodCopy, Origin: originDir},
 		},
 	}
 
@@ -232,7 +232,7 @@ func TestDoctorCheckPackDrift_CopyNoOrigin(t *testing.T) {
 
 	syncCfg := config.SyncConfig{
 		InstalledPacks: map[string]config.InstalledPackMeta{
-			"mypack": {Method: "copy", Origin: "/nonexistent/path"},
+			"mypack": {Method: config.MethodCopy, Origin: "/nonexistent/path"},
 		},
 	}
 
@@ -255,7 +255,7 @@ func TestDoctorCheckPackDrift_CopySameVersion(t *testing.T) {
 
 	syncCfg := config.SyncConfig{
 		InstalledPacks: map[string]config.InstalledPackMeta{
-			"mypack": {Method: "copy", Origin: originDir},
+			"mypack": {Method: config.MethodCopy, Origin: originDir},
 		},
 	}
 

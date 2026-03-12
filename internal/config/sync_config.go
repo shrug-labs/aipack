@@ -22,10 +22,18 @@ type RegistrySourceEntry struct {
 	Path string `yaml:"path,omitempty"` // file path within repo (git only); default: registry.yaml
 }
 
+// Install method constants for InstalledPackMeta.Method.
+const (
+	MethodLink    = "link"
+	MethodCopy    = "copy"
+	MethodClone   = "clone"
+	MethodArchive = "archive"
+)
+
 // InstalledPackMeta records the origin and install method for a pack.
 type InstalledPackMeta struct {
 	Origin      string `yaml:"origin"`                // abs path or URL
-	Method      string `yaml:"method"`                // "link", "copy", "clone"
+	Method      string `yaml:"method"`                // MethodLink, MethodCopy, MethodClone, MethodArchive
 	InstalledAt string `yaml:"installed_at"`          // RFC3339
 	Ref         string `yaml:"ref,omitempty"`         // git ref (URL only)
 	SubPath     string `yaml:"sub_path,omitempty"`    // subdirectory within cloned repo

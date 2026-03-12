@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,23 +76,35 @@ func FetchRegistryFromURL(rawURL string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// FetchFileViaGit clones a repo (shallow, single-branch) into a temp directory,
-// reads the file at filePath, and returns its contents. The temp directory
-// is cleaned up before returning. Uses --branch for the ref to avoid the
-// fetch+checkout two-step that fails with shallow clones on some servers.
+// FetchFileViaGit fetches a single file from a remote git repo. It tries
+// git archive --remote first (fetches only the requested file) and falls
+// back to a shallow clone when the remote doesn't support archive.
 func FetchFileViaGit(repoURL, ref, filePath string) ([]byte, error) {
-	return fetchFileViaGit(repoURL, ref, filePath, RunGit)
+	return fetchFileViaGit(repoURL, ref, filePath, RunGit, GitArchiveFiles)
 }
 
-// FetchFileViaGitWith is like FetchFileViaGit but accepts a custom git runner for testing.
-func FetchFileViaGitWith(repoURL, ref, filePath string, runGitFn func(args ...string) error) ([]byte, error) {
-	return fetchFileViaGit(repoURL, ref, filePath, runGitFn)
+// FetchFileViaGitWith is like FetchFileViaGit but accepts custom runners for testing.
+func FetchFileViaGitWith(repoURL, ref, filePath string, runGitFn func(args ...string) error, archiveFn func(repoURL, ref string, paths []string) ([]byte, error)) ([]byte, error) {
+	return fetchFileViaGit(repoURL, ref, filePath, runGitFn, archiveFn)
 }
 
-func fetchFileViaGit(repoURL, ref, filePath string, runGitFn func(args ...string) error) ([]byte, error) {
+func fetchFileViaGit(repoURL, ref, filePath string, runGitFn func(args ...string) error, archiveFn func(repoURL, ref string, paths []string) ([]byte, error)) ([]byte, error) {
 	if err := CheckGit(); err != nil {
 		return nil, err
 	}
+
+	// Try archive first — fetches only the requested file.
+	if archiveFn != nil {
+		data, err := extractFileFromArchive(archiveFn, repoURL, ref, filePath)
+		if err == nil {
+			return data, nil
+		}
+		if !errors.Is(err, ErrArchiveNotSupported) {
+			return nil, err
+		}
+		// Fall through to clone.
+	}
+
 	tmp, err := os.MkdirTemp("", "aipack-fetch-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir: %w", err)
@@ -111,6 +124,16 @@ func fetchFileViaGit(repoURL, ref, filePath string, runGitFn func(args ...string
 		return nil, fmt.Errorf("reading %s from clone: %w", filePath, err)
 	}
 	return data, nil
+}
+
+// extractFileFromArchive fetches a single file via git archive and extracts
+// its content from the resulting tar stream.
+func extractFileFromArchive(archiveFn func(string, string, []string) ([]byte, error), repoURL, ref, filePath string) ([]byte, error) {
+	tarData, err := archiveFn(repoURL, ref, []string{filePath})
+	if err != nil {
+		return nil, err
+	}
+	return ExtractSingleFileFromTar(tarData, filePath)
 }
 
 // ResolveRegistryPath returns the registry file path to use.

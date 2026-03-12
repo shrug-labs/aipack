@@ -1,10 +1,20 @@
 package config
 
 import (
+	"archive/tar"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// buildTarBytes creates a tar archive in memory and returns the raw bytes.
+func buildTarBytes(t *testing.T, entries []tarEntry) []byte {
+	t.Helper()
+	buf := buildTar(t, entries)
+	return buf.Bytes()
+}
 
 func TestLoadRegistry_HappyPath(t *testing.T) {
 	t.Parallel()
@@ -328,5 +338,103 @@ packs:
 	}
 	if reg.Packs["my-pack"].Description != "source A wins" {
 		t.Errorf("expected source A to win, got %q", reg.Packs["my-pack"].Description)
+	}
+}
+
+// --- FetchFileViaGit tests ---
+
+func TestFetchFileViaGitWith_ArchiveSuccess(t *testing.T) {
+	t.Parallel()
+	wantContent := "registry: data"
+	archiveMock := func(repoURL, ref string, paths []string) ([]byte, error) {
+		// Build a tar containing the requested file.
+		return buildTarBytes(t, []tarEntry{
+			{Name: paths[0], Type: tar.TypeReg, Body: wantContent},
+		}), nil
+	}
+	cloneMock := func(args ...string) error {
+		t.Fatal("clone should not be called when archive succeeds")
+		return nil
+	}
+
+	data, err := FetchFileViaGitWith("git@example.com:org/repo.git", "main", "registry.yaml", cloneMock, archiveMock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != wantContent {
+		t.Errorf("got %q, want %q", string(data), wantContent)
+	}
+}
+
+func TestFetchFileViaGitWith_ArchiveNotSupported_FallsBackToClone(t *testing.T) {
+	t.Parallel()
+	wantContent := "cloned-data"
+	archiveMock := func(repoURL, ref string, paths []string) ([]byte, error) {
+		return nil, ErrArchiveNotSupported
+	}
+	var cloneDir string
+	cloneMock := func(args ...string) error {
+		// Capture the clone destination and write the expected file.
+		for i, a := range args {
+			if a == "clone" && i == 0 {
+				cloneDir = args[len(args)-1]
+			}
+		}
+		if cloneDir == "" {
+			return nil
+		}
+		return os.WriteFile(filepath.Join(cloneDir, "registry.yaml"), []byte(wantContent), 0o644)
+	}
+
+	data, err := FetchFileViaGitWith("https://github.com/org/repo.git", "", "registry.yaml", cloneMock, archiveMock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != wantContent {
+		t.Errorf("got %q, want %q", string(data), wantContent)
+	}
+}
+
+func TestFetchFileViaGitWith_ArchiveGenericError_DoesNotFallback(t *testing.T) {
+	t.Parallel()
+	archiveMock := func(repoURL, ref string, paths []string) ([]byte, error) {
+		return nil, fmt.Errorf("permission denied")
+	}
+	cloneMock := func(args ...string) error {
+		t.Fatal("clone should not be called on non-archive-not-supported errors")
+		return nil
+	}
+
+	_, err := FetchFileViaGitWith("git@example.com:org/repo.git", "main", "registry.yaml", cloneMock, archiveMock)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("expected 'permission denied' in error, got: %v", err)
+	}
+}
+
+func TestFetchFileViaGitWith_NilArchive_UsesClone(t *testing.T) {
+	t.Parallel()
+	wantContent := "clone-only"
+	var cloneDir string
+	cloneMock := func(args ...string) error {
+		for i, a := range args {
+			if a == "clone" && i == 0 {
+				cloneDir = args[len(args)-1]
+			}
+		}
+		if cloneDir == "" {
+			return nil
+		}
+		return os.WriteFile(filepath.Join(cloneDir, "file.txt"), []byte(wantContent), 0o644)
+	}
+
+	data, err := FetchFileViaGitWith("https://example.com/repo.git", "v1.0", "file.txt", cloneMock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != wantContent {
+		t.Errorf("got %q, want %q", string(data), wantContent)
 	}
 }

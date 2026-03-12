@@ -99,8 +99,8 @@ func (c *ProfileSetCmd) Help() string {
 The named profile must already exist under ~/.config/aipack/profiles/.
 
 Examples:
-  # Activate the "ocm" profile
-  aipack profile set ocm
+  # Activate a profile
+  aipack profile set my-team
 
 See also: profile list, profile create`
 }
