@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1673,5 +1675,269 @@ func TestPackWarnMCPServers_NoServers(t *testing.T) {
 	packWarnMCPServers(manifest, &out)
 	if out.Len() > 0 {
 		t.Errorf("expected no output for pack without MCP servers, got: %s", out.String())
+	}
+}
+
+// --- ProfileMissingPacks / PackInstallMissing tests ---
+
+func writeTestProfile(t *testing.T, configDir, name string, packNames []string) {
+	t.Helper()
+	packs := make([]map[string]any, len(packNames))
+	for i, n := range packNames {
+		packs[i] = map[string]any{"name": n}
+	}
+	cfg := map[string]any{"schema_version": 2, "packs": packs}
+	b, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(configDir, "profiles")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestProfileWithDisabled(t *testing.T, configDir, name string, enabled, disabled []string) {
+	t.Helper()
+	var packs []map[string]any
+	for _, n := range enabled {
+		packs = append(packs, map[string]any{"name": n})
+	}
+	for _, n := range disabled {
+		packs = append(packs, map[string]any{"name": n, "enabled": false})
+	}
+	cfg := map[string]any{"schema_version": 2, "packs": packs}
+	b, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(configDir, "profiles")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestRegistry(t *testing.T, configDir string, packs map[string]config.RegistryEntry) {
+	t.Helper()
+	reg := config.Registry{SchemaVersion: 1, Packs: packs}
+	b, err := yaml.Marshal(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "registry.yaml"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProfileMissingPacks_Mixed(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfile(t, configDir, "test", []string{"alpha", "beta", "gamma"})
+
+	// Install only alpha.
+	writePackManifest(t, filepath.Join(configDir, "packs", "alpha"), "alpha")
+
+	missing, err := ProfileMissingPacks(configDir, "test")
+	if err != nil {
+		t.Fatalf("ProfileMissingPacks: %v", err)
+	}
+	if len(missing) != 2 {
+		t.Fatalf("expected 2 missing, got %d: %v", len(missing), missing)
+	}
+	if missing[0] != "beta" || missing[1] != "gamma" {
+		t.Errorf("expected [beta, gamma], got %v", missing)
+	}
+}
+
+func TestProfileMissingPacks_AllPresent(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfile(t, configDir, "test", []string{"alpha", "beta"})
+
+	writePackManifest(t, filepath.Join(configDir, "packs", "alpha"), "alpha")
+	writePackManifest(t, filepath.Join(configDir, "packs", "beta"), "beta")
+
+	missing, err := ProfileMissingPacks(configDir, "test")
+	if err != nil {
+		t.Fatalf("ProfileMissingPacks: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected 0 missing, got %d: %v", len(missing), missing)
+	}
+}
+
+func TestProfileMissingPacks_DisabledPackSkipped(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfileWithDisabled(t, configDir, "test", []string{"alpha"}, []string{"beta"})
+
+	// Neither installed — but beta is disabled so should not appear.
+	missing, err := ProfileMissingPacks(configDir, "test")
+	if err != nil {
+		t.Fatalf("ProfileMissingPacks: %v", err)
+	}
+	if len(missing) != 1 {
+		t.Fatalf("expected 1 missing, got %d: %v", len(missing), missing)
+	}
+	if missing[0] != "alpha" {
+		t.Errorf("expected [alpha], got %v", missing)
+	}
+}
+
+func TestPackInstallMissing_AllPresent(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfile(t, configDir, "test", []string{"alpha", "beta"})
+	writePackManifest(t, filepath.Join(configDir, "packs", "alpha"), "alpha")
+	writePackManifest(t, filepath.Join(configDir, "packs", "beta"), "beta")
+
+	var out bytes.Buffer
+	results, err := PackInstallMissing(PackInstallMissingRequest{
+		ConfigDir:   configDir,
+		ProfileName: "test",
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstallMissing: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Status != "present" {
+			t.Errorf("pack %q: expected present, got %q", r.Pack, r.Status)
+		}
+	}
+}
+
+func TestPackInstallMissing_NotInRegistry(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfile(t, configDir, "test", []string{"alpha", "beta"})
+	writePackManifest(t, filepath.Join(configDir, "packs", "alpha"), "alpha")
+	// beta is missing and no registry entry for it.
+
+	var out bytes.Buffer
+	results, err := PackInstallMissing(PackInstallMissingRequest{
+		ConfigDir:   configDir,
+		ProfileName: "test",
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstallMissing: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Status != "present" {
+		t.Errorf("alpha: expected present, got %q", results[0].Status)
+	}
+	if results[1].Status != "not-in-registry" {
+		t.Errorf("beta: expected not-in-registry, got %q", results[1].Status)
+	}
+}
+
+func TestPackInstallMissing_InstallsFromRegistry(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfile(t, configDir, "test", []string{"alpha", "beta"})
+	writePackManifest(t, filepath.Join(configDir, "packs", "alpha"), "alpha")
+
+	writeTestRegistry(t, configDir, map[string]config.RegistryEntry{
+		"beta": {Repo: "https://example.com/repo.git", Ref: "main", Path: "packs/beta"},
+	})
+
+	var capturedReq PackAddRequest
+	fakePack := func(req PackAddRequest, w io.Writer) error {
+		capturedReq = req
+		// Simulate install by creating the pack dir.
+		writePackManifest(t, filepath.Join(req.ConfigDir, "packs", req.Name), req.Name)
+		return nil
+	}
+
+	var out bytes.Buffer
+	results, err := PackInstallMissing(PackInstallMissingRequest{
+		ConfigDir:   configDir,
+		ProfileName: "test",
+		PackAddFn:   fakePack,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstallMissing: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[1].Status != "installed" {
+		t.Errorf("beta: expected installed, got %q", results[1].Status)
+	}
+
+	// Verify PackAdd was called with correct fields.
+	if capturedReq.URL != "https://example.com/repo.git" {
+		t.Errorf("URL = %q, want https://example.com/repo.git", capturedReq.URL)
+	}
+	if capturedReq.Ref != "main" {
+		t.Errorf("Ref = %q, want main", capturedReq.Ref)
+	}
+	if capturedReq.SubPath != "packs/beta" {
+		t.Errorf("SubPath = %q, want packs/beta", capturedReq.SubPath)
+	}
+	if capturedReq.Name != "beta" {
+		t.Errorf("Name = %q, want beta", capturedReq.Name)
+	}
+	if capturedReq.Register {
+		t.Error("Register should be false")
+	}
+}
+
+func TestPackInstallMissing_PackAddError(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfile(t, configDir, "test", []string{"alpha", "beta", "gamma"})
+
+	writeTestRegistry(t, configDir, map[string]config.RegistryEntry{
+		"alpha": {Repo: "https://example.com/a.git", Ref: "main"},
+		"beta":  {Repo: "https://example.com/b.git", Ref: "main"},
+		"gamma": {Repo: "https://example.com/c.git", Ref: "main"},
+	})
+
+	calls := 0
+	failOnBeta := func(req PackAddRequest, w io.Writer) error {
+		calls++
+		if req.Name == "beta" {
+			return fmt.Errorf("simulated failure")
+		}
+		writePackManifest(t, filepath.Join(req.ConfigDir, "packs", req.Name), req.Name)
+		return nil
+	}
+
+	var out bytes.Buffer
+	results, err := PackInstallMissing(PackInstallMissingRequest{
+		ConfigDir:   configDir,
+		ProfileName: "test",
+		PackAddFn:   failOnBeta,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstallMissing: %v", err)
+	}
+
+	// All three packs should be attempted.
+	if calls != 3 {
+		t.Errorf("expected 3 PackAdd calls, got %d", calls)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	if results[0].Status != "installed" {
+		t.Errorf("alpha: expected installed, got %q", results[0].Status)
+	}
+	if results[1].Status != "error" {
+		t.Errorf("beta: expected error, got %q", results[1].Status)
+	}
+	if results[2].Status != "installed" {
+		t.Errorf("gamma: expected installed, got %q", results[2].Status)
 	}
 }

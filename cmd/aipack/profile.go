@@ -92,17 +92,24 @@ func (c *ProfileListCmd) Run(g *Globals) error {
 type ProfileSetCmd struct {
 	Name      string `arg:"" help:"Profile name to activate"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	Install   bool   `help:"Install missing packs from registry after setting profile" name:"install"`
 }
 
 func (c *ProfileSetCmd) Help() string {
 	return `Sets the active profile by updating defaults.profile in sync-config.yaml.
 The named profile must already exist under ~/.config/aipack/profiles/.
 
+After setting the profile, reports any packs declared in the profile that are
+not installed. Use --install to automatically install them from the registry.
+
 Examples:
   # Activate a profile
   aipack profile set my-team
 
-See also: profile list, profile create`
+  # Activate a profile and install missing packs
+  aipack profile set my-team --install
+
+See also: profile list, profile create, pack install`
 }
 
 func (c *ProfileSetCmd) Run(g *Globals) error {
@@ -117,6 +124,28 @@ func (c *ProfileSetCmd) Run(g *Globals) error {
 		return err
 	}
 	fmt.Fprintf(g.Stdout, "Active profile: %s\n", c.Name)
+
+	if c.Install {
+		results, err := app.PackInstallMissing(app.PackInstallMissingRequest{
+			ConfigDir:   cfgDir,
+			ProfileName: c.Name,
+		}, g.Stdout)
+		if err != nil {
+			return err
+		}
+		printInstallMissingResults(results, c.Name, g.Stdout)
+	} else {
+		missing, err := app.ProfileMissingPacks(cfgDir, c.Name)
+		if err != nil {
+			// Non-fatal — profile is already set.
+			fmt.Fprintf(g.Stderr, "Warning: could not check missing packs: %v\n", err)
+			return nil
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(g.Stdout, "%d pack(s) not installed: %s\n", len(missing), strings.Join(missing, ", "))
+			fmt.Fprintln(g.Stdout, "Run 'aipack pack install' to install them.")
+		}
+	}
 	return nil
 }
 

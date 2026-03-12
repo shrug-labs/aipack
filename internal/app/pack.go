@@ -1233,3 +1233,120 @@ func shortHash(h string) string {
 	}
 	return h
 }
+
+// --- profile-aware pack install ---
+
+// PackInstallMissingRequest holds the inputs for installing packs missing from a profile.
+type PackInstallMissingRequest struct {
+	ConfigDir   string
+	ProfileName string
+
+	// PackAddFn overrides PackAdd for testing. nil = use PackAdd.
+	PackAddFn func(PackAddRequest, io.Writer) error
+}
+
+// PackInstallMissingResult describes the outcome for a single pack in the profile.
+type PackInstallMissingResult struct {
+	Pack   string // pack name from profile
+	Status string // "installed", "present", "not-in-registry", "error"
+	Detail string // install method or error message
+}
+
+// ProfileMissingPacks returns the names of enabled packs in a profile whose
+// directories do not exist under configDir/packs/.
+func ProfileMissingPacks(configDir, profileName string) ([]string, error) {
+	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
+	cfg, err := config.LoadProfile(profilePath)
+	if err != nil {
+		return nil, fmt.Errorf("loading profile %q: %w", profileName, err)
+	}
+
+	packsDir := PacksDir(configDir)
+	var missing []string
+	for _, pe := range cfg.Packs {
+		name := strings.TrimSpace(pe.Name)
+		if name == "" {
+			continue
+		}
+		// Skip disabled packs (nil Enabled = enabled).
+		if pe.Enabled != nil && !*pe.Enabled {
+			continue
+		}
+		packDir := filepath.Join(packsDir, name)
+		if _, err := os.Stat(packDir); os.IsNotExist(err) {
+			missing = append(missing, name)
+		}
+	}
+	return missing, nil
+}
+
+// PackInstallMissing installs packs that a profile declares but that are not
+// present on disk. Each missing pack is looked up in the merged registry and
+// installed via PackAdd. Packs not found in the registry are reported but do
+// not cause a failure.
+func PackInstallMissing(req PackInstallMissingRequest, stdout io.Writer) ([]PackInstallMissingResult, error) {
+	profilePath := filepath.Join(req.ConfigDir, "profiles", req.ProfileName+".yaml")
+	cfg, err := config.LoadProfile(profilePath)
+	if err != nil {
+		return nil, fmt.Errorf("loading profile %q: %w", req.ProfileName, err)
+	}
+
+	packsDir := PacksDir(req.ConfigDir)
+	regReq := RegistryListRequest{ConfigDir: req.ConfigDir}
+	addFn := req.PackAddFn
+	if addFn == nil {
+		addFn = PackAdd
+	}
+
+	var results []PackInstallMissingResult
+	for _, pe := range cfg.Packs {
+		name := strings.TrimSpace(pe.Name)
+		if name == "" {
+			continue
+		}
+		if pe.Enabled != nil && !*pe.Enabled {
+			continue
+		}
+
+		packDir := filepath.Join(packsDir, name)
+		if _, err := os.Stat(packDir); err == nil {
+			results = append(results, PackInstallMissingResult{
+				Pack: name, Status: "present",
+			})
+			continue
+		}
+
+		// Look up in registry.
+		entry, err := RegistryLookup(regReq, name)
+		if err != nil {
+			fmt.Fprintf(stdout, "  %s: not in registry — install manually or check 'aipack registry list'\n", name)
+			results = append(results, PackInstallMissingResult{
+				Pack: name, Status: "not-in-registry", Detail: err.Error(),
+			})
+			continue
+		}
+
+		// Install via PackAdd.
+		addReq := PackAddRequest{
+			ConfigDir: req.ConfigDir,
+			URL:       entry.Repo,
+			Ref:       entry.Ref,
+			SubPath:   entry.Path,
+			Name:      name,
+			Register:  false, // already in the profile
+		}
+		if installErr := addFn(addReq, stdout); installErr != nil {
+			fmt.Fprintf(stdout, "  %s: install failed: %v\n", name, installErr)
+			results = append(results, PackInstallMissingResult{
+				Pack: name, Status: "error", Detail: installErr.Error(),
+			})
+			continue
+		}
+
+		results = append(results, PackInstallMissingResult{
+			Pack: name, Status: "installed",
+		})
+	}
+
+	return results, nil
+}

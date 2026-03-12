@@ -112,21 +112,16 @@ packs:
 aipack pack install --url https://github.com/org/shared-repo.git \
   --path team-pack --ref main --seed
 
-# 2. Activate the team profile (seeded by the pack in step 1).
-aipack profile set my-team
+# 2. Activate the team profile and install its dependency packs.
+#    --install looks up missing packs in the seeded registry and installs them.
+aipack profile set my-team --install
 
-# 3. Install dependency packs from the seeded registry.
-#    These register in the active profile (my-team), not default.
-aipack pack install aipack-core
-aipack pack install essentials
-
-# 4. Sync to your harness.
+# 3. Sync to your harness.
 aipack sync --harness claudecode --scope global
 ```
 
-This pattern lets teams ship a single install command that bootstraps profiles,
-registries, and pack dependencies — new team members run four commands and are
-fully configured.
+Three commands: install the team pack, activate the profile with dependencies,
+sync. New team members are fully configured.
 
 ## Key Concepts
 

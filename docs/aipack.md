@@ -250,6 +250,8 @@ Installs a pack into `~/.config/aipack/packs/<name>/`. Supports three sources:
 - **URL** (`--url` — fetched via `git archive` with automatic fallback to shallow clone)
 - **Registry name** (bare name like `my-team-pack` — looked up in registry, then fetched)
 
+When run with **no arguments**, installs all missing packs from the active profile by looking them up in the registry. This is the easiest way to catch up after setting a profile or after new packs are added to a shared profile.
+
 Remote packs are fetched using a two-phase process: first the manifest (`pack.json`) is retrieved to determine declared content, then only the declared files are fetched. This avoids downloading the full repository. When the remote doesn't support `git archive --remote` (e.g. GitHub), aipack falls back to a shallow clone automatically.
 
 Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts.
@@ -259,6 +261,9 @@ By default, auto-registers the pack as a source in the active profile. Use `--no
 Packs that bundle registries or profiles print a preview of what would be seeded. Use `--seed` to apply them, or review the output and seed manually.
 
 ```bash
+# Install all missing packs from the active profile
+aipack pack install
+
 # Local installs
 aipack pack install ./my-pack
 aipack pack install ./my-pack --copy --name custom-name
@@ -350,10 +355,13 @@ aipack profile delete staging
 
 ### profile set
 
-Sets the active profile by updating `defaults.profile` in `sync-config.yaml`.
+Sets the active profile by updating `defaults.profile` in `sync-config.yaml`. Reports any packs declared in the profile that are not installed.
+
+Use `--install` to automatically install missing packs from the registry after setting the profile.
 
 ```bash
 aipack profile set my-team
+aipack profile set my-team --install
 ```
 
 ### profile show

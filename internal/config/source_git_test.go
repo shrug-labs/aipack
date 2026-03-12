@@ -333,3 +333,16 @@ func TestGitArchiveFilesWith_GenericError(t *testing.T) {
 		t.Fatal("should not be ErrArchiveNotSupported for generic errors")
 	}
 }
+
+func TestClassifyArchiveError_GitHub422(t *testing.T) {
+	t.Parallel()
+	// GitHub rejects git archive --remote over HTTPS with HTTP 422, producing
+	// this specific protocol error.
+	err := fmt.Errorf("git archive --remote=https://github.com/org/repo.git main registry.yaml failed: " +
+		"error: RPC failed; HTTP 422 curl 22 The requested URL returned error: 422\n" +
+		"fatal: git archive: expected ACK/NAK, got a flush packet")
+	got := classifyArchiveError(err)
+	if !errors.Is(got, ErrArchiveNotSupported) {
+		t.Fatalf("got %v, want ErrArchiveNotSupported", got)
+	}
+}

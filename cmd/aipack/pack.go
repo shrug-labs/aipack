@@ -87,6 +87,10 @@ If the argument is not a local directory path and not a URL, it is treated as
 a registry pack name. The registry is consulted to resolve the name to a
 repository URL (and optional subdirectory path), then the pack is fetched.
 
+When run with no arguments, installs all missing packs from the active profile
+by looking them up in the registry. This is useful after 'profile set' to
+install dependency packs declared in the profile.
+
 Both HTTPS and SSH URLs are supported. SSH URLs work with git archive on
 servers that support it (e.g. Bitbucket Server).
 
@@ -95,6 +99,9 @@ By default, the pack is registered as a source in the profile specified by
 to skip auto-registration.
 
 Examples:
+  # Install all missing packs from the active profile
+  aipack pack install
+
   # Install a local pack via symlink
   aipack pack install ./my-pack
 
@@ -134,12 +141,10 @@ func (c *PackInstallCmd) Validate() error {
 	if hasURL && hasPath {
 		return fmt.Errorf("--url and path argument are mutually exclusive")
 	}
-	if !hasURL && !hasPath {
-		return fmt.Errorf("pack install requires a path argument, --url, or a registry pack name")
-	}
 	if hasURL && c.Copy {
 		return fmt.Errorf("--copy is not valid with --url (URL packs are fetched remotely)")
 	}
+	// No-args is valid: triggers profile reconciliation.
 	return nil
 }
 
@@ -160,6 +165,21 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
+	}
+
+	// Profile reconciliation mode: no path, no URL.
+	if c.Path == "" && c.URL == "" {
+		profileName := effectiveProfile(c.Profile, cfgDir)
+		fmt.Fprintf(g.Stdout, "Resolving profile %q...\n", profileName)
+		results, err := app.PackInstallMissing(app.PackInstallMissingRequest{
+			ConfigDir:   cfgDir,
+			ProfileName: profileName,
+		}, g.Stdout)
+		if err != nil {
+			return err
+		}
+		printInstallMissingResults(results, profileName, g.Stdout)
+		return nil
 	}
 
 	profile := ""
@@ -544,4 +564,41 @@ func (c *PackShowCmd) Run(g *Globals) error {
 
 func joinComma(items []string) string {
 	return strings.Join(items, ", ")
+}
+
+// printInstallMissingResults formats PackInstallMissing results for CLI output.
+func printInstallMissingResults(results []app.PackInstallMissingResult, profileName string, w io.Writer) {
+	var installed, present, notFound, errored int
+	for _, r := range results {
+		switch r.Status {
+		case "installed":
+			installed++
+		case "present":
+			present++
+		case "not-in-registry":
+			notFound++
+		case "error":
+			errored++
+		}
+	}
+
+	if installed == 0 && notFound == 0 && errored == 0 {
+		fmt.Fprintf(w, "All packs in profile %q are installed.\n", profileName)
+		return
+	}
+
+	parts := []string{}
+	if installed > 0 {
+		parts = append(parts, fmt.Sprintf("%d installed", installed))
+	}
+	if present > 0 {
+		parts = append(parts, fmt.Sprintf("%d already present", present))
+	}
+	if notFound > 0 {
+		parts = append(parts, fmt.Sprintf("%d not in registry", notFound))
+	}
+	if errored > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", errored))
+	}
+	fmt.Fprintln(w, strings.Join(parts, ", "))
 }
