@@ -65,7 +65,7 @@ func TestCopyDir_RegularFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"root.txt":        "root content",
+		"root.txt":         "root content",
 		"subdir/child.txt": "child content",
 	}
 	for rel, content := range files {

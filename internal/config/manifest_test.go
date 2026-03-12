@@ -31,15 +31,15 @@ func TestContentPaths(t *testing.T) {
 	got := m.ContentPaths()
 
 	want := map[string]bool{
-		"pack.json":                      false,
-		"rules/base.md":                  false,
-		"rules/team.md":                  false,
-		"agents/reviewer.md":             false,
-		"workflows/deploy.md":            false,
-		"skills/oncall/":                 false,
-		"mcp/jira.json":                  false,
-		"profiles/default.yaml":          false,
-		"registry.yaml":                  false,
+		"pack.json":                        false,
+		"rules/base.md":                    false,
+		"rules/team.md":                    false,
+		"agents/reviewer.md":               false,
+		"workflows/deploy.md":              false,
+		"skills/oncall/":                   false,
+		"mcp/jira.json":                    false,
+		"profiles/default.yaml":            false,
+		"registry.yaml":                    false,
 		"configs/claudecode/settings.json": false,
 	}
 
