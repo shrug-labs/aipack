@@ -200,6 +200,79 @@ func TestValidatePackInventory_RejectsBadManifestEntries(t *testing.T) {
 	}
 }
 
+func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		key      string // manifest key in mcp.servers
+		jsonName string // "name" field inside the .json file
+		wantErr  string
+	}{
+		{
+			name:     "name mismatch",
+			key:      "oci-mcp",
+			jsonName: "oci_mcp",
+			wantErr:  `name field is "oci_mcp" in oci-mcp.json (must match manifest key)`,
+		},
+		{
+			name:     "empty name field",
+			key:      "atlassian",
+			jsonName: "",
+			wantErr:  `missing "name" field in atlassian.json`,
+		},
+		{
+			name:     "matching name passes",
+			key:      "dope",
+			jsonName: "dope",
+			wantErr:  "",
+		},
+		{
+			name:     "case-insensitive match passes",
+			key:      "Dope",
+			jsonName: "dope",
+			wantErr:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		tc := tt
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			packRoot := t.TempDir()
+			mcpDir := filepath.Join(packRoot, "mcp")
+			if err := os.MkdirAll(mcpDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			content := []byte(`{"name":"` + tc.jsonName + `","command":["echo"]}`)
+			if err := os.WriteFile(filepath.Join(mcpDir, tc.key+".json"), content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			manifest := PackManifest{
+				SchemaVersion: 1,
+				Name:          "demo",
+				Root:          ".",
+				MCP: MCPPack{Servers: map[string]MCPDefaults{
+					tc.key: {},
+				}},
+			}
+			err := validatePackInventory("demo", packRoot, manifest)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestResolvePackRoot(t *testing.T) {
 	t.Parallel()
 	manifestPath := filepath.Join(string(filepath.Separator), "tmp", "packs", "demo", "pack.json")

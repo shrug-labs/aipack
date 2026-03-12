@@ -123,7 +123,7 @@ func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 		Root:          ".",
 		Rules:         []string{"shared"},
 		MCP:           MCPPack{Servers: map[string]MCPDefaults{"jira": {}}},
-	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n", "mcp/jira.json": `{}`})
+	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n", "mcp/jira.json": `{"name":"jira"}`})
 	installPackForResolveTest(t, root, "second", PackManifest{
 		SchemaVersion: 1,
 		Name:          "second",
@@ -131,7 +131,7 @@ func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 		Root:          ".",
 		Rules:         []string{"shared"},
 		MCP:           MCPPack{Servers: map[string]MCPDefaults{"jira": {}}},
-	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n", "mcp/jira.json": `{}`})
+	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n", "mcp/jira.json": `{"name":"jira"}`})
 
 	_, _, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
@@ -211,7 +211,7 @@ func TestResolveProfile_MCPSelectionErrors(t *testing.T) {
 		MCP: MCPPack{Servers: map[string]MCPDefaults{
 			"jira": {DefaultAllowedTools: []string{"get_issue"}},
 		}},
-	}, map[string]string{"mcp/jira.json": `{}`})
+	}, map[string]string{"mcp/jira.json": `{"name":"jira"}`})
 
 	_, _, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,

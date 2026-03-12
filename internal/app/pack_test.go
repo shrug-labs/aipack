@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/tar"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -1939,5 +1940,323 @@ func TestPackInstallMissing_PackAddError(t *testing.T) {
 	}
 	if results[2].Status != "installed" {
 		t.Errorf("gamma: expected installed, got %q", results[2].Status)
+	}
+}
+
+// --- archive test helpers ---
+
+// buildTestTar creates a tar archive in memory from a map of filename -> content.
+func buildTestTar(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, body := range files {
+		hdr := &tar.Header{
+			Name: name,
+			Mode: 0o600,
+			Size: int64(len(body)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// fakeArchiveFn returns an ArchiveFn that serves different content based on
+// the requested ref. manifestJSON is the pack.json content; extraFiles is
+// extra content keyed by filename.
+func fakeArchiveFn(t *testing.T, manifestJSON string, extraFiles map[string]string) func(repoURL, ref string, paths []string) ([]byte, error) {
+	t.Helper()
+	return func(repoURL, ref string, paths []string) ([]byte, error) {
+		files := make(map[string]string)
+		for _, p := range paths {
+			if strings.HasSuffix(p, "pack.json") {
+				files[p] = manifestJSON
+			} else {
+				// Serve extra files that match requested paths (prefix match for dirs).
+				for name, content := range extraFiles {
+					if strings.HasPrefix(name, p) || name == p {
+						files[name] = content
+					}
+				}
+			}
+		}
+		return buildTestTar(t, files), nil
+	}
+}
+
+// writeRegistryCache writes a cached registry YAML into the config dir with a
+// single pack entry. The sync-config must have a matching registry source.
+func writeRegistryCache(t *testing.T, configDir, sourceName, packName string, entry config.RegistryEntry) {
+	t.Helper()
+	reg := config.Registry{
+		SchemaVersion: 1,
+		Packs:         map[string]config.RegistryEntry{packName: entry},
+	}
+	data, err := yaml.Marshal(&reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := config.RegistriesCacheDir(configDir)
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.SourceCachePath(configDir, sourceName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeSyncConfigWithSource writes a sync-config that includes a registry source.
+func writeSyncConfigWithSource(t *testing.T, configDir, sourceName, sourceURL string) {
+	t.Helper()
+	sc := config.SyncConfig{SchemaVersion: 1}
+	sc.Defaults.Profile = "default"
+	sc.RegistrySources = []config.RegistrySourceEntry{
+		{Name: sourceName, URL: sourceURL},
+	}
+	if err := config.SaveSyncConfig(config.SyncConfigPath(configDir), sc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPackUpdate_Archive_ReResolvesRegistryRef(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+
+	manifest := `{"schema_version":1,"name":"my-pack","version":"1.0.0","root":".","rules":["old"]}`
+	oldFiles := map[string]string{"rules/old.md": "old content"}
+	newFiles := map[string]string{"rules/old.md": "new content"}
+
+	// Install with ref "old-branch" via archive.
+	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@example.com/repo.git")
+	writeSeedProfile(t, configDir, "default")
+
+	var out bytes.Buffer
+	err := PackAdd(PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		ConfigDir: configDir,
+		Ref:       "old-branch",
+		Name:      "my-pack",
+		Register:  false,
+		ArchiveFn: fakeArchiveFn(t, manifest, oldFiles),
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	// Verify it was recorded with old-branch ref.
+	sc, _ := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if sc.InstalledPacks["my-pack"].Ref != "old-branch" {
+		t.Fatalf("stored ref = %q, want old-branch", sc.InstalledPacks["my-pack"].Ref)
+	}
+
+	// Update registry cache to point to "new-branch".
+	writeRegistryCache(t, configDir, "test-source", "my-pack", config.RegistryEntry{
+		Repo: "ssh://git@example.com/repo.git",
+		Ref:  "new-branch",
+	})
+
+	// Track which ref the archive function receives during update.
+	var capturedRefs []string
+	trackingArchive := func(repoURL, ref string, paths []string) ([]byte, error) {
+		capturedRefs = append(capturedRefs, ref)
+		return fakeArchiveFn(t, manifest, newFiles)(repoURL, ref, paths)
+	}
+
+	out.Reset()
+	results, err := PackUpdate(PackUpdateRequest{
+		ConfigDir: configDir,
+		Name:      "my-pack",
+		NowFn:     func() time.Time { return fixedNow },
+		ArchiveFn: trackingArchive,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackUpdate: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != "updated" {
+		t.Fatalf("status = %q, want updated; output:\n%s", results[0].Status, out.String())
+	}
+
+	// Verify the archive was fetched with the registry's new ref, not the stored old one.
+	foundNewRef := false
+	for _, r := range capturedRefs {
+		if r == "new-branch" {
+			foundNewRef = true
+		}
+		if r == "old-branch" {
+			t.Fatal("archive fetch used stale ref 'old-branch' instead of registry's 'new-branch'")
+		}
+	}
+	if !foundNewRef {
+		t.Fatalf("expected archive fetch with ref 'new-branch', captured refs: %v", capturedRefs)
+	}
+
+	// Verify the updated metadata records the new ref.
+	sc, _ = config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if sc.InstalledPacks["my-pack"].Ref != "new-branch" {
+		t.Fatalf("updated ref = %q, want new-branch", sc.InstalledPacks["my-pack"].Ref)
+	}
+}
+
+func TestPackUpdate_Archive_FallsBackWhenNotInRegistry(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+
+	manifest := `{"schema_version":1,"name":"my-pack","version":"1.0.0","root":".","rules":["example"]}`
+	files := map[string]string{"rules/example.md": "content"}
+
+	// Install with ref "main" but no registry entry.
+	writeSeedSyncConfig(t, configDir)
+	writeSeedProfile(t, configDir, "default")
+
+	var out bytes.Buffer
+	err := PackAdd(PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		ConfigDir: configDir,
+		Ref:       "main",
+		Name:      "my-pack",
+		Register:  false,
+		ArchiveFn: fakeArchiveFn(t, manifest, files),
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	// Update with no registry — should use stored metadata ref.
+	var capturedRefs []string
+	trackingArchive := func(repoURL, ref string, paths []string) ([]byte, error) {
+		capturedRefs = append(capturedRefs, ref)
+		return fakeArchiveFn(t, manifest, files)(repoURL, ref, paths)
+	}
+
+	out.Reset()
+	results, err := PackUpdate(PackUpdateRequest{
+		ConfigDir: configDir,
+		Name:      "my-pack",
+		NowFn:     func() time.Time { return fixedNow },
+		ArchiveFn: trackingArchive,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackUpdate: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	// Content is the same, so should be up-to-date.
+	if results[0].Status != "up-to-date" {
+		t.Fatalf("status = %q, want up-to-date", results[0].Status)
+	}
+
+	// Verify the stored ref "main" was used (no registry override).
+	for _, r := range capturedRefs {
+		if r != "main" {
+			t.Fatalf("expected ref 'main', got %q", r)
+		}
+	}
+}
+
+func TestPackAdd_URL_Install_ShowsContentUnchanged(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@example.com/repo.git")
+	writeSeedProfile(t, configDir, "default")
+
+	manifest := `{"schema_version":1,"name":"my-pack","version":"1.0.0","root":".","rules":["example"]}`
+	files := map[string]string{"rules/example.md": "# Example\ncontent"}
+
+	// First install.
+	var out bytes.Buffer
+	err := PackAdd(PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		ConfigDir: configDir,
+		Name:      "my-pack",
+		Ref:       "main",
+		Register:  false,
+		ArchiveFn: fakeArchiveFn(t, manifest, files),
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	// Second install with same content.
+	out.Reset()
+	err = PackAdd(PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		ConfigDir: configDir,
+		Name:      "my-pack",
+		Ref:       "main",
+		Register:  false,
+		ArchiveFn: fakeArchiveFn(t, manifest, files),
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "Content unchanged") {
+		t.Fatalf("expected 'Content unchanged' in output, got:\n%s", out.String())
+	}
+}
+
+func TestPackAdd_URL_Install_ShowsChanges(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@example.com/repo.git")
+	writeSeedProfile(t, configDir, "default")
+
+	oldManifest := `{"schema_version":1,"name":"my-pack","version":"1.0.0","root":".","rules":["example"]}`
+	newManifest := `{"schema_version":1,"name":"my-pack","version":"1.0.0","root":".","rules":["example","added"]}`
+	oldFiles := map[string]string{"rules/example.md": "# Old\ncontent"}
+	newFiles := map[string]string{"rules/example.md": "# New\ncontent", "rules/added.md": "# Added"}
+
+	// First install.
+	var out bytes.Buffer
+	err := PackAdd(PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		ConfigDir: configDir,
+		Name:      "my-pack",
+		Ref:       "main",
+		Register:  false,
+		ArchiveFn: fakeArchiveFn(t, oldManifest, oldFiles),
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	// Second install with different content.
+	out.Reset()
+	err = PackAdd(PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		ConfigDir: configDir,
+		Name:      "my-pack",
+		Ref:       "main",
+		Register:  false,
+		ArchiveFn: fakeArchiveFn(t, newManifest, newFiles),
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "Content unchanged") {
+		t.Fatal("should NOT say 'Content unchanged' when content differs")
+	}
+	if !strings.Contains(output, "Changes:") {
+		t.Fatalf("expected 'Changes:' in output, got:\n%s", output)
 	}
 }

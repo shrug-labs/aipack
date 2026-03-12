@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,6 +68,9 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		if err := requireFile(path); err != nil {
 			return fmt.Errorf("pack %q mcp server %q missing: %w", packName, name, err)
 		}
+		if err := validateMCPServerName(packName, name, path); err != nil {
+			return err
+		}
 	}
 
 	if err := validateConfigFileMap(packName, "harness_settings", packRoot, manifest.Configs.HarnessSettings); err != nil {
@@ -120,6 +124,29 @@ func validateConfigFileMap(packName, label, packRoot string, harnessMap map[stri
 				return fmt.Errorf("pack %q configs.%s[%s] missing %q: %w", packName, label, h, name, err)
 			}
 		}
+	}
+	return nil
+}
+
+// validateMCPServerName reads an MCP server JSON file and verifies that the
+// "name" field inside it matches the manifest key. A mismatch causes the server
+// to silently vanish from inventory during sync.
+func validateMCPServerName(packName, manifestKey, path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("pack %q mcp server %q: %w", packName, manifestKey, err)
+	}
+	var server domain.MCPServer
+	if err := json.Unmarshal(b, &server); err != nil {
+		return fmt.Errorf("pack %q mcp server %q: invalid JSON: %w", packName, manifestKey, err)
+	}
+	normalizedName := strings.ToLower(strings.TrimSpace(server.Name))
+	normalizedKey := strings.ToLower(strings.TrimSpace(manifestKey))
+	if normalizedName == "" {
+		return fmt.Errorf("pack %q mcp server %q: missing \"name\" field in %s", packName, manifestKey, filepath.Base(path))
+	}
+	if normalizedName != normalizedKey {
+		return fmt.Errorf("pack %q mcp server %q: name field is %q in %s (must match manifest key)", packName, manifestKey, server.Name, filepath.Base(path))
 	}
 	return nil
 }

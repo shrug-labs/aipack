@@ -242,6 +242,12 @@ func packAddFromURL(req PackAddRequest, stdout io.Writer) error {
 		return fmt.Errorf("creating packs directory: %w", err)
 	}
 
+	// Capture pre-install integrity so we can show a diff when replacing.
+	var oldIntegrity IntegrityManifest
+	if req.Name != "" {
+		oldIntegrity, _ = loadIntegrity(filepath.Join(packsDir, req.Name))
+	}
+
 	// Try archive-based install first; fall back to clone.
 	result, err := packTryArchive(req, info, packsDir, stdout)
 	if err != nil {
@@ -263,9 +269,10 @@ func packAddFromURL(req PackAddRequest, stdout io.Writer) error {
 
 	packWarnMCPServers(result.manifest, stdout)
 
-	// Record content integrity hashes.
-	if _, err := saveIntegrity(result.destDir); err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to record integrity: %v\n", err)
+	// Record content integrity and show diff when replacing an existing pack.
+	_, changed, _ := saveAndDiffIntegrity(result.destDir, oldIntegrity, stdout)
+	if len(oldIntegrity.Files) > 0 && !changed {
+		fmt.Fprintf(stdout, "Content unchanged.\n")
 	}
 
 	if req.Seed {
@@ -840,9 +847,10 @@ type PackUpdateRequest struct {
 	ConfigDir string
 	Name      string // empty when All=true
 	All       bool
-	RunGitFn  func(args ...string) error       // test injection; nil = real git
-	NowFn     func() time.Time                 // test injection; nil = time.Now
-	GitHashFn func(dir string) (string, error) // test injection; nil = config.GitHeadHash
+	RunGitFn  func(args ...string) error                                // test injection; nil = real git
+	NowFn     func() time.Time                                          // test injection; nil = time.Now
+	GitHashFn func(dir string) (string, error)                          // test injection; nil = config.GitHeadHash
+	ArchiveFn func(repoURL, ref string, paths []string) ([]byte, error) // test injection; nil = config.GitArchiveFiles
 }
 
 // PackUpdateResult describes the outcome of updating a single pack.
@@ -878,9 +886,11 @@ type packUpdateContext struct {
 	packsDir  string
 	configDir string
 	sc        config.SyncConfig
+	registry  config.Registry // loaded once, reused across all packs
 	runGitFn  func(args ...string) error
 	nowFn     func() time.Time
 	gitHashFn func(string) (string, error)
+	archiveFn func(repoURL, ref string, paths []string) ([]byte, error)
 	stdout    io.Writer
 }
 
@@ -895,13 +905,17 @@ func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io
 	if nowFn == nil {
 		nowFn = time.Now
 	}
+	reg, _ := config.LoadMergedRegistry(req.ConfigDir)
+
 	return packUpdateContext{
 		packsDir:  PacksDir(req.ConfigDir),
 		configDir: req.ConfigDir,
 		sc:        sc,
+		registry:  reg,
 		runGitFn:  runGitFn,
 		nowFn:     nowFn,
 		gitHashFn: req.GitHashFn,
+		archiveFn: req.ArchiveFn,
 		stdout:    stdout,
 	}
 }
@@ -1045,6 +1059,23 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		if origin == "" {
 			return PackUpdateResult{Name: name, Method: method, Status: "skipped", Message: "no origin recorded; cannot re-fetch"}
 		}
+
+		// Re-resolve through the registry to pick up ref/origin changes
+		// that happened after the pack was initially installed.
+		ref := meta.Ref
+		subPath := meta.SubPath
+		if entry, ok := ctx.registry.Packs[name]; ok {
+			if entry.Repo != "" {
+				origin = entry.Repo
+			}
+			if entry.Ref != "" {
+				ref = entry.Ref
+			}
+			if entry.Path != "" {
+				subPath = entry.Path
+			}
+		}
+
 		// Capture pre-update integrity for diff.
 		oldIntegrity, _ := loadIntegrity(packDir)
 
@@ -1052,11 +1083,12 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		archiveReq := PackAddRequest{
 			URL:       origin,
 			ConfigDir: ctx.configDir,
-			Ref:       meta.Ref,
-			SubPath:   meta.SubPath,
+			Ref:       ref,
+			SubPath:   subPath,
 			Name:      name,
+			ArchiveFn: ctx.archiveFn,
 		}
-		archiveInfo := config.PackURLInfo{RepoURL: origin, Ref: meta.Ref, SubPath: meta.SubPath}
+		archiveInfo := config.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
 		result, err := packTryArchive(archiveReq, archiveInfo, ctx.packsDir, io.Discard)
 		if err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
@@ -1070,7 +1102,7 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 
 		_ = packRecordOrigin(ctx.configDir, name, config.InstalledPackMeta{
 			Origin: origin, Method: method, InstalledAt: ctx.nowFn().UTC().Format(time.RFC3339),
-			Ref: meta.Ref, SubPath: meta.SubPath, CommitHash: result.commitHash,
+			Ref: ref, SubPath: subPath, CommitHash: result.commitHash,
 		})
 		packSeedRegistry(ctx.configDir, result.destDir, ctx.stdout)
 		fmt.Fprintf(ctx.stdout, "Updated (archive): %s from %s\n", name, origin)
