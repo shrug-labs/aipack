@@ -346,3 +346,18 @@ func TestClassifyArchiveError_GitHub422(t *testing.T) {
 		t.Fatalf("got %v, want ErrArchiveNotSupported", got)
 	}
 }
+
+func TestClassifyArchiveError_GitUploadArchiveMissing(t *testing.T) {
+	t.Parallel()
+	// GitHub may also reject with the server-side archive endpoint missing.
+	err := fmt.Errorf("git archive --remote=https://github.com/org/repo.git HEAD pack.json failed: " +
+		"Invalid command: git-upload-archive '/org/repo.git'\n" +
+		"You appear to be using ssh to clone a git:// URL.\n" +
+		"Make sure your core.gitProxy config option and the\n" +
+		"GIT_PROXY_COMMAND environment variable are NOT set.\n" +
+		"fatal: the remote end hung up unexpectedly")
+	got := classifyArchiveError(err)
+	if !errors.Is(got, ErrArchiveNotSupported) {
+		t.Fatalf("got %v, want ErrArchiveNotSupported", got)
+	}
+}

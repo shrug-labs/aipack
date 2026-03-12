@@ -209,7 +209,10 @@ func classifyArchiveError(err error) error {
 	}
 	// GitHub (and some other forges) reject git archive --remote over HTTPS
 	// with HTTP 422, producing: "expected ACK/NAK, got a flush packet".
-	if strings.Contains(lower, "expected ack/nak") {
+	// They may also reject with "Invalid command: git-upload-archive" when
+	// the server-side archive endpoint is absent entirely.
+	if strings.Contains(lower, "expected ack/nak") ||
+		strings.Contains(lower, "git-upload-archive") {
 		return ErrArchiveNotSupported
 	}
 	return err
