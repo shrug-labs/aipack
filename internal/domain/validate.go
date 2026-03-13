@@ -54,7 +54,7 @@ func (fm AgentFrontmatter) ValidateRefs(fileID string, knownServers, knownSkills
 
 // Validate checks required fields and name consistency for a workflow.
 func (fm WorkflowFrontmatter) Validate(fileID string) []Warning {
-	return validateNameDesc(fm.DisplayName(), fileID, fm.Description)
+	return validateNameDesc(fm.Name, fileID, fm.Description)
 }
 
 // Validate checks required fields and name consistency for a skill.

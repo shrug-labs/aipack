@@ -54,7 +54,7 @@ func createTestPack(t *testing.T, configDir string) string {
 	}
 
 	// Workflow with frontmatter.
-	workflow := "---\ntitle: Gamma Workflow\ndescription: A test workflow\n---\nWorkflow steps.\n"
+	workflow := "---\nname: gamma-workflow\ndescription: A test workflow\n---\nWorkflow steps.\n"
 	if err := os.WriteFile(filepath.Join(packDir, "workflows", "gamma-workflow.md"), []byte(workflow), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +154,8 @@ func TestResolve_TypedContent(t *testing.T) {
 		t.Fatalf("AllWorkflows() = %d, want 1", len(workflows))
 	}
 	wf := workflows[0]
-	if wf.Frontmatter.Title != "Gamma Workflow" {
-		t.Errorf("Workflow.Frontmatter.Title = %q", wf.Frontmatter.Title)
+	if wf.Frontmatter.Name != "gamma-workflow" {
+		t.Errorf("Workflow.Frontmatter.Name = %q", wf.Frontmatter.Name)
 	}
 
 	// Verify typed skills via AllSkills.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -65,9 +66,14 @@ func ParseRegistry(data []byte) (Registry, error) {
 
 // ValidateRegistry checks a parsed registry for structural issues.
 func ValidateRegistry(reg Registry) []string {
+	names := make([]string, 0, len(reg.Packs))
+	for name := range reg.Packs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	var errs []string
-	for name, entry := range reg.Packs {
-		if entry.Repo == "" {
+	for _, name := range names {
+		if reg.Packs[name].Repo == "" {
 			errs = append(errs, fmt.Sprintf("pack %q: missing required field repo", name))
 		}
 	}

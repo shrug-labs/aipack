@@ -18,7 +18,7 @@ func (c *ValidateCmd) Help() string {
 	return `Read-only validation command for a single pack source tree. Checks pack
 structure and content policy without installing or syncing anything.
 
-Exit code 0 if validation passes, 1 if findings are reported.
+Exit code 0 if no errors (warnings are non-blocking), 1 if errors are found.
 
 Examples:
   # Validate a local pack source tree
@@ -57,11 +57,7 @@ func (c *ValidateCmd) Run(g *Globals) error {
 
 func printFindings(g *Globals, findings []config.Finding) {
 	for _, f := range findings {
-		if f.Severity == config.FindingSeverityWarning {
-			fmt.Fprintf(g.Stderr, "- [warning] %s\n", f)
-		} else {
-			fmt.Fprintf(g.Stderr, "- %s\n", f)
-		}
+		fmt.Fprintf(g.Stderr, "- [%s] %s\n", f.Severity, f)
 		if f.Remediation != "" {
 			fmt.Fprintf(g.Stderr, "  remediation: %s\n", f.Remediation)
 		}

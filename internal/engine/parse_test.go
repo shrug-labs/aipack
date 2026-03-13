@@ -140,7 +140,7 @@ func TestParseWorkflows_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	content := []byte("---\ntitle: Deploy\ndescription: Deploy workflow\n---\n1. Build\n2. Deploy\n")
+	content := []byte("---\nname: deploy\ndescription: Deploy workflow\n---\n1. Build\n2. Deploy\n")
 	if err := os.WriteFile(filepath.Join(wfDir, "deploy.md"), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +152,8 @@ func TestParseWorkflows_Basic(t *testing.T) {
 	if len(workflows) != 1 {
 		t.Fatalf("workflows = %d, want 1", len(workflows))
 	}
-	if workflows[0].Frontmatter.Title != "Deploy" {
-		t.Errorf("Title = %q", workflows[0].Frontmatter.Title)
+	if workflows[0].Frontmatter.Name != "deploy" {
+		t.Errorf("Name = %q", workflows[0].Frontmatter.Name)
 	}
 	if workflows[0].SourcePack != "pack1" {
 		t.Errorf("SourcePack = %q", workflows[0].SourcePack)
@@ -330,7 +330,7 @@ func TestParseAgentBytes_FallbackToFilename(t *testing.T) {
 func TestParseWorkflowBytes(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte("---\ntitle: Deploy\ndescription: Deploy workflow\n---\n1. Build\n2. Deploy\n")
+	raw := []byte("---\nname: deploy\ndescription: Deploy workflow\n---\n1. Build\n2. Deploy\n")
 	w, err := ParseWorkflowBytes(raw, "deploy", "pack1")
 	if err != nil {
 		t.Fatal(err)
@@ -338,8 +338,8 @@ func TestParseWorkflowBytes(t *testing.T) {
 	if w.Name != "deploy" {
 		t.Errorf("Name = %q", w.Name)
 	}
-	if w.Frontmatter.Title != "Deploy" {
-		t.Errorf("Title = %q", w.Frontmatter.Title)
+	if w.Frontmatter.Name != "deploy" {
+		t.Errorf("Frontmatter.Name = %q", w.Frontmatter.Name)
 	}
 	if w.SourcePack != "pack1" {
 		t.Errorf("SourcePack = %q", w.SourcePack)

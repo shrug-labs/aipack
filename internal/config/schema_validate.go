@@ -91,15 +91,6 @@ func schemaErrorToFindings(path string, ve *jsonschema.ValidationError) []Findin
 	remediation := remediationFixSchemaValue
 	output := ve.BasicOutput()
 	var findings []Finding
-	if output.Error != nil {
-		findings = append(findings, Finding{
-			Path:        path,
-			Category:    FindingCategorySchema,
-			Severity:    FindingSeverityError,
-			Message:     formatSchemaError(output.InstanceLocation, output.Error),
-			Remediation: remediation,
-		})
-	}
 	for _, unit := range output.Errors {
 		if unit.Error == nil {
 			continue
@@ -109,6 +100,17 @@ func schemaErrorToFindings(path string, ve *jsonschema.ValidationError) []Findin
 			Category:    FindingCategorySchema,
 			Severity:    FindingSeverityError,
 			Message:     formatSchemaError(unit.InstanceLocation, unit.Error),
+			Remediation: remediation,
+		})
+	}
+	// Only emit root error when there are no leaf errors (avoids generic
+	// "doesn't match schema" duplicating specific leaf messages).
+	if len(findings) == 0 && output.Error != nil {
+		findings = append(findings, Finding{
+			Path:        path,
+			Category:    FindingCategorySchema,
+			Severity:    FindingSeverityError,
+			Message:     formatSchemaError(output.InstanceLocation, output.Error),
 			Remediation: remediation,
 		})
 	}

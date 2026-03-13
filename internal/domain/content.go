@@ -21,17 +21,8 @@ type AgentFrontmatter struct {
 // WorkflowFrontmatter is the harness-neutral workflow frontmatter schema.
 type WorkflowFrontmatter struct {
 	Name        string         `yaml:"name,omitempty"`
-	Title       string         `yaml:"title,omitempty"` // deprecated: use Name
 	Description string         `yaml:"description,omitempty"`
 	Metadata    map[string]any `yaml:"metadata,omitempty"`
-}
-
-// DisplayName returns Name if set, falling back to Title for backwards compat.
-func (w WorkflowFrontmatter) DisplayName() string {
-	if w.Name != "" {
-		return w.Name
-	}
-	return w.Title
 }
 
 // SkillFrontmatter is the parsed SKILL.md frontmatter.
