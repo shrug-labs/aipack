@@ -208,6 +208,27 @@ func TestRunPackValidate_AgentUnknownMCPServer(t *testing.T) {
 	}
 }
 
+func TestRunPackValidate_AgentUnknownFieldEmitsWarning(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	writeFile(t, filepath.Join(packDir, "pack.json"),
+		`{"schema_version":1,"name":"demo","root":".","rules":[],"agents":["typo"],"workflows":[],"skills":[]}`)
+	writeFile(t, filepath.Join(packDir, "agents", "typo.md"),
+		"---\nname: typo\ndescription: test\ndissallowed_tools:\n  - Bash\n---\nbody\n")
+
+	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
+	found := false
+	for _, f := range rep.Findings {
+		if f.Path == "agents/typo.md" && f.Category == config.FindingCategoryFrontmatter &&
+			f.Severity == config.FindingSeverityWarning {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected frontmatter warning for unknown field, got %v", rep.Findings)
+	}
+}
+
 func TestRunPackValidate_MalformedFrontmatterEmitsWarning(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()

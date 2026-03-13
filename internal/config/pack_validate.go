@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -169,6 +170,17 @@ func (v *packValidator) validateAgentFrontmatter(packRoot, id string, knownServe
 			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
 		return
 	}
+
+	// Strict mode: detect unknown fields. AgentFrontmatter has no catch-all
+	// metadata field, so any unknown key is likely a typo.
+	var strict domain.AgentFrontmatter
+	dec := yaml.NewDecoder(bytes.NewReader(fmBytes))
+	dec.KnownFields(true)
+	if err := dec.Decode(&strict); err != nil {
+		v.addFinding("agents/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
+			fmt.Sprintf("[frontmatter] %s", err.Error()))
+	}
+
 	for _, w := range fm.Validate(id) {
 		v.addFinding("agents/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
 	}
