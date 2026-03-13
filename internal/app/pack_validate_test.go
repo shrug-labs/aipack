@@ -208,6 +208,27 @@ func TestRunPackValidate_AgentUnknownMCPServer(t *testing.T) {
 	}
 }
 
+func TestRunPackValidate_MalformedFrontmatterEmitsWarning(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	writeFile(t, filepath.Join(packDir, "pack.json"),
+		`{"schema_version":1,"name":"demo","root":".","rules":[],"agents":["bad"],"workflows":[],"skills":[]}`)
+	// tools should be a list, not a string — yaml.Unmarshal will error
+	writeFile(t, filepath.Join(packDir, "agents", "bad.md"),
+		"---\nname: bad\ndescription: test\ntools: not-a-list\n---\nbody\n")
+
+	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
+	found := false
+	for _, f := range rep.Findings {
+		if f.Path == "agents/bad.md" && f.Category == config.FindingCategoryFrontmatter {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected frontmatter warning for malformed YAML, got %v", rep.Findings)
+	}
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

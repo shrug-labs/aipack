@@ -145,6 +145,8 @@ func (v *packValidator) validateRuleFrontmatter(packRoot, id string) {
 	}
 	var fm domain.RuleFrontmatter
 	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		v.addFinding("rules/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
+			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
 		return
 	}
 	for _, w := range fm.Validate(id) {
@@ -163,6 +165,8 @@ func (v *packValidator) validateAgentFrontmatter(packRoot, id string, knownServe
 	}
 	var fm domain.AgentFrontmatter
 	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		v.addFinding("agents/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
+			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
 		return
 	}
 	for _, w := range fm.Validate(id) {
@@ -184,6 +188,8 @@ func (v *packValidator) validateWorkflowFrontmatter(packRoot, id string) {
 	}
 	var fm domain.WorkflowFrontmatter
 	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		v.addFinding("workflows/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
+			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
 		return
 	}
 	for _, w := range fm.Validate(id) {
@@ -202,6 +208,8 @@ func (v *packValidator) validateSkillFrontmatter(packRoot, id string) {
 	}
 	var fm domain.SkillFrontmatter
 	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		v.addFinding("skills/"+id+"/SKILL.md", FindingCategoryFrontmatter, FindingSeverityWarning,
+			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
 		return
 	}
 	for _, w := range fm.Validate(id) {
