@@ -168,6 +168,46 @@ func writePackValidateFixture(t *testing.T) string {
 	return packDir
 }
 
+func TestRunPackValidate_FrontmatterMissingDescription(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":1,"name":"demo","root":".","rules":["no-desc"],"agents":[],"workflows":[],"skills":[]}`)
+	writeFile(t, filepath.Join(packDir, "rules", "no-desc.md"), "---\nname: no-desc\n---\nbody\n")
+
+	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
+	// Should still be OK=true since frontmatter issues are warnings.
+	found := false
+	for _, f := range rep.Findings {
+		if f.Path == "rules/no-desc.md" && f.Category == config.FindingCategoryFrontmatter {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected frontmatter warning for missing description, got %v", rep.Findings)
+	}
+	if !rep.OK {
+		t.Fatal("frontmatter warnings should not set OK=false")
+	}
+}
+
+func TestRunPackValidate_AgentUnknownMCPServer(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":1,"name":"demo","root":".","rules":[],"agents":["bad"],"workflows":[],"skills":[],"mcp":{"servers":{}}}`)
+	writeFile(t, filepath.Join(packDir, "agents", "bad.md"), "---\nname: bad\ndescription: test\nmcp_servers:\n  - nonexistent\n---\nbody\n")
+
+	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
+	found := false
+	for _, f := range rep.Findings {
+		if f.Category == config.FindingCategoryConsistency {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected consistency warning for unknown mcp_server, got %v", rep.Findings)
+	}
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

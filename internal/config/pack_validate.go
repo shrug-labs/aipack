@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -102,6 +104,108 @@ func (v *packValidator) validateManifestAndInventory() {
 			continue // existence already validated by validatePackInventory
 		}
 		v.findings = append(v.findings, ValidateMCPServerSchema(mcpRelPath, mcpRaw)...)
+	}
+
+	v.validateFrontmatter(manifest, resolvedRoot)
+}
+
+func (v *packValidator) validateFrontmatter(manifest PackManifest, packRoot string) {
+	// Build known-ID sets for cross-reference checks.
+	knownServers := map[string]struct{}{}
+	for name := range manifest.MCP.Servers {
+		knownServers[name] = struct{}{}
+	}
+	knownSkills := map[string]struct{}{}
+	for _, id := range manifest.Skills {
+		knownSkills[id] = struct{}{}
+	}
+
+	for _, id := range manifest.Rules {
+		v.validateRuleFrontmatter(packRoot, id)
+	}
+	for _, id := range manifest.Agents {
+		v.validateAgentFrontmatter(packRoot, id, knownServers, knownSkills)
+	}
+	for _, id := range manifest.Workflows {
+		v.validateWorkflowFrontmatter(packRoot, id)
+	}
+	for _, id := range manifest.Skills {
+		v.validateSkillFrontmatter(packRoot, id)
+	}
+}
+
+func (v *packValidator) validateRuleFrontmatter(packRoot, id string) {
+	raw, err := os.ReadFile(filepath.Join(packRoot, "rules", id+".md"))
+	if err != nil {
+		return
+	}
+	fmBytes, _, _ := domain.SplitFrontmatter(raw)
+	if len(fmBytes) == 0 {
+		return
+	}
+	var fm domain.RuleFrontmatter
+	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		return
+	}
+	for _, w := range fm.Validate(id) {
+		v.addFinding("rules/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
+	}
+}
+
+func (v *packValidator) validateAgentFrontmatter(packRoot, id string, knownServers, knownSkills map[string]struct{}) {
+	raw, err := os.ReadFile(filepath.Join(packRoot, "agents", id+".md"))
+	if err != nil {
+		return
+	}
+	fmBytes, _, _ := domain.SplitFrontmatter(raw)
+	if len(fmBytes) == 0 {
+		return
+	}
+	var fm domain.AgentFrontmatter
+	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		return
+	}
+	for _, w := range fm.Validate(id) {
+		v.addFinding("agents/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
+	}
+	for _, w := range fm.ValidateRefs(id, knownServers, knownSkills) {
+		v.addFinding("agents/"+id+".md", FindingCategoryConsistency, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
+	}
+}
+
+func (v *packValidator) validateWorkflowFrontmatter(packRoot, id string) {
+	raw, err := os.ReadFile(filepath.Join(packRoot, "workflows", id+".md"))
+	if err != nil {
+		return
+	}
+	fmBytes, _, _ := domain.SplitFrontmatter(raw)
+	if len(fmBytes) == 0 {
+		return
+	}
+	var fm domain.WorkflowFrontmatter
+	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		return
+	}
+	for _, w := range fm.Validate(id) {
+		v.addFinding("workflows/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
+	}
+}
+
+func (v *packValidator) validateSkillFrontmatter(packRoot, id string) {
+	raw, err := os.ReadFile(filepath.Join(packRoot, "skills", id, "SKILL.md"))
+	if err != nil {
+		return
+	}
+	fmBytes, _, _ := domain.SplitFrontmatter(raw)
+	if len(fmBytes) == 0 {
+		return
+	}
+	var fm domain.SkillFrontmatter
+	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		return
+	}
+	for _, w := range fm.Validate(id) {
+		v.addFinding("skills/"+id+"/SKILL.md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
 	}
 }
 
