@@ -1,12 +1,11 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/shrug-labs/aipack/internal/util"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 // PackCreateRequest describes a pack scaffolding request.
@@ -56,26 +55,17 @@ func PackCreate(req PackCreateRequest) error {
 		}
 	}
 
-	manifest := map[string]any{
-		"schema_version": 1,
-		"name":           name,
-		"version":        "0.1.0",
-		"root":           ".",
-		"rules":          []any{},
-		"agents":         []any{},
-		"workflows":      []any{},
-		"skills":         []any{},
-		"prompts":        []any{},
-		"mcp":            map[string]any{"servers": map[string]any{}},
-		"configs":        map[string]any{"harness_settings": map[string]any{}},
+	// Content vector fields are intentionally nil so that DiscoverContent
+	// auto-discovers them from the directory structure at sync time.
+	manifest := config.PackManifest{
+		SchemaVersion: 1,
+		Name:          name,
+		Version:       "0.1.0",
+		Root:          ".",
+		MCP:           config.MCPPack{Servers: map[string]config.MCPDefaults{}},
+		Configs:       config.PackConfigs{HarnessSettings: map[string][]string{}},
 	}
-
-	b, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal pack manifest: %w", err)
-	}
-	b = append(b, '\n')
-	if err := util.WriteFileAtomicWithPerms(manifestPath, b, 0o755, 0o644); err != nil {
+	if err := config.SavePackManifest(manifestPath, manifest); err != nil {
 		return fmt.Errorf("write %s: %w", manifestPath, err)
 	}
 	return nil

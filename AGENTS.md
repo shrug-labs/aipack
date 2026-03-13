@@ -63,5 +63,7 @@ Three-layer structure enforced by `cmd/aipack/architecture_test.go`:
 
 - Before editing: read nearby code and related tests
 - After editing: `go test ./...`, then `go vet ./...`
+- Pre-commit gate: `go build ./...` → `go test ./...` → `make fmt` → check `git diff` for fmt changes → stage any fmt changes → commit
+- Use `make fmt` (not raw `gofmt -w`) — it's the canonical formatting target
 - If CLI behavior changed: update CLI help text in the same change
 - If sync behavior changed: update `docs/aipack.md`

@@ -15,10 +15,10 @@ type PackManifest struct {
 	Name          string   `json:"name"`
 	Version       string   `json:"version"`
 	Root          string   `json:"root"`
-	Rules         []string `json:"rules"`
-	Agents        []string `json:"agents"`
-	Workflows     []string `json:"workflows"`
-	Skills        []string `json:"skills"`
+	Rules         []string `json:"rules,omitempty"`
+	Agents        []string `json:"agents,omitempty"`
+	Workflows     []string `json:"workflows,omitempty"`
+	Skills        []string `json:"skills,omitempty"`
 	Prompts       []string `json:"prompts,omitempty"`
 	MCP           MCPPack  `json:"mcp"`
 
