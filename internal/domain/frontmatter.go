@@ -1,11 +1,14 @@
 package domain
 
-import "strings"
+import (
+	"bytes"
+	"strings"
+)
 
 // HasFrontmatterPrefix reports whether raw bytes begin with a YAML frontmatter
 // marker. Unlike SplitFrontmatter, it does not require a closing delimiter.
 func HasFrontmatterPrefix(b []byte) bool {
-	return strings.HasPrefix(string(b), "---")
+	return bytes.HasPrefix(b, []byte("---"))
 }
 
 // SplitFrontmatter splits a markdown file into YAML frontmatter and body.

@@ -39,21 +39,31 @@ func (c *ValidateCmd) Run(g *Globals) error {
 		}
 		_, _ = g.Stdout.Write(append(b, '\n'))
 	} else {
-		if rep.OK {
+		if rep.OK && len(rep.Findings) == 0 {
 			fmt.Fprintln(g.Stdout, "validate OK")
+		} else if rep.OK {
+			fmt.Fprintln(g.Stdout, "validate OK (with warnings)")
+			printFindings(g, rep.Findings)
 		} else {
 			fmt.Fprintln(g.Stderr, "validate FAILED")
-			for _, f := range rep.Findings {
-				if f.Severity == config.FindingSeverityWarning {
-					fmt.Fprintf(g.Stderr, "- [warning] %s\n", f)
-				} else {
-					fmt.Fprintf(g.Stderr, "- %s\n", f)
-				}
-			}
+			printFindings(g, rep.Findings)
 		}
 	}
 	if rep.OK {
 		return nil
 	}
 	return ExitError{Code: cmdutil.ExitFail}
+}
+
+func printFindings(g *Globals, findings []config.Finding) {
+	for _, f := range findings {
+		if f.Severity == config.FindingSeverityWarning {
+			fmt.Fprintf(g.Stderr, "- [warning] %s\n", f)
+		} else {
+			fmt.Fprintf(g.Stderr, "- %s\n", f)
+		}
+		if f.Remediation != "" {
+			fmt.Fprintf(g.Stderr, "  remediation: %s\n", f.Remediation)
+		}
+	}
 }

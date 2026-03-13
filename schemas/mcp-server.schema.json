@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/shrug-labs/aipack/main/docs/mcp-server.schema.json",
+  "$id": "https://raw.githubusercontent.com/shrug-labs/aipack/main/schemas/mcp-server.schema.json",
   "title": "aipack MCP Server Definition",
   "description": "Schema for pack mcp/*.json files. Each file declares one MCP server connection. The filename (minus .json) must match the name field (case-insensitive). See docs/pack-format.md Section 6.",
   "type": "object",

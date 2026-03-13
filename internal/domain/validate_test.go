@@ -84,6 +84,21 @@ func TestSkillFrontmatter_Validate_RequiredFields(t *testing.T) {
 	}
 }
 
+func TestWorkflowFrontmatter_Validate_MissingName(t *testing.T) {
+	t.Parallel()
+	fm := WorkflowFrontmatter{Description: "does things"}
+	ws := fm.Validate("my-wf")
+	found := false
+	for _, w := range ws {
+		if w.Field == "name" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected warning for missing name, got %v", ws)
+	}
+}
+
 func TestWorkflowFrontmatter_Validate_MissingDescription(t *testing.T) {
 	t.Parallel()
 	fm := WorkflowFrontmatter{Name: "my-wf"}

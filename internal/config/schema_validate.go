@@ -1,8 +1,8 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
-	"strings"
 	"sync"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -25,7 +25,7 @@ func initSchemas() {
 
 func compileSchemas() (*jsonschema.Schema, *jsonschema.Schema, error) {
 	c := jsonschema.NewCompiler()
-	packDoc, err := jsonschema.UnmarshalJSON(strings.NewReader(string(schemas.PackSchemaJSON)))
+	packDoc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemas.PackSchemaJSON))
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing pack schema: %w", err)
 	}
@@ -38,7 +38,7 @@ func compileSchemas() (*jsonschema.Schema, *jsonschema.Schema, error) {
 	}
 
 	c2 := jsonschema.NewCompiler()
-	mcpDoc, err := jsonschema.UnmarshalJSON(strings.NewReader(string(schemas.MCPServerSchemaJSON)))
+	mcpDoc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemas.MCPServerSchemaJSON))
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing mcp-server schema: %w", err)
 	}
@@ -72,7 +72,7 @@ func ValidateMCPServerSchema(relPath string, data []byte) []Finding {
 }
 
 func validateAgainstSchema(schema *jsonschema.Schema, path string, data []byte) []Finding {
-	inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(data)))
+	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
 	if err != nil {
 		return []Finding{{Path: path, Category: FindingCategorySchema, Severity: FindingSeverityError, Message: fmt.Sprintf("invalid JSON: %v", err)}}
 	}
@@ -88,14 +88,16 @@ func validateAgainstSchema(schema *jsonschema.Schema, path string, data []byte) 
 }
 
 func schemaErrorToFindings(path string, ve *jsonschema.ValidationError) []Finding {
+	remediation := remediationFixSchemaValue
 	output := ve.BasicOutput()
 	var findings []Finding
 	if output.Error != nil {
 		findings = append(findings, Finding{
-			Path:     path,
-			Category: FindingCategorySchema,
-			Severity: FindingSeverityError,
-			Message:  formatSchemaError(output.InstanceLocation, output.Error),
+			Path:        path,
+			Category:    FindingCategorySchema,
+			Severity:    FindingSeverityError,
+			Message:     formatSchemaError(output.InstanceLocation, output.Error),
+			Remediation: remediation,
 		})
 	}
 	for _, unit := range output.Errors {
@@ -103,10 +105,11 @@ func schemaErrorToFindings(path string, ve *jsonschema.ValidationError) []Findin
 			continue
 		}
 		findings = append(findings, Finding{
-			Path:     path,
-			Category: FindingCategorySchema,
-			Severity: FindingSeverityError,
-			Message:  formatSchemaError(unit.InstanceLocation, unit.Error),
+			Path:        path,
+			Category:    FindingCategorySchema,
+			Severity:    FindingSeverityError,
+			Message:     formatSchemaError(unit.InstanceLocation, unit.Error),
+			Remediation: remediation,
 		})
 	}
 	return findings

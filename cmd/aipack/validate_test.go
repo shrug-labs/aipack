@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -70,5 +71,31 @@ func TestValidateCmd_JSONReportsFindings(t *testing.T) {
 	}
 	if f.Severity == "" {
 		t.Fatal("expected severity to be set")
+	}
+}
+
+func TestValidateCmd_WarningsOnlyExitOK(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Pack with a rule missing its description — produces a warning but no error.
+	if err := os.WriteFile(filepath.Join(dir, "pack.json"), []byte(`{"schema_version":1,"name":"demo","root":".","rules":["no-desc"],"agents":[],"workflows":[],"skills":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rules", "no-desc.md"), []byte("---\nname: no-desc\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "validate", dir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("expected exit 0 for warnings-only pack, got %d\nstderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "with warnings") {
+		t.Fatalf("expected 'with warnings' in stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "[warning]") {
+		t.Fatalf("expected warnings printed to stderr, got %q", stderr)
 	}
 }

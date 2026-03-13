@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+### Added
+
+- **Pack format specification**: `docs/pack-format.md` — formal spec covering pack structure, content vectors, frontmatter schemas, environment references, composition, distribution, and harness contract.
+- **JSON Schema validation**: `validate` checks `pack.json` and `mcp/*.json` against embedded JSON Schemas (`schemas/pack.schema.json`, `schemas/mcp-server.schema.json`). Catches field typos, naming violations, transport-conditional requirements, and runtime-only field leakage.
+- **Frontmatter validation**: `validate` checks required fields (name, description), name-vs-fileID consistency, and cross-file references (agent `mcp_servers` and `skills` against manifest). Findings are warning-level.
+- **Agent frontmatter strict mode**: `validate` detects unknown fields in agent frontmatter (e.g., `dissallowed_tools` typo) using strict YAML decoding.
+- **`doctor` profile and registry checks**: New warning-level checks `profile_validated` (schema_version, empty/duplicate pack names) and `registry_validated` (missing `repo` field).
+
+### Changed
+
+- **Structured validate output**: `validate` findings now carry `path`, `category`, `severity`, `message`, and `remediation`. Warnings no longer cause non-zero exit. `--json` output uses the structured format. Text output shows `validate OK (with warnings)` when only warnings are present.
+
 ## [0.8.0]
 
 ### Added

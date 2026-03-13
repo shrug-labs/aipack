@@ -2,32 +2,33 @@ package domain
 
 import "fmt"
 
-// Validate checks required fields and name consistency for a rule.
-func (fm RuleFrontmatter) Validate(fileID string) []Warning {
+// FrontmatterValidator is implemented by all content frontmatter types.
+type FrontmatterValidator interface {
+	Validate(fileID string) []Warning
+}
+
+// validateNameDesc checks name and description fields shared by all content types.
+func validateNameDesc(name, fileID, description string) []Warning {
 	var ws []Warning
-	if fm.Name == "" {
+	if name == "" {
 		ws = append(ws, Warning{Field: "name", Message: "missing required field"})
-	} else if fm.Name != fileID {
-		ws = append(ws, Warning{Field: "name", Message: fmt.Sprintf("frontmatter name %q differs from file ID %q", fm.Name, fileID)})
+	} else if name != fileID {
+		ws = append(ws, Warning{Field: "name", Message: fmt.Sprintf("frontmatter name %q differs from file ID %q", name, fileID)})
 	}
-	if fm.Description == "" {
+	if description == "" {
 		ws = append(ws, Warning{Field: "description", Message: "missing required field"})
 	}
 	return ws
 }
 
+// Validate checks required fields and name consistency for a rule.
+func (fm RuleFrontmatter) Validate(fileID string) []Warning {
+	return validateNameDesc(fm.Name, fileID, fm.Description)
+}
+
 // Validate checks required fields and name consistency for an agent.
 func (fm AgentFrontmatter) Validate(fileID string) []Warning {
-	var ws []Warning
-	if fm.Name == "" {
-		ws = append(ws, Warning{Field: "name", Message: "missing required field"})
-	} else if fm.Name != fileID {
-		ws = append(ws, Warning{Field: "name", Message: fmt.Sprintf("frontmatter name %q differs from file ID %q", fm.Name, fileID)})
-	}
-	if fm.Description == "" {
-		ws = append(ws, Warning{Field: "description", Message: "missing required field"})
-	}
-	return ws
+	return validateNameDesc(fm.Name, fileID, fm.Description)
 }
 
 // ValidateRefs checks that agent mcp_servers and skills reference known IDs.
@@ -53,27 +54,10 @@ func (fm AgentFrontmatter) ValidateRefs(fileID string, knownServers, knownSkills
 
 // Validate checks required fields and name consistency for a workflow.
 func (fm WorkflowFrontmatter) Validate(fileID string) []Warning {
-	var ws []Warning
-	name := fm.DisplayName()
-	if name != "" && name != fileID {
-		ws = append(ws, Warning{Field: "name", Message: fmt.Sprintf("frontmatter name %q differs from file ID %q", name, fileID)})
-	}
-	if fm.Description == "" {
-		ws = append(ws, Warning{Field: "description", Message: "missing required field"})
-	}
-	return ws
+	return validateNameDesc(fm.DisplayName(), fileID, fm.Description)
 }
 
 // Validate checks required fields and name consistency for a skill.
 func (fm SkillFrontmatter) Validate(fileID string) []Warning {
-	var ws []Warning
-	if fm.Name == "" {
-		ws = append(ws, Warning{Field: "name", Message: "missing required field"})
-	} else if fm.Name != fileID {
-		ws = append(ws, Warning{Field: "name", Message: fmt.Sprintf("frontmatter name %q differs from file ID %q", fm.Name, fileID)})
-	}
-	if fm.Description == "" {
-		ws = append(ws, Warning{Field: "description", Message: "missing required field"})
-	}
-	return ws
+	return validateNameDesc(fm.Name, fileID, fm.Description)
 }

@@ -14,6 +14,14 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
+// Remediation string constants.
+const (
+	remediationFixYAMLSyntax   = "Fix the YAML syntax in the frontmatter block"
+	remediationFixSchemaValue  = "Fix the value to match the schema; see docs/pack-format.md"
+	remediationCheckRefID      = "Check that the referenced ID exists in pack.json or mcp/*.json"
+	remediationUnknownAgentKey = "Remove or rename the unknown field; see docs/pack-format.md Section 4.4 for valid agent fields"
+)
+
 type packValidationPolicy struct {
 	skipDirs              map[string]struct{}
 	skipFiles             map[string]struct{}
@@ -70,30 +78,35 @@ func (v *packValidator) validateManifestAndInventory() {
 	manifestPath := filepath.Join(v.root, "pack.json")
 	st, err := os.Stat(manifestPath)
 	if err != nil || !st.Mode().IsRegular() {
-		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, fmt.Sprintf("not found in %s", v.root))
+		v.addFinding(Finding{Path: "pack.json", Category: FindingCategoryInventory, Severity: FindingSeverityError,
+			Message: fmt.Sprintf("not found in %s", v.root)})
 		return
 	}
 
 	// Schema validation on raw bytes.
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
-		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
+		v.addFinding(Finding{Path: "pack.json", Category: FindingCategoryInventory, Severity: FindingSeverityError,
+			Message: err.Error()})
 		return
 	}
 	v.findings = append(v.findings, ValidatePackJSONSchema(raw)...)
 
-	manifest, err := LoadPackManifest(manifestPath)
+	manifest, err := ParsePackManifest(raw)
 	if err != nil {
-		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
+		v.addFinding(Finding{Path: "pack.json", Category: FindingCategoryInventory, Severity: FindingSeverityError,
+			Message: err.Error()})
 		return
 	}
 	resolvedRoot := ResolvePackRoot(manifestPath, manifest.Root)
 	if resolvedRoot == "" {
-		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, fmt.Sprintf("pack %q root could not be resolved", manifest.Name))
+		v.addFinding(Finding{Path: "pack.json", Category: FindingCategoryInventory, Severity: FindingSeverityError,
+			Message: fmt.Sprintf("pack %q root could not be resolved", manifest.Name)})
 		return
 	}
 	if err := validatePackInventory(manifest.Name, resolvedRoot, manifest); err != nil {
-		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
+		v.addFinding(Finding{Path: "pack.json", Category: FindingCategoryInventory, Severity: FindingSeverityError,
+			Message: err.Error()})
 	}
 
 	// Validate each MCP server definition against its schema.
@@ -122,110 +135,87 @@ func (v *packValidator) validateFrontmatter(manifest PackManifest, packRoot stri
 	}
 
 	for _, id := range manifest.Rules {
-		v.validateRuleFrontmatter(packRoot, id)
+		v.validateContentFrontmatter(filepath.Join(packRoot, "rules", id+".md"), "rules/"+id+".md", id, &domain.RuleFrontmatter{})
 	}
 	for _, id := range manifest.Agents {
 		v.validateAgentFrontmatter(packRoot, id, knownServers, knownSkills)
 	}
 	for _, id := range manifest.Workflows {
-		v.validateWorkflowFrontmatter(packRoot, id)
+		v.validateContentFrontmatter(filepath.Join(packRoot, "workflows", id+".md"), "workflows/"+id+".md", id, &domain.WorkflowFrontmatter{})
 	}
 	for _, id := range manifest.Skills {
-		v.validateSkillFrontmatter(packRoot, id)
+		v.validateContentFrontmatter(filepath.Join(packRoot, "skills", id, "SKILL.md"), "skills/"+id+"/SKILL.md", id, &domain.SkillFrontmatter{})
 	}
 }
 
-func (v *packValidator) validateRuleFrontmatter(packRoot, id string) {
-	raw, err := os.ReadFile(filepath.Join(packRoot, "rules", id+".md"))
+// validateContentFrontmatter is the generic frontmatter validation path for
+// rules, workflows, and skills. The dest parameter must be a pointer to a
+// zero-value frontmatter struct that implements domain.FrontmatterValidator.
+func (v *packValidator) validateContentFrontmatter(fullPath, relPath, id string, dest domain.FrontmatterValidator) {
+	raw, err := os.ReadFile(fullPath)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			v.addFinding(Finding{Path: relPath, Category: FindingCategoryFrontmatter, Severity: FindingSeverityWarning,
+				Message: fmt.Sprintf("cannot read file: %s", err.Error())})
+		}
 		return
 	}
 	fmBytes, _, _ := domain.SplitFrontmatter(raw)
 	if len(fmBytes) == 0 {
 		return
 	}
-	var fm domain.RuleFrontmatter
-	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-		v.addFinding("rules/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
-			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
+	if err := yaml.Unmarshal(fmBytes, dest); err != nil {
+		v.addFinding(Finding{Path: relPath, Category: FindingCategoryFrontmatter, Severity: FindingSeverityWarning,
+			Message: fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()), Remediation: remediationFixYAMLSyntax})
 		return
 	}
-	for _, w := range fm.Validate(id) {
-		v.addFinding("rules/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
+	for _, w := range dest.Validate(id) {
+		v.addFinding(Finding{Path: relPath, Category: FindingCategoryFrontmatter, Severity: FindingSeverityWarning,
+			Message: fmt.Sprintf("[%s] %s", w.Field, w.Message), Remediation: remediationForField(w.Field)})
 	}
 }
 
 func (v *packValidator) validateAgentFrontmatter(packRoot, id string, knownServers, knownSkills map[string]struct{}) {
+	relPath := "agents/" + id + ".md"
 	raw, err := os.ReadFile(filepath.Join(packRoot, "agents", id+".md"))
 	if err != nil {
+		if !os.IsNotExist(err) {
+			v.addFinding(Finding{Path: relPath, Category: FindingCategoryFrontmatter, Severity: FindingSeverityWarning,
+				Message: fmt.Sprintf("cannot read file: %s", err.Error())})
+		}
 		return
 	}
 	fmBytes, _, _ := domain.SplitFrontmatter(raw)
 	if len(fmBytes) == 0 {
 		return
 	}
-	var fm domain.AgentFrontmatter
-	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-		v.addFinding("agents/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
-			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
-		return
-	}
 
-	// Strict mode: detect unknown fields. AgentFrontmatter has no catch-all
-	// metadata field, so any unknown key is likely a typo.
-	var strict domain.AgentFrontmatter
+	// Strict decode: detect unknown fields and populate fm in one pass.
+	var fm domain.AgentFrontmatter
 	dec := yaml.NewDecoder(bytes.NewReader(fmBytes))
 	dec.KnownFields(true)
-	if err := dec.Decode(&strict); err != nil {
-		v.addFinding("agents/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
-			fmt.Sprintf("[frontmatter] %s", err.Error()))
+	if err := dec.Decode(&fm); err != nil {
+		// Distinguish unknown-field errors from parse errors by attempting
+		// a lenient decode. If lenient also fails, it's a syntax error.
+		var lenient domain.AgentFrontmatter
+		if yamlErr := yaml.Unmarshal(fmBytes, &lenient); yamlErr != nil {
+			v.addFinding(Finding{Path: relPath, Category: FindingCategoryFrontmatter, Severity: FindingSeverityWarning,
+				Message: fmt.Sprintf("[frontmatter] invalid YAML: %s", yamlErr.Error()), Remediation: remediationFixYAMLSyntax})
+			return
+		}
+		// Strict failed but lenient succeeded → unknown fields.
+		v.addFinding(Finding{Path: relPath, Category: FindingCategoryFrontmatter, Severity: FindingSeverityWarning,
+			Message: fmt.Sprintf("[frontmatter] %s", err.Error()), Remediation: remediationUnknownAgentKey})
+		fm = lenient
 	}
 
 	for _, w := range fm.Validate(id) {
-		v.addFinding("agents/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
+		v.addFinding(Finding{Path: relPath, Category: FindingCategoryFrontmatter, Severity: FindingSeverityWarning,
+			Message: fmt.Sprintf("[%s] %s", w.Field, w.Message), Remediation: remediationForField(w.Field)})
 	}
 	for _, w := range fm.ValidateRefs(id, knownServers, knownSkills) {
-		v.addFinding("agents/"+id+".md", FindingCategoryConsistency, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
-	}
-}
-
-func (v *packValidator) validateWorkflowFrontmatter(packRoot, id string) {
-	raw, err := os.ReadFile(filepath.Join(packRoot, "workflows", id+".md"))
-	if err != nil {
-		return
-	}
-	fmBytes, _, _ := domain.SplitFrontmatter(raw)
-	if len(fmBytes) == 0 {
-		return
-	}
-	var fm domain.WorkflowFrontmatter
-	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-		v.addFinding("workflows/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning,
-			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
-		return
-	}
-	for _, w := range fm.Validate(id) {
-		v.addFinding("workflows/"+id+".md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
-	}
-}
-
-func (v *packValidator) validateSkillFrontmatter(packRoot, id string) {
-	raw, err := os.ReadFile(filepath.Join(packRoot, "skills", id, "SKILL.md"))
-	if err != nil {
-		return
-	}
-	fmBytes, _, _ := domain.SplitFrontmatter(raw)
-	if len(fmBytes) == 0 {
-		return
-	}
-	var fm domain.SkillFrontmatter
-	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-		v.addFinding("skills/"+id+"/SKILL.md", FindingCategoryFrontmatter, FindingSeverityWarning,
-			fmt.Sprintf("[frontmatter] invalid YAML: %s", err.Error()))
-		return
-	}
-	for _, w := range fm.Validate(id) {
-		v.addFinding("skills/"+id+"/SKILL.md", FindingCategoryFrontmatter, FindingSeverityWarning, fmt.Sprintf("[%s] %s", w.Field, w.Message))
+		v.addFinding(Finding{Path: relPath, Category: FindingCategoryConsistency, Severity: FindingSeverityWarning,
+			Message: fmt.Sprintf("[%s] %s", w.Field, w.Message), Remediation: remediationCheckRefID})
 	}
 }
 
@@ -255,12 +245,14 @@ func (v *packValidator) walkPackFiles() {
 
 func (v *packValidator) validateScannedFile(rel string, fullPath string, baseName string) {
 	if isForbiddenEnvFile(baseName) {
-		v.addFinding(rel, FindingCategoryPolicy, FindingSeverityError, "forbidden .env file")
+		v.addFinding(Finding{Path: rel, Category: FindingCategoryPolicy, Severity: FindingSeverityError,
+			Message: "forbidden .env file", Remediation: "Remove the .env file or add it to .gitignore"})
 		return
 	}
 	for _, snippet := range v.policy.forbiddenPathSnippets {
 		if strings.Contains(rel, snippet) {
-			v.addFinding(rel, FindingCategoryPolicy, FindingSeverityError, fmt.Sprintf("filename contains forbidden snippet '%s'", snippet))
+			v.addFinding(Finding{Path: rel, Category: FindingCategoryPolicy, Severity: FindingSeverityError,
+				Message: fmt.Sprintf("filename contains forbidden snippet '%s'", snippet), Remediation: "Rename the file to remove absolute path fragments"})
 			break
 		}
 	}
@@ -270,25 +262,32 @@ func (v *packValidator) validateScannedFile(rel string, fullPath string, baseNam
 	}
 	if !domain.HasFrontmatterPrefix(b) {
 		if _, _, ok := domain.MatchPrimaryContentFile(rel); ok {
-			v.addFinding(rel, FindingCategoryFrontmatter, FindingSeverityError, "missing YAML frontmatter")
+			v.addFinding(Finding{Path: rel, Category: FindingCategoryFrontmatter, Severity: FindingSeverityError,
+				Message: "missing YAML frontmatter", Remediation: "Add a YAML frontmatter block with at least name and description fields"})
 		}
 	}
 	if v.policy.shouldSkipSecretScan(rel) {
 		return
 	}
-	text := string(b)
-	if pattern, ok := v.policy.firstMatchingSecretPattern(text); ok {
-		v.addFinding(rel, FindingCategoryPolicy, FindingSeverityError, fmt.Sprintf("matches secret pattern '%s'", pattern))
+	if pattern, ok := v.policy.firstMatchingSecretPattern(b); ok {
+		v.addFinding(Finding{Path: rel, Category: FindingCategoryPolicy, Severity: FindingSeverityError,
+			Message: fmt.Sprintf("matches secret pattern '%s'", pattern), Remediation: "Remove the secret or move it to an environment variable"})
 	}
 }
 
-func (v *packValidator) addFinding(path, category, severity, message string) {
-	v.findings = append(v.findings, Finding{
-		Path:     path,
-		Category: category,
-		Severity: severity,
-		Message:  message,
-	})
+func (v *packValidator) addFinding(f Finding) {
+	v.findings = append(v.findings, f)
+}
+
+func remediationForField(field string) string {
+	switch field {
+	case "name":
+		return "Set the name field to match the file/directory ID"
+	case "description":
+		return "Add a description field explaining when this content applies"
+	default:
+		return ""
+	}
 }
 
 func (p packValidationPolicy) shouldSkipDir(name string) bool {
@@ -311,9 +310,9 @@ func (p packValidationPolicy) shouldSkipSecretScan(rel string) bool {
 	return false
 }
 
-func (p packValidationPolicy) firstMatchingSecretPattern(text string) (string, bool) {
+func (p packValidationPolicy) firstMatchingSecretPattern(b []byte) (string, bool) {
 	for _, pat := range p.secretPatterns {
-		if pat.FindStringIndex(text) != nil {
+		if pat.Match(b) {
 			return pat.String(), true
 		}
 	}
