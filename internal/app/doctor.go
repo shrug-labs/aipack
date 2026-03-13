@@ -163,6 +163,9 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	add(profileCheck)
 	rep.ProfilePath = pp
 
+	// Profile structure validation (warning-level).
+	add(doctorCheckProfileValidation(prof))
+
 	// packs + MCP inventory — reuse config.ResolveProfile + engine.LoadMCPInventoryForPacks
 	packsCheck := CheckResult{Name: "packs_resolved", Severity: "critical", Status: "fail", OK: false}
 	resolvedPacks, settingsPack, rcErr := config.ResolveProfile(prof, pp, configDir)
@@ -201,6 +204,9 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	if req.Status {
 		rep.Ecosystem = buildEcosystemStatus(resolvedPacks, settingsPack, profileName, pp, configDir)
 	}
+
+	// Registry validation (warning-level).
+	add(doctorCheckRegistryValidation(configDir))
 
 	// required env vars
 	envCheck := CheckResult{Name: "mcp_env_vars_present", Severity: "critical", Status: "fail", OK: false}
@@ -893,4 +899,47 @@ func appendDrift(drifts []driftItem, pack, kind string, onDisk, declared []strin
 		}
 	}
 	return drifts
+}
+
+func doctorCheckProfileValidation(prof config.ProfileConfig) CheckResult {
+	check := CheckResult{Name: "profile_validated", Severity: "warning", Status: "pass", OK: true}
+	errs := config.ValidateProfileConfig(prof)
+	if len(errs) > 0 {
+		check.Status = "warn"
+		check.OK = false
+		check.Message = fmt.Sprintf("%d profile validation issue(s)", len(errs))
+		check.Remediation = "Fix the issues in the profile YAML"
+		check.Details = map[string]any{"issues": errs}
+		return check
+	}
+	check.Message = "profile structure valid"
+	return check
+}
+
+func doctorCheckRegistryValidation(configDir string) CheckResult {
+	check := CheckResult{Name: "registry_validated", Severity: "warning", Status: "pass", OK: true}
+	regPath := filepath.Join(configDir, "registry.yaml")
+	if _, err := os.Stat(regPath); os.IsNotExist(err) {
+		check.Message = "no local registry"
+		return check
+	}
+	reg, err := config.LoadRegistry(regPath)
+	if err != nil {
+		check.Status = "warn"
+		check.OK = false
+		check.Message = err.Error()
+		check.Remediation = "Fix or remove " + regPath
+		return check
+	}
+	errs := config.ValidateRegistry(reg)
+	if len(errs) > 0 {
+		check.Status = "warn"
+		check.OK = false
+		check.Message = fmt.Sprintf("%d registry validation issue(s)", len(errs))
+		check.Remediation = "Fix the issues in registry.yaml"
+		check.Details = map[string]any{"issues": errs}
+		return check
+	}
+	check.Message = "registry entries valid"
+	return check
 }

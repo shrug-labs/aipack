@@ -63,6 +63,17 @@ func ParseRegistry(data []byte) (Registry, error) {
 	return reg, nil
 }
 
+// ValidateRegistry checks a parsed registry for structural issues.
+func ValidateRegistry(reg Registry) []string {
+	var errs []string
+	for name, entry := range reg.Packs {
+		if entry.Repo == "" {
+			errs = append(errs, fmt.Sprintf("pack %q: missing required field repo", name))
+		}
+	}
+	return errs
+}
+
 // FetchRegistryFromURL fetches raw YAML bytes from a remote URL.
 func FetchRegistryFromURL(rawURL string) ([]byte, error) {
 	resp, err := http.Get(rawURL) //nolint:gosec
