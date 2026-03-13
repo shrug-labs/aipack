@@ -42,22 +42,24 @@ var defaultPackValidationPolicy = packValidationPolicy{
 type packValidator struct {
 	root     string
 	policy   packValidationPolicy
-	findings []string
+	findings []Finding
 }
 
-func ValidatePackRoot(packRoot string) []string {
+func ValidatePackRoot(packRoot string) []Finding {
 	root := strings.TrimSpace(packRoot)
 	if root == "" {
-		return []string{"pack root must be set"}
+		return []Finding{{Message: "pack root must be set", Category: FindingCategoryInventory, Severity: FindingSeverityError}}
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return []string{err.Error()}
+		return []Finding{{Message: err.Error(), Category: FindingCategoryInventory, Severity: FindingSeverityError}}
 	}
 	v := packValidator{root: absRoot, policy: defaultPackValidationPolicy}
 	v.validateManifestAndInventory()
 	v.walkPackFiles()
-	sort.Strings(v.findings)
+	sort.Slice(v.findings, func(i, j int) bool {
+		return v.findings[i].String() < v.findings[j].String()
+	})
 	return v.findings
 }
 
@@ -65,21 +67,21 @@ func (v *packValidator) validateManifestAndInventory() {
 	manifestPath := filepath.Join(v.root, "pack.json")
 	st, err := os.Stat(manifestPath)
 	if err != nil || !st.Mode().IsRegular() {
-		v.findings = append(v.findings, fmt.Sprintf("pack.json not found in %s", v.root))
+		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, fmt.Sprintf("not found in %s", v.root))
 		return
 	}
 	manifest, err := LoadPackManifest(manifestPath)
 	if err != nil {
-		v.findings = append(v.findings, fmt.Sprintf("pack.json: %v", err))
+		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
 		return
 	}
 	resolvedRoot := ResolvePackRoot(manifestPath, manifest.Root)
 	if resolvedRoot == "" {
-		v.findings = append(v.findings, fmt.Sprintf("pack %q root could not be resolved", manifest.Name))
+		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, fmt.Sprintf("pack %q root could not be resolved", manifest.Name))
 		return
 	}
 	if err := validatePackInventory(manifest.Name, resolvedRoot, manifest); err != nil {
-		v.findings = append(v.findings, err.Error())
+		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
 	}
 }
 
@@ -109,12 +111,12 @@ func (v *packValidator) walkPackFiles() {
 
 func (v *packValidator) validateScannedFile(rel string, fullPath string, baseName string) {
 	if isForbiddenEnvFile(baseName) {
-		v.addFinding(rel, "forbidden .env file")
+		v.addFinding(rel, FindingCategoryPolicy, FindingSeverityError, "forbidden .env file")
 		return
 	}
 	for _, snippet := range v.policy.forbiddenPathSnippets {
 		if strings.Contains(rel, snippet) {
-			v.addFinding(rel, fmt.Sprintf("filename contains forbidden snippet '%s'", snippet))
+			v.addFinding(rel, FindingCategoryPolicy, FindingSeverityError, fmt.Sprintf("filename contains forbidden snippet '%s'", snippet))
 			break
 		}
 	}
@@ -124,7 +126,7 @@ func (v *packValidator) validateScannedFile(rel string, fullPath string, baseNam
 	}
 	if !domain.HasFrontmatterPrefix(b) {
 		if _, _, ok := domain.MatchPrimaryContentFile(rel); ok {
-			v.addFinding(rel, "missing YAML frontmatter")
+			v.addFinding(rel, FindingCategoryFrontmatter, FindingSeverityError, "missing YAML frontmatter")
 		}
 	}
 	if v.policy.shouldSkipSecretScan(rel) {
@@ -132,12 +134,17 @@ func (v *packValidator) validateScannedFile(rel string, fullPath string, baseNam
 	}
 	text := string(b)
 	if pattern, ok := v.policy.firstMatchingSecretPattern(text); ok {
-		v.addFinding(rel, fmt.Sprintf("matches secret pattern '%s'", pattern))
+		v.addFinding(rel, FindingCategoryPolicy, FindingSeverityError, fmt.Sprintf("matches secret pattern '%s'", pattern))
 	}
 }
 
-func (v *packValidator) addFinding(rel string, message string) {
-	v.findings = append(v.findings, fmt.Sprintf("%s: %s", rel, message))
+func (v *packValidator) addFinding(path, category, severity, message string) {
+	v.findings = append(v.findings, Finding{
+		Path:     path,
+		Category: category,
+		Severity: severity,
+		Message:  message,
+	})
 }
 
 func (p packValidationPolicy) shouldSkipDir(name string) bool {

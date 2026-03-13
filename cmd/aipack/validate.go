@@ -6,6 +6,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 type ValidateCmd struct {
@@ -42,8 +43,12 @@ func (c *ValidateCmd) Run(g *Globals) error {
 			fmt.Fprintln(g.Stdout, "validate OK")
 		} else {
 			fmt.Fprintln(g.Stderr, "validate FAILED")
-			for _, finding := range rep.Findings {
-				fmt.Fprintf(g.Stderr, "- %s\n", finding)
+			for _, f := range rep.Findings {
+				if f.Severity == config.FindingSeverityWarning {
+					fmt.Fprintf(g.Stderr, "- [warning] %s\n", f)
+				} else {
+					fmt.Fprintf(g.Stderr, "- %s\n", f)
+				}
 			}
 		}
 	}

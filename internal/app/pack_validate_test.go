@@ -3,9 +3,19 @@ package app
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/config"
 )
+
+func findingExists(findings []config.Finding, path, message string) bool {
+	for _, f := range findings {
+		if f.Path == path && f.Message == message {
+			return true
+		}
+	}
+	return false
+}
 
 func TestRunPackValidate_MissingFrontmatterFinding(t *testing.T) {
 	t.Parallel()
@@ -16,7 +26,7 @@ func TestRunPackValidate_MissingFrontmatterFinding(t *testing.T) {
 	if rep.OK {
 		t.Fatal("expected invalid pack")
 	}
-	if !slices.Contains(rep.Findings, "rules/missing-frontmatter.md: missing YAML frontmatter") {
+	if !findingExists(rep.Findings, "rules/missing-frontmatter.md", "missing YAML frontmatter") {
 		t.Fatalf("expected frontmatter finding, got %v", rep.Findings)
 	}
 }
@@ -32,13 +42,13 @@ func TestRunPackValidate_MissingFrontmatterFindingAcrossAuthoredKinds(t *testing
 	if rep.OK {
 		t.Fatal("expected invalid pack")
 	}
-	for _, want := range []string{
-		"agents/reviewer.md: missing YAML frontmatter",
-		"workflows/ship.md: missing YAML frontmatter",
-		"skills/triage/SKILL.md: missing YAML frontmatter",
+	for _, want := range []struct{ path, msg string }{
+		{"agents/reviewer.md", "missing YAML frontmatter"},
+		{"workflows/ship.md", "missing YAML frontmatter"},
+		{"skills/triage/SKILL.md", "missing YAML frontmatter"},
 	} {
-		if !slices.Contains(rep.Findings, want) {
-			t.Fatalf("expected finding %q, got %v", want, rep.Findings)
+		if !findingExists(rep.Findings, want.path, want.msg) {
+			t.Fatalf("expected finding %q at %q, got %v", want.msg, want.path, rep.Findings)
 		}
 	}
 }
@@ -60,7 +70,7 @@ func TestRunPackValidate_LeadingFrontmatterMarkerCountsAsPresent(t *testing.T) {
 	writeFile(t, filepath.Join(packDir, "rules", "open-frontmatter.md"), "---\nname: broken\nbody\n")
 
 	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
-	if slices.Contains(rep.Findings, "rules/open-frontmatter.md: missing YAML frontmatter") {
+	if findingExists(rep.Findings, "rules/open-frontmatter.md", "missing YAML frontmatter") {
 		t.Fatalf("expected leading frontmatter marker to count as present, got %v", rep.Findings)
 	}
 }
@@ -85,7 +95,7 @@ func TestRunPackValidate_TopLevelMarkdownIsScannedForSecrets(t *testing.T) {
 	if rep.OK {
 		t.Fatal("expected invalid pack")
 	}
-	if !slices.Contains(rep.Findings, "notes.md: matches secret pattern 'AKIA[0-9A-Z]{16}'") {
+	if !findingExists(rep.Findings, "notes.md", "matches secret pattern 'AKIA[0-9A-Z]{16}'") {
 		t.Fatalf("expected top-level markdown secret finding, got %v", rep.Findings)
 	}
 }
@@ -110,7 +120,7 @@ func TestRunPackValidate_RejectsEnvFiles(t *testing.T) {
 	if rep.OK {
 		t.Fatal("expected invalid pack")
 	}
-	if !slices.Contains(rep.Findings, ".env.production: forbidden .env file") {
+	if !findingExists(rep.Findings, ".env.production", "forbidden .env file") {
 		t.Fatalf("expected .env finding, got %v", rep.Findings)
 	}
 }
@@ -135,7 +145,7 @@ func TestRunPackValidate_RejectsSecretsInMarkdownOutsideDocs(t *testing.T) {
 	if rep.OK {
 		t.Fatal("expected invalid pack")
 	}
-	if !slices.Contains(rep.Findings, "rules/has-frontmatter.md: matches secret pattern '\\bocid1\\.[a-z0-9.]+'") {
+	if !findingExists(rep.Findings, "rules/has-frontmatter.md", "matches secret pattern '\\bocid1\\.[a-z0-9.]+'") {
 		t.Fatalf("expected secret finding, got %v", rep.Findings)
 	}
 }
