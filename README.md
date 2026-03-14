@@ -123,6 +123,12 @@ aipack sync --harness claudecode --scope global
 Three commands: install the team pack, activate the profile with dependencies,
 sync. New team members are fully configured.
 
+## Documentation
+
+- **[Getting Started: Authoring and Sharing Packs](docs/getting-started.md)** — create a pack from scratch or existing content, share it with your team, compose multiple packs
+- **[Pack Format Specification](docs/pack-format.md)** — full format reference including content vectors, MCP servers, profiles, distribution, and JSON Schemas
+- **[aipack Reference](docs/aipack.md)** — complete CLI reference, per-harness behavior, sync contract, and save modes
+
 ## Key Concepts
 
 ### Packs
