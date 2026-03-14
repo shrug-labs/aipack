@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/shrug-labs/aipack/main/docs/pack.schema.json",
+  "title": "aipack Pack Manifest",
+  "description": "Schema for aipack pack.json manifest files (schema_version 1). See docs/pack-format.md for the full specification.",
+  "type": "object",
+  "required": ["schema_version", "name", "root"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional JSON Schema reference for editor validation."
+    },
+    "schema_version": {
+      "const": 1,
+      "description": "Manifest schema version. This schema defines version 1."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Pack identifier. Must match the pack's directory name. Lowercase alphanumeric with hyphens or underscores.",
+      "examples": ["essentials", "team-ops", "aipack-core"]
+    },
+    "version": {
+      "type": "string",
+      "description": "Informational pack version. Convention: YYYY.MM.DD or semver. The authoritative version is the git ref used at install time.",
+      "examples": ["2026.03.12", "1.0.0"]
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the pack's purpose. Used by search indexing and registry listings."
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "\\.\\." },
+      "description": "Base path for content resolution, relative to pack.json. Typically \".\".",
+      "default": ".",
+      "examples": ["."]
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/content_id" },
+      "uniqueItems": true,
+      "description": "Explicit rule content IDs to include. Omit entirely to auto-discover from rules/*.md. An empty array [] means the pack explicitly declares no rules."
+    },
+    "agents": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/content_id" },
+      "uniqueItems": true,
+      "description": "Explicit agent content IDs to include. Omit entirely to auto-discover from agents/*.md. An empty array [] means the pack explicitly declares no agents."
+    },
+    "workflows": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/content_id" },
+      "uniqueItems": true,
+      "description": "Explicit workflow content IDs to include. Omit entirely to auto-discover from workflows/*.md. An empty array [] means the pack explicitly declares no workflows."
+    },
+    "skills": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/content_id" },
+      "uniqueItems": true,
+      "description": "Explicit skill content IDs to include. Omit entirely to auto-discover from skills/*/SKILL.md. An empty array [] means the pack explicitly declares no skills."
+    },
+    "prompts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/content_id" },
+      "uniqueItems": true,
+      "description": "Local prompt library IDs (prompts/<id>.md). Not synced to harnesses — used for pack-internal prompt management and promptlib publishing only."
+    },
+    "mcp": {
+      "$ref": "#/definitions/mcp_pack",
+      "description": "MCP server default configurations. Keys must match corresponding mcp/<name>.json files."
+    },
+    "configs": {
+      "$ref": "#/definitions/pack_configs",
+      "description": "Harness-specific settings templates and plugins."
+    },
+    "profiles": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/relative_path" },
+      "uniqueItems": true,
+      "description": "Relative paths to bundled profile YAML files. Copied to the user's profile directory on install with --seed."
+    },
+    "registries": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/relative_path" },
+      "uniqueItems": true,
+      "description": "Relative paths to bundled registry YAML files. Merged into the user's local registry on install with --seed."
+    }
+  },
+  "definitions": {
+    "content_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Content identifier. Derived from filename without extension (rules/my-rule.md → my-rule) or subdirectory name (skills/my-skill/ → my-skill). Lowercase alphanumeric with hyphens or underscores."
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "\\.\\." },
+      "description": "Relative file path within the pack directory. Must not contain '..' path traversal."
+    },
+    "mcp_pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "servers": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/mcp_server_defaults" },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "description": "Server name. Must match the name field in the corresponding mcp/<name>.json file (case-insensitive)."
+          },
+          "description": "Per-server default configurations keyed by server name."
+        }
+      }
+    },
+    "mcp_server_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_allowed_tools": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Tool names auto-approved by default. Profiles can override this list per-server. Tools not in this list but in the server's available_tools inventory follow harness-specific default behavior (typically ask/prompt)."
+        }
+      }
+    },
+    "pack_configs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness_settings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "propertyNames": { "$ref": "#/definitions/harness_name" },
+          "description": "Base harness config template files per harness. Merged with engine-managed keys (MCP servers, tool permissions, content references) at sync time. At most one pack per profile can provide settings for a given harness."
+        },
+        "harness_plugins": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "propertyNames": { "$ref": "#/definitions/harness_name" },
+          "description": "Harness plugin config files per harness. Synced as pure copies — not merged, not gated by --skip-settings."
+        }
+      }
+    },
+    "harness_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*$",
+      "description": "Harness identifier. Known values: claudecode, opencode, codex, cline.",
+      "examples": ["claudecode", "opencode", "codex", "cline"]
+    }
+  }
+}
