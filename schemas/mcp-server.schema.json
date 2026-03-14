@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/shrug-labs/aipack/main/docs/mcp-server.schema.json",
+  "title": "aipack MCP Server Definition",
+  "description": "Schema for pack mcp/*.json files. Each file declares one MCP server connection. The filename (minus .json) must match the name field (case-insensitive). See docs/pack-format.md Section 6.",
+  "type": "object",
+  "required": ["name", "transport"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional JSON Schema reference for editor validation."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "description": "Server identifier. Must match the filename (minus .json) and the corresponding key in pack.json mcp.servers (case-insensitive after trim). Mismatch causes silent invisibility during sync.",
+      "examples": ["atlassian", "dope", "oci-mcp"]
+    },
+    "transport": {
+      "type": "string",
+      "enum": ["stdio", "sse", "streamable-http"],
+      "description": "MCP transport protocol. Determines which connection fields are required."
+    },
+    "timeout": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Connection timeout in seconds. Transformed to harness-native units at sync time (e.g., milliseconds for OpenCode)."
+    },
+    "command": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Command and arguments to launch the server process. Required for stdio transport. Supports {env:VAR} and {params.KEY} placeholders.",
+      "examples": [
+        ["{env:HOME}/.local/share/mcp-servers/my-server/.venv/bin/my-server", "--url", "{params.server_url}"]
+      ]
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Environment variables passed to the server process (stdio transport). Supports {env:VAR} and {params.KEY} placeholders.",
+      "examples": [{ "API_TOKEN": "{env:MY_TOKEN}" }]
+    },
+    "url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server endpoint URL. Required for sse and streamable-http transports. Supports {env:VAR} and {params.KEY} placeholders.",
+      "examples": ["{params.server_url}/mcp"]
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "HTTP headers sent with requests (sse and streamable-http transports). Supports {env:VAR} and {params.KEY} placeholders."
+    },
+    "available_tools": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "Complete inventory of tools the server provides. Used for tool permission rendering — tools in this list but not in default_allowed_tools (pack.json) or allowed_tools (profile) are explicitly denied where the harness supports it."
+    },
+    "links": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Documentation URLs. Metadata only — not synced to harness config."
+    },
+    "auth": {
+      "type": "string",
+      "description": "Authentication notes (e.g., required tokens, setup steps). Metadata only — not synced to harness config."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Human-readable notes about the server. Metadata only — not synced to harness config."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "transport": { "const": "stdio" } }
+      },
+      "then": {
+        "required": ["command"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "transport": { "enum": ["sse", "streamable-http"] } }
+      },
+      "then": {
+        "required": ["url"]
+      }
+    }
+  ]
+}

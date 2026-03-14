@@ -68,6 +68,15 @@ func (v *packValidator) validateManifestAndInventory() {
 		v.findings = append(v.findings, fmt.Sprintf("pack.json not found in %s", v.root))
 		return
 	}
+
+	// Schema validation on raw bytes.
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		v.addFinding("pack.json", err.Error())
+		return
+	}
+	v.findings = append(v.findings, ValidatePackJSONSchema(raw)...)
+
 	manifest, err := LoadPackManifest(manifestPath)
 	if err != nil {
 		v.findings = append(v.findings, fmt.Sprintf("pack.json: %v", err))
@@ -80,6 +89,17 @@ func (v *packValidator) validateManifestAndInventory() {
 	}
 	if err := validatePackInventory(manifest.Name, resolvedRoot, manifest); err != nil {
 		v.findings = append(v.findings, err.Error())
+	}
+
+	// Validate each MCP server definition against its schema.
+	for name := range manifest.MCP.Servers {
+		mcpRelPath := filepath.ToSlash(filepath.Join("mcp", name+".json"))
+		mcpPath := filepath.Join(resolvedRoot, "mcp", name+".json")
+		mcpRaw, readErr := os.ReadFile(mcpPath)
+		if readErr != nil {
+			continue // existence already validated by validatePackInventory
+		}
+		v.findings = append(v.findings, ValidateMCPServerSchema(mcpRelPath, mcpRaw)...)
 	}
 }
 
