@@ -159,6 +159,66 @@ func TestApplyPlan_IdenticalNoLedger(t *testing.T) {
 	}
 }
 
+func TestApplyPlan_RecordsPerServerMCPLedgerEntries(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	configPath := filepath.Join(dir, ".claude", "settings.local.json")
+	configContent := []byte(`{"mcpServers":{"jira":{"command":"uvx","args":["jira-mcp"]}}}`)
+	serverContent, err := domain.MCPInventoryBytes(domain.MCPServer{
+		Name:      "jira",
+		Transport: domain.TransportStdio,
+		Command:   []string{"uvx", "jira-mcp"},
+	})
+	if err != nil {
+		t.Fatalf("MCPInventoryBytes: %v", err)
+	}
+
+	plan := domain.Plan{
+		MCP: []domain.SettingsAction{{
+			Dst:        configPath,
+			Desired:    configContent,
+			Harness:    domain.HarnessClaudeCode,
+			Label:      ".mcp.json",
+			SourcePack: "pack1",
+		}},
+		MCPServers: []domain.MCPAction{{
+			Name:       "jira",
+			ConfigPath: configPath,
+			Content:    serverContent,
+			SourcePack: "pack1",
+			Harness:    domain.HarnessClaudeCode,
+		}},
+		Desired: map[string]struct{}{
+			filepath.Clean(configPath): {},
+		},
+		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
+	}
+
+	ar := ApplyRequest{Quiet: true}
+	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+
+	lg, _, err := LoadLedger(plan.Ledger)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v", err)
+	}
+	if _, ok := lg.Managed[filepath.Clean(configPath)]; !ok {
+		t.Fatal("ledger missing MCP config entry")
+	}
+	entry, ok := lg.Managed[domain.MCPLedgerKey(configPath, "jira")]
+	if !ok {
+		t.Fatal("ledger missing per-server MCP entry")
+	}
+	if entry.SourcePack != "pack1" {
+		t.Fatalf("SourcePack = %q, want pack1", entry.SourcePack)
+	}
+	if entry.Digest != domain.SingleFileDigest(serverContent) {
+		t.Fatalf("Digest = %q, want %q", entry.Digest, domain.SingleFileDigest(serverContent))
+	}
+}
+
 func TestApplyPlan_ManagedUpdates(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -516,6 +576,60 @@ func TestApplyPlan_PruneDeletesOrphaned(t *testing.T) {
 	}
 }
 
+func TestApplyPlan_StaleLedgerEntriesReconciledWithoutPrune(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	fileA := filepath.Join(dir, "rules", "alpha.md")
+	fileB := filepath.Join(dir, "rules", "beta.md")
+
+	// First apply creates both files.
+	plan1 := buildPlan(dir, []domain.WriteAction{
+		{Dst: fileA, Content: []byte("alpha"), SourcePack: "pack1"},
+		{Dst: fileB, Content: []byte("beta"), SourcePack: "pack1"},
+	})
+	ar := ApplyRequest{Quiet: true}
+	if err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
+		t.Fatalf("first ApplyPlan: %v", err)
+	}
+
+	// Second apply only has fileA. Prune=false should leave fileB on disk
+	// but remove its ledger entry so it stops showing as a prune candidate.
+	plan2 := buildPlan(dir, []domain.WriteAction{
+		{Dst: fileA, Content: []byte("alpha"), SourcePack: "pack1"},
+	})
+	ar2 := ApplyRequest{Prune: false, Quiet: true}
+	if err := ApplyPlan(plan2, ar2, []string{dir}); err != nil {
+		t.Fatalf("second ApplyPlan: %v", err)
+	}
+
+	// fileB should still exist on disk (not deleted without Prune).
+	if _, err := os.Stat(fileB); err != nil {
+		t.Errorf("fileB should still exist on disk: %v", err)
+	}
+
+	// Ledger should only have fileA — fileB's entry should be reconciled away.
+	lg, _, err := LoadLedger(plan2.Ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := lg.Managed[fileA]; !ok {
+		t.Error("ledger should still have fileA")
+	}
+	if _, ok := lg.Managed[fileB]; ok {
+		t.Error("ledger should not have fileB after reconciliation")
+	}
+
+	// PruneCandidatesWithLedger should report nothing (ledger is clean).
+	candidates, err := PruneCandidatesWithLedger(plan2, []string{dir}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) > 0 {
+		t.Errorf("expected no prune candidates after reconciliation, got %v", candidates)
+	}
+}
+
 func TestApplyPlan_DestinationValidation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -579,5 +693,45 @@ func TestPruneCandidates(t *testing.T) {
 	}
 	if candidates[0] != fileC {
 		t.Errorf("candidate = %q, want %q", candidates[0], fileC)
+	}
+}
+
+func TestApplyPlan_SettingsSnapshot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Pre-create a settings file.
+	settingsPath := filepath.Join(dir, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"user_setting": true}` + "\n")
+	if err := os.WriteFile(settingsPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := domain.Plan{
+		Settings: []domain.SettingsAction{{
+			Dst:     settingsPath,
+			Desired: []byte(`{"managed": true}` + "\n"),
+			Harness: domain.HarnessClaudeCode,
+			Label:   "settings.local.json",
+		}},
+		Desired: map[string]struct{}{settingsPath: {}},
+		Ledger:  filepath.Join(dir, ".aipack", "ledger.json"),
+	}
+
+	ar := ApplyRequest{Quiet: true}
+	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+
+	// Verify presync cache was created with original content.
+	cached, err := os.ReadFile(filepath.Join(presyncDir(plan.Ledger), "claudecode--.claude--settings.local.json"))
+	if err != nil {
+		t.Fatalf("presync cache missing: %v", err)
+	}
+	if string(cached) != string(original) {
+		t.Errorf("presync = %q, want %q", cached, original)
 	}
 }

@@ -18,7 +18,7 @@ aipack introduces **packs** — portable, versioned bundles of agent configurati
 │  (team ops) │────▶│          │────▶│ .claude/     │
 ├─────────────┤     │          │     ├──────────────┤
 │  Pack B     │────▶│  aipack  │────▶│ Codex        │
-│  (personal) │     │   sync   │     │ AGENTS.md    │
+│  (personal) │     │   sync   │     │ AGENTS.override.md │
 ├─────────────┤     │          │     ├──────────────┤
 │  Pack C     │────▶│          │────▶│ OpenCode     │
 │  (org-wide) │     │          │     │ .opencode/   │
@@ -34,8 +34,8 @@ aipack introduces **packs** — portable, versioned bundles of agent configurati
 |---------|-------|--------|-----------|--------|-------------|----------|
 | Claude Code | Individual files | Skill directories | Command files | Subagent files | `.mcp.json` | `settings.local.json` |
 | OpenCode | Individual files | Skill directories | Command files | Individual files | `opencode.json` | `opencode.json` |
-| Codex | Flattened to `AGENTS.override.md` | Skill directories | Flattened | Flattened | `config.toml` | `config.toml` |
-| Cline | Individual files | Skill directories | Individual files | Individual files | Global only | N/A |
+| Codex | Flattened to `AGENTS.override.md` | Skill directories | Promoted to skill dirs | Promoted to skill dirs | `config.toml` | `config.toml` |
+| Cline | Individual files | Skill directories | Individual files | Promoted to skill dirs | Global only | N/A |
 
 ## Quick Start
 
@@ -127,7 +127,7 @@ sync. New team members are fully configured.
 
 - **[Getting Started: Authoring and Sharing Packs](docs/getting-started.md)** — create a pack from scratch or existing content, share it with your team, compose multiple packs
 - **[Pack Format Specification](docs/pack-format.md)** — full format reference including content vectors, MCP servers, profiles, distribution, and JSON Schemas
-- **[aipack Reference](docs/aipack.md)** — complete CLI reference, per-harness behavior, sync contract, and save modes
+- **[aipack Reference](docs/aipack.md)** — complete CLI reference, top-level command surface, per-harness behavior, and sync/save behavior
 
 ## Key Concepts
 
@@ -165,7 +165,7 @@ Packs are referenced by name and resolved from `~/.config/aipack/packs/<name>/`.
 Sync reads your profile, resolves all packs, and writes to harness-native locations:
 
 ```bash
-aipack sync                          # sync active profile, all scopes
+aipack sync                          # sync active profile to default scope/harnesses
 aipack sync --scope project          # project-local config only
 aipack sync --scope global           # user-global config only
 aipack sync --harness claudecode     # one harness only
@@ -179,15 +179,24 @@ Sync is non-destructive by default. Modified files show a unified diff and are s
 
 | Feature | Description |
 |---------|-------------|
+| `aipack init` | Bootstrap config directory, default profile, and registry |
 | `aipack sync` | Render packs into harness-native config |
 | `aipack save` | Capture harness config back into packs |
-| `aipack pack install/list/show/update/delete` | Pack lifecycle management |
-| `aipack profile create/set/show/list` | Profile management |
-| `aipack registry add/fetch/list/search/sources/remove` | Discover and manage pack registries |
+| `aipack restore` | Undo the last sync's settings changes |
+| `aipack clean` | Remove all managed files from harness locations |
+| `aipack pack create/install/list/show/update/delete` | Pack lifecycle management |
+| `aipack pack rename/enable/disable/validate` | Pack configuration and validation |
+| `aipack profile create/set/show/list/delete` | Profile management |
+| `aipack registry fetch/list/sources/remove` | Discover and manage pack registries |
 | `aipack search` | Full-text search across all installed packs |
+| `aipack query` | Run raw SQL against the pack index |
+| `aipack status` | Show ecosystem status: profile, packs, and content inventories |
+| `aipack trace` | Trace a resource from pack source to harness destination |
 | `aipack render` | Generate portable pack output |
 | `aipack doctor` | Validate config health and detect drift |
 | `aipack manage` | Interactive terminal UI |
+| `aipack prompt list/show/copy` | Browse prompts from installed packs |
+| `aipack version` | Print the CLI version |
 
 ## Releases and Versioning
 
@@ -204,8 +213,7 @@ Sync is non-destructive by default. Modified files show a unified diff and are s
 
 aipack supports multiple registry sources. Each source is cached locally and fetched independently.
 
-- `aipack registry add <url>` configures a source without fetching (useful offline or for setup scripts).
-- `aipack registry fetch <url>` fetches a single source and saves it for future use.
+- `aipack registry fetch <url>` adds and fetches a single source.
 - `aipack registry fetch` (bare) fetches all configured sources.
 - `aipack registry sources` lists configured sources and their cache status.
 - Sources are saved to `registry_sources` in `sync-config.yaml` and cached in `~/.config/aipack/registries/`.

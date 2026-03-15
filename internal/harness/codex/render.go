@@ -1,8 +1,6 @@
 package codex
 
 import (
-	"fmt"
-
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -11,30 +9,24 @@ import (
 
 type codexMCPServer struct {
 	Enabled           bool              `toml:"enabled"`
-	EnabledTools      []string          `toml:"enabled_tools"`
+	Type              string            `toml:"type,omitempty"` // omit for stdio (default)
+	EnabledTools      []string          `toml:"enabled_tools,omitempty"`
 	DisabledTools     []string          `toml:"disabled_tools,omitempty"`
 	StartupTimeoutSec int               `toml:"startup_timeout_sec"`
-	Command           string            `toml:"command"`
-	Args              []string          `toml:"args"`
-	Env               map[string]string `toml:"env,omitempty"`
+	Command           string            `toml:"command,omitempty"` // stdio only
+	Args              []string          `toml:"args,omitempty"`    // stdio only
+	Env               map[string]string `toml:"env,omitempty"`     // stdio only
+	URL               string            `toml:"url,omitempty"`     // sse / streamable-http
+	Headers           map[string]string `toml:"headers,omitempty"` // sse / streamable-http
 }
 
 // buildMCPEntries renders MCP servers to Codex TOML format.
 // Codex uses unprefixed tool names (it applies its own prefix internally).
-func buildMCPEntries(servers []domain.MCPServer, resolveEnv bool) (map[string]codexMCPServer, []domain.Warning) {
-	expanded, warnings := engine.ExpandMCPForRender(servers, resolveEnv, engine.EnvRefFormatShell)
+func buildMCPEntries(servers []domain.MCPServer) (map[string]codexMCPServer, []domain.Warning) {
+	expanded, warnings := engine.ExpandMCPServers(servers)
 
 	mcp := map[string]codexMCPServer{}
 	for _, s := range expanded {
-		if !s.IsStdio() {
-			warnings = append(warnings, domain.Warning{
-				Message: fmt.Sprintf("MCP server %q uses %s transport, which Codex does not support — skipping", s.Name, s.Transport),
-			})
-			continue
-		}
-		if len(s.Command) == 0 {
-			continue
-		}
 		timeout := s.Timeout
 		if timeout == 0 {
 			timeout = 10
@@ -44,11 +36,22 @@ func buildMCPEntries(servers []domain.MCPServer, resolveEnv bool) (map[string]co
 			EnabledTools:      append([]string{}, s.AllowedTools...),
 			DisabledTools:     append([]string{}, s.DisabledTools...),
 			StartupTimeoutSec: timeout,
-			Command:           s.Command[0],
-			Args:              s.Command[1:],
 		}
-		if len(s.Env) > 0 {
-			entry.Env = s.Env
+		if s.IsStdio() {
+			if len(s.Command) == 0 {
+				continue
+			}
+			entry.Command = s.Command[0]
+			entry.Args = s.Command[1:]
+			if len(s.Env) > 0 {
+				entry.Env = s.Env
+			}
+		} else {
+			entry.Type = s.Transport
+			entry.URL = s.URL
+			if len(s.Headers) > 0 {
+				entry.Headers = s.Headers
+			}
 		}
 		mcp[s.Name] = entry
 	}
@@ -56,7 +59,7 @@ func buildMCPEntries(servers []domain.MCPServer, resolveEnv bool) (map[string]co
 }
 
 // RenderBytes produces the full config.toml content.
-func RenderBytes(base []byte, servers []domain.MCPServer, resolveEnv bool) ([]byte, []domain.Warning, error) {
+func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
 		if err := toml.Unmarshal(base, &root); err != nil {
@@ -64,7 +67,7 @@ func RenderBytes(base []byte, servers []domain.MCPServer, resolveEnv bool) ([]by
 		}
 	}
 
-	entries, warnings := buildMCPEntries(servers, resolveEnv)
+	entries, warnings := buildMCPEntries(servers)
 	root["mcp_servers"] = entries
 	out, err := toml.Marshal(root)
 	if err != nil {
@@ -74,8 +77,8 @@ func RenderBytes(base []byte, servers []domain.MCPServer, resolveEnv bool) ([]by
 }
 
 // RenderMCPOnly produces a TOML document containing ONLY the mcp_servers table.
-func RenderMCPOnly(servers []domain.MCPServer, resolveEnv bool) ([]byte, []domain.Warning, error) {
-	return RenderBytes(nil, servers, resolveEnv)
+func RenderMCPOnly(servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
+	return RenderBytes(nil, servers)
 }
 
 // StripManagedKeys removes sync-managed keys from rendered settings.

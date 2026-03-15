@@ -288,7 +288,7 @@ func TestPlan_Global_WritesToGlobalDirs(t *testing.T) {
 	}
 }
 
-func TestPlan_Project_MCPAsPlugin(t *testing.T) {
+func TestPlan_Project_MCP(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
@@ -314,30 +314,46 @@ func TestPlan_Project_MCPAsPlugin(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// MCP always syncs as plugin (not gated by --skip-settings).
-	if len(f.Plugins) < 1 {
-		t.Fatal("expected at least 1 plugin for MCP")
+	// MCP always syncs as MCP action (not gated by --skip-settings).
+	if len(f.MCP) < 1 {
+		t.Fatal("expected at least 1 MCP action")
 	}
 
 	var hasMCP, hasSettings bool
-	for _, p := range f.Plugins {
+	for _, p := range f.MCP {
 		if p.Label == ".mcp.json" {
 			hasMCP = true
+			if !p.MergeMode {
+				t.Error(".mcp.json action should use MergeMode to preserve non-managed keys")
+			}
 		}
 		if strings.Contains(p.Label, "settings.local.json") {
 			hasSettings = true
 		}
 	}
 	if !hasMCP {
-		t.Error("expected .mcp.json as plugin")
+		t.Error("expected .mcp.json as MCP action")
 	}
-	// When skip-settings but MCP exists, settings permissions go as plugin too.
+	// When skip-settings but MCP exists, settings permissions go as MCP action too.
 	if !hasSettings {
-		t.Error("expected settings.local.json as plugin when skip-settings + MCP servers exist")
+		t.Error("expected settings.local.json as MCP action when skip-settings + MCP servers exist")
 	}
 	// No Settings entries when skip-settings.
 	if len(f.Settings) != 0 {
 		t.Errorf("expected no Settings when skip-settings, got %d", len(f.Settings))
+	}
+	if len(f.MCPServers) != 1 {
+		t.Fatalf("expected 1 MCP server action, got %d", len(f.MCPServers))
+	}
+	var tracked domain.MCPServer
+	if err := json.Unmarshal(f.MCPServers[0].Content, &tracked); err != nil {
+		t.Fatalf("unmarshal tracked MCP action: %v", err)
+	}
+	if tracked.Timeout != 0 {
+		t.Fatalf("tracked timeout: got %d want 0 (Claude render/capture omits timeout)", tracked.Timeout)
+	}
+	if tracked.Transport != domain.TransportStdio {
+		t.Fatalf("tracked transport: got %q want %q", tracked.Transport, domain.TransportStdio)
 	}
 }
 
@@ -372,6 +388,144 @@ func TestPlan_Project_SettingsWhenNotSkipped(t *testing.T) {
 	}
 	if !f.Settings[0].MergeMode {
 		t.Error("settings should use MergeMode")
+	}
+}
+
+func TestPlan_Project_BaseSettingsMergedWithMCP(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	base := []byte(`{
+  "permissions": {
+    "allow": ["Bash(go test:*)"]
+  }
+}`)
+
+	h := Harness{}
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: dir,
+		Profile: domain.Profile{
+			MCPServers: []domain.MCPServer{
+				{Name: "svc", Command: []string{"svc"}, AllowedTools: []string{"tool1"}},
+			},
+			BaseSettings: domain.SettingsBundle{
+				domain.HarnessClaudeCode: []domain.ConfigFile{
+					{Filename: "settings.local.json", Content: base, SourcePack: "test"},
+				},
+			},
+			SettingsPack: "test",
+		},
+	}
+
+	f, err := h.Plan(ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	if len(f.Settings) != 1 {
+		t.Fatalf("expected 1 settings action, got %d", len(f.Settings))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(f.Settings[0].Desired, &got); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+
+	perms, _ := got["permissions"].(map[string]any)
+	if perms == nil {
+		t.Fatal("missing permissions in rendered settings")
+	}
+	allow, _ := perms["allow"].([]any)
+	if len(allow) != 2 {
+		t.Fatalf("allow: got %v want 2 entries", allow)
+	}
+	if allow[0] != "Bash(go test:*)" {
+		t.Errorf("allow[0]: got %v want base permission", allow[0])
+	}
+	if allow[1] != "mcp__svc__tool1" {
+		t.Errorf("allow[1]: got %v want MCP permission", allow[1])
+	}
+}
+
+func TestPlan_Project_BaseSettingsOnlyNoMCP(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	base := []byte(`{
+  "permissions": {
+    "allow": ["Bash(go test:*)"]
+  }
+}`)
+
+	h := Harness{}
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: dir,
+		Profile: domain.Profile{
+			BaseSettings: domain.SettingsBundle{
+				domain.HarnessClaudeCode: []domain.ConfigFile{
+					{Filename: "settings.local.json", Content: base, SourcePack: "test"},
+				},
+			},
+			SettingsPack: "test",
+		},
+	}
+
+	f, err := h.Plan(ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	// Base settings alone should emit settings even without MCP servers.
+	if len(f.Settings) != 1 {
+		t.Fatalf("expected 1 settings action for base-only, got %d", len(f.Settings))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(f.Settings[0].Desired, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	perms := got["permissions"].(map[string]any)
+	allow := perms["allow"].([]any)
+	if len(allow) != 1 || allow[0] != "Bash(go test:*)" {
+		t.Errorf("allow: got %v want [Bash(go test:*)]", allow)
+	}
+}
+
+func TestPlan_Global_MCPMergeMode(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+
+	h := Harness{}
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeGlobal,
+		TargetDir: home,
+		Profile: domain.Profile{
+			MCPServers: []domain.MCPServer{
+				{Name: "atlassian", Command: []string{"npx", "atlassian-mcp"}},
+			},
+		},
+	}
+
+	f, err := h.Plan(ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	// Global MCP targets ~/.claude.json which contains other Claude Code state.
+	// MergeMode must be true to preserve non-managed keys.
+	var found bool
+	for _, p := range f.MCP {
+		if p.Label == ".claude.json" {
+			found = true
+			if !p.MergeMode {
+				t.Error(".claude.json action must use MergeMode to preserve existing settings")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected .claude.json MCP action for global scope")
 	}
 }
 
@@ -524,6 +678,10 @@ func TestCapture_Project_ParsesSettingsPermissions(t *testing.T) {
 	srv, ok := res.MCPServers["jira"]
 	if !ok {
 		t.Fatalf("expected jira MCP server, got %+v", res.MCPServers)
+	}
+	// Verify parseMCPJSON correctly unwraps the mcpServers envelope.
+	if len(srv.Command) != 2 || srv.Command[0] != "npx" || srv.Command[1] != "jira-mcp" {
+		t.Fatalf("Command = %v, want [npx jira-mcp]", srv.Command)
 	}
 	if len(srv.DisabledTools) != 1 || srv.DisabledTools[0] != "delete_issue" {
 		t.Fatalf("DisabledTools = %v, want [delete_issue]", srv.DisabledTools)

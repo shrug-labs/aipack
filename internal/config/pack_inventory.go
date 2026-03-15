@@ -45,16 +45,16 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		return err
 	}
 
-	if err := validateManifestContent(packName, packRoot, domain.ContentRules, manifest.Rules); err != nil {
+	if err := validateManifestContent(packName, packRoot, domain.CategoryRules, manifest.Rules); err != nil {
 		return err
 	}
-	if err := validateManifestContent(packName, packRoot, domain.ContentAgents, manifest.Agents); err != nil {
+	if err := validateManifestContent(packName, packRoot, domain.CategoryAgents, manifest.Agents); err != nil {
 		return err
 	}
-	if err := validateManifestContent(packName, packRoot, domain.ContentWorkflows, manifest.Workflows); err != nil {
+	if err := validateManifestContent(packName, packRoot, domain.CategoryWorkflows, manifest.Workflows); err != nil {
 		return err
 	}
-	if err := validateManifestContent(packName, packRoot, domain.ContentSkills, manifest.Skills); err != nil {
+	if err := validateManifestContent(packName, packRoot, domain.CategorySkills, manifest.Skills); err != nil {
 		return err
 	}
 	for _, id := range manifest.Prompts {
@@ -83,7 +83,7 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 	return nil
 }
 
-func validateManifestContent(packName string, packRoot string, kind domain.AuthoredContentKind, ids []string) error {
+func validateManifestContent(packName string, packRoot string, kind domain.PackCategory, ids []string) error {
 	for _, id := range ids {
 		path := filepath.Join(packRoot, filepath.FromSlash(kind.PrimaryRelPath(id)))
 		if err := requireFile(path); err != nil {

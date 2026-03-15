@@ -9,8 +9,8 @@ import (
 )
 
 // buildMCPServers assembles typed MCPServer structs from inventory data and
-// per-pack permissions. Params ({params.*}) in command and env are expanded.
-// Env refs ({env:VAR}) are left as-is for harness-specific transform at render time.
+// per-pack permissions. Params ({params.*}) and env refs ({env:VAR}) in command,
+// URL, env, and headers are expanded. Servers with unresolvable refs are skipped.
 func buildMCPServers(params map[string]string, packs []config.ResolvedPack, inventory map[string]domain.MCPServer) ([]domain.MCPServer, []domain.Warning) {
 	servers := enabledServers(packs)
 	out := make([]domain.MCPServer, 0, len(servers))
@@ -26,12 +26,24 @@ func buildMCPServers(params map[string]string, packs []config.ResolvedPack, inve
 			continue
 		}
 
-		// Expand params; leave env refs as {env:VAR} for harness-specific transform.
-		expanded, err := expandMCPServer(params, inv, false, "", nil)
+		var expandDetail string
+		warnFn := func(msg string) { expandDetail = msg }
+		expanded, err := expandMCPServer(params, inv, warnFn)
 		if err != nil {
 			warnings = append(warnings, domain.Warning{
 				Field:   "mcp." + name,
 				Message: "skipping MCP server: " + err.Error(),
+			})
+			continue
+		}
+		if expanded.Skip {
+			msg := fmt.Sprintf("skipping MCP server %q: unresolved references", name)
+			if expandDetail != "" {
+				msg = expandDetail
+			}
+			warnings = append(warnings, domain.Warning{
+				Field:   "mcp." + name,
+				Message: msg,
 			})
 			continue
 		}

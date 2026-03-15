@@ -178,17 +178,117 @@ func TestLoadLedger_CorruptJSON(t *testing.T) {
 
 func TestLedgerPathForScope_Project(t *testing.T) {
 	t.Parallel()
-	path := LedgerPathForScope(domain.ScopeProject, "/home/user/proj", "/home/user", []string{"claudecode"})
-	if path != "/home/user/proj/.aipack/ledger.json" {
-		t.Errorf("path = %q", path)
+	path := LedgerPathForScope(domain.ScopeProject, "/home/user/proj", "/home/user", "claudecode")
+	want := "/home/user/.config/aipack/ledger/-home-user-proj/claudecode.json"
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
 	}
 }
 
 func TestLedgerPathForScope_Global(t *testing.T) {
 	t.Parallel()
-	path := LedgerPathForScope(domain.ScopeGlobal, "/home/user/proj", "/home/user", []string{"claudecode", "opencode"})
-	expected := "/home/user/.config/aipack/ledger/claudecode+opencode.json"
-	if path != expected {
-		t.Errorf("path = %q, want %q", path, expected)
+	path := LedgerPathForScope(domain.ScopeGlobal, "/home/user/proj", "/home/user", "claudecode")
+	want := "/home/user/.config/aipack/ledger/claudecode.json"
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+}
+
+func TestEncodeProjectPath(t *testing.T) {
+	t.Parallel()
+	got := EncodeProjectPath("/Users/foo/bar")
+	want := "-Users-foo-bar"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	ledgerDir := filepath.Join(home, ".config", "aipack", "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a combined ledger with entries for two harnesses.
+	combined := domain.NewLedger()
+	combined.Managed[filepath.Join(home, ".claude", "rules", "a.md")] = domain.Entry{Digest: "aaa", SourcePack: "p1"}
+	combined.Managed[filepath.Join(home, ".opencode", "rules", "b.md")] = domain.Entry{Digest: "bbb", SourcePack: "p1"}
+	if err := SaveLedger(filepath.Join(ledgerDir, "claudecode+opencode.json"), combined, false); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := map[string][]string{
+		"claudecode": {filepath.Join(home, ".claude")},
+		"opencode":   {filepath.Join(home, ".opencode")},
+	}
+
+	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []string{"claudecode", "opencode"}, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("migrated = %d, want 2", n)
+	}
+
+	// Verify per-harness ledgers.
+	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, "claudecode"))
+	if len(cc.Managed) != 1 {
+		t.Errorf("claudecode entries = %d, want 1", len(cc.Managed))
+	}
+	oc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, "opencode"))
+	if len(oc.Managed) != 1 {
+		t.Errorf("opencode entries = %d, want 1", len(oc.Managed))
+	}
+}
+
+func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "myproject")
+
+	// Write an old project-local ledger.
+	oldPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := domain.NewLedger()
+	old.Managed[filepath.Join(projectDir, ".claude", "rules", "x.md")] = domain.Entry{Digest: "xxx", SourcePack: "p1"}
+	if err := SaveLedger(oldPath, old, false); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := map[string][]string{
+		"claudecode": {filepath.Join(projectDir, ".claude")},
+	}
+
+	n, err := MigrateOldLedgers(domain.ScopeProject, projectDir, home, []string{"claudecode"}, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("migrated = %d, want 1", n)
+	}
+
+	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode"))
+	if len(cc.Managed) != 1 {
+		t.Errorf("claudecode entries = %d, want 1", len(cc.Managed))
+	}
+}
+
+func TestMigrateOldLedgers_NoOldFiles(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	roots := map[string][]string{
+		"claudecode": {filepath.Join(home, ".claude")},
+	}
+
+	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []string{"claudecode"}, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("migrated = %d, want 0", n)
 	}
 }

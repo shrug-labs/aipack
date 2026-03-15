@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +15,6 @@ type DoctorCmd struct {
 	ProfilePath string `help:"Direct path to a profile YAML file" name:"profile-path" type:"path"`
 	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
 	JSON        bool   `help:"Emit machine-readable JSON report instead of human-readable text" name:"json"`
-	Status      bool   `help:"Show ecosystem status: profile, packs, content vectors, and totals" name:"status"`
 	Fix         bool   `help:"Auto-fix safe issues (prune orphaned ledger entries, fill missing SourcePack)" name:"fix"`
 }
 
@@ -43,10 +41,7 @@ Examples:
   # Machine-readable JSON output
   aipack doctor --profile default --json
 
-  # Show ecosystem status (profile, packs, content vectors)
-  aipack doctor --status
-
-See also: init, sync`
+See also: init, sync, status`
 }
 
 func (c *DoctorCmd) Run(g *Globals) error {
@@ -55,25 +50,20 @@ func (c *DoctorCmd) Run(g *Globals) error {
 		ProfilePath: c.ProfilePath,
 		ProfileName: c.Profile,
 		Home:        os.Getenv("HOME"),
-		Status:      c.Status,
 		Fix:         c.Fix,
+		Version:     version,
 	})
 
 	if c.JSON {
-		b, err := json.MarshalIndent(rep, "", "  ")
-		if err != nil {
+		if err := cmdutil.WriteJSON(g.Stdout, rep); err != nil {
 			return err
 		}
-		_, _ = g.Stdout.Write(append(b, '\n'))
 		if rep.OK {
 			return nil
 		}
 		return ExitError{Code: cmdutil.ExitFail}
 	}
 	printDoctorHuman(rep, g.Stdout, g.Stderr)
-	if rep.Ecosystem != nil {
-		printEcosystemStatus(rep.Ecosystem, g.Stdout)
-	}
 	if rep.OK {
 		return nil
 	}
@@ -108,7 +98,7 @@ func printDoctorHuman(rep app.DoctorReport, stdout io.Writer, stderr io.Writer) 
 		}
 		fmt.Fprintf(stderr, "- %s: %s\n", c.Name, c.Message)
 		switch c.Name {
-		case "mcp_env_vars_present":
+		case "mcp_refs_present":
 			if c.Details != nil {
 				switch missing := c.Details["missing"].(type) {
 				case []string:
@@ -162,27 +152,4 @@ func printDoctorHuman(rep app.DoctorReport, stdout io.Writer, stderr io.Writer) 
 			fmt.Fprintf(stderr, "  remediation: %s\n", c.Remediation)
 		}
 	}
-}
-
-func printEcosystemStatus(es *app.EcosystemStatus, w io.Writer) {
-	fmt.Fprintf(w, "\nprofile: %s (%s)\n", es.Profile, es.ProfilePath)
-	if es.SettingsPack != "" {
-		fmt.Fprintf(w, "settings: %s\n", es.SettingsPack)
-	}
-	fmt.Fprintf(w, "\npacks (%d):\n", len(es.Packs))
-	for i, p := range es.Packs {
-		settings := ""
-		if p.Settings {
-			settings = " (settings)"
-		}
-		ver := ""
-		if p.Version != "" {
-			ver = " v" + p.Version
-		}
-		fmt.Fprintf(w, "  %d. %s%s%s\n", i+1, p.Name, ver, settings)
-		fmt.Fprintf(w, "     rules: %d  agents: %d  workflows: %d  skills: %d  mcp: %d\n",
-			p.Rules, p.Agents, p.Workflows, p.Skills, p.MCPServers)
-	}
-	fmt.Fprintf(w, "\ntotals: %d rules, %d agents, %d workflows, %d skills, %d mcp servers\n",
-		es.TotalRules, es.TotalAgents, es.TotalWorkflows, es.TotalSkills, es.TotalMCP)
 }

@@ -74,6 +74,44 @@ var (
 
 	panelHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 
+	panelStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1)
+
+	panelFocusedStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("205")).
+				Padding(0, 1)
+
+	panelMutedHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("250"))
+
+	panelSubtleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+
+	badgeInstalledStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("46"))
+
+	badgeAvailableStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("81"))
+
+	badgeDetachedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("214"))
+
+	badgeMetaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+
+	listMetaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+
+	categoryHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("252"))
+
+	contentSummaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+
 	previewBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("205")).
@@ -88,10 +126,12 @@ var (
 			Foreground(lipgloss.Color("75"))
 
 	// Operation type styles for the sync plan view.
-	opWriteStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // green
-	opCopyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // blue
+	opRuleStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // green
+	opWorkflowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // blue
+	opAgentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("141")) // purple
+	opSkillStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("79"))  // teal
 	opSettingsStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // yellow
-	opPluginStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("141")) // purple
+	opMCPStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))  // cyan
 	opPruneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
 
 	// Diff output styles for the plan diff viewer.

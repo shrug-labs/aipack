@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestParseFrontmatter(t *testing.T) {
@@ -76,7 +78,7 @@ func TestPreviewModel_EmptyContent(t *testing.T) {
 	p := newPreviewModel(80, 40)
 	p.setContent(previewLoadedMsg{
 		title:    "empty-rule",
-		category: CatRules,
+		category: domain.CategoryRules,
 		filePath: "/tmp/pack/rules/empty.md",
 	})
 	view := p.View()

@@ -16,13 +16,13 @@ type ProfileCreateCmd struct {
 func (c *ProfileCreateCmd) Help() string {
 	return `Creates a new empty profile YAML file under ~/.config/aipack/profiles/.
 The profile is initialized with the current schema version and an empty
-packs list. Use 'pack add' to add packs to it.
+packs list. Use 'pack enable' to add packs to it.
 
 Examples:
   # Create a new profile
   aipack profile create staging
 
-See also: profile delete, profile list, pack add`
+See also: profile delete, profile list, pack enable`
 }
 
 func (c *ProfileCreateCmd) Run(g *Globals) error {

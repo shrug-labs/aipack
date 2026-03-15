@@ -80,119 +80,6 @@ func TestScanBytesForSecrets_Clean(t *testing.T) {
 	}
 }
 
-func TestScanSnapshotForSecrets(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// Create a .json file containing a secret — scanSnapshotForSecrets skips .md files.
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"key": "ocid1.vault.oc1.phx.abc"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a .md file without secrets — should be skipped by the scanner.
-	if err := os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# Safe readme\nNo secrets here.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	findings := scanSnapshotForSecrets(dir)
-	if len(findings) == 0 {
-		t.Fatal("expected findings from config.json, got none")
-	}
-
-	// Verify the finding references the json file, not the md file.
-	foundJSON := false
-	foundMD := false
-	for _, f := range findings {
-		if filepath.ToSlash(f) == "config.json: matches forbidden secret pattern: ocid1.*" {
-			foundJSON = true
-		}
-		if filepath.Base(f) == "readme.md" {
-			foundMD = true
-		}
-	}
-	if !foundJSON {
-		t.Errorf("expected config.json in findings, got %v", findings)
-	}
-	if foundMD {
-		t.Errorf("readme.md should be skipped, but appeared in findings: %v", findings)
-	}
-}
-
-func TestBuildPackManifest(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// Create the expected directory structure.
-	for _, sub := range []string{"rules", "agents", "workflows", "skills/s1", "mcp"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, "rules", "a.md"), []byte("rule a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "agents", "b.md"), []byte("agent b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "workflows", "c.md"), []byte("workflow c"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "skills", "s1", "SKILL.md"), []byte("skill s1"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "mcp", "m.json"), []byte(`{}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	servers := map[string]domain.MCPServer{
-		"m": {Name: "m", Command: []string{"test"}},
-	}
-	allowedTools := map[string][]string{
-		"m": {"tool1", "tool2"},
-	}
-
-	manifest, err := buildPackManifest(dir, "1.0.0", servers, allowedTools)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if manifest.SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d, want 1", manifest.SchemaVersion)
-	}
-	if manifest.Version != "1.0.0" {
-		t.Errorf("Version = %q, want %q", manifest.Version, "1.0.0")
-	}
-
-	// Rules
-	if len(manifest.Rules) != 1 || manifest.Rules[0] != "a" {
-		t.Errorf("Rules = %v, want [a]", manifest.Rules)
-	}
-
-	// Agents
-	if len(manifest.Agents) != 1 || manifest.Agents[0] != "b" {
-		t.Errorf("Agents = %v, want [b]", manifest.Agents)
-	}
-
-	// Workflows
-	if len(manifest.Workflows) != 1 || manifest.Workflows[0] != "c" {
-		t.Errorf("Workflows = %v, want [c]", manifest.Workflows)
-	}
-
-	// Skills
-	if len(manifest.Skills) != 1 || manifest.Skills[0] != "s1" {
-		t.Errorf("Skills = %v, want [s1]", manifest.Skills)
-	}
-
-	// MCP servers
-	mDefaults, ok := manifest.MCP.Servers["m"]
-	if !ok {
-		t.Fatal("expected MCP server 'm' in manifest")
-	}
-	if len(mDefaults.DefaultAllowedTools) != 2 {
-		t.Errorf("DefaultAllowedTools = %v, want 2 items", mDefaults.DefaultAllowedTools)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Conflict helpers
 // ---------------------------------------------------------------------------
@@ -235,6 +122,51 @@ func TestCheckFileConflict_DifferentContent(t *testing.T) {
 	}
 	if !conflict {
 		t.Error("expected conflict for different content")
+	}
+}
+
+func TestCheckMCPConflict_IgnoresPackMetadataFormatting(t *testing.T) {
+	t.Parallel()
+	dst := filepath.Join(t.TempDir(), "jira.json")
+	if err := os.WriteFile(dst, []byte("{\n  \"name\": \"jira\",\n  \"transport\": \"stdio\",\n  \"command\": [\"uvx\", \"jira-mcp\"],\n  \"available_tools\": [\"get_issue\"],\n  \"notes\": \"metadata only\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcContent, err := domain.MCPTrackedBytes(domain.MCPServer{
+		Name:      "jira",
+		Transport: domain.TransportStdio,
+		Command:   []string{"uvx", "jira-mcp"},
+	})
+	if err != nil {
+		t.Fatalf("MCPTrackedBytes: %v", err)
+	}
+	conflict, err := checkMCPConflict(srcContent, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conflict {
+		t.Fatal("expected no conflict for equivalent MCP runtime config")
+	}
+}
+
+func TestCheckMCPConflict_NormalizesImplicitStdioTransport(t *testing.T) {
+	t.Parallel()
+	dst := filepath.Join(t.TempDir(), "jira.json")
+	if err := os.WriteFile(dst, []byte("{\n  \"name\": \"jira\",\n  \"transport\": \"stdio\",\n  \"command\": [\"uvx\", \"jira-mcp\"]\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcContent, err := domain.MCPInventoryBytes(domain.MCPServer{
+		Name:    "jira",
+		Command: []string{"uvx", "jira-mcp"},
+	})
+	if err != nil {
+		t.Fatalf("MCPInventoryBytes: %v", err)
+	}
+	conflict, err := checkMCPConflict(srcContent, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conflict {
+		t.Fatal("expected no conflict when stdio transport is implicit in source inventory")
 	}
 }
 
@@ -326,6 +258,7 @@ func (s stubHarness) StripManagedSettings(b []byte, _ string) ([]byte, error) { 
 func (s stubHarness) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
 	return s.capture, nil
 }
+func (s stubHarness) CleanActions(domain.Scope, string, string) []harness.CleanAction { return nil }
 
 // writeLedger writes a ledger JSON file at path with the given entries.
 func writeLedger(t *testing.T, path string, entries map[string]domain.Entry) {
@@ -370,299 +303,6 @@ func writeSaveTestManifest(t *testing.T, packRoot, name string) {
 }
 
 // ---------------------------------------------------------------------------
-// RunToPack integration tests
-// ---------------------------------------------------------------------------
-
-func TestRunToPack_ExistingPack_NoConflict(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
-	packName := "test-pack"
-	packRoot := filepath.Join(configDir, "packs", packName)
-
-	// Create pack with manifest but no rules/a.md yet.
-	writeSaveTestManifest(t, packRoot, packName)
-
-	// Harness file to capture.
-	harnessFile := filepath.Join(home, "harness", "rules", "a.md")
-	if err := os.MkdirAll(filepath.Dir(harnessFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(harnessFile, []byte("new rule"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write ledger so the file is not skipped.
-	ledgerPath := filepath.Join(home, "project", ".aipack", "ledger.json")
-	writeLedger(t, ledgerPath, map[string]domain.Entry{
-		harnessFile: {SourcePack: packName, Digest: "old-digest"},
-	})
-
-	stub := stubHarness{
-		id: "claudecode",
-		capture: harness.CaptureResult{
-			Copies: []domain.CopyAction{{
-				Src: harnessFile, Dst: "rules/a.md", Kind: domain.CopyKindFile,
-			}},
-		},
-	}
-	reg := harness.NewRegistry(stub)
-
-	// Write sync-config so registration doesn't fail.
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "sync-config.yaml"), []byte("schema_version: 1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := RunToPack(ToPackRequest{
-		TargetSpec: TargetSpec{
-			Scope:      "project",
-			ProjectDir: filepath.Join(home, "project"),
-			Harnesses:  []domain.Harness{"claudecode"},
-			Home:       home,
-		},
-		PackName:  packName,
-		ConfigDir: configDir,
-	}, reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.SavedFiles) != 1 {
-		t.Errorf("expected 1 saved file, got %d", len(result.SavedFiles))
-	}
-	if len(result.Conflicts) != 0 {
-		t.Errorf("expected 0 conflicts, got %d", len(result.Conflicts))
-	}
-
-	// Verify file was written.
-	got, err := os.ReadFile(filepath.Join(packRoot, "rules", "a.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "new rule" {
-		t.Errorf("pack file = %q, want %q", got, "new rule")
-	}
-
-	// Verify ledger was updated with the saved file's provenance.
-	lg, _, lErr := engine.LoadLedger(ledgerPath)
-	if lErr != nil {
-		t.Fatal(lErr)
-	}
-	entry, ok := lg.Managed[harnessFile]
-	if !ok {
-		t.Fatal("expected ledger entry for harness file after save")
-	}
-	if entry.SourcePack != packName {
-		t.Errorf("ledger source_pack = %q, want %q", entry.SourcePack, packName)
-	}
-	wantDigest := domain.SingleFileDigest([]byte("new rule"))
-	if entry.Digest != wantDigest {
-		t.Errorf("ledger digest = %q, want %q", entry.Digest, wantDigest)
-	}
-}
-
-func TestRunToPack_ExistingPack_Conflict_Errors(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
-	packName := "test-pack"
-	packRoot := filepath.Join(configDir, "packs", packName)
-
-	writeSaveTestManifest(t, packRoot, packName)
-
-	// Existing pack file with different content.
-	rulesDir := filepath.Join(packRoot, "rules")
-	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rulesDir, "a.md"), []byte("pack version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Harness file with different content.
-	harnessFile := filepath.Join(home, "harness", "rules", "a.md")
-	if err := os.MkdirAll(filepath.Dir(harnessFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(harnessFile, []byte("harness version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ledgerPath := filepath.Join(home, "project", ".aipack", "ledger.json")
-	writeLedger(t, ledgerPath, map[string]domain.Entry{
-		harnessFile: {SourcePack: packName, Digest: "old-digest"},
-	})
-
-	stub := stubHarness{
-		id: "claudecode",
-		capture: harness.CaptureResult{
-			Copies: []domain.CopyAction{{
-				Src: harnessFile, Dst: "rules/a.md", Kind: domain.CopyKindFile,
-			}},
-		},
-	}
-	reg := harness.NewRegistry(stub)
-
-	_, err := RunToPack(ToPackRequest{
-		TargetSpec: TargetSpec{
-			Scope:      "project",
-			ProjectDir: filepath.Join(home, "project"),
-			Harnesses:  []domain.Harness{"claudecode"},
-			Home:       home,
-		},
-		PackName:  packName,
-		ConfigDir: configDir,
-	}, reg)
-	if err == nil {
-		t.Fatal("expected conflict error, got nil")
-	}
-	if !strings.Contains(err.Error(), "conflict") {
-		t.Errorf("expected error containing 'conflict', got: %v", err)
-	}
-
-	// Verify pack file was NOT overwritten.
-	got, _ := os.ReadFile(filepath.Join(rulesDir, "a.md"))
-	if string(got) != "pack version" {
-		t.Errorf("pack file should be unchanged, got %q", got)
-	}
-}
-
-func TestRunToPack_ExistingPack_Conflict_Force(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
-	packName := "test-pack"
-	packRoot := filepath.Join(configDir, "packs", packName)
-
-	writeSaveTestManifest(t, packRoot, packName)
-
-	rulesDir := filepath.Join(packRoot, "rules")
-	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rulesDir, "a.md"), []byte("pack version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	harnessFile := filepath.Join(home, "harness", "rules", "a.md")
-	if err := os.MkdirAll(filepath.Dir(harnessFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(harnessFile, []byte("harness version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ledgerPath := filepath.Join(home, "project", ".aipack", "ledger.json")
-	writeLedger(t, ledgerPath, map[string]domain.Entry{
-		harnessFile: {SourcePack: packName, Digest: "old-digest"},
-	})
-
-	stub := stubHarness{
-		id: "claudecode",
-		capture: harness.CaptureResult{
-			Copies: []domain.CopyAction{{
-				Src: harnessFile, Dst: "rules/a.md", Kind: domain.CopyKindFile,
-			}},
-		},
-	}
-	reg := harness.NewRegistry(stub)
-
-	result, err := RunToPack(ToPackRequest{
-		TargetSpec: TargetSpec{
-			Scope:      "project",
-			ProjectDir: filepath.Join(home, "project"),
-			Harnesses:  []domain.Harness{"claudecode"},
-			Home:       home,
-		},
-		PackName:  packName,
-		ConfigDir: configDir,
-		Force:     true,
-	}, reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Conflicts) != 1 {
-		t.Errorf("expected 1 conflict, got %d", len(result.Conflicts))
-	}
-	if len(result.SavedFiles) != 1 {
-		t.Errorf("expected 1 saved file, got %d", len(result.SavedFiles))
-	}
-
-	// Verify file WAS overwritten.
-	got, _ := os.ReadFile(filepath.Join(rulesDir, "a.md"))
-	if string(got) != "harness version" {
-		t.Errorf("pack file should be overwritten, got %q", got)
-	}
-}
-
-func TestRunToPack_ExistingPack_Conflict_DryRun(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
-	packName := "test-pack"
-	packRoot := filepath.Join(configDir, "packs", packName)
-
-	writeSaveTestManifest(t, packRoot, packName)
-
-	rulesDir := filepath.Join(packRoot, "rules")
-	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rulesDir, "a.md"), []byte("pack version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	harnessFile := filepath.Join(home, "harness", "rules", "a.md")
-	if err := os.MkdirAll(filepath.Dir(harnessFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(harnessFile, []byte("harness version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ledgerPath := filepath.Join(home, "project", ".aipack", "ledger.json")
-	writeLedger(t, ledgerPath, map[string]domain.Entry{
-		harnessFile: {SourcePack: packName, Digest: "old-digest"},
-	})
-
-	stub := stubHarness{
-		id: "claudecode",
-		capture: harness.CaptureResult{
-			Copies: []domain.CopyAction{{
-				Src: harnessFile, Dst: "rules/a.md", Kind: domain.CopyKindFile,
-			}},
-		},
-	}
-	reg := harness.NewRegistry(stub)
-
-	result, err := RunToPack(ToPackRequest{
-		TargetSpec: TargetSpec{
-			Scope:      "project",
-			ProjectDir: filepath.Join(home, "project"),
-			Harnesses:  []domain.Harness{"claudecode"},
-			Home:       home,
-		},
-		PackName:  packName,
-		ConfigDir: configDir,
-		DryRun:    true,
-	}, reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Conflicts) != 1 {
-		t.Errorf("expected 1 conflict, got %d", len(result.Conflicts))
-	}
-
-	// Verify file was NOT written.
-	got, _ := os.ReadFile(filepath.Join(rulesDir, "a.md"))
-	if string(got) != "pack version" {
-		t.Errorf("pack file should be unchanged in dry-run, got %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // RunRoundTrip integration tests
 // ---------------------------------------------------------------------------
 
@@ -695,7 +335,7 @@ func TestRunRoundTrip_PackSideConflict_Errors(t *testing.T) {
 	}
 
 	// Write ledger.
-	ledgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		harnessFile: {SourcePack: "my-pack", Digest: origDigest},
 	})
@@ -758,7 +398,7 @@ func TestRunRoundTrip_PackSideConflict_Force(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		harnessFile: {SourcePack: "my-pack", Digest: origDigest},
 	})
@@ -799,94 +439,6 @@ func TestRunRoundTrip_PackSideConflict_Force(t *testing.T) {
 		t.Errorf("pack file should be overwritten, got %q", got)
 	}
 }
-
-func TestRunToPack_ExistingPack_AgentUsesTypedNeutralBytes(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
-	packName := "test-pack"
-	packRoot := filepath.Join(configDir, "packs", packName)
-
-	writeSaveTestManifest(t, packRoot, packName)
-
-	harnessFile := filepath.Join(home, "harness", "agents", "reviewer.md")
-	if err := os.MkdirAll(filepath.Dir(harnessFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	native := []byte("---\nname: reviewer\ntools:\n  bash: true\n---\nReview\n")
-	if err := os.WriteFile(harnessFile, native, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	neutralBytes, err := engine.RenderAgentBytes(domain.Agent{
-		Frontmatter: domain.AgentFrontmatter{Name: "reviewer", Tools: []string{"bash"}},
-		Body:        []byte("Review\n"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	neutral := string(neutralBytes)
-	if err := os.MkdirAll(filepath.Join(packRoot, "agents"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packRoot, "agents", "reviewer.md"), []byte(neutral), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ledgerPath := filepath.Join(home, "project", ".aipack", "ledger.json")
-	writeLedger(t, ledgerPath, map[string]domain.Entry{
-		harnessFile: {SourcePack: packName, Digest: "old-digest"},
-	})
-
-	stub := stubHarness{
-		id: "opencode",
-		capture: harness.CaptureResult{
-			Copies: []domain.CopyAction{{
-				Src: harnessFile, Dst: "agents/reviewer.md", Kind: domain.CopyKindFile,
-			}},
-			Agents: []domain.Agent{{
-				Name:        "reviewer",
-				Frontmatter: domain.AgentFrontmatter{Name: "reviewer", Tools: []string{"bash"}},
-				Body:        []byte("Review\n"),
-				Raw:         native,
-				SourcePath:  harnessFile,
-			}},
-		},
-	}
-	reg := harness.NewRegistry(stub)
-
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "sync-config.yaml"), []byte("schema_version: 1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := RunToPack(ToPackRequest{
-		TargetSpec: TargetSpec{
-			Scope:      "project",
-			ProjectDir: filepath.Join(home, "project"),
-			Harnesses:  []domain.Harness{"opencode"},
-			Home:       home,
-		},
-		PackName:  packName,
-		ConfigDir: configDir,
-	}, reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Conflicts) != 0 {
-		t.Fatalf("expected no conflicts, got %v", result.Conflicts)
-	}
-	got, err := os.ReadFile(filepath.Join(packRoot, "agents", "reviewer.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != neutral {
-		t.Fatalf("pack file = %q, want neutral %q (ToPack)", got, neutral)
-	}
-}
-
 func TestRunRoundTrip_AgentPackAlreadyNeutral_DoesNotConflict(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -918,7 +470,7 @@ func TestRunRoundTrip_AgentPackAlreadyNeutral_DoesNotConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		harnessFile: {SourcePack: "my-pack", Digest: "old-digest"},
 	})
@@ -967,89 +519,6 @@ func TestRunRoundTrip_AgentPackAlreadyNeutral_DoesNotConflict(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Finding #1: Directory-backed saves don't propagate deletions
 // ---------------------------------------------------------------------------
-
-func TestRunToPack_DirSave_PropagatesDeletions(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
-	packName := "test-pack"
-	packRoot := filepath.Join(configDir, "packs", packName)
-
-	writeSaveTestManifest(t, packRoot, packName)
-
-	// Pre-populate pack skill dir with an extra file that no longer exists in source.
-	packSkillDir := filepath.Join(packRoot, "skills", "my-skill")
-	if err := os.MkdirAll(packSkillDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packSkillDir, "SKILL.md"), []byte("skill"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packSkillDir, "extra.md"), []byte("stale"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Source skill dir only has SKILL.md (extra.md was deleted).
-	srcSkillDir := filepath.Join(home, "harness", "skills", "my-skill")
-	if err := os.MkdirAll(srcSkillDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcSkillDir, "SKILL.md"), []byte("skill updated"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ledgerPath := filepath.Join(home, "project", ".aipack", "ledger.json")
-	writeLedger(t, ledgerPath, map[string]domain.Entry{
-		srcSkillDir: {SourcePack: packName, Digest: "old-digest"},
-	})
-
-	stub := stubHarness{
-		id: "claudecode",
-		capture: harness.CaptureResult{
-			Copies: []domain.CopyAction{{
-				Src: srcSkillDir, Dst: "skills/my-skill", Kind: domain.CopyKindDir,
-			}},
-		},
-	}
-	reg := harness.NewRegistry(stub)
-
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "sync-config.yaml"), []byte("schema_version: 1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := RunToPack(ToPackRequest{
-		TargetSpec: TargetSpec{
-			Scope:      "project",
-			ProjectDir: filepath.Join(home, "project"),
-			Harnesses:  []domain.Harness{"claudecode"},
-			Home:       home,
-		},
-		PackName:  packName,
-		ConfigDir: configDir,
-		Force:     true,
-	}, reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// SKILL.md should be updated.
-	got, err := os.ReadFile(filepath.Join(packSkillDir, "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "skill updated" {
-		t.Errorf("SKILL.md = %q, want %q", got, "skill updated")
-	}
-
-	// extra.md should have been removed — it no longer exists in source.
-	if _, err := os.Stat(filepath.Join(packSkillDir, "extra.md")); !os.IsNotExist(err) {
-		t.Error("extra.md should have been deleted from pack dir, but still exists")
-	}
-}
-
 func TestRunRoundTrip_DirSave_PropagatesDeletions(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -1077,7 +546,7 @@ func TestRunRoundTrip_DirSave_PropagatesDeletions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		srcSkillDir: {SourcePack: "my-pack", Digest: "old-digest"},
 	})
@@ -1125,41 +594,10 @@ func TestRunRoundTrip_DirSave_PropagatesDeletions(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding #2: Snapshot manifests omit Claude Code settings
+// Finding #4: Forced settings saves should persist immediately
 // ---------------------------------------------------------------------------
 
-func TestBuildPackManifest_DetectsClaudeCodeSettings(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// Create Claude Code settings config.
-	ccDir := filepath.Join(dir, "configs", "claudecode")
-	if err := os.MkdirAll(ccDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(ccDir, "settings.local.json"), []byte(`{}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	manifest, err := buildPackManifest(dir, "1.0.0", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ccSettings, ok := manifest.Configs.HarnessSettings["claudecode"]
-	if !ok {
-		t.Fatal("expected claudecode in HarnessSettings, not found")
-	}
-	if len(ccSettings) != 1 || ccSettings[0] != "settings.local.json" {
-		t.Errorf("claudecode HarnessSettings = %v, want [settings.local.json]", ccSettings)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Finding #4: Forced settings saves don't advance ledger
-// ---------------------------------------------------------------------------
-
-func TestRunRoundTrip_SettingsSave_AdvancesLedger(t *testing.T) {
+func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	projectDir := filepath.Join(home, "project")
@@ -1178,7 +616,7 @@ func TestRunRoundTrip_SettingsSave_AdvancesLedger(t *testing.T) {
 
 	origDigest := domain.SingleFileDigest(origContent)
 
-	ledgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		settingsFile: {SourcePack: "my-pack", Digest: origDigest},
 	})
@@ -1215,13 +653,23 @@ func TestRunRoundTrip_SettingsSave_AdvancesLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The settings change should be detected.
-	if len(result.PendingSettings) == 0 {
-		t.Fatal("expected at least 1 pending settings change")
+	if len(result.PendingSettings) != 0 {
+		t.Fatalf("PendingSettings = %d, want 0", len(result.PendingSettings))
+	}
+	if len(result.SavedFiles) != 1 {
+		t.Fatalf("SavedFiles = %d, want 1", len(result.SavedFiles))
 	}
 
-	// Reload ledger — the digest should have been advanced when PendingSettings
-	// were recorded, so a second run reports unchanged.
+	got, err := os.ReadFile(filepath.Join(packRoot, "configs", "claudecode", "settings.local.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(newContent) {
+		t.Fatalf("saved settings = %q, want %q", got, newContent)
+	}
+
+	// Reload ledger — once the forced save writes the pack-side file, the
+	// harness digest should advance so the next round-trip is clean.
 	lg, _, lErr := engine.LoadLedger(ledgerPath)
 	if lErr != nil {
 		t.Fatal(lErr)
@@ -1230,12 +678,11 @@ func TestRunRoundTrip_SettingsSave_AdvancesLedger(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ledger entry for settings file")
 	}
-	newDigest := domain.SingleFileDigest(newContent)
-	if entry.Digest != newDigest {
-		t.Errorf("ledger digest not advanced: got %q, want %q", entry.Digest, newDigest)
+	if entry.Digest == origDigest {
+		t.Errorf("ledger digest did not advance after forced settings save")
 	}
 
-	// A second round-trip with same content should report unchanged.
+	// A second round-trip with the same content should now be clean.
 	result2, err := RunRoundTrip(RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
@@ -1249,7 +696,7 @@ func TestRunRoundTrip_SettingsSave_AdvancesLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(result2.PendingSettings) != 0 {
-		t.Errorf("second round-trip should report no pending settings, got %d", len(result2.PendingSettings))
+		t.Errorf("second round-trip PendingSettings = %d, want 0", len(result2.PendingSettings))
 	}
 	if result2.UnchangedCount != 1 {
 		t.Errorf("second round-trip UnchangedCount = %d, want 1", result2.UnchangedCount)
@@ -1295,7 +742,7 @@ func TestRunRoundTrip_SkillDir_NoFalseConflict_AfterSync(t *testing.T) {
 	// Ledger has per-file entries (as sync would create).
 	skillPath := filepath.Join(srcSkillDir, "SKILL.md")
 	helperPath := filepath.Join(srcSkillDir, "helper.md")
-	ledgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		skillPath:  {SourcePack: "my-pack", Digest: domain.SingleFileDigest(skillContent)},
 		helperPath: {SourcePack: "my-pack", Digest: domain.SingleFileDigest(helperContent)},
@@ -1344,5 +791,168 @@ func TestRunRoundTrip_SkillDir_NoFalseConflict_AfterSync(t *testing.T) {
 	}
 	if string(got) != string(modifiedSkill) {
 		t.Errorf("pack SKILL.md = %q, want %q", got, modifiedSkill)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Content writes (promoted agents/workflows) in round-trip
+// ---------------------------------------------------------------------------
+
+func TestRunRoundTrip_ContentWrite_SavedDirectly(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+
+	// Simulate a promoted agent SKILL.md on disk (the harness side).
+	skillFile := filepath.Join(projectDir, ".agents", "skills", "my-agent", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	promotedContent := []byte("---\nname: my-agent\nsource_type: agent\n---\n\nagent body\n")
+	if err := os.WriteFile(skillFile, promotedContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ledger records the digest of the promoted SKILL.md (as sync would).
+	origDigest := domain.SingleFileDigest(promotedContent)
+
+	// Simulate that the SKILL.md was modified (user edited the agent body).
+	modifiedPromoted := []byte("---\nname: my-agent\nsource_type: agent\n---\n\nupdated agent body\n")
+	if err := os.WriteFile(skillFile, modifiedPromoted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modifiedDigest := domain.SingleFileDigest(modifiedPromoted)
+
+	// Re-rendered agent content (what capture would produce).
+	reRendered := []byte("---\nname: my-agent\n---\n\nupdated agent body\n")
+
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex")
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		skillFile: {SourcePack: "my-pack", Digest: origDigest},
+	})
+
+	// Pre-populate pack agent file.
+	packAgentDir := filepath.Join(packRoot, "agents")
+	if err := os.MkdirAll(packAgentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := stubHarness{
+		id: "codex",
+		capture: harness.CaptureResult{
+			Writes: []domain.WriteAction{{
+				Src:          skillFile,
+				Dst:          "agents/my-agent.md",
+				Content:      reRendered,
+				IsContent:    true,
+				SourceDigest: modifiedDigest,
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	result, err := RunRoundTrip(RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope:      "project",
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{"codex"},
+			Home:       home,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+	}, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Content write should produce a SavedFile, not a PendingSettingsChange.
+	if len(result.SavedFiles) != 1 {
+		t.Fatalf("SavedFiles = %d, want 1", len(result.SavedFiles))
+	}
+	if len(result.PendingSettings) != 0 {
+		t.Fatalf("PendingSettings = %d, want 0", len(result.PendingSettings))
+	}
+
+	// The re-rendered agent content should be written to the pack.
+	got, err := os.ReadFile(filepath.Join(packAgentDir, "my-agent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(reRendered) {
+		t.Errorf("pack agent = %q, want %q", got, reRendered)
+	}
+
+	// Ledger should be updated with the SourceDigest (promoted SKILL.md hash),
+	// not the re-rendered content hash.
+	lg, _, err := engine.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := lg.Managed[skillFile]
+	if !ok {
+		t.Fatal("expected ledger entry for skill file")
+	}
+	if entry.Digest != modifiedDigest {
+		t.Errorf("ledger digest = %q, want SourceDigest %q", entry.Digest, modifiedDigest)
+	}
+}
+
+func TestRunRoundTrip_ContentWrite_UnchangedSkipped(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+
+	skillFile := filepath.Join(projectDir, ".agents", "skills", "my-wf", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	promotedContent := []byte("---\nname: my-wf\nsource_type: workflow\n---\n\nwf body\n")
+	if err := os.WriteFile(skillFile, promotedContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ledger digest matches the on-disk SKILL.md — nothing changed.
+	sourceDigest := domain.SingleFileDigest(promotedContent)
+
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex")
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		skillFile: {SourcePack: "my-pack", Digest: sourceDigest},
+	})
+
+	reRendered := []byte("---\nname: my-wf\n---\n\nwf body\n")
+
+	stub := stubHarness{
+		id: "codex",
+		capture: harness.CaptureResult{
+			Writes: []domain.WriteAction{{
+				Src:          skillFile,
+				Dst:          "workflows/my-wf.md",
+				Content:      reRendered,
+				IsContent:    true,
+				SourceDigest: sourceDigest,
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	result, err := RunRoundTrip(RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope:      "project",
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{"codex"},
+			Home:       home,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+	}, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.SavedFiles) != 0 {
+		t.Errorf("SavedFiles = %d, want 0 (unchanged)", len(result.SavedFiles))
+	}
+	if result.UnchangedCount != 1 {
+		t.Errorf("UnchangedCount = %d, want 1", result.UnchangedCount)
 	}
 }

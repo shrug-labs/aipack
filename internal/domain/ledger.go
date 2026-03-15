@@ -19,7 +19,8 @@ type Entry struct {
 
 // Ledger tracks managed files across sync operations.
 type Ledger struct {
-	Managed map[string]Entry `json:"managed"`
+	Managed   map[string]Entry `json:"managed"`
+	UpdatedAt int64            `json:"-"` // epoch seconds from updated_at_epoch_s; 0 if absent
 }
 
 // NewLedger creates an empty ledger.

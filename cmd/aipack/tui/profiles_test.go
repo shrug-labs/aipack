@@ -54,6 +54,26 @@ func TestTwoPanelView_ShowsProfileDetails(t *testing.T) {
 	}
 }
 
+func TestProfileList_SelectedProfileStaysHighlightedWhenNotFocused(t *testing.T) {
+	t.Parallel()
+
+	m := profilesModel{
+		items: []profileItem{
+			{name: "default", isActive: true},
+			{name: "other"},
+		},
+		cursor: 1,
+		focus:  panelPacks,
+		width:  120,
+		height: 20,
+	}
+
+	view := m.viewProfileList(24, 10)
+	if !strings.Contains(view, selectedStyle.Render("other")) {
+		t.Fatalf("expected selected profile to stay pink out of focus, got:\n%s", view)
+	}
+}
+
 func TestTwoPanelView_UnsyncedShowsPendingCount(t *testing.T) {
 	t.Parallel()
 	// Pending count is now shown on the Sync tab, not on the profiles view.
@@ -61,8 +81,8 @@ func TestTwoPanelView_UnsyncedShowsPendingCount(t *testing.T) {
 	m.activeSync = syncTabSnapshot{
 		syncState: syncUnsynced,
 		syncTarget: syncTargetInfo{PlanSummary: app.PlanSummary{
-			NumWrites: 2,
-			NumCopies: 1,
+			NumRules:  2,
+			NumSkills: 1,
 		}},
 	}
 	m.width = 120
@@ -210,6 +230,61 @@ func TestProfileSavedMsg_RerunsSyncCheck(t *testing.T) {
 	// Sync state should be set to syncLoading (checkSyncCmd sets it).
 	if rm.profiles.items[0].syncState != syncLoading {
 		t.Fatalf("expected syncState=syncLoading after save triggered recheck, got %d", rm.profiles.items[0].syncState)
+	}
+}
+
+func TestProfilesLoaded_ClampsOffsetForLastActiveProfile(t *testing.T) {
+	t.Parallel()
+
+	items := make([]profileItem, 0, 7)
+	for i := range 7 {
+		items = append(items, profileItem{
+			name:     "profile-" + string(rune('0'+i)),
+			isActive: i == 6,
+			cfg:      config.ProfileConfig{Packs: []config.PackEntry{{Name: "pack-a"}}},
+		})
+	}
+
+	m := profilesModel{
+		width:  100,
+		height: 10,
+		focus:  panelProfiles,
+	}
+
+	updated, _ := m.Update(profilesLoadedMsg{items: items})
+	m = updated
+
+	view := m.viewProfileList(20, 8)
+	if !strings.Contains(view, "profile-6") {
+		t.Fatalf("expected last active profile to be visible after load, got:\n%s", view)
+	}
+}
+
+func TestViewTreePanel_ShowsLastContentItemAtBottom(t *testing.T) {
+	t.Parallel()
+
+	tree := testTree(
+		config.PackManifest{Rules: []string{"rule-0", "rule-1", "rule-2", "rule-3", "rule-4", "rule-5"}},
+		config.PackEntry{Name: "test-pack"},
+	)
+	tree.cursor = len(tree.nodes) - 1
+	tree.clampOffset(6)
+
+	m := profilesModel{
+		items: []profileItem{{
+			name: "default",
+			cfg:  config.ProfileConfig{Packs: []config.PackEntry{{Name: "test-pack"}}},
+			tree: &tree,
+		}},
+		cursor: 0,
+		focus:  panelTree,
+		width:  100,
+		height: 10,
+	}
+
+	view := m.viewTreePanel(40, 8)
+	if !strings.Contains(view, "rule-5") {
+		t.Fatalf("expected tree panel to include the last content item, got:\n%s", view)
 	}
 }
 
@@ -416,7 +491,7 @@ func TestLeftPanel_SpaceReturnsFileSizeCmd(t *testing.T) {
 	// Build a tree manually so computeFileSizesCmd has something to work with.
 	tree := treeModel{
 		nodes: []treeNode{{kind: nodeItem, id: "test", packIdx: 0}},
-		packs: []packInfo{{idx: 0, name: "pack-a", root: "/tmp/pack-a"}},
+		packs: []app.ProfilePackInfo{{Index: 0, Name: "pack-a", Root: "/tmp/pack-a"}},
 	}
 	m := profilesModel{
 		items: []profileItem{
@@ -497,7 +572,7 @@ func TestProfilesTab_NoSyncBlurb(t *testing.T) {
 				isActive:  true,
 				syncState: syncUnsynced,
 				syncTarget: syncTargetInfo{
-					PlanSummary: app.PlanSummary{NumWrites: 5, NumCopies: 2, NumSettings: 1},
+					PlanSummary: app.PlanSummary{NumRules: 5, NumSkills: 2, NumSettings: 1},
 					harnesses:   []string{"cline"},
 					scope:       "project",
 				},

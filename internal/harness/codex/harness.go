@@ -61,101 +61,77 @@ func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
 }
 
 func planProject(f *domain.Fragment, ctx engine.SyncContext) error {
-	skillsSubDir := filepath.Join(".agents", "skills")
-
-	if rules := ctx.Profile.AllRules(); len(rules) > 0 {
-		baseAgents := filepath.Join(ctx.TargetDir, "AGENTS.md")
-		var existing string
-		b, err := os.ReadFile(baseAgents)
-		if err == nil {
-			existing = string(b)
-		}
-		override := buildAgentsOverride(rules, existing)
-		dst := filepath.Join(ctx.TargetDir, "AGENTS.override.md")
-		f.Writes = append(f.Writes, domain.WriteAction{Dst: dst, Content: []byte(override)})
-		f.Desired = append(f.Desired, dst)
-	}
-	f.AddSkillCopies(ctx.TargetDir, skillsSubDir, ctx.Profile.AllSkills())
-	addPromotedWorkflows(f, ctx.TargetDir, skillsSubDir, ctx.Profile.AllWorkflows())
-	addPromotedAgents(f, ctx.TargetDir, skillsSubDir, ctx.Profile.AllAgents())
-
-	sp := ctx.Profile.SettingsPackName(domain.HarnessCodex)
-	dst := SettingsProjectPath(ctx.TargetDir)
-	hasMCP := len(ctx.Profile.MCPServers) > 0
-
-	decision := engine.ClassifySettings(hasMCP, hasMCP, ctx.SkipSettings)
-	if decision.EmitSettings {
-		base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
-		out, _, err := RenderBytes(base, ctx.Profile.MCPServers, true)
-		if err != nil {
-			return err
-		}
-		f.Settings = append(f.Settings, domain.SettingsAction{
-			Dst: dst, Desired: out, Harness: domain.HarnessCodex,
-			Label: "config.toml", SourcePack: sp,
-		})
-		f.Desired = append(f.Desired, filepath.Clean(dst))
-	} else if decision.EmitMCPPlugin {
-		managed, _, err := RenderMCPOnly(ctx.Profile.MCPServers, true)
-		if err != nil {
-			return err
-		}
-		f.Plugins = append(f.Plugins, domain.SettingsAction{
-			Dst: dst, Desired: managed, Harness: domain.HarnessCodex,
-			Label: "config.toml (managed keys)", SourcePack: sp, MergeMode: decision.MergeMode,
-		})
-		f.Desired = append(f.Desired, filepath.Clean(dst))
-	}
-
-	return nil
+	return planCodex(f, ctx, ctx.TargetDir, ctx.TargetDir, SettingsProjectPath(ctx.TargetDir))
 }
 
 func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 	codexHome := filepath.Join(ctx.TargetDir, ".codex")
+	return planCodex(f, ctx, codexHome, ctx.TargetDir, SettingsGlobalPath(ctx.TargetDir))
+}
+
+// planCodex is the shared implementation for both project and global scope.
+// overrideBase is where AGENTS.override.md lives; skillsBase is where .agents/skills/ lives.
+func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsBase, settingsPath string) error {
 	skillsSubDir := filepath.Join(".agents", "skills")
 
 	if rules := ctx.Profile.AllRules(); len(rules) > 0 {
-		baseAgents := filepath.Join(codexHome, "AGENTS.md")
+		baseAgents := filepath.Join(overrideBase, "AGENTS.md")
 		var existing string
 		b, err := os.ReadFile(baseAgents)
 		if err == nil {
 			existing = string(b)
 		}
 		override := buildAgentsOverride(rules, existing)
-		dst := filepath.Join(codexHome, "AGENTS.override.md")
+		dst := filepath.Join(overrideBase, "AGENTS.override.md")
 		f.Writes = append(f.Writes, domain.WriteAction{Dst: dst, Content: []byte(override)})
 		f.Desired = append(f.Desired, dst)
 	}
-	f.AddSkillCopies(ctx.TargetDir, skillsSubDir, ctx.Profile.AllSkills())
-	addPromotedWorkflows(f, ctx.TargetDir, skillsSubDir, ctx.Profile.AllWorkflows())
-	addPromotedAgents(f, ctx.TargetDir, skillsSubDir, ctx.Profile.AllAgents())
+	f.AddSkillCopies(skillsBase, skillsSubDir, ctx.Profile.AllSkills())
+	addPromotedWorkflows(f, skillsBase, skillsSubDir, ctx.Profile.AllWorkflows())
+	addPromotedAgents(f, skillsBase, skillsSubDir, ctx.Profile.AllAgents())
 
 	sp := ctx.Profile.SettingsPackName(domain.HarnessCodex)
-	codexConfigPath := SettingsGlobalPath(ctx.TargetDir)
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 
 	decision := engine.ClassifySettings(hasMCP, hasMCP, ctx.SkipSettings)
+	var mcpRendered []byte
 	if decision.EmitSettings {
 		base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
-		out, _, err := RenderBytes(base, ctx.Profile.MCPServers, true)
+		out, _, err := RenderBytes(base, ctx.Profile.MCPServers)
 		if err != nil {
 			return err
 		}
+		mcpRendered = out
 		f.Settings = append(f.Settings, domain.SettingsAction{
-			Dst: codexConfigPath, Desired: out, Harness: domain.HarnessCodex,
-			Label: "config.toml", SourcePack: sp,
+			Dst: settingsPath, Desired: out, Harness: domain.HarnessCodex,
+			Label: "config.toml", SourcePack: sp, MergeMode: true,
 		})
-		f.Desired = append(f.Desired, filepath.Clean(codexConfigPath))
-	} else if decision.EmitMCPPlugin {
-		managed, _, err := RenderMCPOnly(ctx.Profile.MCPServers, true)
+		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
+	} else if decision.EmitMCP {
+		managed, _, err := RenderMCPOnly(ctx.Profile.MCPServers)
 		if err != nil {
 			return err
 		}
-		f.Plugins = append(f.Plugins, domain.SettingsAction{
-			Dst: codexConfigPath, Desired: managed, Harness: domain.HarnessCodex,
+		mcpRendered = managed
+		f.MCP = append(f.MCP, domain.SettingsAction{
+			Dst: settingsPath, Desired: managed, Harness: domain.HarnessCodex,
 			Label: "config.toml (managed keys)", SourcePack: sp, MergeMode: decision.MergeMode,
 		})
-		f.Desired = append(f.Desired, filepath.Clean(codexConfigPath))
+		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
+	}
+	if hasMCP && len(mcpRendered) > 0 {
+		planned := map[string]domain.MCPServer{}
+		parseCodexSettings(planned, map[string][]string{}, mcpRendered)
+		mcpActions, err := domain.BuildMCPActions(
+			settingsPath,
+			domain.HarnessCodex,
+			harness.PlannedMCPServers(ctx.Profile.MCPServers, planned),
+			true,
+		)
+		if err != nil {
+			return err
+		}
+		f.MCPServers = append(f.MCPServers, mcpActions...)
 	}
 
 	return nil
@@ -174,7 +150,7 @@ func buildAgentsOverride(rules []domain.Rule, existingAgents string) string {
 // Render produces a Fragment for pack rendering.
 func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
-	out, _, err := RenderBytes(base, ctx.Profile.MCPServers, false)
+	out, _, err := RenderBytes(base, ctx.Profile.MCPServers)
 	if err != nil {
 		return domain.Fragment{}, err
 	}
@@ -190,6 +166,43 @@ func (Harness) StripManagedSettings(rendered []byte, _ string) ([]byte, error) {
 	return StripManagedKeys(rendered)
 }
 
+// CleanActions returns operations to reset Codex managed state.
+func (Harness) CleanActions(scope domain.Scope, baseDir, _ string) []harness.CleanAction {
+	var actions []harness.CleanAction
+	var configPath string
+	if scope == domain.ScopeProject {
+		configPath = SettingsProjectPath(baseDir)
+		actions = append(actions,
+			harness.CleanAction{Path: filepath.Join(baseDir, ".agents", "skills")},
+			harness.CleanAction{Path: filepath.Join(baseDir, "AGENTS.override.md")},
+		)
+	} else {
+		configPath = SettingsGlobalPath(baseDir)
+		codexHome := filepath.Join(baseDir, ".codex")
+		actions = append(actions,
+			harness.CleanAction{Path: filepath.Join(baseDir, ".agents", "skills")},
+			harness.CleanAction{Path: filepath.Join(codexHome, "rules")},
+			harness.CleanAction{Path: filepath.Join(codexHome, "AGENTS.override.md")},
+		)
+	}
+	actions = append(actions, harness.CleanAction{
+		Path:   configPath,
+		Format: harness.CleanTOML,
+		Edit: func(root map[string]any) {
+			delete(root, "mcp_servers")
+			if m, ok := root["mcp"].(map[string]any); ok {
+				delete(m, "servers")
+				if len(m) == 0 {
+					delete(root, "mcp")
+				} else {
+					root["mcp"] = m
+				}
+			}
+		},
+	})
+	return actions
+}
+
 // Capture extracts Codex content for round-trip save.
 func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
@@ -201,13 +214,15 @@ func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error
 }
 
 func captureProject(projectDir string, res harness.CaptureResult) (harness.CaptureResult, error) {
-	skillCopies, skills := harness.CaptureSkills(
+	harness.CapturePromotedContent(
 		filepath.Join(projectDir, ".agents", "skills"),
-		"skills",
+		&res,
 	)
-	res.Copies = append(res.Copies, skillCopies...)
-	res.Skills = append(res.Skills, skills...)
 	// AGENTS.override.md is fully generated by sync — not captured.
+	// Rules are flattened into AGENTS.override.md during Plan and cannot be
+	// individually recovered. CaptureResult.Rules will be empty for Codex.
+	// This is a one-way transform: rules must be round-tripped through the
+	// pack source, not through the harness.
 
 	settingsPath := SettingsProjectPath(projectDir)
 	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
@@ -218,20 +233,23 @@ func captureProject(projectDir string, res harness.CaptureResult) (harness.Captu
 		})
 		res.Warnings = append(res.Warnings, parseCodexSettings(res.MCPServers, res.AllowedTools, b)...)
 	}
+	res.MaterializeCapturedMCP(settingsPath)
 	return res, nil
 }
 
 func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResult, error) {
 	codexHome := filepath.Join(home, ".codex")
 
-	skillCopies, skills := harness.CaptureSkills(
+	harness.CapturePromotedContent(
 		filepath.Join(home, ".agents", "skills"),
-		"skills",
+		&res,
 	)
-	res.Copies = append(res.Copies, skillCopies...)
-	res.Skills = append(res.Skills, skills...)
 
 	// Capture user-authored .rules files (flat Dst).
+	// These are Codex-native format (not markdown+frontmatter), so they're
+	// captured as CopyActions rather than parsed into typed domain.Rule values.
+	// Other harnesses (claudecode, cline, opencode) use .md rules that get
+	// parsed; Codex rules stay as opaque files for round-trip fidelity.
 	rulesDir := filepath.Join(codexHome, "rules")
 	if entries, err := os.ReadDir(rulesDir); err == nil {
 		for _, e := range entries {
@@ -248,7 +266,7 @@ func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResul
 	} else if !os.IsNotExist(err) {
 		res.Warnings = append(res.Warnings, domain.Warning{Path: rulesDir, Message: fmt.Sprintf("reading directory: %v", err)})
 	}
-	// AGENTS.override.md is fully generated by sync — not captured.
+	// AGENTS.override.md is fully generated by sync — not captured (see captureProject).
 
 	settingsPath := SettingsGlobalPath(home)
 	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
@@ -259,6 +277,7 @@ func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResul
 		})
 		res.Warnings = append(res.Warnings, parseCodexSettings(res.MCPServers, res.AllowedTools, b)...)
 	}
+	res.MaterializeCapturedMCP(settingsPath)
 	return res, nil
 }
 
@@ -267,10 +286,14 @@ type codexSettingsCapture struct {
 }
 
 type codexCapturedServer struct {
-	Command      string            `toml:"command"`
-	Args         []string          `toml:"args"`
-	EnabledTools []string          `toml:"enabled_tools"`
-	Env          map[string]string `toml:"env"`
+	Type          string            `toml:"type"`
+	Command       string            `toml:"command"`
+	Args          []string          `toml:"args"`
+	EnabledTools  []string          `toml:"enabled_tools"`
+	DisabledTools []string          `toml:"disabled_tools"`
+	Env           map[string]string `toml:"env"`
+	URL           string            `toml:"url"`
+	Headers       map[string]string `toml:"headers"`
 }
 
 func parseCodexSettings(servers map[string]domain.MCPServer, allowed map[string][]string, b []byte) []domain.Warning {
@@ -279,22 +302,37 @@ func parseCodexSettings(servers map[string]domain.MCPServer, allowed map[string]
 		return []domain.Warning{{Message: fmt.Sprintf("failed to parse Codex config.toml: %v", err)}}
 	}
 	for name, entry := range cfg.MCPServers {
-		cmd := entry.Command
-		if cmd == "" {
-			continue
+		transport := entry.Type
+		if transport == "" {
+			transport = domain.TransportStdio
 		}
-		argv := []string{cmd}
-		argv = append(argv, entry.Args...)
-		env := entry.Env
-		if env == nil {
-			env = map[string]string{}
-		}
-		servers[name] = domain.MCPServer{
+		srv := domain.MCPServer{
 			Name:      name,
-			Transport: domain.TransportStdio,
-			Command:   argv,
-			Env:       env,
+			Transport: transport,
 		}
+		if srv.IsStdio() {
+			if entry.Command == "" {
+				continue
+			}
+			argv := []string{entry.Command}
+			argv = append(argv, entry.Args...)
+			srv.Command = argv
+			env := entry.Env
+			if env == nil {
+				env = map[string]string{}
+			}
+			srv.Env = env
+		} else {
+			srv.URL = entry.URL
+			if len(entry.Headers) > 0 {
+				srv.Headers = entry.Headers
+			}
+		}
+		if len(entry.DisabledTools) > 0 {
+			srv.DisabledTools = append([]string{}, entry.DisabledTools...)
+			sort.Strings(srv.DisabledTools)
+		}
+		servers[name] = srv
 		if len(entry.EnabledTools) > 0 {
 			allowed[name] = append([]string{}, entry.EnabledTools...)
 			sort.Strings(allowed[name])

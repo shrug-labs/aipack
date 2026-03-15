@@ -18,7 +18,7 @@ func TestRenderMCPBytesFromTyped_Basic(t *testing.T) {
 		},
 	}
 
-	out, _, err := RenderMCPBytesFromTyped(servers, false)
+	out, _, err := RenderMCPBytesFromTyped(servers)
 	if err != nil {
 		t.Fatalf("RenderMCPBytesFromTyped: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestRenderMCPBytesFromTyped_OmitsEmptyEnv(t *testing.T) {
 		},
 	}
 
-	out, _, err := RenderMCPBytesFromTyped(servers, false)
+	out, _, err := RenderMCPBytesFromTyped(servers)
 	if err != nil {
 		t.Fatalf("RenderMCPBytesFromTyped: %v", err)
 	}
@@ -73,8 +73,8 @@ func TestRenderMCPBytesFromTyped_OmitsEmptyEnv(t *testing.T) {
 	}
 }
 
-func TestRenderMCPBytesFromTyped_EnvRefTransform(t *testing.T) {
-	t.Parallel()
+func TestRenderMCPBytesFromTyped_EnvRefsResolved(t *testing.T) {
+	t.Setenv("MY_CMD", "/usr/local/bin/mycmd")
 	servers := []domain.MCPServer{
 		{
 			Name:    "bar",
@@ -83,7 +83,7 @@ func TestRenderMCPBytesFromTyped_EnvRefTransform(t *testing.T) {
 		},
 	}
 
-	out, _, err := RenderMCPBytesFromTyped(servers, false)
+	out, _, err := RenderMCPBytesFromTyped(servers)
 	if err != nil {
 		t.Fatalf("RenderMCPBytesFromTyped: %v", err)
 	}
@@ -93,9 +93,9 @@ func TestRenderMCPBytesFromTyped_EnvRefTransform(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	// {env:MY_CMD} → ${MY_CMD} (brace format for Claude Code).
-	if got.MCPServers["bar"].Command != "${MY_CMD}" {
-		t.Errorf("env transform: got %q want %q", got.MCPServers["bar"].Command, "${MY_CMD}")
+	// {env:MY_CMD} resolved from process environment at sync time.
+	if got.MCPServers["bar"].Command != "/usr/local/bin/mycmd" {
+		t.Errorf("env resolve: got %q want %q", got.MCPServers["bar"].Command, "/usr/local/bin/mycmd")
 	}
 }
 
@@ -165,7 +165,7 @@ func TestRenderSettingsBytes_AllowOnly(t *testing.T) {
 		{Name: "svc", AllowedTools: []string{"tool1"}},
 	}
 
-	out, err := RenderSettingsBytes(servers)
+	out, err := RenderSettingsBytes(nil, servers)
 	if err != nil {
 		t.Fatalf("RenderSettingsBytes: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestRenderSettingsBytes_AllowAndDeny(t *testing.T) {
 		},
 	}
 
-	out, err := RenderSettingsBytes(servers)
+	out, err := RenderSettingsBytes(nil, servers)
 	if err != nil {
 		t.Fatalf("RenderSettingsBytes: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestRenderSettingsBytes_NoDenyOmitsDenyKey(t *testing.T) {
 		{Name: "svc", AllowedTools: []string{"tool1"}},
 	}
 
-	out, err := RenderSettingsBytes(servers)
+	out, err := RenderSettingsBytes(nil, servers)
 	if err != nil {
 		t.Fatalf("RenderSettingsBytes: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestRenderMCPBytesFromTyped_SSEServer(t *testing.T) {
 		},
 	}
 
-	out, _, err := RenderMCPBytesFromTyped(servers, false)
+	out, _, err := RenderMCPBytesFromTyped(servers)
 	if err != nil {
 		t.Fatalf("RenderMCPBytesFromTyped: %v", err)
 	}
@@ -338,6 +338,122 @@ func TestRenderMCPBytesFromTyped_SSEServer(t *testing.T) {
 	}
 }
 
+func TestRenderSettingsBytes_WithBaseSettings(t *testing.T) {
+	t.Parallel()
+	base := []byte(`{
+  "permissions": {
+    "allow": ["Bash(go test:*)"]
+  },
+  "model": "claude-sonnet-4-5-20250514"
+}`)
+	servers := []domain.MCPServer{
+		{Name: "svc", AllowedTools: []string{"tool1"}},
+	}
+
+	out, err := RenderSettingsBytes(base, servers)
+	if err != nil {
+		t.Fatalf("RenderSettingsBytes: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Non-permission key from base is preserved.
+	if got["model"] != "claude-sonnet-4-5-20250514" {
+		t.Errorf("model: got %v", got["model"])
+	}
+
+	perms, _ := got["permissions"].(map[string]any)
+	if perms == nil {
+		t.Fatal("missing permissions")
+	}
+	allow, _ := perms["allow"].([]any)
+	if len(allow) != 2 {
+		t.Fatalf("allow: got %v want 2 entries", allow)
+	}
+	// Base non-MCP permission preserved first.
+	if allow[0] != "Bash(go test:*)" {
+		t.Errorf("allow[0]: got %v want Bash(go test:*)", allow[0])
+	}
+	// MCP permission added.
+	if allow[1] != "mcp__svc__tool1" {
+		t.Errorf("allow[1]: got %v want mcp__svc__tool1", allow[1])
+	}
+}
+
+func TestRenderSettingsBytes_BaseWithMCPEntriesReplaced(t *testing.T) {
+	t.Parallel()
+	// Base has stale MCP entries that should be replaced.
+	base := []byte(`{
+  "permissions": {
+    "allow": ["Bash(*)", "mcp__old__stale_tool"],
+    "deny": ["mcp__old__dangerous"]
+  }
+}`)
+	servers := []domain.MCPServer{
+		{Name: "new", AllowedTools: []string{"fresh"}, DisabledTools: []string{"blocked"}},
+	}
+
+	out, err := RenderSettingsBytes(base, servers)
+	if err != nil {
+		t.Fatalf("RenderSettingsBytes: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	perms := got["permissions"].(map[string]any)
+	allow := perms["allow"].([]any)
+	// Should have Bash(*) from base + new MCP, but NOT mcp__old__stale_tool.
+	if len(allow) != 2 {
+		t.Fatalf("allow: got %v want 2 entries", allow)
+	}
+	if allow[0] != "Bash(*)" {
+		t.Errorf("allow[0]: got %v", allow[0])
+	}
+	if allow[1] != "mcp__new__fresh" {
+		t.Errorf("allow[1]: got %v", allow[1])
+	}
+
+	deny := perms["deny"].([]any)
+	// Should have new MCP deny, but NOT mcp__old__dangerous.
+	if len(deny) != 1 {
+		t.Fatalf("deny: got %v want 1 entry", deny)
+	}
+	if deny[0] != "mcp__new__blocked" {
+		t.Errorf("deny[0]: got %v", deny[0])
+	}
+}
+
+func TestRenderSettingsBytes_BaseOnlyNoServers(t *testing.T) {
+	t.Parallel()
+	base := []byte(`{
+  "permissions": {
+    "allow": ["Bash(go test:*)"]
+  }
+}`)
+
+	out, err := RenderSettingsBytes(base, nil)
+	if err != nil {
+		t.Fatalf("RenderSettingsBytes: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	perms := got["permissions"].(map[string]any)
+	allow := perms["allow"].([]any)
+	if len(allow) != 1 || allow[0] != "Bash(go test:*)" {
+		t.Errorf("allow: got %v want [Bash(go test:*)]", allow)
+	}
+}
+
 func TestRenderMCPBytesFromTyped_MixedTransports(t *testing.T) {
 	t.Parallel()
 	servers := []domain.MCPServer{
@@ -345,7 +461,7 @@ func TestRenderMCPBytesFromTyped_MixedTransports(t *testing.T) {
 		{Name: "remote", Transport: domain.TransportStreamableHTTP, URL: "https://example.com/mcp"},
 	}
 
-	out, _, err := RenderMCPBytesFromTyped(servers, false)
+	out, _, err := RenderMCPBytesFromTyped(servers)
 	if err != nil {
 		t.Fatalf("RenderMCPBytesFromTyped: %v", err)
 	}

@@ -2,13 +2,13 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/shrug-labs/aipack/internal/index"
+	"github.com/shrug-labs/aipack/internal/app"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 type searchFocus int
@@ -26,7 +26,7 @@ type searchTabModel struct {
 	configDir string
 
 	query   string
-	results []index.SearchResult
+	results []app.SearchResult
 	focus   searchFocus
 	cursor  int
 	offset  int // scroll offset for results list
@@ -172,7 +172,7 @@ func (m searchTabModel) updateResults(msg tea.KeyMsg) (searchTabModel, tea.Cmd) 
 	case "enter":
 		if m.cursor < len(m.results) {
 			r := m.results[m.cursor]
-			fp := searchResultFilePath(r)
+			fp := app.SearchResultFilePath(r)
 			if fp != "" {
 				return m, func() tea.Msg {
 					return previewRequestMsg{
@@ -340,26 +340,7 @@ func searchKindStyle(kind string) lipgloss.Style {
 	return dimStyle
 }
 
-func kindToCategory(kind string) string {
-	switch kind {
-	case "rule":
-		return CatRules
-	case "agent":
-		return CatAgents
-	case "workflow":
-		return CatWorkflows
-	case "skill":
-		return CatSkills
-	}
-	return kind
-}
-
-func searchResultFilePath(r index.SearchResult) string {
-	if r.Path == "" {
-		return ""
-	}
-	if r.Kind == "skill" {
-		return filepath.Join(r.Path, "SKILL.md")
-	}
-	return r.Path
+func kindToCategory(kind string) domain.PackCategory {
+	cat, _ := domain.ParseSingularLabel(kind)
+	return cat
 }

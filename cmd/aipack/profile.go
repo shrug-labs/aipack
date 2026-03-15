@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,7 +142,7 @@ func (c *ProfileSetCmd) Run(g *Globals) error {
 		}
 		if len(missing) > 0 {
 			fmt.Fprintf(g.Stdout, "%d pack(s) not installed: %s\n", len(missing), strings.Join(missing, ", "))
-			fmt.Fprintln(g.Stdout, "Run 'aipack pack install' to install them.")
+			fmt.Fprintln(g.Stdout, "Run 'aipack pack install -m' to install them.")
 		}
 	}
 	return nil
@@ -190,12 +189,7 @@ func (c *ProfileShowCmd) Run(g *Globals) error {
 	cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
 
 	if c.JSON {
-		b, err := json.MarshalIndent(loaded.profile, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, _ = g.Stdout.Write(append(b, '\n'))
-		return nil
+		return cmdutil.WriteJSON(g.Stdout, loaded.profile)
 	}
 
 	fmt.Fprintf(g.Stdout, "Profile: %s (from %s)\n", loaded.profileName, loaded.profilePath)

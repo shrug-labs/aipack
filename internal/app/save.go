@@ -5,479 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
-	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
-// SnapshotRequest holds parameters for a snapshot save operation.
-type SnapshotRequest struct {
-	TargetSpec
-
-	Now        func() time.Time
-	RandUint32 func() uint32
-}
-
-// SnapshotResult holds the output of a snapshot operation.
-type SnapshotResult struct {
-	BaseDir         string
-	SnapshotID      string
-	SecretFindings  []string
-	CaptureWarnings []domain.Warning
-}
-
-// RunSnapshot captures harness content into a timestamped snapshot directory.
-func RunSnapshot(req SnapshotRequest, reg *harness.Registry) (SnapshotResult, error) {
-	now := req.Now
-	if now == nil {
-		now = time.Now
-	}
-	randU32 := req.RandUint32
-	if randU32 == nil {
-		randU32 = func() uint32 { return rand.Uint32() }
-	}
-	home := req.Home
-	if strings.TrimSpace(home) == "" {
-		return SnapshotResult{}, fmt.Errorf("HOME is not set")
-	}
-	if len(req.Harnesses) == 0 {
-		return SnapshotResult{}, fmt.Errorf("no harnesses selected")
-	}
-
-	timestamp := now().UTC().Format("20060102-150405") + fmt.Sprintf("-%08x", randU32())
-	base := filepath.Join(home, ".config", "aipack", "saved", timestamp)
-	packDir := filepath.Join(base, "pack")
-	if _, err := os.Stat(base); err == nil {
-		return SnapshotResult{}, fmt.Errorf("save destination already exists: %s", base)
-	}
-
-	if err := os.MkdirAll(packDir, 0o700); err != nil {
-		return SnapshotResult{}, err
-	}
-
-	ctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
-	merged, err := captureAndMerge(ctx, req.Harnesses, reg)
-	if err != nil {
-		return SnapshotResult{}, err
-	}
-
-	for _, c := range merged.Copies {
-		dst := filepath.Join(packDir, filepath.FromSlash(c.Dst))
-		switch c.Kind {
-		case domain.CopyKindDir:
-			if err := util.CopyDir(c.Src, dst); err != nil {
-				return SnapshotResult{}, err
-			}
-		case domain.CopyKindFile:
-			b, err := os.ReadFile(c.Src)
-			if err != nil {
-				return SnapshotResult{}, err
-			}
-			b, err = desiredBytesForCopy(c, merged, b)
-			if err != nil {
-				return SnapshotResult{}, err
-			}
-			if err := util.WriteFileAtomicWithPerms(dst, b, 0o700, 0o600); err != nil {
-				return SnapshotResult{}, err
-			}
-		}
-	}
-	for _, w := range merged.Writes {
-		dst := filepath.Join(packDir, filepath.FromSlash(w.Dst))
-		if err := util.WriteFileAtomicWithPerms(dst, w.Content, 0o700, 0o600); err != nil {
-			return SnapshotResult{}, err
-		}
-	}
-
-	if len(merged.MCPServers) > 0 {
-		mcpDir := filepath.Join(packDir, "mcp")
-		if err := os.MkdirAll(mcpDir, 0o700); err != nil {
-			return SnapshotResult{}, err
-		}
-		keys := sortedMapKeys(merged.MCPServers)
-		for _, k := range keys {
-			s := merged.MCPServers[k]
-			s.Name = k
-			if tools := merged.AllowedTools[k]; len(tools) > 0 {
-				s.AvailableTools = append([]string{}, tools...)
-			}
-			b, err := json.MarshalIndent(s, "", "  ")
-			if err != nil {
-				return SnapshotResult{}, err
-			}
-			b = append(b, '\n')
-			if err := util.WriteFileAtomicWithPerms(filepath.Join(mcpDir, k+".json"), b, 0o700, 0o600); err != nil {
-				return SnapshotResult{}, err
-			}
-		}
-	}
-
-	manifest, err := buildPackManifest(packDir, timestamp, merged.MCPServers, merged.AllowedTools)
-	if err != nil {
-		return SnapshotResult{}, err
-	}
-	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return SnapshotResult{}, err
-	}
-	manifestBytes = append(manifestBytes, '\n')
-	if err := util.WriteFileAtomicWithPerms(filepath.Join(packDir, "pack.json"), manifestBytes, 0o700, 0o600); err != nil {
-		return SnapshotResult{}, err
-	}
-
-	// Install the snapshot pack at the standard installed-packs location.
-	configDir := filepath.Join(home, ".config", "aipack")
-	packName := "snapshot-" + timestamp
-	installedPackDir := filepath.Join(configDir, "packs", packName)
-	if err := util.CopyDir(packDir, installedPackDir); err != nil {
-		return SnapshotResult{}, fmt.Errorf("installing snapshot pack: %w", err)
-	}
-
-	// Register in sync-config.
-	syncCfgPath := config.SyncConfigPath(configDir)
-	syncCfg, err := config.LoadSyncConfig(syncCfgPath)
-	if err != nil {
-		return SnapshotResult{}, fmt.Errorf("loading sync-config: %w", err)
-	}
-	if syncCfg.InstalledPacks == nil {
-		syncCfg.InstalledPacks = map[string]config.InstalledPackMeta{}
-	}
-	syncCfg.InstalledPacks[packName] = config.InstalledPackMeta{
-		Origin: base,
-		Method: "snapshot",
-	}
-	if err := config.SaveSyncConfig(syncCfgPath, syncCfg); err != nil {
-		return SnapshotResult{}, fmt.Errorf("saving sync-config: %w", err)
-	}
-
-	findings := scanSnapshotForSecrets(packDir)
-	return SnapshotResult{
-		BaseDir:         base,
-		SnapshotID:      timestamp,
-		SecretFindings:  findings,
-		CaptureWarnings: merged.Warnings,
-	}, nil
-}
-
-// ToPackRequest holds parameters for saving harness content back to a source pack.
-type ToPackRequest struct {
-	TargetSpec
-	PackName  string
-	ConfigDir string
-	DryRun    bool
-	Force     bool
-	Stderr    io.Writer
-}
-
-// ToPackResult holds the output of a to-pack save operation.
-type ToPackResult struct {
-	SavedFiles []SavedFile
-	Skipped    int
-	Conflicts  []ConflictFile
-	Warnings   []domain.Warning
-}
-
-// RunToPack captures current harness content and writes it back to an
-// installed pack's directory. If the pack doesn't exist, it scaffolds a new
-// one. Files attributed to OTHER packs via the ledger are excluded.
-func RunToPack(req ToPackRequest, reg *harness.Registry) (ToPackResult, error) {
-	packRoot := filepath.Join(req.ConfigDir, "packs", req.PackName)
-	manifestPath := filepath.Join(packRoot, "pack.json")
-	if _, err := os.Stat(manifestPath); err != nil {
-		if os.IsNotExist(err) {
-			return runToPackCreate(req, packRoot, reg)
-		}
-		return ToPackResult{}, err
-	}
-	return runToPackExisting(req, packRoot, manifestPath, reg)
-}
-
-func runToPackExisting(req ToPackRequest, packRoot, manifestPath string, reg *harness.Registry) (ToPackResult, error) {
-	stderr := req.Stderr
-	if stderr == nil {
-		stderr = io.Discard
-	}
-	home := req.Home
-	var result ToPackResult
-
-	manifest, err := config.LoadPackManifest(manifestPath)
-	if err != nil {
-		return result, fmt.Errorf("loading pack manifest: %w", err)
-	}
-	resolvedRoot := ResolvePackRootWithFallback(manifestPath, manifest, packRoot)
-
-	ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, home, req.Harnesses)
-	lg, ledgerWarn, err := engine.LoadLedger(ledgerPath)
-	if err != nil {
-		return result, fmt.Errorf("loading ledger: %w", err)
-	}
-	if ledgerWarn != "" {
-		fmt.Fprintln(stderr, "WARNING: "+ledgerWarn)
-	}
-
-	ctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
-
-	for _, hid := range req.Harnesses {
-		h, err := reg.Lookup(hid)
-		if err != nil {
-			return result, err
-		}
-		res, err := h.Capture(ctx)
-		if err != nil {
-			return result, err
-		}
-		result.Warnings = append(result.Warnings, res.Warnings...)
-
-		for _, c := range res.Copies {
-			if shouldSkipForPack(c.Src, req.PackName, lg) {
-				result.Skipped++
-				continue
-			}
-			dst := filepath.Join(resolvedRoot, filepath.FromSlash(c.Dst))
-
-			// For files, read content once and reuse for conflict check, save, and digest.
-			var srcContent []byte
-			var desiredContent []byte
-			if c.Kind == domain.CopyKindFile {
-				srcContent, err = os.ReadFile(c.Src)
-				if err != nil {
-					return result, err
-				}
-				desiredContent, err = desiredBytesForCopy(c, res, srcContent)
-				if err != nil {
-					return result, err
-				}
-			}
-
-			// Conflict check.
-			var conflict bool
-			if c.Kind == domain.CopyKindDir {
-				conflict, err = checkDirConflict(c.Src, dst)
-			} else {
-				conflict, err = checkFileConflict(desiredContent, dst)
-			}
-			if err != nil {
-				return result, err
-			}
-
-			if conflict {
-				result.Conflicts = append(result.Conflicts, ConflictFile{
-					HarnessPath: c.Src, PackPath: dst, PackName: req.PackName,
-				})
-				if !req.Force && !req.DryRun {
-					return result, fmt.Errorf("conflict: %s differs from %s (use --force to overwrite)", c.Src, dst)
-				}
-			}
-
-			if !req.DryRun {
-				if c.Kind == domain.CopyKindDir {
-					if err := saveDirToPack(c.Src, dst); err != nil {
-						return result, err
-					}
-				} else {
-					if err := saveContentToPack(desiredContent, dst); err != nil {
-						return result, err
-					}
-				}
-
-				// Update ledger so round-trip can route this file next time.
-				var digest string
-				if c.Kind == domain.CopyKindDir {
-					digest, err = dirDigest(c.Src)
-				} else {
-					digest = domain.SingleFileDigest(srcContent)
-				}
-				if err != nil {
-					return result, err
-				}
-				lg.Managed[filepath.Clean(c.Src)] = domain.Entry{
-					SourcePack: req.PackName,
-					Digest:     digest,
-				}
-			}
-			result.SavedFiles = append(result.SavedFiles, SavedFile{
-				HarnessPath: c.Src, PackName: req.PackName, PackPath: dst,
-			})
-		}
-
-		for _, w := range res.Writes {
-			dst := filepath.Join(resolvedRoot, filepath.FromSlash(w.Dst))
-
-			conflict, err := checkFileConflict(w.Content, dst)
-			if err != nil {
-				return result, err
-			}
-			if conflict {
-				result.Conflicts = append(result.Conflicts, ConflictFile{
-					HarnessPath: "(generated)", PackPath: dst, PackName: req.PackName,
-				})
-				if !req.Force && !req.DryRun {
-					return result, fmt.Errorf("conflict: generated content differs from %s (use --force to overwrite)", dst)
-				}
-			}
-
-			if !req.DryRun {
-				if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-					return result, err
-				}
-				if err := util.WriteFileAtomic(dst, w.Content); err != nil {
-					return result, err
-				}
-
-				if w.Src != "" {
-					lg.Managed[filepath.Clean(w.Src)] = domain.Entry{
-						SourcePack: req.PackName,
-						Digest:     domain.SingleFileDigest(w.Content),
-					}
-				}
-			}
-			result.SavedFiles = append(result.SavedFiles, SavedFile{
-				HarnessPath: "(generated)", PackName: req.PackName, PackPath: dst,
-			})
-		}
-	}
-
-	// Persist updated ledger.
-	if !req.DryRun && len(result.SavedFiles) > 0 {
-		if err := engine.SaveLedger(ledgerPath, lg, false); err != nil {
-			return result, fmt.Errorf("saving ledger: %w", err)
-		}
-	}
-
-	return result, nil
-}
-
-func runToPackCreate(req ToPackRequest, packRoot string, reg *harness.Registry) (ToPackResult, error) {
-	home := req.Home
-	var result ToPackResult
-
-	ctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
-	merged, err := captureAndMerge(ctx, req.Harnesses, reg)
-	if err != nil {
-		return result, err
-	}
-	result.Warnings = append(result.Warnings, merged.Warnings...)
-
-	for _, c := range merged.Copies {
-		dst := filepath.Join(packRoot, filepath.FromSlash(c.Dst))
-		if c.Kind == domain.CopyKindDir {
-			if err := saveDirToPack(c.Src, dst); err != nil {
-				return result, err
-			}
-		} else {
-			srcContent, err := os.ReadFile(c.Src)
-			if err != nil {
-				return result, err
-			}
-			desiredContent, err := desiredBytesForCopy(c, merged, srcContent)
-			if err != nil {
-				return result, err
-			}
-			if err := saveContentToPack(desiredContent, dst); err != nil {
-				return result, err
-			}
-		}
-		result.SavedFiles = append(result.SavedFiles, SavedFile{
-			HarnessPath: c.Src, PackName: req.PackName, PackPath: dst,
-		})
-	}
-	for _, w := range merged.Writes {
-		dst := filepath.Join(packRoot, filepath.FromSlash(w.Dst))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return result, err
-		}
-		if err := util.WriteFileAtomic(dst, w.Content); err != nil {
-			return result, err
-		}
-		result.SavedFiles = append(result.SavedFiles, SavedFile{
-			HarnessPath: "(generated)", PackName: req.PackName, PackPath: dst,
-		})
-	}
-
-	if len(merged.MCPServers) > 0 {
-		mcpDir := filepath.Join(packRoot, "mcp")
-		if err := os.MkdirAll(mcpDir, 0o755); err != nil {
-			return result, err
-		}
-		keys := sortedMapKeys(merged.MCPServers)
-		for _, k := range keys {
-			s := merged.MCPServers[k]
-			s.Name = k
-			if tools := merged.AllowedTools[k]; len(tools) > 0 {
-				s.AvailableTools = append([]string{}, tools...)
-			}
-			b, err := json.MarshalIndent(s, "", "  ")
-			if err != nil {
-				return result, err
-			}
-			b = append(b, '\n')
-			if err := util.WriteFileAtomic(filepath.Join(mcpDir, k+".json"), b); err != nil {
-				return result, err
-			}
-		}
-	}
-
-	manifest, err := buildPackManifest(packRoot, "0.1.0", merged.MCPServers, merged.AllowedTools)
-	if err != nil {
-		return result, err
-	}
-	manifest.Name = req.PackName
-	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return result, err
-	}
-	manifestBytes = append(manifestBytes, '\n')
-	if err := util.WriteFileAtomic(filepath.Join(packRoot, "pack.json"), manifestBytes); err != nil {
-		return result, err
-	}
-
-	syncCfgPath := config.SyncConfigPath(req.ConfigDir)
-	syncCfg, err := config.LoadSyncConfig(syncCfgPath)
-	if err != nil {
-		return result, fmt.Errorf("loading sync-config: %w", err)
-	}
-	if syncCfg.InstalledPacks == nil {
-		syncCfg.InstalledPacks = map[string]config.InstalledPackMeta{}
-	}
-	syncCfg.InstalledPacks[req.PackName] = config.InstalledPackMeta{
-		Origin: packRoot,
-		Method: "created",
-	}
-	if err := config.SaveSyncConfig(syncCfgPath, syncCfg); err != nil {
-		return result, fmt.Errorf("saving sync-config: %w", err)
-	}
-
-	return result, nil
-}
-
-// shouldSkipForPack returns true if the file at path is tracked in the ledger
-// and attributed to a different pack than the target.
-func shouldSkipForPack(path, packName string, lg domain.Ledger) bool {
-	entry, tracked := lg.Managed[filepath.Clean(path)]
-	if !tracked {
-		return false
-	}
-	if entry.SourcePack == "" {
-		return false
-	}
-	return entry.SourcePack != packName
-}
-
-func ledgerPathForScope(scope domain.Scope, projectDir, home string, harnesses []domain.Harness) string {
-	keys := make([]string, 0, len(harnesses))
-	for _, h := range harnesses {
-		keys = append(keys, strings.ToLower(string(h)))
-	}
-	return engine.LedgerPathForScope(scope, projectDir, home, keys)
+func ledgerPathForScope(scope domain.Scope, projectDir, home string, h domain.Harness) string {
+	return engine.LedgerPathForScope(scope, projectDir, home, strings.ToLower(string(h)))
 }
 
 func saveFileToPack(src, dst string) error {
@@ -555,19 +95,19 @@ func desiredBytesForCopy(c domain.CopyAction, res harness.CaptureResult, srcCont
 	}
 	src := filepath.Clean(c.Src)
 	switch kind {
-	case domain.ContentRules:
+	case domain.CategoryRules:
 		for _, rule := range res.Rules {
 			if filepath.Clean(rule.SourcePath) == src {
 				return engine.RenderRuleBytes(rule)
 			}
 		}
-	case domain.ContentAgents:
+	case domain.CategoryAgents:
 		for _, agent := range res.Agents {
 			if filepath.Clean(agent.SourcePath) == src {
 				return engine.RenderAgentBytes(agent)
 			}
 		}
-	case domain.ContentWorkflows:
+	case domain.CategoryWorkflows:
 		for _, workflow := range res.Workflows {
 			if filepath.Clean(workflow.SourcePath) == src {
 				return engine.RenderWorkflowBytes(workflow)
@@ -587,6 +127,25 @@ func checkFileConflict(srcContent []byte, dst string) (bool, error) {
 		return false, err
 	}
 	return !bytes.Equal(srcContent, dstContent), nil
+}
+
+func checkMCPConflict(srcContent []byte, dst string) (bool, error) {
+	srcTracked, err := trackedMCPBytesFromFile(srcContent)
+	if err != nil {
+		return true, nil
+	}
+	dstContent, err := os.ReadFile(dst)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	dstTracked, err := trackedMCPBytesFromFile(dstContent)
+	if err != nil {
+		return true, nil
+	}
+	return !bytes.Equal(srcTracked, dstTracked), nil
 }
 
 // checkDirConflict returns true if any file in srcDir differs from its counterpart under dstDir.
@@ -667,30 +226,33 @@ type PendingSettingsChange struct {
 
 // RunRoundTrip captures current harness content and saves changed files
 // back to their source packs using ledger provenance.
+// Each harness is processed independently with its own per-harness ledger.
 func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult, error) {
 	stderr := req.Stderr
 	if stderr == nil {
 		stderr = io.Discard
 	}
 	home := req.Home
-
-	ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, home, req.Harnesses)
-	lg, ledgerWarn, err := engine.LoadLedger(ledgerPath)
-	if err != nil {
-		return RoundTripResult{}, fmt.Errorf("loading ledger: %w", err)
-	}
-	if ledgerWarn != "" {
-		fmt.Fprintln(stderr, "WARNING: "+ledgerWarn)
-	}
-	if len(lg.Managed) == 0 {
-		return RoundTripResult{}, fmt.Errorf("no ledger found at %s — run 'aipack sync' first", ledgerPath)
-	}
-
 	ctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
 	var result RoundTripResult
-	settingsLedgerDirty := false
 
 	for _, hid := range req.Harnesses {
+		ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, home, hid)
+		lg, ledgerWarn, err := engine.LoadLedger(ledgerPath)
+		if err != nil {
+			return RoundTripResult{}, fmt.Errorf("loading ledger for %s: %w", hid, err)
+		}
+		if ledgerWarn != "" {
+			fmt.Fprintln(stderr, "WARNING: "+ledgerWarn)
+		}
+		if len(lg.Managed) == 0 {
+			result.CaptureWarnings = append(result.CaptureWarnings, domain.Warning{
+				Field:   "ledger",
+				Message: fmt.Sprintf("no ledger found for %s at %s — run 'aipack sync' first", hid, ledgerPath),
+			})
+			continue
+		}
+
 		h, err := reg.Lookup(hid)
 		if err != nil {
 			return RoundTripResult{}, err
@@ -700,6 +262,8 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 			return RoundTripResult{}, err
 		}
 		result.CaptureWarnings = append(result.CaptureWarnings, res.Warnings...)
+
+		savedCount := 0
 
 		// Content files (rules, agents, workflows, skills).
 		for _, c := range res.Copies {
@@ -832,9 +396,11 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 				}
 			}
 			result.SavedFiles = append(result.SavedFiles, SavedFile{HarnessPath: src, PackName: packName, PackPath: dst})
+			savedCount++
 		}
 
-		// Settings files.
+		// Write actions: content writes (promoted agents/workflows) and
+		// settings writes are handled differently.
 		for _, w := range res.Writes {
 			if w.Src == "" {
 				continue
@@ -845,7 +411,7 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 				continue
 			}
 
-			curDigest := domain.SingleFileDigest(w.Content)
+			curDigest := w.EffectiveDigest()
 			if curDigest == entry.Digest {
 				result.UnchangedCount++
 				continue
@@ -858,7 +424,7 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 						packName = k
 					}
 				} else {
-					return RoundTripResult{}, fmt.Errorf("empty source_pack for settings %s and multiple packs configured — run 'aipack sync' first to populate provenance", src)
+					return RoundTripResult{}, fmt.Errorf("empty source_pack for %s and multiple packs configured — run 'aipack sync' first to populate provenance", src)
 				}
 			}
 			packRoot, ok := req.PackRoots[packName]
@@ -866,34 +432,77 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 				continue
 			}
 
-			stripped, err := h.StripManagedSettings(w.Content, filepath.Base(w.Dst))
-			if err != nil {
-				return RoundTripResult{}, fmt.Errorf("stripping managed settings from %s: %w", src, err)
-			}
-
 			dst := filepath.Join(packRoot, filepath.FromSlash(w.Dst))
-			result.PendingSettings = append(result.PendingSettings, PendingSettingsChange{
-				HarnessPath: src,
-				PackName:    packName,
-				PackPath:    dst,
-				Stripped:    stripped,
-			})
 
-			// Advance ledger digest so next round-trip sees this as unchanged.
-			if !req.DryRun {
-				lg.Managed[src] = domain.Entry{
-					SourcePack: packName,
-					Digest:     curDigest,
+			if w.IsContent {
+				// Content write — save re-rendered content directly.
+				conflict, err := checkFileConflict(w.Content, dst)
+				if err != nil {
+					return RoundTripResult{}, err
 				}
-				settingsLedgerDirty = true
+				if conflict {
+					result.Conflicts = append(result.Conflicts, ConflictFile{
+						HarnessPath: src, PackPath: dst, PackName: packName,
+					})
+					if !req.Force && !req.DryRun {
+						return result, fmt.Errorf(
+							"conflict: both harness (%s) and pack (%s) changed since last sync (use --force to overwrite pack)",
+							src, dst,
+						)
+					}
+					if req.DryRun {
+						continue
+					}
+				}
+
+				if !req.DryRun {
+					if err := saveContentToPack(w.Content, dst); err != nil {
+						return RoundTripResult{}, err
+					}
+					lg.Managed[src] = domain.Entry{
+						SourcePack: packName,
+						Digest:     curDigest,
+					}
+				}
+				result.SavedFiles = append(result.SavedFiles, SavedFile{
+					HarnessPath: src, PackName: packName, PackPath: dst,
+				})
+				savedCount++
+			} else {
+				// Settings write — either save immediately when forced, or emit
+				// as pending so the caller can decide whether to persist it.
+				stripped, err := h.StripManagedSettings(w.Content, filepath.Base(w.Dst))
+				if err != nil {
+					return RoundTripResult{}, fmt.Errorf("stripping managed settings from %s: %w", src, err)
+				}
+				if req.Force && !req.DryRun {
+					if err := saveContentToPack(stripped, dst); err != nil {
+						return RoundTripResult{}, err
+					}
+					lg.Managed[src] = domain.Entry{
+						SourcePack: packName,
+						Digest:     curDigest,
+					}
+					result.SavedFiles = append(result.SavedFiles, SavedFile{
+						HarnessPath: src, PackName: packName, PackPath: dst,
+					})
+					savedCount++
+				} else {
+					result.PendingSettings = append(result.PendingSettings, PendingSettingsChange{
+						HarnessPath: src,
+						PackName:    packName,
+						PackPath:    dst,
+						Stripped:    stripped,
+					})
+				}
 			}
 		}
-	}
 
-	// Persist updated ledger digests.
-	if !req.DryRun && (len(result.SavedFiles) > 0 || settingsLedgerDirty) {
-		if err := engine.SaveLedger(ledgerPath, lg, false); err != nil {
-			return result, fmt.Errorf("saving ledger: %w", err)
+		// Persist updated ledger digests for this harness.
+		if !req.DryRun && savedCount > 0 {
+			if err := engine.SaveLedger(ledgerPath, lg, false); err != nil {
+				return result, fmt.Errorf("saving ledger for %s: %w", hid, err)
+			}
 		}
 	}
 
@@ -936,6 +545,29 @@ func fileChangedSinceLedger(src, ledgerDigest string, kind domain.CopyKind) (boo
 		return false, err
 	}
 	return domain.SingleFileDigest(content) != ledgerDigest, nil
+}
+
+func mcpFileChangedSinceLedger(src, ledgerDigest string) (bool, error) {
+	if ledgerDigest == "" {
+		return true, nil
+	}
+	content, err := os.ReadFile(src)
+	if err != nil {
+		return false, err
+	}
+	tracked, err := trackedMCPBytesFromFile(content)
+	if err != nil {
+		return true, nil
+	}
+	return domain.SingleFileDigest(tracked) != ledgerDigest, nil
+}
+
+func trackedMCPBytesFromFile(content []byte) ([]byte, error) {
+	var server domain.MCPServer
+	if err := json.Unmarshal(content, &server); err != nil {
+		return nil, err
+	}
+	return domain.MCPTrackedBytes(server)
 }
 
 // dirDigest computes a combined digest of all files in a directory tree.
@@ -1020,23 +652,6 @@ func packDirMatchesLedger(srcDir, dstDir string, lg domain.Ledger) bool {
 	return clean
 }
 
-// captureAndMerge runs Capture on each harness and merges the results.
-func captureAndMerge(ctx harness.CaptureContext, ids []domain.Harness, reg *harness.Registry) (harness.CaptureResult, error) {
-	var results []harness.CaptureResult
-	for _, hid := range ids {
-		h, err := reg.Lookup(hid)
-		if err != nil {
-			return harness.CaptureResult{}, err
-		}
-		res, err := h.Capture(ctx)
-		if err != nil {
-			return harness.CaptureResult{}, err
-		}
-		results = append(results, res)
-	}
-	return harness.MergeCaptureResults(results...)
-}
-
 func sortedMapKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -1044,116 +659,6 @@ func sortedMapKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func buildPackManifest(packDir string, version string, servers map[string]domain.MCPServer, allowedTools map[string][]string) (config.PackManifest, error) {
-	agents, err := config.DiscoverIDs(filepath.Join(packDir, "agents"), ".md")
-	if err != nil {
-		return config.PackManifest{}, err
-	}
-	rules, err := config.DiscoverIDs(filepath.Join(packDir, "rules"), ".md")
-	if err != nil {
-		return config.PackManifest{}, err
-	}
-	workflows, err := config.DiscoverIDs(filepath.Join(packDir, "workflows"), ".md")
-	if err != nil {
-		return config.PackManifest{}, err
-	}
-	skills, err := config.DiscoverSkills(filepath.Join(packDir, "skills"))
-	if err != nil {
-		return config.PackManifest{}, err
-	}
-	mcpIDs, err := config.DiscoverIDs(filepath.Join(packDir, "mcp"), ".json")
-	if err != nil {
-		return config.PackManifest{}, err
-	}
-
-	serverDefaults := map[string]config.MCPDefaults{}
-	for _, name := range mcpIDs {
-		tools := append([]string{}, allowedTools[name]...)
-		sort.Strings(tools)
-		serverDefaults[name] = config.MCPDefaults{DefaultAllowedTools: tools}
-	}
-
-	manifest := config.PackManifest{
-		SchemaVersion: 1,
-		Name:          "snapshot",
-		Version:       version,
-		Root:          ".",
-		Rules:         rules,
-		Agents:        agents,
-		Workflows:     workflows,
-		Skills:        skills,
-		MCP:           config.MCPPack{Servers: serverDefaults},
-		Configs: config.PackConfigs{
-			HarnessSettings: detectConfigHarnessSettings(packDir),
-			HarnessPlugins:  detectConfigHarnessPlugins(packDir),
-		},
-	}
-	return manifest, nil
-}
-
-func detectConfigHarnessSettings(packDir string) map[string][]string {
-	out := map[string][]string{}
-	if util.ExistsFile(filepath.Join(packDir, "configs", string(domain.HarnessClaudeCode), "settings.local.json")) {
-		out[string(domain.HarnessClaudeCode)] = []string{"settings.local.json"}
-	}
-	if util.ExistsFile(filepath.Join(packDir, "configs", string(domain.HarnessCodex), "config.toml")) {
-		out[string(domain.HarnessCodex)] = []string{"config.toml"}
-	}
-	if util.ExistsFile(filepath.Join(packDir, "configs", string(domain.HarnessOpenCode), "opencode.json")) {
-		out[string(domain.HarnessOpenCode)] = []string{"opencode.json"}
-	}
-	return out
-}
-
-func detectConfigHarnessPlugins(packDir string) map[string][]string {
-	out := map[string][]string{}
-	if util.ExistsFile(filepath.Join(packDir, "configs", string(domain.HarnessOpenCode), "oh-my-opencode.json")) {
-		out[string(domain.HarnessOpenCode)] = []string{"oh-my-opencode.json"}
-	}
-	return out
-}
-
-func scanSnapshotForSecrets(packDir string) []string {
-	findings := []string{}
-	_ = filepath.WalkDir(packDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		low := strings.ToLower(d.Name())
-		if strings.HasSuffix(low, ".md") {
-			return nil
-		}
-		st, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		if st.Size() > 512*1024 {
-			return nil
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		msgs := scanBytesForSecrets(b)
-		if len(msgs) == 0 {
-			return nil
-		}
-		rel, err := filepath.Rel(packDir, path)
-		if err != nil {
-			rel = path
-		}
-		for _, m := range msgs {
-			findings = append(findings, filepath.ToSlash(rel)+": "+m)
-		}
-		return nil
-	})
-	sort.Strings(findings)
-	return findings
 }
 
 func scanBytesForSecrets(b []byte) []string {
@@ -1194,4 +699,35 @@ func scanBytesForSecrets(b []byte) []string {
 	}
 
 	return results
+}
+
+// SaveRoundTrip executes a round-trip save (harness → source packs) using
+// the active profile from sync-config defaults.
+func SaveRoundTrip(configDir string, force bool, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
+	return saveRoundTripActive(configDir, false, force, reg)
+}
+
+// SaveRoundTripPlan runs a dry-run round-trip save using the active profile,
+// returning what would change without writing.
+func SaveRoundTripPlan(configDir string, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
+	return saveRoundTripActive(configDir, true, false, reg)
+}
+
+func saveRoundTripActive(configDir string, dryRun, force bool, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
+	res, warnings, err := ResolveActiveProfile(configDir)
+	if err != nil {
+		return RoundTripResult{}, warnings, err
+	}
+	packRoots := resolvePackRoots(res.Profile)
+	result, err := RunRoundTrip(RoundTripRequest{
+		TargetSpec: res.TargetSpec,
+		PackRoots:  packRoots,
+		DryRun:     dryRun,
+		Force:      force,
+	}, reg)
+	if err != nil {
+		return result, warnings, err
+	}
+	warnings = append(warnings, result.CaptureWarnings...)
+	return result, warnings, nil
 }

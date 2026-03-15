@@ -49,11 +49,6 @@ func RunInit(req InitRequest, stdout io.Writer) error {
 		return err
 	}
 
-	registryPath := filepath.Join(req.ConfigDir, "registry.yaml")
-	if err := writeInitFile(registryPath, config.InitRegistryBytes, req.Force, stdout); err != nil {
-		return err
-	}
-
 	// Auto-fetch the default registry so packs are discoverable immediately.
 	fmt.Fprintln(stdout, "\nFetching default registry...")
 	fetchReq := RegistryFetchRequest{ConfigDir: req.ConfigDir}

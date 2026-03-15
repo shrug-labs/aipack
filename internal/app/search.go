@@ -8,6 +8,10 @@ import (
 	"github.com/shrug-labs/aipack/internal/index"
 )
 
+// SearchResult mirrors index.SearchResult at the app layer so callers
+// (like the TUI) don't need to import internal/index.
+type SearchResult = index.SearchResult
+
 // IndexSearchRequest holds parameters for a search against the pack index.
 type IndexSearchRequest struct {
 	ConfigDir string // override; empty = default
@@ -22,7 +26,7 @@ type IndexSearchRequest struct {
 }
 
 // RunIndexSearch opens the index DB and executes a search with optional filters.
-func RunIndexSearch(req IndexSearchRequest) ([]index.SearchResult, error) {
+func RunIndexSearch(req IndexSearchRequest) ([]SearchResult, error) {
 	db, err := openIndexDB(req.ConfigDir, req.Home)
 	if err != nil {
 		return nil, err
@@ -73,6 +77,17 @@ func RunIndexSchema(configDir, home string) (string, error) {
 	defer db.Close()
 
 	return db.Schema()
+}
+
+// SearchResultFilePath returns the primary file path for a search result.
+func SearchResultFilePath(r SearchResult) string {
+	if r.Path == "" {
+		return ""
+	}
+	if r.Kind == "skill" {
+		return filepath.Join(r.Path, "SKILL.md")
+	}
+	return r.Path
 }
 
 func openIndexDB(configDir, home string) (*index.DB, error) {

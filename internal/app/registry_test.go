@@ -484,23 +484,6 @@ func TestRegistryFetch_URLFromSyncConfig(t *testing.T) {
 	}
 }
 
-func TestRegistryFetch_PruneDeprecated(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	var buf bytes.Buffer
-	_ = RegistryFetch(RegistryFetchRequest{
-		ConfigDir: dir,
-		URL:       "https://example.com/registry.yaml",
-		Prune:     true,
-		FetchFn:   fakeFetchFn(testRemoteRegistryYAML),
-	}, &buf)
-
-	if !strings.Contains(buf.String(), "no longer needed") {
-		t.Errorf("expected deprecation notice for --prune, got: %s", buf.String())
-	}
-}
-
 func TestRegistryRemove(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -564,33 +547,30 @@ func TestRegistryList_MergedView(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	// Local registry with one pack.
-	localYAML := `schema_version: 1
+	// Two cached sources with different packs.
+	source1YAML := `schema_version: 1
 packs:
-  local-pack:
-    repo: https://github.com/org/local
-    description: Local pack
+  pack-a:
+    repo: https://github.com/org/a
+    description: Pack A
 `
-	os.WriteFile(filepath.Join(dir, "registry.yaml"), []byte(localYAML), 0o600)
-
-	// Cached source with another pack.
-	cachedYAML := `schema_version: 1
+	source2YAML := `schema_version: 1
 packs:
-  remote-pack:
-    repo: https://github.com/org/remote
-    description: Remote pack
+  pack-b:
+    repo: https://github.com/org/b
+    description: Pack B
 `
 	os.MkdirAll(config.RegistriesCacheDir(dir), 0o700)
-	os.WriteFile(config.SourceCachePath(dir, "my-source"), []byte(cachedYAML), 0o600)
+	os.WriteFile(config.SourceCachePath(dir, "source-1"), []byte(source1YAML), 0o600)
+	os.WriteFile(config.SourceCachePath(dir, "source-2"), []byte(source2YAML), 0o600)
 
-	// Register the source in sync-config.
 	sc := config.SyncConfig{SchemaVersion: 1}
 	sc.RegistrySources = []config.RegistrySourceEntry{
-		{Name: "my-source", URL: "https://example.com/reg.yaml"},
+		{Name: "source-1", URL: "https://example.com/s1.yaml"},
+		{Name: "source-2", URL: "https://example.com/s2.yaml"},
 	}
 	config.SaveSyncConfig(config.SyncConfigPath(dir), sc)
 
-	// List should show both packs.
 	results, err := RegistryList(RegistryListRequest{ConfigDir: dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -600,42 +580,42 @@ packs:
 	}
 }
 
-func TestRegistryList_LocalWinsConflict(t *testing.T) {
+func TestRegistryList_FirstSourceWinsConflict(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	// Local registry has "my-pack" with description A.
-	localYAML := `schema_version: 1
+	// First source has "my-pack" with description A.
+	source1YAML := `schema_version: 1
 packs:
   my-pack:
-    repo: https://github.com/org/local
-    description: Local version
+    repo: https://github.com/org/first
+    description: First source version
 `
-	os.WriteFile(filepath.Join(dir, "registry.yaml"), []byte(localYAML), 0o600)
-
-	// Cached source has "my-pack" with description B.
-	cachedYAML := `schema_version: 1
+	// Second source has "my-pack" with description B.
+	source2YAML := `schema_version: 1
 packs:
   my-pack:
-    repo: https://github.com/org/remote
-    description: Remote version
+    repo: https://github.com/org/second
+    description: Second source version
 `
 	os.MkdirAll(config.RegistriesCacheDir(dir), 0o700)
-	os.WriteFile(config.SourceCachePath(dir, "remote"), []byte(cachedYAML), 0o600)
+	os.WriteFile(config.SourceCachePath(dir, "first"), []byte(source1YAML), 0o600)
+	os.WriteFile(config.SourceCachePath(dir, "second"), []byte(source2YAML), 0o600)
 
 	sc := config.SyncConfig{SchemaVersion: 1}
 	sc.RegistrySources = []config.RegistrySourceEntry{
-		{Name: "remote", URL: "https://example.com/reg.yaml"},
+		{Name: "first", URL: "https://example.com/first.yaml"},
+		{Name: "second", URL: "https://example.com/second.yaml"},
 	}
 	config.SaveSyncConfig(config.SyncConfigPath(dir), sc)
 
-	// Lookup should return the local version.
+	// Lookup should return the first source's version.
 	entry, err := RegistryLookup(RegistryListRequest{ConfigDir: dir}, "my-pack")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if entry.Description != "Local version" {
-		t.Errorf("expected local version to win, got %q", entry.Description)
+	if entry.Description != "First source version" {
+		t.Errorf("expected first source to win, got %q", entry.Description)
 	}
 }
 
@@ -755,8 +735,8 @@ func TestRegistryList_ShowsInstalledFlag(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	// Create a local registry with two packs.
-	localYAML := `schema_version: 1
+	// Create a cached registry source with two packs.
+	cachedYAML := `schema_version: 1
 packs:
   installed-pack:
     repo: https://github.com/org/installed
@@ -765,7 +745,14 @@ packs:
     repo: https://github.com/org/available
     description: Not installed
 `
-	os.WriteFile(filepath.Join(dir, "registry.yaml"), []byte(localYAML), 0o600)
+	os.MkdirAll(config.RegistriesCacheDir(dir), 0o700)
+	os.WriteFile(config.SourceCachePath(dir, "test"), []byte(cachedYAML), 0o600)
+
+	sc := config.SyncConfig{SchemaVersion: 1}
+	sc.RegistrySources = []config.RegistrySourceEntry{
+		{Name: "test", URL: "https://example.com/test.yaml"},
+	}
+	config.SaveSyncConfig(config.SyncConfigPath(dir), sc)
 
 	// Simulate one pack being installed.
 	os.MkdirAll(filepath.Join(dir, "packs", "installed-pack"), 0o755)

@@ -184,3 +184,102 @@ func TestResolveCurrentVector_Exclude(t *testing.T) {
 		t.Fatalf("expected [a,c], got %v", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// VectorEqual tests
+// ---------------------------------------------------------------------------
+
+func TestVectorEqual_BothNil(t *testing.T) {
+	t.Parallel()
+	if !VectorEqual(VectorSelector{}, VectorSelector{}) {
+		t.Fatal("both nil should be equal")
+	}
+}
+
+func TestVectorEqual_NilVsEmpty(t *testing.T) {
+	t.Parallel()
+	empty := []string{}
+	a := VectorSelector{Include: &empty}
+	b := VectorSelector{}
+	if VectorEqual(a, b) {
+		t.Fatal("nil vs empty-include should not be equal")
+	}
+}
+
+func TestVectorEqual_SameContent(t *testing.T) {
+	t.Parallel()
+	inc1 := []string{"a", "b"}
+	inc2 := []string{"b", "a"}
+	a := VectorSelector{Include: &inc1}
+	b := VectorSelector{Include: &inc2}
+	if !VectorEqual(a, b) {
+		t.Fatal("same content (different order) should be equal")
+	}
+}
+
+func TestVectorEqual_DifferentContent(t *testing.T) {
+	t.Parallel()
+	inc1 := []string{"a"}
+	inc2 := []string{"b"}
+	a := VectorSelector{Include: &inc1}
+	b := VectorSelector{Include: &inc2}
+	if VectorEqual(a, b) {
+		t.Fatal("different content should not be equal")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MCPConfigEqual tests
+// ---------------------------------------------------------------------------
+
+func TestMCPConfigEqual_BothEmpty(t *testing.T) {
+	t.Parallel()
+	if !MCPConfigEqual(map[string]MCPServerConfig{}, map[string]MCPServerConfig{}) {
+		t.Fatal("both empty should be equal")
+	}
+}
+
+func TestMCPConfigEqual_DifferentKeys(t *testing.T) {
+	t.Parallel()
+	a := map[string]MCPServerConfig{"foo": {Enabled: BoolPtr(true)}}
+	b := map[string]MCPServerConfig{"bar": {Enabled: BoolPtr(true)}}
+	if MCPConfigEqual(a, b) {
+		t.Fatal("different keys should not be equal")
+	}
+}
+
+func TestMCPConfigEqual_DifferentEnabled(t *testing.T) {
+	t.Parallel()
+	a := map[string]MCPServerConfig{"foo": {Enabled: BoolPtr(true)}}
+	b := map[string]MCPServerConfig{"foo": {Enabled: BoolPtr(false)}}
+	if MCPConfigEqual(a, b) {
+		t.Fatal("different enabled should not be equal")
+	}
+}
+
+func TestMCPConfigEqual_NilVsSetEnabled(t *testing.T) {
+	t.Parallel()
+	a := map[string]MCPServerConfig{"foo": {Enabled: nil}}
+	b := map[string]MCPServerConfig{"foo": {Enabled: BoolPtr(true)}}
+	if MCPConfigEqual(a, b) {
+		t.Fatal("nil vs set enabled should not be equal")
+	}
+}
+
+func TestMCPConfigEqual_SameToolsDifferentOrder(t *testing.T) {
+	t.Parallel()
+	a := map[string]MCPServerConfig{"foo": {Enabled: BoolPtr(true), AllowedTools: []string{"b", "a"}}}
+	b := map[string]MCPServerConfig{"foo": {Enabled: BoolPtr(true), AllowedTools: []string{"a", "b"}}}
+	if !MCPConfigEqual(a, b) {
+		t.Fatal("same tools in different order should be equal")
+	}
+}
+
+func TestMCPConfigEqual_DifferentLengths(t *testing.T) {
+	t.Parallel()
+	a := map[string]MCPServerConfig{"foo": {}, "bar": {}}
+	b := map[string]MCPServerConfig{"foo": {}}
+	if MCPConfigEqual(a, b) {
+		t.Fatal("different lengths should not be equal")
+	}
+}

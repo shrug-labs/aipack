@@ -12,6 +12,7 @@ require (
 require (
 	github.com/alecthomas/kong v1.14.0
 	github.com/charmbracelet/bubbles v0.21.1-0.20250623103423-23b8fd6302d7
+	github.com/fsnotify/fsnotify v1.9.0
 	modernc.org/sqlite v1.46.1
 )
 

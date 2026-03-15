@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -85,8 +86,8 @@ func TestHasFrontmatterPrefix_UnclosedDelimiterCountsAsPresent(t *testing.T) {
 func TestHasFrontmatterPrefix_MalformedLeadingDelimiter(t *testing.T) {
 	t.Parallel()
 	raw := []byte("----\nnot really frontmatter\n")
-	if !HasFrontmatterPrefix(raw) {
-		t.Fatal("expected malformed leading delimiter to match current prefix semantics")
+	if HasFrontmatterPrefix(raw) {
+		t.Fatal("expected malformed leading delimiter (----) to be rejected by HasFrontmatterPrefix")
 	}
 	fm, _, err := SplitFrontmatter(raw)
 	if err != nil {
@@ -172,6 +173,42 @@ func TestFragment_AddSkillCopies(t *testing.T) {
 	}
 	if f.Copies[0].Src != "/pack/skills/onboard" {
 		t.Errorf("copies[0].Src = %q", f.Copies[0].Src)
+	}
+}
+
+func TestFragment_AddSkillCopies_ExpandsFiles(t *testing.T) {
+	t.Parallel()
+	// Create a real skill directory with files to verify walk expansion.
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(srcDir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "helper.md"), []byte("helper"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := Fragment{}
+	f.AddSkillCopies("/project", ".claude/skills", []Skill{
+		{Name: "deploy", DirPath: srcDir, SourcePack: "pack1"},
+	})
+
+	// Desired should contain the directory + both expanded file paths.
+	want := map[string]bool{
+		filepath.Join("/project", ".claude/skills", "deploy"):                  true,
+		filepath.Join("/project", ".claude/skills", "deploy", "SKILL.md"):      true,
+		filepath.Join("/project", ".claude/skills", "deploy", "sub/helper.md"): true,
+	}
+	if len(f.Desired) != len(want) {
+		t.Fatalf("desired = %v, want %d entries", f.Desired, len(want))
+	}
+	for _, d := range f.Desired {
+		if !want[d] {
+			t.Errorf("unexpected desired entry: %s", d)
+		}
 	}
 }
 

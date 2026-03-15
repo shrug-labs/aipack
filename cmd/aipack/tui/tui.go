@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -32,8 +36,14 @@ type RunResult struct {
 
 // Run starts the TUI program in alt-screen mode.
 func Run(cfg RunConfig) (RunResult, error) {
+	// Cancel on SIGHUP so Bubble Tea exits before macOS revokes the pty.
+	// Without this, a closed terminal leaves the process stuck in an
+	// uninterruptible read() on the defunct pty file descriptor.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGHUP, os.Interrupt)
+	defer stop()
+
 	m := newRootModel(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
 	final, err := p.Run()
 	if err != nil {
 		return RunResult{}, err
@@ -70,10 +80,11 @@ const (
 	dialogPackRemove        = "pack-remove"
 	dialogWarnings          = "warnings"
 	dialogActionSave        = "action-save"
-	dialogSaveAddToPack     = "save-add-to-pack"
 	dialogActionContent     = "action-content"
 	dialogContentMoveTo     = "content-move-to"
 	dialogSearchInstall     = "search-install"
+	dialogCreatePack        = "create-pack"
+	dialogDeleteSaveFile    = "delete-save-file"
 )
 
 type rootModel struct {
@@ -112,6 +123,9 @@ type rootModel struct {
 
 	// Search install state: pack name stashed between dialog open and confirm.
 	pendingSearchInstall string
+
+	// Save tab delete state: harness path stashed between dialog open and confirm.
+	pendingDeletePath string
 }
 
 func newRootModel(cfg RunConfig) rootModel {
@@ -119,17 +133,17 @@ func newRootModel(cfg RunConfig) rootModel {
 		cfg:      cfg,
 		profiles: newProfilesModel(cfg.ConfigDir),
 		packs:    newPacksModel(cfg.ConfigDir),
-		saveTab:  newSaveTabModel(cfg.ConfigDir),
+		saveTab:  newSaveTabModel(cfg.ConfigDir, cfg.Registry),
 		syncTab:  newSyncTabModel(cfg.ConfigDir),
 		search:   newSearchTabModel(cfg.ConfigDir),
 	}
 }
 
 func (m rootModel) Init() tea.Cmd {
-	return tea.Batch(
-		m.profiles.initCmd(m.cfg.SyncCfg),
-		m.packs.Init(),
-	)
+	// Load profiles first; packs and registry load after profiles arrive
+	// (triggered by profilesLoadedMsg handler). Sequencing avoids a race
+	// condition where concurrent Init commands can freeze the TUI.
+	return m.profiles.initCmd(m.cfg.SyncCfg)
 }
 
 func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -140,17 +154,18 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Preview overlay message handling.
-	switch msg := msg.(type) {
-	case previewRequestMsg:
+	if msg, ok := msg.(previewRequestMsg); ok {
 		p := newPreviewModel(m.width, m.height)
 		m.preview = &p
 		return m, loadPreview(msg.title, msg.category, msg.packName, msg.filePath)
-	case previewLoadedMsg:
+	}
+	if msg, ok := msg.(previewLoadedMsg); ok {
 		if m.preview != nil {
 			m.preview.setContent(msg)
+			return m, nil
 		}
-		return m, nil
-	case editorFinishedMsg:
+	}
+	if msg, ok := msg.(editorFinishedMsg); ok {
 		if msg.err != nil {
 			m.statusText = errorStyle.Render(fmt.Sprintf("editor: %v", msg.err))
 		}
@@ -159,7 +174,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadPreview(m.preview.title, m.preview.category, m.preview.packName, m.preview.filePath)
 		}
 		// Reload sync-config in case it was edited.
-		if cfg, err := config.LoadSyncConfig(config.SyncConfigPath(m.cfg.ConfigDir)); err == nil {
+		if cfg, err := app.ReloadSyncConfig(m.cfg.ConfigDir); err == nil {
 			m.cfg.SyncCfg = cfg
 		}
 		// Reload all data after editing a config file.
@@ -168,6 +183,8 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			loadPacks(m.cfg.ConfigDir),
 			loadRegistry(m.cfg.ConfigDir),
 		)
+	}
+	switch msg := msg.(type) {
 	case requestAddPackMsg:
 		names := m.unregisteredPacks()
 		if len(names) > 0 {
@@ -250,7 +267,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeTab = (m.activeTab + 1) % tabCount
 			if m.activeTab == tabSave {
 				m.saveTab.loading = true
-				return m, m.triggerInspect()
+				return m, detectHarnesses(m.cfg.Registry)
 			}
 			if m.activeTab == tabSearch && !m.search.searched && !m.search.loading {
 				m.search.loading = true
@@ -261,7 +278,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeTab = (m.activeTab - 1 + tabCount) % tabCount
 			if m.activeTab == tabSave {
 				m.saveTab.loading = true
-				return m, m.triggerInspect()
+				return m, detectHarnesses(m.cfg.Registry)
 			}
 			if m.activeTab == tabSearch && !m.search.searched && !m.search.loading {
 				m.search.loading = true
@@ -279,6 +296,9 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == tabSearch && m.search.focus == searchFocusResults {
 				break
 			}
+			if m.activeTab == tabSave && m.saveTab.stage > saveStageHarness {
+				break // let save tab handle back-navigation
+			}
 			return m.startExit()
 		case "q", "ctrl+c":
 			m.quitting = true
@@ -286,11 +306,14 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+s":
 			return m.startSave()
 		case "s":
+			if m.activeTab == tabSave && m.saveTab.stage == saveStageFiles {
+				break // let save tab handle 's' for proceed-to-save
+			}
 			if m.activeTab == tabProfiles || m.activeTab == tabSync || m.activeTab == tabSave {
 				return m.startSync()
 			}
 		case "v":
-			if m.activeTab == tabProfiles || m.activeTab == tabSync || m.activeTab == tabSave {
+			if m.activeTab == tabProfiles || m.activeTab == tabSync {
 				return m.openPlanView()
 			}
 		case "r":
@@ -409,7 +432,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Stash context for confirm and open save plan view.
 		m.savePlanCtx = &savePlanContext{
 			profileName: msg.profileName,
-			profilePath: msg.profilePath,
 		}
 		pv := newPlanViewModel(m.width, m.height, msg.profileName, "", msg.ops, true)
 		m.planView = &pv
@@ -497,6 +519,17 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle pack lifecycle messages.
+	if msg, ok := msg.(packCreatedMsg); ok {
+		if msg.err != nil {
+			m.statusText = errorStyle.Render(fmt.Sprintf("create error: %v", msg.err))
+		} else {
+			m.statusText = dimStyle.Render(fmt.Sprintf("created %s", msg.name))
+		}
+		return m, tea.Batch(
+			loadPacks(m.cfg.ConfigDir),
+			loadProfiles(m.cfg.ConfigDir, m.cfg.SyncCfg),
+		)
+	}
 	if msg, ok := msg.(packAddedMsg); ok {
 		if msg.err != nil {
 			m.statusText = errorStyle.Render(fmt.Sprintf("add error: %v", msg.err))
@@ -555,12 +588,16 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for i, item := range m.profiles.items {
 					if item.name == m.pendingCursorHint {
 						m.profiles.cursor = i
+						m.profiles.clampProfileOffset()
 						m.profiles = m.profiles.ensureTree()
 						break
 					}
 				}
 				m.pendingCursorHint = ""
 			}
+			// Load packs and registry after profiles arrive (sequenced
+			// from Init to avoid concurrent-command race condition).
+			cmd = tea.Batch(cmd, m.packs.Init())
 			syncCmd := m.profiles.checkSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)
 			if syncCmd != nil {
 				cmd = tea.Batch(cmd, syncCmd)
@@ -578,10 +615,19 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusText = errorStyle.Render(m.packs.loadErr)
 		}
 		return m, cmd
-	case inspectResultMsg:
+	case saveFileDeletedMsg:
+		dm := msg.(saveFileDeletedMsg)
+		if dm.err != nil {
+			m.statusText = errorStyle.Render(fmt.Sprintf("delete: %v", dm.err))
+			return m, nil
+		}
+		m.statusText = dimStyle.Render(fmt.Sprintf("deleted %s", filepath.Base(dm.path)))
+		m.saveTab.loading = true
+		return m, m.saveTab.rediscoverFiles()
+	case harnessDetectedMsg, vectorsDiscoveredMsg, saveFilesDiscoveredMsg, savePipelineDoneMsg:
 		var cmd tea.Cmd
 		m.saveTab, cmd = m.saveTab.Update(msg)
-		m.statusText = "" // clear transient status (e.g. "refreshing...")
+		m.statusText = ""
 		return m, cmd
 	case searchResultsMsg:
 		var cmd tea.Cmd
@@ -671,7 +717,7 @@ func (m rootModel) updatePlanView(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ctx := m.savePlanCtx
 				m.planView = nil
 				m.statusText = dimStyle.Render("saving...")
-				return m, runSave(m.cfg.ConfigDir, ctx.profileName, ctx.profilePath, m.cfg.SyncCfg, m.cfg.Registry)
+				return m, runSave(m.cfg.ConfigDir, ctx.profileName, m.cfg.Registry)
 			}
 		}
 	}
@@ -721,13 +767,25 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 	// Save tab dialogs.
 	case dialogActionSave:
 		return m.handleSaveActionResult(msg)
-	case dialogSaveAddToPack:
-		return m.handleSaveAddToPack(msg)
 	// Pack content dialogs.
 	case dialogActionContent:
 		return m.handlePackContentAction(msg)
 	case dialogContentMoveTo:
 		return m.handleContentMoveTo(msg)
+	// Create pack dialog.
+	case dialogCreatePack:
+		if msg.confirmed && msg.value != "" {
+			m.statusText = dimStyle.Render(fmt.Sprintf("creating %s...", msg.value))
+			return m, createPack(m.cfg.ConfigDir, msg.value)
+		}
+	// Save tab file deletion.
+	case dialogDeleteSaveFile:
+		if msg.confirmed && m.pendingDeletePath != "" {
+			path := m.pendingDeletePath
+			m.pendingDeletePath = ""
+			return m, deleteSaveFile(path)
+		}
+		m.pendingDeletePath = ""
 	// Search install dialog.
 	case dialogSearchInstall:
 		if msg.confirmed && m.pendingSearchInstall != "" {
@@ -875,8 +933,6 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 	switch msg.value {
 	case actEditSyncConfig:
 		return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "sync-config.yaml"))
-	case actEditRegistry:
-		return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "registry.yaml"))
 	}
 
 	switch msg.id {
@@ -891,6 +947,13 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			return m, nil
 		}
 		switch msg.value {
+		case actProfileAddPack:
+			names := m.unregisteredPacks()
+			if len(names) > 0 {
+				d := newListSelectDialog(dialogAddPack, "Add pack to profile:", names)
+				m.dialog = &d
+			}
+			return m, nil
 		case actEditFile:
 			return m, openFileInEditor(item.path)
 		case actDuplicate:
@@ -917,10 +980,13 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 				m.statusText = dimStyle.Render("no unregistered packs available")
 			}
 		case actProfileRemovePack:
-			names := m.profiles.profilePackNames()
-			if len(names) > 0 {
-				d := newListSelectDialog(dialogRemovePack, "Remove pack from profile:", names)
-				m.dialog = &d
+			if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
+				packName := item.cfg.Packs[m.profiles.packCursor].Name
+				m.profiles = m.profiles.removePackFromProfile(packName)
+				m.dirty = m.dirty || m.profiles.dirty
+				if item := m.profiles.currentItem(); item != nil && item.dirty {
+					return m, saveProfile(m.cfg.ConfigDir, item.name, item.cfg)
+				}
 			} else {
 				m.statusText = dimStyle.Render("no packs in profile")
 			}
@@ -940,10 +1006,14 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			}
 		}
 	case dialogActionSync:
-		// actEditSyncConfig and actEditRegistry handled above.
+		// actEditSyncConfig handled above.
 		return m, nil
 	case dialogActionPackTab:
 		switch msg.value {
+		case actCreatePack:
+			d := newTextInputDialog(dialogCreatePack, "New pack name:")
+			m.dialog = &d
+			return m, nil
 		case actEditManifest:
 			if pi := m.packs.currentItem(); pi != nil {
 				return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "packs", pi.entry.Name, "pack.json"))
@@ -985,51 +1055,40 @@ func (m rootModel) handleSaveActionResult(msg dialogResultMsg) (tea.Model, tea.C
 		return m, nil
 	}
 	switch msg.value {
+	case actPreview:
+		if f := m.saveTab.currentFile(); f != nil {
+			p := newPreviewModel(m.width, m.height)
+			m.preview = &p
+			return m, loadPreview(
+				saveCandidateLabel(*f), f.Category, f.PackName, f.HarnessPath)
+		}
+	case actViewDiff:
+		if c := m.saveTab.currentCandidate(); c != nil {
+			title := saveCandidateLabel(c.HarnessFile)
+			dv := newDiffViewModel(m.width, m.height, title, shortPath(c.HarnessPath))
+			m.saveTab.diffView = &dv
+			return m, m.saveTab.loadCandidateDiff(*c)
+		}
 	case actEditFile:
 		if f := m.saveTab.currentFile(); f != nil {
 			return m, openFileInEditor(f.HarnessPath)
 		}
-	case actAddToPack:
-		f := m.saveTab.currentFile()
-		if f == nil || f.State != app.FileUntracked {
+	case actDeleteFile:
+		if f := m.saveTab.currentFile(); f != nil {
+			m.pendingDeletePath = f.HarnessPath
+			d := newConfirmDialog(dialogDeleteSaveFile,
+				fmt.Sprintf("Delete %s from harness?", filepath.Base(f.HarnessPath)))
+			m.dialog = &d
 			return m, nil
 		}
-		// Offer list of packs from the active profile + "Create new pack...".
-		item := m.profiles.activeItem()
-		if item == nil {
-			m.statusText = errorStyle.Render("no active profile")
-			return m, nil
+	case actSaveToPack:
+		if m.saveTab.selCount > 0 {
+			var cmd tea.Cmd
+			m.saveTab, cmd = m.saveTab.advanceToPack()
+			return m, cmd
 		}
-		var names []string
-		for _, pe := range item.cfg.Packs {
-			names = append(names, pe.Name)
-		}
-		names = append(names, "Create new pack...")
-		d := newListSelectDialog(dialogSaveAddToPack, fmt.Sprintf("Add %s to pack:", filepath.Base(f.HarnessPath)), names)
-		m.dialog = &d
-		return m, nil
-	case actSaveModified:
-		return m.startSave()
 	}
 	return m, nil
-}
-
-func (m rootModel) handleSaveAddToPack(msg dialogResultMsg) (tea.Model, tea.Cmd) {
-	if !msg.confirmed || msg.value == "" {
-		return m, nil
-	}
-	f := m.saveTab.currentFile()
-	if f == nil {
-		return m, nil
-	}
-	packName := msg.value
-	if packName == "Create new pack..." {
-		// TODO: chain to a text input dialog for new pack name
-		m.statusText = dimStyle.Render("create new pack not yet implemented")
-		return m, nil
-	}
-	m.statusText = dimStyle.Render(fmt.Sprintf("adding to %s...", packName))
-	return m, saveFileToPack(m.cfg.ConfigDir, f.HarnessPath, f.Category, f.RelPath, packName, m.cfg.SyncCfg)
 }
 
 // startExit initiates the exit flow: auto-save if dirty, then quit.
@@ -1071,14 +1130,13 @@ func (m rootModel) refresh() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// triggerInspect fires an async harness inspection for the Save tab.
+// triggerInspect fires an async harness detection for the Save tab pipeline.
 func (m rootModel) triggerInspect() tea.Cmd {
 	item := m.profiles.activeItem()
 	if item == nil {
 		return nil
 	}
-	m.saveTab.loading = true
-	return inspectHarness(m.cfg.ConfigDir, item.path, m.cfg.SyncCfg, m.cfg.Registry)
+	return detectHarnesses(m.cfg.Registry)
 }
 
 // startSave initiates the save flow: dry-run first, then show plan view.
@@ -1089,7 +1147,7 @@ func (m rootModel) startSave() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.statusText = dimStyle.Render("checking for changes...")
-	return m, runSavePlan(m.cfg.ConfigDir, item.name, item.path, m.cfg.SyncCfg, m.cfg.Registry)
+	return m, runSavePlan(m.cfg.ConfigDir, item.name, m.cfg.Registry)
 }
 
 // startSync initiates the sync flow: auto-save if dirty, then prompt sync.
@@ -1133,7 +1191,7 @@ func (m rootModel) doSync(scope, harness string) (tea.Model, tea.Cmd) {
 	m.statusText = dimStyle.Render("syncing...")
 	m.pendingExit = false
 
-	return m, runSync(m.cfg.ConfigDir, item.name, item.path, scope, harness, m.cfg.SyncCfg, m.cfg.Registry)
+	return m, runSync(m.cfg.ConfigDir, item.name, item.path, scope, harness, m.syncTab.prune, m.cfg.SyncCfg, m.cfg.Registry)
 }
 
 // promptSync shows the sync options dialog for the target profile.
@@ -1249,7 +1307,7 @@ func (m rootModel) editCurrentFile() (tea.Model, tea.Cmd) {
 			}
 		}
 	case tabPacks:
-		if m.packs.focus == packPanelContent {
+		if m.packs.focus == packPanelContent || m.packs.focus == packPanelPreview {
 			if m.packs.contentCursor >= 0 && m.packs.contentCursor < len(m.packs.contentItems) {
 				ci := m.packs.contentItems[m.packs.contentCursor]
 				if !ci.isHeader {
@@ -1354,7 +1412,7 @@ const (
 	actActivate       = "Activate"
 	actDelete         = "Delete"
 	actSettingsSource = "Settings source"
-	// Profile pack roster actions (pack add/remove = profile membership).
+	// Profile pack roster actions (pack enable/disable = profile membership).
 	actProfileAddPack    = "Add to profile"
 	actProfileRemovePack = "Remove from profile"
 	// Packs tab actions (pack install/delete = disk operations).
@@ -1363,14 +1421,16 @@ const (
 	actUpdate     = "Update"
 	actUpdateAll  = "Update all"
 	// Save tab actions.
-	actAddToPack    = "Add to pack"
-	actMoveToPack   = "Move to pack"
-	actSaveModified = "Save modified"
+	actCreatePack = "Create pack"
+	actMoveToPack = "Move to pack"
+	actPreview    = "Preview"
+	actViewDiff   = "View diff"
+	actSaveToPack = "Save selected to pack"
+	actDeleteFile = "Delete file"
 	// Edit actions (open in $EDITOR).
 	actEditFile       = "Edit file"
 	actEditManifest   = "Edit manifest"
 	actEditSyncConfig = "Edit sync-config"
-	actEditRegistry   = "Edit registry"
 )
 
 // openActionMenu opens a context-sensitive action dialog based on the current focus.
@@ -1389,7 +1449,7 @@ func (m rootModel) openActionMenu() (tea.Model, tea.Cmd) {
 		if m.packs.focus == packPanelList {
 			return m.openPackTabActions()
 		}
-		if m.packs.focus == packPanelContent {
+		if m.packs.focus == packPanelContent || m.packs.focus == packPanelPreview {
 			return m.openPackContentActions()
 		}
 	case tabSync:
@@ -1409,6 +1469,9 @@ func (m rootModel) openProfileActions() (tea.Model, tea.Cmd) {
 	if !item.isActive {
 		actions = append(actions, actActivate)
 	}
+	if names := m.unregisteredPacks(); len(names) > 0 {
+		actions = append(actions, actProfileAddPack)
+	}
 	actions = append(actions, actDelete, actEditFile)
 	d := newListSelectDialog(dialogActionProfile, "Profile actions:", actions)
 	m.dialog = &d
@@ -1417,24 +1480,14 @@ func (m rootModel) openProfileActions() (tea.Model, tea.Cmd) {
 
 func (m rootModel) openPackRosterActions() (tea.Model, tea.Cmd) {
 	var actions []string
-	names := m.unregisteredPacks()
-	if len(names) > 0 {
-		actions = append(actions, actProfileAddPack)
-	}
-	if len(m.profiles.profilePackNames()) > 0 {
-		actions = append(actions, actProfileRemovePack)
-	}
-	// Offer "Settings source" if the selected pack has harness configs.
-	if item := m.profiles.currentItem(); item != nil && item.tree != nil && m.profiles.packCursor < len(item.cfg.Packs) {
-		packIdx := m.profiles.packCursor
-		for _, pi := range item.tree.packs {
-			if pi.idx == packIdx && pi.manifest.Configs.HasAnyConfigs() {
-				actions = append(actions, actSettingsSource)
-				break
-			}
+	actions = append(actions, actProfileRemovePack)
+	// Offer "Settings source" for any pack that is not already the current settings source.
+	if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
+		curName := item.cfg.Packs[m.profiles.packCursor].Name
+		if curName != m.profiles.settingsSourcePack() {
+			actions = append(actions, actSettingsSource)
 		}
 	}
-	actions = append(actions, actEditManifest)
 	if len(actions) == 0 {
 		m.statusText = dimStyle.Render("no actions available")
 		return m, nil
@@ -1450,11 +1503,10 @@ func (m rootModel) openPackTabActions() (tea.Model, tea.Cmd) {
 	if li != nil && li.installed {
 		actions = append(actions, actPackDelete, actUpdate, actEditManifest)
 	}
-	actions = append(actions, actInstall)
+	actions = append(actions, actCreatePack, actInstall)
 	if len(m.packs.items) > 0 {
 		actions = append(actions, actUpdateAll)
 	}
-	actions = append(actions, actEditRegistry)
 	d := newListSelectDialog(dialogActionPackTab, "Pack actions:", actions)
 	m.dialog = &d
 	return m, nil
@@ -1537,34 +1589,31 @@ func (m rootModel) handleContentMoveTo(msg dialogResultMsg) (tea.Model, tea.Cmd)
 	fromPack := pi.entry.Name
 
 	m.statusText = dimStyle.Render(fmt.Sprintf("moving %s/%s to %s...", ci.category, ci.id, toPack))
-	return m, moveContentToPack(m.cfg.ConfigDir, ci.id, ci.category, fromPack, toPack, m.cfg.SyncCfg)
+	return m, moveContentToPack(m.cfg.ConfigDir, ci.id, ci.category, fromPack, toPack)
 }
 
 func (m rootModel) openSyncActions() (tea.Model, tea.Cmd) {
-	d := newListSelectDialog(dialogActionSync, "Sync actions:", []string{actEditSyncConfig, actEditRegistry})
+	d := newListSelectDialog(dialogActionSync, "Sync actions:", []string{actEditSyncConfig})
 	m.dialog = &d
 	return m, nil
 }
 
 func (m rootModel) openSaveActions() (tea.Model, tea.Cmd) {
+	if m.saveTab.stage != saveStageFiles {
+		m.statusText = dimStyle.Render("no actions available")
+		return m, nil
+	}
 	f := m.saveTab.currentFile()
 	if f == nil {
 		m.statusText = dimStyle.Render("no actions available")
 		return m, nil
 	}
-	actions := []string{actEditFile}
-	switch f.State {
-	case app.FileUntracked:
-		actions = append(actions, actAddToPack)
-	case app.FileModified, app.FileConflict, app.FileSettings:
-		actions = append(actions, actSaveModified)
-	default:
-		// Current file is clean — offer bulk save if there are pending changes.
-		if m.saveTab.countModified+m.saveTab.countSettings > 0 {
-			actions = append(actions, actSaveModified)
-		}
+	actions := []string{actPreview, actViewDiff, actEditFile, actDeleteFile}
+	if m.saveTab.selCount > 0 {
+		actions = append(actions, actSaveToPack)
 	}
-	d := newListSelectDialog(dialogActionSave, "Save actions:", actions)
+	d := newListSelectDialog(dialogActionSave,
+		fmt.Sprintf("Actions for %s:", filepath.Base(f.HarnessPath)), actions)
 	m.dialog = &d
 	return m, nil
 }
@@ -1583,12 +1632,6 @@ func (m rootModel) tabNames(state syncStatus) []string {
 		syncLabel = "Sync " + statusDotInactive
 	}
 	saveLabel := "Save"
-	pending := m.saveTab.pendingCount()
-	if pending > 0 {
-		saveLabel = fmt.Sprintf("Save %s", statusDotInactive)
-	} else if len(m.saveTab.files) > 0 {
-		saveLabel = "Save " + statusDotActive
-	}
 	return []string{"Profiles", "Packs", saveLabel, syncLabel, "Search"}
 }
 
@@ -1624,11 +1667,16 @@ func (m rootModel) helpText() string {
 		switch m.packs.focus {
 		case packPanelContent:
 			return "j/k:navigate  enter:preview  e:edit  .:actions  esc:back"
+		case packPanelPreview:
+			return "j/k:scroll  enter:preview  e:edit  .:actions  esc:back"
 		default:
 			return "j/k:navigate  enter:content  .:actions  r:refresh  tab:switch  esc:quit"
 		}
 	case tabSave:
-		base = "j/k:navigate  enter:preview  .:actions  ctrl+s:save  r:refresh  tab:switch  esc:quit"
+		base = m.saveTab.helpText()
+		if base == "" {
+			base = "tab:switch  esc:quit"
+		}
 	case tabSync:
 		base = "j/k:navigate  space:toggle  .:actions  v:plan  s:sync  ctrl+s:save  r:refresh  tab:switch  esc:quit"
 	case tabSearch:

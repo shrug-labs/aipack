@@ -21,7 +21,7 @@ func TestPlanView_VKeyOpensPlanView(t *testing.T) {
 			name: "test",
 			syncTarget: syncTargetInfo{
 				PlanSummary: app.PlanSummary{Ops: []app.PlanOp{
-					{Kind: app.PlanOpWrite, Dst: "/tmp/out/rules/r.md", SourcePack: "my-pack", Size: 100},
+					{Kind: app.PlanOpRule, Dst: "/tmp/out/rules/r.md", SourcePack: "my-pack", Size: 100},
 				}},
 				projectDir: "/tmp/out",
 			},
@@ -61,7 +61,7 @@ func TestPlanView_EscCloses(t *testing.T) {
 	m := newRootModel(RunConfig{})
 	m.width = 120
 	m.height = 40
-	ops := []app.PlanOp{{Kind: app.PlanOpWrite, Dst: "/tmp/file.md", Size: 50}}
+	ops := []app.PlanOp{{Kind: app.PlanOpRule, Dst: "/tmp/file.md", Size: 50}}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 	m.planView = &pv
 
@@ -77,7 +77,7 @@ func TestPlanView_QCloses(t *testing.T) {
 	m := newRootModel(RunConfig{})
 	m.width = 120
 	m.height = 40
-	ops := []app.PlanOp{{Kind: app.PlanOpWrite, Dst: "/tmp/file.md", Size: 50}}
+	ops := []app.PlanOp{{Kind: app.PlanOpRule, Dst: "/tmp/file.md", Size: 50}}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 	m.planView = &pv
 
@@ -94,8 +94,8 @@ func TestPlanView_ViewTakesOver(t *testing.T) {
 	m.width = 120
 	m.height = 40
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/project/rules/r.md", SourcePack: "my-pack", Size: 100},
-		{Kind: app.PlanOpCopy, Dst: "/tmp/project/agents/a.md", SourcePack: "my-pack"},
+		{Kind: app.PlanOpRule, Dst: "/tmp/project/rules/r.md", SourcePack: "my-pack", Size: 100},
+		{Kind: app.PlanOpSkill, Dst: "/tmp/project/agents/a.md", SourcePack: "my-pack"},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp/project", ops, false)
 	m.planView = &pv
@@ -112,19 +112,19 @@ func TestPlanView_ViewTakesOver(t *testing.T) {
 func TestPlanView_GroupsOperations(t *testing.T) {
 	t.Parallel()
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/project/r.md", SourcePack: "pack-a", Size: 100},
-		{Kind: app.PlanOpWrite, Dst: "/tmp/project/a.md", SourcePack: "pack-a", Size: 200},
-		{Kind: app.PlanOpCopy, Dst: "/tmp/project/w.md", SourcePack: "pack-b"},
+		{Kind: app.PlanOpRule, Dst: "/tmp/project/r.md", SourcePack: "pack-a", Size: 100},
+		{Kind: app.PlanOpRule, Dst: "/tmp/project/a.md", SourcePack: "pack-a", Size: 200},
+		{Kind: app.PlanOpSkill, Dst: "/tmp/project/w.md", SourcePack: "pack-b"},
 		{Kind: app.PlanOpSettings, Dst: "/home/.config/settings.json", SourcePack: "pack-a", Size: 50},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp/project", ops, false)
 	view := pv.View()
 
-	if !strings.Contains(view, "Writes (2)") {
-		t.Fatalf("expected view to contain 'Writes (2)', got:\n%s", view)
+	if !strings.Contains(view, "Rules (2)") {
+		t.Fatalf("expected view to contain 'Rules (2)', got:\n%s", view)
 	}
-	if !strings.Contains(view, "Copies (1)") {
-		t.Fatalf("expected view to contain 'Copies (1)', got:\n%s", view)
+	if !strings.Contains(view, "Skills (1)") {
+		t.Fatalf("expected view to contain 'Skills (1)', got:\n%s", view)
 	}
 	if !strings.Contains(view, "Settings (1)") {
 		t.Fatalf("expected view to contain 'Settings (1)', got:\n%s", view)
@@ -161,7 +161,7 @@ func TestPlanView_SyncTabAlsoOpens(t *testing.T) {
 		isActive: true,
 		syncTarget: syncTargetInfo{
 			PlanSummary: app.PlanSummary{Ops: []app.PlanOp{
-				{Kind: app.PlanOpWrite, Dst: "/tmp/file.md", Size: 100},
+				{Kind: app.PlanOpRule, Dst: "/tmp/file.md", Size: 100},
 			}},
 			projectDir: "/tmp",
 		},
@@ -201,13 +201,13 @@ func TestPlanView_HelpText(t *testing.T) {
 func TestSyncTargetInfo_PlanOpsPopulated(t *testing.T) {
 	t.Parallel()
 	target := syncTargetInfo{PlanSummary: app.PlanSummary{
-		NumWrites:   2,
-		NumCopies:   1,
+		NumRules:    2,
+		NumSkills:   1,
 		NumSettings: 1,
 		Ops: []app.PlanOp{
-			{Kind: app.PlanOpWrite, Dst: "/a"},
-			{Kind: app.PlanOpWrite, Dst: "/b"},
-			{Kind: app.PlanOpCopy, Dst: "/c"},
+			{Kind: app.PlanOpRule, Dst: "/a"},
+			{Kind: app.PlanOpRule, Dst: "/b"},
+			{Kind: app.PlanOpSkill, Dst: "/c"},
 			{Kind: app.PlanOpSettings, Dst: "/d"},
 		},
 	}}
@@ -222,9 +222,9 @@ func TestSyncTargetInfo_PlanOpsPopulated(t *testing.T) {
 func TestPlanView_CursorNavigation(t *testing.T) {
 	t.Parallel()
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/a.md", Size: 100, Content: []byte("a")},
-		{Kind: app.PlanOpWrite, Dst: "/tmp/b.md", Size: 200, Content: []byte("b")},
-		{Kind: app.PlanOpCopy, Dst: "/tmp/c.md", Src: "/src/c.md"},
+		{Kind: app.PlanOpRule, Dst: "/tmp/a.md", Size: 100, Content: []byte("a")},
+		{Kind: app.PlanOpRule, Dst: "/tmp/b.md", Size: 200, Content: []byte("b")},
+		{Kind: app.PlanOpSkill, Dst: "/tmp/c.md", Src: "/src/c.md"},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 
@@ -255,8 +255,8 @@ func TestPlanView_CursorSkipsHeaders(t *testing.T) {
 	t.Parallel()
 	// Two groups: writes and copies. Cursor should skip both headers.
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/a.md", Size: 10, Content: []byte("a")},
-		{Kind: app.PlanOpCopy, Dst: "/tmp/b.md", Src: "/src/b.md"},
+		{Kind: app.PlanOpRule, Dst: "/tmp/a.md", Size: 10, Content: []byte("a")},
+		{Kind: app.PlanOpSkill, Dst: "/tmp/b.md", Src: "/src/b.md"},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 
@@ -272,7 +272,7 @@ func TestPlanView_CursorSkipsHeaders(t *testing.T) {
 func TestPlanView_EnterOpensDiffView(t *testing.T) {
 	t.Parallel()
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/a.md", Size: 10, Content: []byte("hello")},
+		{Kind: app.PlanOpRule, Dst: "/tmp/a.md", Size: 10, Content: []byte("hello")},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 
@@ -289,7 +289,7 @@ func TestPlanView_EnterOpensDiffView(t *testing.T) {
 func TestPlanView_DiffLoadedSetsContent(t *testing.T) {
 	t.Parallel()
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/a.md", Size: 10, Content: []byte("hello")},
+		{Kind: app.PlanOpRule, Dst: "/tmp/a.md", Size: 10, Content: []byte("hello")},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 
@@ -316,7 +316,7 @@ func TestPlanView_EscClosesDiffNotPlan(t *testing.T) {
 	m := newRootModel(RunConfig{})
 	m.width = 120
 	m.height = 40
-	ops := []app.PlanOp{{Kind: app.PlanOpWrite, Dst: "/tmp/a.md", Size: 10, Content: []byte("a")}}
+	ops := []app.PlanOp{{Kind: app.PlanOpRule, Dst: "/tmp/a.md", Size: 10, Content: []byte("a")}}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 	dv := newDiffViewModel(120, 40, "a.md", "./a.md")
 	dv.setContent("--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n", false, "", "")
@@ -337,7 +337,7 @@ func TestPlanView_EscClosesDiffNotPlan(t *testing.T) {
 func TestPlanView_DiffNewFile(t *testing.T) {
 	t.Parallel()
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/new.md", Size: 5, Content: []byte("hello")},
+		{Kind: app.PlanOpRule, Dst: "/tmp/new.md", Size: 5, Content: []byte("hello")},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 	dv := newDiffViewModel(120, 40, "new.md", "./new.md")
@@ -362,7 +362,7 @@ func TestPlanView_DiffNewFile(t *testing.T) {
 func TestPlanView_DiffError(t *testing.T) {
 	t.Parallel()
 	ops := []app.PlanOp{
-		{Kind: app.PlanOpWrite, Dst: "/tmp/a.md", Size: 10, Content: []byte("a")},
+		{Kind: app.PlanOpRule, Dst: "/tmp/a.md", Size: 10, Content: []byte("a")},
 	}
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 	dv := newDiffViewModel(120, 40, "a.md", "./a.md")

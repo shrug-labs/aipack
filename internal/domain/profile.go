@@ -20,7 +20,6 @@ type Profile struct {
 	Packs        []Pack
 	MCPServers   []MCPServer
 	BaseSettings SettingsBundle
-	Plugins      PluginsBundle
 
 	// SettingsPack is the name of the single pack that provides base settings
 	// for all harnesses. At most one pack per profile can have settings.enabled.

@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/shrug-labs/aipack/internal/app"
-	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 // planViewItem is a single entry in the flat plan list (header or operation).
@@ -68,10 +67,12 @@ func (m *planViewModel) buildItems() []planViewItem {
 		label string
 		style lipgloss.Style
 	}{
-		{app.PlanOpWrite, "Writes", opWriteStyle},
-		{app.PlanOpCopy, "Copies", opCopyStyle},
+		{app.PlanOpRule, "Rules", opRuleStyle},
+		{app.PlanOpWorkflow, "Workflows", opWorkflowStyle},
+		{app.PlanOpAgent, "Agents", opAgentStyle},
+		{app.PlanOpSkill, "Skills", opSkillStyle},
 		{app.PlanOpSettings, "Settings", opSettingsStyle},
-		{app.PlanOpPlugin, "Plugins", opPluginStyle},
+		{app.PlanOpMCP, "MCP", opMCPStyle},
 		{app.PlanOpPrune, "Prunes", opPruneStyle},
 	}
 
@@ -317,7 +318,7 @@ func (m planViewModel) loadDiff(op app.PlanOp) tea.Cmd {
 				return diffLoadedMsg{dst: op.Dst, title: title, err: err}
 			}
 			labelA := filepath.Base(op.Dst) + " (will be removed)"
-			diffText := engine.UnifiedDiff(onDisk, nil, labelA, "/dev/null")
+			diffText := app.ComputeDiff(onDisk, nil, labelA, "/dev/null")
 			return diffLoadedMsg{dst: op.Dst, title: title, diffText: diffText}
 		}
 
@@ -359,7 +360,7 @@ func (m planViewModel) loadDiff(op app.PlanOp) tea.Cmd {
 			labelA = filepath.Base(op.Dst) + " (in pack)"
 			labelB = filepath.Base(op.Dst) + " (in harness)"
 		}
-		diffText := engine.UnifiedDiff(onDisk, desired, labelA, labelB)
+		diffText := app.ComputeDiff(onDisk, desired, labelA, labelB)
 
 		return diffLoadedMsg{dst: op.Dst, title: title, diffText: diffText}
 	}

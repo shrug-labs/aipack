@@ -11,37 +11,62 @@ import (
 	"github.com/shrug-labs/aipack/internal/engine"
 )
 
-func TestDoctorExtractEnvRefNames_Single(t *testing.T) {
+func TestDoctorRequiredMCPRefs_EnvAndParams(t *testing.T) {
 	t.Parallel()
-	names := doctorExtractEnvRefNames("{env:HOME}/bin")
-	if len(names) != 1 {
-		t.Fatalf("expected 1 name, got %d: %v", len(names), names)
+	params := map[string]string{"base": "/usr/local"}
+	inv := map[string]domain.MCPServer{
+		"myserver": {
+			Command: []string{"{params.base}/bin/server", "--token={env:TOKEN}"},
+			Env:     map[string]string{"HOME": "{env:HOME}"},
+		},
 	}
-	if names[0] != "HOME" {
-		t.Errorf("names[0] = %q, want %q", names[0], "HOME")
+	missing, requiredBy := doctorRequiredMCPRefs(params, inv, []string{"myserver"})
+
+	// TOKEN and HOME should be listed as required env refs.
+	if _, ok := requiredBy["env:TOKEN"]; !ok {
+		t.Error("expected env:TOKEN in requiredBy")
+	}
+	if _, ok := requiredBy["env:HOME"]; !ok {
+		t.Error("expected env:HOME in requiredBy")
+	}
+	// params.base is available, so should NOT appear.
+	if _, ok := requiredBy["param:base"]; ok {
+		t.Error("param:base should not appear (it's available)")
+	}
+
+	// Both env vars are likely unset in test, so should be missing.
+	hasMissing := false
+	for _, m := range missing {
+		if m == "env:TOKEN" || m == "env:HOME" {
+			hasMissing = true
+		}
+	}
+	if !hasMissing {
+		t.Errorf("expected at least one missing env ref, got %v", missing)
 	}
 }
 
-func TestDoctorExtractEnvRefNames_Multiple(t *testing.T) {
+func TestDoctorRequiredMCPRefs_MissingParam(t *testing.T) {
 	t.Parallel()
-	names := doctorExtractEnvRefNames("{env:A}{env:B}")
-	if len(names) != 2 {
-		t.Fatalf("expected 2 names, got %d: %v", len(names), names)
+	params := map[string]string{} // no params
+	inv := map[string]domain.MCPServer{
+		"myserver": {
+			Command: []string{"{params.missing_key}/bin/server"},
+		},
 	}
-	// Result is sorted.
-	if names[0] != "A" {
-		t.Errorf("names[0] = %q, want %q", names[0], "A")
-	}
-	if names[1] != "B" {
-		t.Errorf("names[1] = %q, want %q", names[1], "B")
-	}
-}
+	missing, requiredBy := doctorRequiredMCPRefs(params, inv, []string{"myserver"})
 
-func TestDoctorExtractEnvRefNames_None(t *testing.T) {
-	t.Parallel()
-	names := doctorExtractEnvRefNames("/usr/bin")
-	if len(names) != 0 {
-		t.Errorf("expected 0 names, got %d: %v", len(names), names)
+	if _, ok := requiredBy["param:missing_key"]; !ok {
+		t.Error("expected param:missing_key in requiredBy")
+	}
+	found := false
+	for _, m := range missing {
+		if m == "param:missing_key" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected param:missing_key in missing, got %v", missing)
 	}
 }
 
@@ -402,7 +427,7 @@ func TestDoctorCheckManifestDrift_NoDrift(t *testing.T) {
 			Rules: []string{"alpha"},
 		},
 	}}
-	cr := doctorCheckManifestDrift(dir, packs)
+	cr := doctorCheckManifestDrift(dir, packs, false)
 	if !cr.OK {
 		t.Errorf("OK = false, want true (no drift)")
 	}
@@ -423,7 +448,7 @@ func TestDoctorCheckManifestDrift_Undeclared(t *testing.T) {
 			Rules: []string{"alpha"}, // beta is on disk but not declared
 		},
 	}}
-	cr := doctorCheckManifestDrift(dir, packs)
+	cr := doctorCheckManifestDrift(dir, packs, false)
 	if cr.OK {
 		t.Errorf("OK = true, want false (undeclared content)")
 	}
@@ -445,9 +470,120 @@ func TestDoctorCheckManifestDrift_Missing(t *testing.T) {
 			Rules: []string{"ghost"}, // declared but not on disk
 		},
 	}}
-	cr := doctorCheckManifestDrift(dir, packs)
+	cr := doctorCheckManifestDrift(dir, packs, false)
 	if cr.OK {
 		t.Errorf("OK = true, want false (missing content)")
+	}
+}
+
+func TestDoctorCheckManifestDrift_FixAddsUndeclaredAndRemovesMissing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packRoot := filepath.Join(dir, "packs", "mypack")
+	os.MkdirAll(filepath.Join(packRoot, "rules"), 0o755)
+	os.WriteFile(filepath.Join(packRoot, "rules", "alpha.md"), []byte("x"), 0o600)
+	os.WriteFile(filepath.Join(packRoot, "rules", "beta.md"), []byte("x"), 0o600)
+
+	manifest := config.PackManifest{
+		SchemaVersion: 1,
+		Name:          "mypack",
+		Root:          ".",
+		Rules:         []string{"alpha", "ghost"}, // ghost is missing; beta is undeclared
+	}
+	// Write the initial manifest so SavePackManifest can overwrite it.
+	if err := config.SavePackManifest(filepath.Join(packRoot, "pack.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	packs := []config.ResolvedPack{{
+		Name:     "mypack",
+		Root:     packRoot,
+		Manifest: manifest,
+	}}
+	cr := doctorCheckManifestDrift(dir, packs, true)
+	if !cr.Fixed {
+		t.Fatalf("Fixed = false, want true")
+	}
+	if cr.Status != "fixed" {
+		t.Errorf("Status = %q, want fixed", cr.Status)
+	}
+
+	// Re-read manifest and verify.
+	updated, err := config.LoadPackManifest(filepath.Join(packRoot, "pack.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alpha", "beta"}
+	if len(updated.Rules) != len(want) {
+		t.Fatalf("Rules = %v, want %v", updated.Rules, want)
+	}
+	for i, id := range want {
+		if updated.Rules[i] != id {
+			t.Errorf("Rules[%d] = %q, want %q", i, updated.Rules[i], id)
+		}
+	}
+}
+
+func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "aipack")
+	projectDir := filepath.Join(home, "project")
+	trackedFile := filepath.Join(projectDir, ".claude", "settings.local.json")
+
+	if err := os.MkdirAll(filepath.Dir(trackedFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trackedFile, []byte(`{"ok":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
+	if err := engine.SaveLedger(ledgerPath, domain.Ledger{
+		Managed: map[string]domain.Entry{
+			trackedFile: {Digest: domain.SingleFileDigest([]byte(`{"ok":true}`))},
+		},
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	cr := doctorCheckLedgerHealth(configDir, []config.ResolvedPack{{Name: "alpha"}}, true)
+	if !cr.Fixed {
+		t.Fatalf("Fixed = false, want true")
+	}
+
+	lg, _, err := engine.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lg.Managed[trackedFile].SourcePack; got != "alpha" {
+		t.Fatalf("SourcePack = %q, want alpha", got)
+	}
+}
+
+func TestDoctorCheckStaleLedgers_FindsNestedProjectLedgerDirs(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "aipack")
+	projectDir := filepath.Join(home, "project")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
+
+	if err := engine.SaveLedger(ledgerPath, domain.Ledger{Managed: map[string]domain.Entry{}}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	var syncCfg config.SyncConfig
+	syncCfg.Defaults.Harnesses = []string{"claudecode"}
+	cr := doctorCheckStaleLedgers(configDir, syncCfg)
+	if cr.OK {
+		t.Fatalf("OK = true, want false")
+	}
+	if cr.Status != "warn" {
+		t.Fatalf("Status = %q, want warn", cr.Status)
+	}
+	stale, ok := cr.Details["stale"].([]string)
+	if !ok || len(stale) == 0 {
+		t.Fatalf("stale details = %#v, want non-empty []string", cr.Details["stale"])
 	}
 }
 

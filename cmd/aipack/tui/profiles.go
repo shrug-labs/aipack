@@ -3,12 +3,12 @@ package tui
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/harness"
 )
@@ -43,6 +43,11 @@ func (m profilesModel) treeVisibleH() int {
 	return colH
 }
 
+func (m *profilesModel) clampProfileOffset() {
+	visH := max(m.treeVisibleH()-2, 1)
+	m.profileOffset = clampOffset(m.cursor, m.profileOffset, visH)
+}
+
 func newProfilesModel(configDir string) profilesModel {
 	return profilesModel{
 		configDir: configDir,
@@ -70,6 +75,7 @@ func (m profilesModel) Update(msg tea.Msg) (profilesModel, tea.Cmd) {
 				break
 			}
 		}
+		m.clampProfileOffset()
 		// Build tree for initially focused profile.
 		m = m.ensureTree()
 		// Start file size computation; sync check is triggered by rootModel.
@@ -116,12 +122,11 @@ func (m profilesModel) Update(msg tea.Msg) (profilesModel, tea.Cmd) {
 }
 
 func (m profilesModel) updateProfileList(msg tea.KeyMsg) (profilesModel, tea.Cmd) {
-	visH := max(m.treeVisibleH()-2, 1)
 	switch msg.String() {
 	case "j", "down":
 		if m.cursor < len(m.items)-1 {
 			m.cursor++
-			m.profileOffset = clampOffset(m.cursor, m.profileOffset, visH)
+			m.clampProfileOffset()
 			m.packCursor = 0
 			m.packOffset = 0
 			m = m.ensureTree()
@@ -130,7 +135,7 @@ func (m profilesModel) updateProfileList(msg tea.KeyMsg) (profilesModel, tea.Cmd
 	case "k", "up":
 		if m.cursor > 0 {
 			m.cursor--
-			m.profileOffset = clampOffset(m.cursor, m.profileOffset, visH)
+			m.clampProfileOffset()
 			m.packCursor = 0
 			m.packOffset = 0
 			m = m.ensureTree()
@@ -199,7 +204,8 @@ func (m profilesModel) updateTree(msg tea.KeyMsg) (profilesModel, tea.Cmd) {
 		item.tree.clampOffset(treeH)
 	case " ":
 		if item.tree.toggle() {
-			item.tree.applyToProfile(item.cfg.Packs)
+			ct := item.tree.toContentTree()
+			app.ApplyContentTree(ct, item.cfg.Packs)
 			m.dirty = true
 			item.dirty = true
 			if item.isActive {
@@ -222,7 +228,7 @@ func (m profilesModel) updateTree(msg tea.KeyMsg) (profilesModel, tea.Cmd) {
 		}
 		packName := ""
 		if n.packIdx >= 0 && n.packIdx < len(item.tree.packs) {
-			packName = item.tree.packs[n.packIdx].name
+			packName = item.tree.packs[n.packIdx].Name
 		}
 		return m, func() tea.Msg {
 			return previewRequestMsg{
@@ -263,7 +269,7 @@ func (m profilesModel) togglePackEnabled(idx int) profilesModel {
 	return m
 }
 
-// boolPtr is a local alias for config.BoolPtr.
+// boolPtr returns a pointer to a bool value.
 var boolPtr = config.BoolPtr
 
 // ensureTree builds a content tree for the currently focused profile if needed.
@@ -277,30 +283,20 @@ func (m profilesModel) ensureTree() profilesModel {
 		return m
 	}
 
-	// Resolve all packs; only include enabled in tree.
-	var resolved []packInfo
-	var errs []string
-	for i, pe := range item.cfg.Packs {
-		manifestPath := filepath.Join(m.configDir, "packs", pe.Name, "pack.json")
-		manifest, err := config.LoadPackManifest(manifestPath)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("pack %q: %v", pe.Name, err))
+	// Resolve all packs via app layer.
+	allPacks, errs := app.ResolveProfilePacks(m.configDir, item.cfg.Packs)
+
+	// Filter to enabled packs only for the tree.
+	var enabled []app.ProfilePackInfo
+	for _, p := range allPacks {
+		pe := item.cfg.Packs[p.Index]
+		if pe.Enabled != nil && !*pe.Enabled {
 			continue
 		}
-		packRoot := config.ResolvePackRoot(manifestPath, manifest.Root)
-
-		if pe.Enabled != nil && !*pe.Enabled {
-			continue // skip disabled packs from tree
-		}
-		resolved = append(resolved, packInfo{
-			idx:      i,
-			name:     pe.Name,
-			root:     packRoot,
-			manifest: manifest,
-		})
+		enabled = append(enabled, p)
 	}
 
-	if len(resolved) == 0 {
+	if len(enabled) == 0 {
 		if len(errs) > 0 {
 			item.treeErr = errs[0]
 		} else {
@@ -309,7 +305,8 @@ func (m profilesModel) ensureTree() profilesModel {
 		return m
 	}
 
-	tree := buildMultiPackTree(resolved, item.cfg.Packs)
+	ct := app.BuildContentTree(enabled, item.cfg.Packs)
+	tree := buildTreeFromContent(ct)
 	item.tree = &tree
 	item.treeErr = ""
 	return m
@@ -327,7 +324,7 @@ func (m profilesModel) computeFileSizesCmd() tea.Cmd {
 	profileName := item.name
 	packs := item.tree.packs
 	return func() tea.Msg {
-		sizes := computeFileSizesForProfile(packs)
+		sizes := app.PackContentSizes(packs)
 		return fileSizeMsg{profileName: profileName, sizes: sizes}
 	}
 }
@@ -516,11 +513,10 @@ func (m profilesModel) viewProfileList(width, height int) string {
 		}
 
 		nameStyle := lipgloss.NewStyle()
-		if !focused && i != m.cursor {
-			nameStyle = dimStyle
-		}
-		if focused && i == m.cursor {
+		if i == m.cursor {
 			nameStyle = selectedStyle
+		} else if !focused {
+			nameStyle = dimStyle
 		}
 
 		label := ""

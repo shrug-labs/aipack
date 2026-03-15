@@ -25,14 +25,17 @@ const (
 
 // HarnessFile describes a single file in harness locations with its state.
 type HarnessFile struct {
-	HarnessPath string // absolute path on disk
-	RelPath     string // relative path within category (e.g. "triage" for rules/triage.md)
-	Category    string // rules, agents, workflows, skills, mcp, settings
-	State       FileState
-	PackName    string // source pack (empty for untracked)
-	PackPath    string // destination path in pack (empty for untracked)
-	Size        int64
-	Kind        domain.CopyKind // file or dir
+	HarnessPath  string              // absolute path on disk
+	RelPath      string              // relative path within category (e.g. "triage" for rules/triage.md)
+	Category     domain.PackCategory // rules, agents, workflows, skills, mcp, settings
+	State        FileState
+	PackName     string // source pack (empty for untracked)
+	PackPath     string // destination path in pack (empty for untracked)
+	Size         int64
+	Kind         domain.CopyKind // file or dir
+	Content      []byte          // synthesized content for non-file-backed resources like MCP servers
+	AllowedTools []string
+	Scope        domain.Scope // source scope (global or project)
 }
 
 // InspectRequest holds parameters for inspecting harness file state.
@@ -50,19 +53,44 @@ type InspectResult struct {
 	LedgerFiles int // total entries in ledger
 }
 
+// InspectActive inspects harness file state using the active profile from
+// sync-config defaults, resolving all context from configDir.
+func InspectActive(configDir string, reg *harness.Registry) (InspectResult, []domain.Warning, error) {
+	res, warnings, err := ResolveActiveProfile(configDir)
+	if err != nil {
+		return InspectResult{}, warnings, err
+	}
+	packRoots := resolvePackRoots(res.Profile)
+	result, err := InspectHarness(InspectRequest{
+		TargetSpec: res.TargetSpec,
+		PackRoots:  packRoots,
+	}, reg)
+	return result, warnings, err
+}
+
 // InspectHarness captures all harness content and classifies every file
 // against the ledger, returning a complete file inventory.
 func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, error) {
 	home := req.Home
 	var result InspectResult
 
-	ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, home, req.Harnesses)
-	result.LedgerPath = ledgerPath
-
-	lg, _, err := engine.LoadLedger(ledgerPath)
-	if err != nil {
-		return result, fmt.Errorf("loading ledger: %w", err)
+	// Build a merged ledger from all per-harness ledgers.
+	lg := domain.NewLedger()
+	var firstLedgerPath string
+	for _, hid := range req.Harnesses {
+		lp := ledgerPathForScope(req.Scope, req.ProjectDir, home, hid)
+		if firstLedgerPath == "" {
+			firstLedgerPath = lp
+		}
+		hLg, _, lerr := engine.LoadLedger(lp)
+		if lerr != nil {
+			continue
+		}
+		for k, v := range hLg.Managed {
+			lg.Managed[k] = v
+		}
 	}
+	result.LedgerPath = firstLedgerPath
 	result.HasLedger = len(lg.Managed) > 0
 	result.LedgerFiles = len(lg.Managed)
 
@@ -82,12 +110,20 @@ func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, e
 		// Content files (rules, agents, workflows, skills).
 		for _, c := range res.Copies {
 			src := filepath.Clean(c.Src)
+			size, sizeErr := fileOrDirSize(src, c.Kind)
+			if sizeErr != nil {
+				result.Warnings = append(result.Warnings, domain.Warning{
+					Field:   src,
+					Message: fmt.Sprintf("could not compute size: %v", sizeErr),
+				})
+			}
 			fi := HarnessFile{
 				HarnessPath: src,
-				RelPath:     filepath.Base(c.Dst),
+				RelPath:     relPathFromDst(categoryFromDst(c.Dst), c.Dst, c.Kind),
 				Category:    categoryFromDst(c.Dst),
 				Kind:        c.Kind,
-				Size:        fileOrDirSize(src, c.Kind),
+				Size:        size,
+				Scope:       req.Scope,
 			}
 
 			// For directories (skills), the ledger tracks individual files
@@ -104,6 +140,12 @@ func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, e
 				continue
 			}
 
+			srcContent, _ := os.ReadFile(src)
+			fi.Content, err = desiredBytesForCopy(c, res, srcContent)
+			if err != nil {
+				return result, err
+			}
+
 			entry, tracked := lg.Managed[src]
 			if !tracked {
 				fi.State = FileUntracked
@@ -117,9 +159,6 @@ func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, e
 			if ok {
 				fi.PackPath = filepath.Join(packRoot, filepath.FromSlash(c.Dst))
 			}
-
-			// Check if harness content changed since last sync.
-			srcContent, _ := os.ReadFile(src)
 
 			changed, err := contentChangedSinceLedger(srcContent, src, entry.Digest, c.Kind)
 			if err != nil {
@@ -151,18 +190,33 @@ func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, e
 			result.Files = append(result.Files, fi)
 		}
 
-		// Settings files.
+		// Write actions can represent either promoted content (agents/workflows)
+		// or actual settings files.
 		for _, w := range res.Writes {
 			if w.Src == "" {
 				continue
 			}
 			src := filepath.Clean(w.Src)
+			size, sizeErr := fileOrDirSize(src, domain.CopyKindFile)
+			if sizeErr != nil {
+				result.Warnings = append(result.Warnings, domain.Warning{
+					Field:   src,
+					Message: fmt.Sprintf("could not compute size: %v", sizeErr),
+				})
+			}
+			category := domain.CategorySettings
+			relPath := filepath.Base(w.Dst)
+			if w.IsContent {
+				category = categoryFromDst(w.Dst)
+				relPath = relPathFromDst(category, w.Dst, domain.CopyKindFile)
+			}
 			fi := HarnessFile{
 				HarnessPath: src,
-				RelPath:     filepath.Base(w.Dst),
-				Category:    "settings",
+				RelPath:     relPath,
+				Category:    category,
 				Kind:        domain.CopyKindFile,
-				Size:        fileOrDirSize(src, domain.CopyKindFile),
+				Size:        size,
+				Scope:       req.Scope,
 			}
 
 			entry, tracked := lg.Managed[src]
@@ -179,12 +233,90 @@ func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, e
 				fi.PackPath = filepath.Join(packRoot, filepath.FromSlash(w.Dst))
 			}
 
-			curDigest := domain.SingleFileDigest(w.Content)
+			curDigest := w.EffectiveDigest()
 			if curDigest == entry.Digest {
 				fi.State = FileClean
+				result.Files = append(result.Files, fi)
+				continue
+			}
+
+			if w.IsContent {
+				if fi.PackPath != "" {
+					conflict, err := checkFileConflict(w.Content, fi.PackPath)
+					if err != nil {
+						return result, err
+					}
+					if conflict {
+						fi.State = FileConflict
+						result.Files = append(result.Files, fi)
+						continue
+					}
+				}
+				fi.State = FileModified
 			} else {
 				fi.State = FileSettings
 			}
+			result.Files = append(result.Files, fi)
+		}
+
+		// MCP servers.
+		if len(res.MCP) == 0 && len(res.MCPServers) > 0 {
+			res.MaterializeCapturedMCP(sourcePathForMCP(res))
+		}
+		for _, captured := range res.MCP {
+			content, err := domain.MCPInventoryBytes(captured.Server)
+			if err != nil {
+				return result, err
+			}
+			trackedContent, err := domain.MCPTrackedBytes(captured.Server)
+			if err != nil {
+				return result, err
+			}
+			name := captured.Server.Name
+			fi := HarnessFile{
+				HarnessPath:  filepath.Clean(captured.HarnessPath),
+				RelPath:      name,
+				Category:     domain.CategoryMCP,
+				Kind:         domain.CopyKindFile,
+				Size:         int64(len(content)),
+				Content:      content,
+				AllowedTools: append([]string{}, captured.AllowedTools...),
+				Scope:        req.Scope,
+			}
+
+			entry, tracked := lg.Managed[domain.MCPLedgerKey(fi.HarnessPath, name)]
+			if !tracked {
+				fi.State = FileUntracked
+				result.Files = append(result.Files, fi)
+				continue
+			}
+
+			fi.PackName = inferPackName(entry, req.PackRoots)
+			if packRoot, ok := req.PackRoots[fi.PackName]; ok {
+				fi.PackPath = filepath.Join(packRoot, domain.CategoryMCP.DirName(), name+domain.CategoryMCP.Ext())
+			}
+
+			if domain.SingleFileDigest(trackedContent) == entry.Digest {
+				fi.State = FileClean
+				result.Files = append(result.Files, fi)
+				continue
+			}
+
+			if fi.PackPath != "" {
+				if _, statErr := os.Stat(fi.PackPath); statErr == nil {
+					packChanged, packErr := mcpFileChangedSinceLedger(fi.PackPath, entry.Digest)
+					if packErr != nil {
+						return result, packErr
+					}
+					if packChanged {
+						fi.State = FileConflict
+						result.Files = append(result.Files, fi)
+						continue
+					}
+				}
+			}
+
+			fi.State = FileModified
 			result.Files = append(result.Files, fi)
 		}
 	}
@@ -257,15 +389,16 @@ func dirChildrenClean(dir string, lg domain.Ledger) bool {
 		entry, ok := lg.Managed[filepath.Clean(p)]
 		if !ok {
 			clean = false
-			return nil
+			return filepath.SkipAll
 		}
 		content, rerr := os.ReadFile(p)
 		if rerr != nil {
 			clean = false
-			return nil
+			return filepath.SkipAll
 		}
 		if domain.SingleFileDigest(content) != entry.Digest {
 			clean = false
+			return filepath.SkipAll
 		}
 		return nil
 	})
@@ -288,18 +421,40 @@ func classifyDirCopy(dir string, lg domain.Ledger, packRoots map[string]string) 
 	return FileModified, packName
 }
 
-func categoryFromDst(dst string) string {
+func categoryFromDst(dst string) domain.PackCategory {
 	parts := strings.SplitN(filepath.ToSlash(dst), "/", 2)
 	if len(parts) == 0 {
 		return ""
 	}
-	return parts[0]
+	return domain.PackCategory(parts[0])
 }
 
-func fileOrDirSize(path string, kind domain.CopyKind) int64 {
+func relPathFromDst(cat domain.PackCategory, dst string, kind domain.CopyKind) string {
+	base := filepath.Base(dst)
+	if kind == domain.CopyKindDir || cat == domain.CategorySettings {
+		return base
+	}
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+func sourcePathForMCP(res harness.CaptureResult) string {
+	for _, w := range res.Writes {
+		if w.Src != "" {
+			return filepath.Clean(w.Src)
+		}
+	}
+	for _, c := range res.Copies {
+		if c.Src != "" {
+			return filepath.Clean(c.Src)
+		}
+	}
+	return ""
+}
+
+func fileOrDirSize(path string, kind domain.CopyKind) (int64, error) {
 	if kind == domain.CopyKindDir {
 		var total int64
-		_ = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
 			}
@@ -309,11 +464,11 @@ func fileOrDirSize(path string, kind domain.CopyKind) int64 {
 			}
 			return nil
 		})
-		return total
+		return total, err
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return info.Size()
+	return info.Size(), nil
 }

@@ -15,6 +15,7 @@ type RenderCmd struct {
 	ProfilePath string `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
 	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	OutDir      string `help:"Output directory (default: auto-generated temporary directory under $TMPDIR)" name:"out-dir" type:"path"`
+	JSON        bool   `help:"Emit machine-readable JSON output" name:"json"`
 }
 
 func (c *RenderCmd) Help() string {
@@ -61,6 +62,9 @@ func (c *RenderCmd) Run(g *Globals) error {
 
 	if err := app.RunRender(loaded.profile, out, g.Registry); err != nil {
 		return err
+	}
+	if c.JSON {
+		return cmdutil.WriteJSON(g.Stdout, map[string]any{"output_dir": out})
 	}
 	fmt.Fprintln(g.Stdout, out)
 	return nil

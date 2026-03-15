@@ -4,7 +4,6 @@ import (
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
-	"github.com/shrug-labs/aipack/internal/index"
 )
 
 // profilesLoadedMsg is sent after the initial profile listing completes.
@@ -26,7 +25,6 @@ type syncTargetInfo struct {
 	harnesses  []string
 	scope      domain.Scope
 	projectDir string
-	ledgerTime int64 // epoch seconds; 0 if unknown
 }
 
 // syncStatusMsg delivers the result of a lazy sync-status check.
@@ -135,7 +133,7 @@ type profileItem struct {
 // previewRequestMsg signals the root model to open a file preview overlay.
 type previewRequestMsg struct {
 	title    string
-	category string
+	category domain.PackCategory
 	packName string
 	filePath string
 }
@@ -143,7 +141,7 @@ type previewRequestMsg struct {
 // previewLoadedMsg carries the result of an async file read for preview.
 type previewLoadedMsg struct {
 	title       string
-	category    string
+	category    domain.PackCategory
 	packName    string
 	filePath    string
 	frontmatter []fmEntry // parsed YAML frontmatter key-value pairs
@@ -189,7 +187,6 @@ type packUpdatedMsg struct {
 // plan entries for the save plan view.
 type savePlanMsg struct {
 	profileName string
-	profilePath string
 	ops         []app.PlanOp
 	warnings    []domain.Warning
 	err         error
@@ -208,7 +205,6 @@ type saveDoneMsg struct {
 // the user confirms in the save plan view.
 type savePlanContext struct {
 	profileName string
-	profilePath string
 }
 
 // syncTabSnapshot holds the active profile's sync state,
@@ -218,12 +214,6 @@ type syncTabSnapshot struct {
 	syncTarget   syncTargetInfo
 	syncErrText  string
 	syncWarnings []domain.Warning
-}
-
-// inspectResultMsg delivers the result of a harness file inspection.
-type inspectResultMsg struct {
-	result app.InspectResult
-	err    error
 }
 
 // saveToPackMsg is sent after saving a file to a pack completes.
@@ -236,7 +226,7 @@ type saveToPackMsg struct {
 // moveToPackMsg is sent after moving a content item between packs.
 type moveToPackMsg struct {
 	id       string // content ID (e.g. "triage")
-	category string
+	category domain.PackCategory
 	fromPack string
 	toPack   string
 	err      error
@@ -244,7 +234,7 @@ type moveToPackMsg struct {
 
 // searchResultsMsg delivers search results from the index DB.
 type searchResultsMsg struct {
-	results []index.SearchResult
+	results []app.SearchResult
 	err     error
 }
 
@@ -252,6 +242,47 @@ type searchResultsMsg struct {
 type searchInstallMsg struct {
 	name string
 	err  error
+}
+
+// packCreatedMsg is sent after a new pack is scaffolded and registered.
+type packCreatedMsg struct {
+	name string
+	err  error
+}
+
+// ---------------------------------------------------------------------------
+// Save pipeline messages
+// ---------------------------------------------------------------------------
+
+// harnessDetectedMsg delivers available harnesses for save stage 1.
+type harnessDetectedMsg struct {
+	harnesses []domain.Harness
+	err       error
+}
+
+// vectorsDiscoveredMsg delivers available content vectors for save stage 2.
+type vectorsDiscoveredMsg struct {
+	vectors []domain.PackCategory
+	err     error
+}
+
+// saveFilesDiscoveredMsg delivers file candidates for save stage 3.
+type saveFilesDiscoveredMsg struct {
+	candidates []app.SaveCandidate
+	warnings   []string
+	err        error
+}
+
+// saveFileDeletedMsg delivers the result of deleting a harness file.
+type saveFileDeletedMsg struct {
+	path string
+	err  error
+}
+
+// savePipelineDoneMsg delivers the result of pipeline execution.
+type savePipelineDoneMsg struct {
+	result *app.SavePipelineResult
+	err    error
 }
 
 // syncStatus represents the sync state of a profile.

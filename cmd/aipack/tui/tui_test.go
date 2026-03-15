@@ -9,12 +9,78 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // testTree builds a single-pack tree for testing convenience.
 func testTree(manifest config.PackManifest, entry config.PackEntry) treeModel {
-	packs := []packInfo{{idx: 0, name: entry.Name, root: "/tmp/pack", manifest: manifest}}
-	return buildMultiPackTree(packs, []config.PackEntry{entry})
+	packs := []app.ProfilePackInfo{{Index: 0, Name: entry.Name, Root: "/tmp/pack", Manifest: manifest}}
+	ct := app.BuildContentTree(packs, []config.PackEntry{entry})
+	return buildTreeFromContent(ct)
+}
+
+func TestRootModel_VInSaveTabDoesNotOpenPlanView(t *testing.T) {
+	t.Parallel()
+
+	m := newRootModel(RunConfig{})
+	m.activeTab = tabSave
+	m.width = 120
+	m.height = 40
+	m.saveTab.width = 120
+	m.saveTab.height = 36
+	m.saveTab.stage = saveStageFiles
+	m.saveTab.candidates = []app.SaveCandidate{{
+		HarnessFile: app.HarnessFile{
+			HarnessPath: "/tmp/.claude.json",
+			RelPath:     "atlassian",
+			Category:    domain.CategoryMCP,
+			State:       app.FileConflict,
+			Content:     []byte("{\"name\":\"atlassian\"}\n"),
+		},
+		Selected: true,
+	}}
+	m.saveTab.sortedIndices = []int{0}
+	m.saveTab.stateCounts = map[app.FileState]int{app.FileConflict: 1}
+	m.saveTab.selCount = 1
+
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	rm := result.(rootModel)
+	if rm.planView != nil {
+		t.Fatal("expected save tab v key to stay in save tab, not open plan view")
+	}
+	if rm.saveTab.diffView == nil {
+		t.Fatal("expected save tab diff view to open on v")
+	}
+	if cmd == nil {
+		t.Fatal("expected diff load command")
+	}
+}
+
+func TestRootModel_ProfilesTabShowsLastProfileAtBottom(t *testing.T) {
+	t.Parallel()
+
+	m := newRootModel(RunConfig{})
+	m.activeTab = tabProfiles
+	m.width = 100
+	m.height = 14
+	m.profiles.width = 100
+	m.profiles.height = 10
+	m.profiles.focus = panelProfiles
+
+	for i := range 7 {
+		m.profiles.items = append(m.profiles.items, profileItem{
+			name: fmt.Sprintf("profile-%d", i),
+			cfg:  config.ProfileConfig{Packs: []config.PackEntry{{Name: "pack-a"}}},
+		})
+	}
+	m.profiles.cursor = len(m.profiles.items) - 1
+	visH := max(m.profiles.treeVisibleH()-2, 1)
+	m.profiles.profileOffset = clampOffset(m.profiles.cursor, 0, visH)
+
+	view := m.View()
+	if !strings.Contains(view, "profile-6") {
+		t.Fatalf("expected root view to include last visible profile, got:\n%s", view)
+	}
 }
 
 func TestRootModel_TabSwitching(t *testing.T) {
@@ -404,7 +470,7 @@ func TestPromptSync_UnsyncedProfileShowsPendingCount(t *testing.T) {
 			name:      "default",
 			syncState: syncUnsynced,
 			syncTarget: syncTargetInfo{
-				PlanSummary: app.PlanSummary{NumWrites: 2, NumCopies: 1},
+				PlanSummary: app.PlanSummary{NumRules: 2, NumSkills: 1},
 				harnesses:   []string{"cline"},
 				scope:       "project",
 			},
@@ -630,7 +696,7 @@ func TestSyncFlow_SaveThenPrompt(t *testing.T) {
 			tree:      &tree,
 			dirty:     true,
 			syncTarget: syncTargetInfo{
-				PlanSummary: app.PlanSummary{NumWrites: 3},
+				PlanSummary: app.PlanSummary{NumRules: 3},
 				harnesses:   []string{"cline"},
 				scope:       "project",
 			},
@@ -674,7 +740,7 @@ func TestEnrichedSyncStatus(t *testing.T) {
 	}
 
 	target := syncTargetInfo{
-		PlanSummary: app.PlanSummary{NumWrites: 5, NumCopies: 3, NumSettings: 2},
+		PlanSummary: app.PlanSummary{NumRules: 5, NumSkills: 3, NumSettings: 2},
 		harnesses:   []string{"cline", "opencode"},
 		scope:       "project",
 		projectDir:  "/tmp/project",
@@ -872,7 +938,7 @@ func TestRootModel_PreviewRequestOpensOverlay(t *testing.T) {
 
 	result, cmd := m.Update(previewRequestMsg{
 		title:    "rule-a",
-		category: CatRules,
+		category: domain.CategoryRules,
 		packName: "test-pack",
 		filePath: "/tmp/pack/rules/rule-a.md",
 	})
@@ -885,6 +951,36 @@ func TestRootModel_PreviewRequestOpensOverlay(t *testing.T) {
 	}
 }
 
+func TestRootModel_PreviewLoadedMsgUpdatesPacksInlinePreview(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(RunConfig{})
+	m.activeTab = tabPacks
+	m.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:  "test-pack",
+			Path:  "/tmp/pack",
+			Rules: []string{"rule-a"},
+		}},
+	})
+	m.packs.previewPath = "/tmp/pack/rules/rule-a.md"
+	m.packs.previewState = asyncLoading
+
+	result, _ := m.Update(previewLoadedMsg{
+		title:    "rule-a",
+		category: domain.CategoryRules,
+		packName: "test-pack",
+		filePath: "/tmp/pack/rules/rule-a.md",
+		body:     "# Inline",
+	})
+	rm := result.(rootModel)
+	if rm.packs.previewState != asyncLoaded {
+		t.Fatalf("expected inline preview state loaded, got %d", rm.packs.previewState)
+	}
+	if rm.packs.previewData.body != "# Inline" {
+		t.Fatalf("expected inline preview body to be updated, got %q", rm.packs.previewData.body)
+	}
+}
+
 func TestRootModel_EscClosesPreview(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(RunConfig{})
@@ -893,7 +989,7 @@ func TestRootModel_EscClosesPreview(t *testing.T) {
 	p := newPreviewModel(120, 40)
 	p.setContent(previewLoadedMsg{
 		title:    "rule-a",
-		category: CatRules,
+		category: domain.CategoryRules,
 		filePath: "/tmp/pack/rules/rule-a.md",
 		body:     "test body",
 	})
@@ -916,7 +1012,7 @@ func TestRootModel_QClosesPreview(t *testing.T) {
 	m.height = 40
 	p := newPreviewModel(120, 40)
 	p.setContent(previewLoadedMsg{
-		title: "rule-a", category: CatRules,
+		title: "rule-a", category: domain.CategoryRules,
 		filePath: "/tmp/pack/rules/rule-a.md", body: "test",
 	})
 	m.preview = &p
@@ -939,7 +1035,7 @@ func TestRootModel_PreviewViewTakesOver(t *testing.T) {
 	p := newPreviewModel(80, 40)
 	p.setContent(previewLoadedMsg{
 		title:    "rule-a",
-		category: CatRules,
+		category: domain.CategoryRules,
 		filePath: "/tmp/pack/rules/rule-a.md",
 		body:     "# Hello World",
 	})
@@ -972,6 +1068,12 @@ func TestHelpText_VPlanOnProfilesAndSync(t *testing.T) {
 	help = m.helpText()
 	if !strings.Contains(help, "v:plan") {
 		t.Fatalf("expected sync help to contain 'v:plan', got %q", help)
+	}
+	if strings.Contains(help, "p:prune") {
+		t.Fatalf("expected sync help to omit 'p:prune', got %q", help)
+	}
+	if !strings.Contains(help, "space:toggle") {
+		t.Fatalf("expected sync help to contain 'space:toggle', got %q", help)
 	}
 
 	m.activeTab = tabPacks

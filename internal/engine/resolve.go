@@ -9,13 +9,13 @@ import (
 
 // Resolve produces a fully-typed domain.Profile from a ProfileConfig.
 // It resolves pack sources, parses all content into typed structs,
-// builds MCP servers with params expanded, and loads harness settings/plugins.
+// builds MCP servers with params expanded, and loads harness settings.
 //
 // This is the single entry point for profile resolution. It absorbs:
 //   - config.ResolveProfile (validation, pack resolution, selector application)
 //   - resolvePackContent (rule/agent/workflow/skill parsing)
 //   - buildMCPServers (MCP resolution + param expansion)
-//   - loadHarnessSettings + loadHarnessPlugins (settings loading)
+//   - loadHarnessSettings (settings + drop-in config loading)
 func Resolve(
 	profileCfg config.ProfileConfig,
 	profilePath string,
@@ -56,25 +56,19 @@ func Resolve(
 	}
 	warnings = append(warnings, mcpWarnings...)
 
-	// Step 4: Load harness settings and plugins for all harnesses.
+	// Step 4: Load harness settings for all harnesses.
 	allH := domain.AllHarnesses()
 	settings, settingsWarnings, err := loadHarnessSettings(resolvedPacks, settingsPack, allH)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
 	warnings = append(warnings, settingsWarnings...)
-	plugins, pluginsWarnings, err := loadHarnessPlugins(resolvedPacks, settingsPack, allH)
-	if err != nil {
-		return domain.Profile{}, warnings, err
-	}
-	warnings = append(warnings, pluginsWarnings...)
 
 	p := domain.NewProfile()
 	p.Params = profileCfg.Params
 	p.Packs = packs
 	p.MCPServers = mcpServers
 	p.BaseSettings = settings
-	p.Plugins = plugins
 	p.SettingsPack = settingsPack
 	return p, warnings, nil
 }

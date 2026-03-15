@@ -11,10 +11,6 @@ func RulesGlobalDir(home string) string {
 	return filepath.Join(home, "Documents", "Cline", "Rules", "aipack")
 }
 
-func AgentsGlobalDir(home string) string {
-	return filepath.Join(home, "Documents", "Cline", "Agents", "aipack")
-}
-
 // WorkflowsGlobalDir returns the global workflows directory for Cline.
 func WorkflowsGlobalDir(home string) string {
 	return filepath.Join(home, "Documents", "Cline", "Workflows", "aipack")
@@ -46,7 +42,7 @@ func SettingsGlobalPath(home string) string {
 func ManagedRootsProject(projectDir string) []string {
 	return []string{
 		filepath.Join(projectDir, ".clinerules"),
-		filepath.Join(projectDir, ".clinerules", "agents"),
+		filepath.Join(projectDir, ".clinerules", "workflows"),
 		filepath.Join(projectDir, ".clinerules", "skills"),
 	}
 }
@@ -56,7 +52,6 @@ func ManagedRootsGlobal(home string) []string {
 	out := []string{
 		filepath.Join(home, ".cline", "skills"),
 		RulesGlobalDir(home),
-		AgentsGlobalDir(home),
 		WorkflowsGlobalDir(home),
 	}
 	if p := SettingsGlobalPath(home); filepath.Clean(p) != "." && p != "" {
@@ -69,7 +64,6 @@ func ManagedRootsGlobal(home string) []string {
 func StrictExtraDirsProject(projectDir string) []string {
 	return []string{
 		filepath.Join(projectDir, ".clinerules"),
-		filepath.Join(projectDir, ".clinerules", "agents"),
 		filepath.Join(projectDir, ".clinerules", "workflows"),
 	}
 }

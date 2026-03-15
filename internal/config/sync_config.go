@@ -28,12 +28,13 @@ const (
 	MethodCopy    = "copy"
 	MethodClone   = "clone"
 	MethodArchive = "archive"
+	MethodLocal   = "local" // pack already resides in the packs directory; registered in-place
 )
 
 // InstalledPackMeta records the origin and install method for a pack.
 type InstalledPackMeta struct {
 	Origin      string `yaml:"origin"`                // abs path or URL
-	Method      string `yaml:"method"`                // MethodLink, MethodCopy, MethodClone, MethodArchive
+	Method      string `yaml:"method"`                // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodLocal
 	InstalledAt string `yaml:"installed_at"`          // RFC3339
 	Ref         string `yaml:"ref,omitempty"`         // git ref (URL only)
 	SubPath     string `yaml:"sub_path,omitempty"`    // subdirectory within cloned repo

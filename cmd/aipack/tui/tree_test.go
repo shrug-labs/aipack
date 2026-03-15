@@ -6,7 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestTreeModel_Toggle(t *testing.T) {
@@ -69,15 +71,16 @@ func TestTreeModel_CategoryExpandCollapse(t *testing.T) {
 
 func TestTreeModel_MultiPackAttribution(t *testing.T) {
 	t.Parallel()
-	packs := []packInfo{
-		{idx: 0, name: "pack-a", root: "/tmp/a", manifest: config.PackManifest{Rules: []string{"rule-1"}}},
-		{idx: 1, name: "pack-b", root: "/tmp/b", manifest: config.PackManifest{Rules: []string{"rule-2"}}},
+	packs := []app.ProfilePackInfo{
+		{Index: 0, Name: "pack-a", Root: "/tmp/a", Manifest: config.PackManifest{Rules: []string{"rule-1"}}},
+		{Index: 1, Name: "pack-b", Root: "/tmp/b", Manifest: config.PackManifest{Rules: []string{"rule-2"}}},
 	}
 	entries := []config.PackEntry{
 		{Name: "pack-a"},
 		{Name: "pack-b"},
 	}
-	tree := buildMultiPackTree(packs, entries)
+	ct := app.BuildContentTree(packs, entries)
+	tree := buildTreeFromContent(ct)
 
 	// Should have: category + 2 items.
 	if len(tree.nodes) != 3 {
@@ -148,8 +151,8 @@ func TestTreeModel_EnterOpensPreview(t *testing.T) {
 	if req.title != "rule-a" {
 		t.Fatalf("expected title 'rule-a', got %q", req.title)
 	}
-	if req.category != CatRules {
-		t.Fatalf("expected category %q, got %q", CatRules, req.category)
+	if req.category != domain.CategoryRules {
+		t.Fatalf("expected category %q, got %q", domain.CategoryRules, req.category)
 	}
 	if req.packName != "test-pack" {
 		t.Fatalf("expected packName 'test-pack', got %q", req.packName)
@@ -254,7 +257,7 @@ func TestEnsureTree_SkipsDisabledPacks(t *testing.T) {
 	if item.tree != nil {
 		// If a tree was built, it should only have pack-b entries.
 		for _, p := range item.tree.packs {
-			if p.name == "pack-a" {
+			if p.Name == "pack-a" {
 				t.Fatal("disabled pack-a should not appear in tree")
 			}
 		}
@@ -263,15 +266,16 @@ func TestEnsureTree_SkipsDisabledPacks(t *testing.T) {
 
 func TestTreeModel_FilePath(t *testing.T) {
 	t.Parallel()
-	packs := []packInfo{
-		{idx: 0, name: "test-pack", root: "/tmp/pack", manifest: config.PackManifest{
+	packs := []app.ProfilePackInfo{
+		{Index: 0, Name: "test-pack", Root: "/tmp/pack", Manifest: config.PackManifest{
 			Rules:     []string{"rule-a"},
 			Agents:    []string{"agent-a"},
 			Workflows: []string{"flow-a"},
 			Skills:    []string{"skill-a"},
 		}},
 	}
-	tree := buildMultiPackTree(packs, []config.PackEntry{{Name: "test-pack"}})
+	ct := app.BuildContentTree(packs, []config.PackEntry{{Name: "test-pack"}})
+	tree := buildTreeFromContent(ct)
 
 	// Find each category's first item and check path.
 	for i, n := range tree.nodes {
@@ -281,19 +285,19 @@ func TestTreeModel_FilePath(t *testing.T) {
 		tree.cursor = i
 		fp := tree.filePath()
 		switch n.category {
-		case CatRules:
+		case domain.CategoryRules:
 			if fp != "/tmp/pack/rules/rule-a.md" {
 				t.Fatalf("rules: expected /tmp/pack/rules/rule-a.md, got %q", fp)
 			}
-		case CatAgents:
+		case domain.CategoryAgents:
 			if fp != "/tmp/pack/agents/agent-a.md" {
 				t.Fatalf("agents: expected /tmp/pack/agents/agent-a.md, got %q", fp)
 			}
-		case CatWorkflows:
+		case domain.CategoryWorkflows:
 			if fp != "/tmp/pack/workflows/flow-a.md" {
 				t.Fatalf("workflows: expected /tmp/pack/workflows/flow-a.md, got %q", fp)
 			}
-		case CatSkills:
+		case domain.CategorySkills:
 			if fp != "/tmp/pack/skills/skill-a/SKILL.md" {
 				t.Fatalf("skills: expected /tmp/pack/skills/skill-a/SKILL.md, got %q", fp)
 			}
@@ -309,14 +313,15 @@ func TestTreeModel_FilePath(t *testing.T) {
 
 func TestTreeModel_FilePathMCP(t *testing.T) {
 	t.Parallel()
-	packs := []packInfo{
-		{idx: 0, name: "test-pack", root: "/tmp/pack", manifest: config.PackManifest{
+	packs := []app.ProfilePackInfo{
+		{Index: 0, Name: "test-pack", Root: "/tmp/pack", Manifest: config.PackManifest{
 			MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{"srv": {}}},
 		}},
 	}
-	tree := buildMultiPackTree(packs, []config.PackEntry{{Name: "test-pack"}})
+	ct := app.BuildContentTree(packs, []config.PackEntry{{Name: "test-pack"}})
+	tree := buildTreeFromContent(ct)
 	for i, n := range tree.nodes {
-		if n.kind == nodeItem && n.category == CatMCP {
+		if n.kind == nodeItem && n.category == domain.CategoryMCP {
 			tree.cursor = i
 			fp := tree.filePath()
 			if fp != "/tmp/pack/mcp/srv.json" {
@@ -330,12 +335,13 @@ func TestTreeModel_FilePathMCP(t *testing.T) {
 
 func TestTreeModel_EnterOnMCPItem_OpensPreview(t *testing.T) {
 	t.Parallel()
-	packs := []packInfo{
-		{idx: 0, name: "test-pack", root: "/tmp/pack", manifest: config.PackManifest{
+	packs := []app.ProfilePackInfo{
+		{Index: 0, Name: "test-pack", Root: "/tmp/pack", Manifest: config.PackManifest{
 			MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{"srv": {}}},
 		}},
 	}
-	tree := buildMultiPackTree(packs, []config.PackEntry{{Name: "test-pack"}})
+	ct := app.BuildContentTree(packs, []config.PackEntry{{Name: "test-pack"}})
+	tree := buildTreeFromContent(ct)
 
 	// Expand the MCP category.
 	tree.cursor = 0
@@ -343,7 +349,7 @@ func TestTreeModel_EnterOnMCPItem_OpensPreview(t *testing.T) {
 
 	// Move to the MCP item.
 	for i, n := range tree.nodes {
-		if n.kind == nodeItem && n.category == CatMCP {
+		if n.kind == nodeItem && n.category == domain.CategoryMCP {
 			tree.cursor = i
 			break
 		}
@@ -371,7 +377,7 @@ func TestTreeModel_EnterOnMCPItem_OpensPreview(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected previewRequestMsg, got %T", msg)
 	}
-	if req.category != CatMCP || req.title != "srv" {
+	if req.category != domain.CategoryMCP || req.title != "srv" {
 		t.Fatalf("expected MCP preview for 'srv', got category=%q title=%q", req.category, req.title)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -61,6 +62,24 @@ func ParseRegistry(data []byte) (Registry, error) {
 		reg.Packs = make(map[string]RegistryEntry)
 	}
 	return reg, nil
+}
+
+// ValidateRegistry checks a parsed registry for structural issues.
+func ValidateRegistry(reg Registry) []string {
+	names := make([]string, 0, len(reg.Packs))
+	for name := range reg.Packs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var errs []string
+	for _, name := range names {
+		entry := reg.Packs[name]
+		if entry.Repo == "" {
+			errs = append(errs, fmt.Sprintf("pack %q: missing required field repo", name))
+		}
+	}
+	return errs
 }
 
 // FetchRegistryFromURL fetches raw YAML bytes from a remote URL.
@@ -136,18 +155,6 @@ func extractFileFromArchive(archiveFn func(string, string, []string) ([]byte, er
 	return ExtractSingleFileFromTar(tarData, filePath)
 }
 
-// ResolveRegistryPath returns the registry file path to use.
-// Priority: explicit flag > sync-config defaults.registry > <configDir>/registry.yaml.
-func ResolveRegistryPath(flagVal, scDefault, configDir string) string {
-	if flagVal != "" {
-		return flagVal
-	}
-	if scDefault != "" {
-		return scDefault
-	}
-	return filepath.Join(configDir, "registry.yaml")
-}
-
 // RegistriesCacheDir returns the directory for cached remote registries.
 func RegistriesCacheDir(configDir string) string {
 	return filepath.Join(configDir, "registries")
@@ -158,25 +165,15 @@ func SourceCachePath(configDir, name string) string {
 	return filepath.Join(RegistriesCacheDir(configDir), name+".yaml")
 }
 
-// LoadMergedRegistry loads the local registry and all cached source registries,
-// producing a unified in-memory view. Local entries have highest priority,
-// followed by sources in registry_sources list order. First-seen wins for
-// pack name conflicts.
+// LoadMergedRegistry loads all cached source registries, producing a unified
+// in-memory view. Sources are merged in registry_sources list order;
+// first-seen wins for pack name conflicts.
 func LoadMergedRegistry(configDir string) (Registry, error) {
 	merged := Registry{
 		SchemaVersion: RegistrySchemaVersion,
 		Packs:         make(map[string]RegistryEntry),
 	}
 
-	// 1. Local registry (highest priority).
-	localPath := filepath.Join(configDir, "registry.yaml")
-	if local, err := LoadRegistry(localPath); err == nil {
-		for name, entry := range local.Packs {
-			merged.Packs[name] = entry
-		}
-	}
-
-	// 2. Cached source registries in list order.
 	sc, _ := LoadSyncConfig(SyncConfigPath(configDir))
 	for _, src := range sc.RegistrySources {
 		cachePath := SourceCachePath(configDir, src.Name)

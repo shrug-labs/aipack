@@ -41,6 +41,14 @@ type SkillFrontmatter struct {
 	Metadata    map[string]any `yaml:"metadata,omitempty"`
 }
 
+// writableContent is satisfied by Rule, Workflow, and Agent for generic write generation.
+type writableContent interface {
+	writeName() string
+	writeRaw() []byte
+	writeSourcePack() string
+	writeSourcePath() string
+}
+
 // Rule is a parsed pack rule file.
 type Rule struct {
 	Name        string          // filename sans .md
@@ -50,6 +58,11 @@ type Rule struct {
 	SourcePath  string          // absolute path to source file
 	SourcePack  string          // pack name this came from
 }
+
+func (r Rule) writeName() string       { return r.Name }
+func (r Rule) writeRaw() []byte        { return r.Raw }
+func (r Rule) writeSourcePack() string { return r.SourcePack }
+func (r Rule) writeSourcePath() string { return r.SourcePath }
 
 // Agent is a parsed pack agent file.
 type Agent struct {
@@ -61,6 +74,11 @@ type Agent struct {
 	SourcePack  string
 }
 
+func (a Agent) writeName() string       { return a.Name }
+func (a Agent) writeRaw() []byte        { return a.Raw }
+func (a Agent) writeSourcePack() string { return a.SourcePack }
+func (a Agent) writeSourcePath() string { return a.SourcePath }
+
 // Workflow is a parsed pack workflow file.
 type Workflow struct {
 	Name        string              // derived from filename
@@ -70,6 +88,11 @@ type Workflow struct {
 	SourcePath  string
 	SourcePack  string
 }
+
+func (w Workflow) writeName() string       { return w.Name }
+func (w Workflow) writeRaw() []byte        { return w.Raw }
+func (w Workflow) writeSourcePack() string { return w.SourcePack }
+func (w Workflow) writeSourcePath() string { return w.SourcePath }
 
 // Skill is a parsed pack skill directory.
 type Skill struct {
@@ -128,6 +151,13 @@ type MCPServer struct {
 	Links []string `json:"links,omitempty"`
 	Auth  string   `json:"auth,omitempty"`
 	Notes string   `json:"notes,omitempty"`
+}
+
+// CapturedMCP is a per-server MCP record extracted from a harness config.
+type CapturedMCP struct {
+	Server       MCPServer
+	HarnessPath  string
+	AllowedTools []string
 }
 
 // IsStdio reports whether the server uses stdio transport (including empty, which defaults to stdio).

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/util"
@@ -15,12 +16,12 @@ type PackManifest struct {
 	Name          string   `json:"name"`
 	Version       string   `json:"version"`
 	Root          string   `json:"root"`
-	Rules         []string `json:"rules"`
-	Agents        []string `json:"agents"`
-	Workflows     []string `json:"workflows"`
-	Skills        []string `json:"skills"`
+	Rules         []string `json:"rules,omitempty"`
+	Agents        []string `json:"agents,omitempty"`
+	Workflows     []string `json:"workflows,omitempty"`
+	Skills        []string `json:"skills,omitempty"`
 	Prompts       []string `json:"prompts,omitempty"`
-	MCP           MCPPack  `json:"mcp"`
+	MCP           MCPPack  `json:"mcp,omitzero"`
 
 	// Profiles lists relative paths to seed profile YAML files within the pack.
 	// When a pack is installed, these profiles are copied to the config directory
@@ -34,7 +35,7 @@ type PackManifest struct {
 
 	// Configs inventories harness settings files shipped with the pack.
 	// This is used for validation and deterministic settings pack selection.
-	Configs PackConfigs `json:"configs"`
+	Configs PackConfigs `json:"configs,omitzero"`
 }
 
 type PackConfigs struct {
@@ -63,6 +64,56 @@ type MCPPack struct {
 
 type MCPDefaults struct {
 	DefaultAllowedTools []string `json:"default_allowed_tools"`
+}
+
+// ContentIDsPtr returns a pointer to the content ID slice for the given
+// authored category, or nil for MCP and unknown categories.
+// Use this when you need to mutate the manifest's content list in place.
+func (m *PackManifest) ContentIDsPtr(cat domain.PackCategory) *[]string {
+	switch cat {
+	case domain.CategoryRules:
+		return &m.Rules
+	case domain.CategoryAgents:
+		return &m.Agents
+	case domain.CategoryWorkflows:
+		return &m.Workflows
+	case domain.CategorySkills:
+		return &m.Skills
+	}
+	return nil
+}
+
+// ContentIDs returns the resource IDs for the given category.
+// For MCP, returns sorted server names.
+func (m PackManifest) ContentIDs(cat domain.PackCategory) []string {
+	if p := m.ContentIDsPtr(cat); p != nil {
+		return *p
+	}
+	if cat == domain.CategoryMCP {
+		names := make([]string, 0, len(m.MCP.Servers))
+		for n := range m.MCP.Servers {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		return names
+	}
+	return nil
+}
+
+// VectorSelectorFor returns a pointer to the VectorSelector for the given
+// authored category. Returns nil for MCP or unknown categories.
+func (pe *PackEntry) VectorSelectorFor(cat domain.PackCategory) *VectorSelector {
+	switch cat {
+	case domain.CategoryRules:
+		return &pe.Rules
+	case domain.CategoryAgents:
+		return &pe.Agents
+	case domain.CategoryWorkflows:
+		return &pe.Workflows
+	case domain.CategorySkills:
+		return &pe.Skills
+	}
+	return nil
 }
 
 func LoadPackManifest(path string) (PackManifest, error) {
@@ -98,17 +149,17 @@ func (m PackManifest) ContentPaths() []string {
 	paths := []string{"pack.json"}
 
 	for _, id := range m.Rules {
-		paths = append(paths, domain.ContentRules.PrimaryRelPath(id))
+		paths = append(paths, domain.CategoryRules.PrimaryRelPath(id))
 	}
 	for _, id := range m.Agents {
-		paths = append(paths, domain.ContentAgents.PrimaryRelPath(id))
+		paths = append(paths, domain.CategoryAgents.PrimaryRelPath(id))
 	}
 	for _, id := range m.Workflows {
-		paths = append(paths, domain.ContentWorkflows.PrimaryRelPath(id))
+		paths = append(paths, domain.CategoryWorkflows.PrimaryRelPath(id))
 	}
 	for _, id := range m.Skills {
 		// Trailing "/" so git archive fetches the entire directory recursively.
-		paths = append(paths, filepath.ToSlash(filepath.Join(domain.ContentSkills.DirName(), id))+"/")
+		paths = append(paths, filepath.ToSlash(filepath.Join(domain.CategorySkills.DirName(), id))+"/")
 	}
 	for _, id := range m.Prompts {
 		paths = append(paths, filepath.ToSlash(filepath.Join("prompts", id+".md")))

@@ -13,57 +13,28 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
-// parseRules reads and parses rule files, returning typed Rule structs.
-// SourcePack is set at parse time — no retroactive attribution needed.
-func parseRules(packRoot string, ids []string, sourcePack string) ([]domain.Rule, []domain.Warning, error) {
-	var rules []domain.Rule
-	var warnings []domain.Warning
+// ---------------------------------------------------------------------------
+// Generic parse infrastructure
+// ---------------------------------------------------------------------------
 
-	for _, id := range ids {
-		path := filepath.Join(packRoot, filepath.FromSlash(domain.ContentRules.PrimaryRelPath(id)))
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, nil, fmt.Errorf("reading rule %s: %w", path, err)
-		}
-
-		fmBytes, body, err := domain.SplitFrontmatter(raw)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		var fm domain.RuleFrontmatter
-		if len(fmBytes) > 0 {
-			if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-				warnings = append(warnings, domain.Warning{
-					Path:    path,
-					Field:   "frontmatter",
-					Message: "invalid YAML: " + err.Error(),
-				})
-			}
-		}
-
-		rules = append(rules, domain.Rule{
-			Name:        id,
-			Frontmatter: fm,
-			Body:        body,
-			Raw:         raw,
-			SourcePath:  path,
-			SourcePack:  sourcePack,
-		})
-	}
-	return rules, warnings, nil
+// parseSpec configures parseContent for a specific content type.
+type parseSpec[T any, FM any] struct {
+	kind  domain.PackCategory
+	label string
+	build func(id string, fm FM, body, raw []byte, path, sourcePack string) T
 }
 
-// parseAgents reads and parses agent files, returning typed Agent structs.
-func parseAgents(packRoot string, ids []string, sourcePack string) ([]domain.Agent, []domain.Warning, error) {
-	var agents []domain.Agent
+// parseContent reads and parses pack content files, returning typed structs.
+// SourcePack is set at parse time — no retroactive attribution needed.
+func parseContent[T any, FM any](spec parseSpec[T, FM], packRoot string, ids []string, sourcePack string) ([]T, []domain.Warning, error) {
+	var items []T
 	var warnings []domain.Warning
 
 	for _, id := range ids {
-		path := filepath.Join(packRoot, filepath.FromSlash(domain.ContentAgents.PrimaryRelPath(id)))
+		path := filepath.Join(packRoot, filepath.FromSlash(spec.kind.PrimaryRelPath(id)))
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return nil, nil, fmt.Errorf("reading agent %s: %w", path, err)
+			return nil, nil, fmt.Errorf("reading %s %s: %w", spec.label, path, err)
 		}
 
 		fmBytes, body, err := domain.SplitFrontmatter(raw)
@@ -71,7 +42,7 @@ func parseAgents(packRoot string, ids []string, sourcePack string) ([]domain.Age
 			return nil, nil, err
 		}
 
-		var fm domain.AgentFrontmatter
+		var fm FM
 		if len(fmBytes) > 0 {
 			if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
 				warnings = append(warnings, domain.Warning{
@@ -82,103 +53,84 @@ func parseAgents(packRoot string, ids []string, sourcePack string) ([]domain.Age
 			}
 		}
 
+		items = append(items, spec.build(id, fm, body, raw, path, sourcePack))
+	}
+	return items, warnings, nil
+}
+
+// parseBytesContent parses a single content item from raw bytes with
+// best-effort frontmatter unmarshalling.
+func parseBytesContent[T any, FM any](spec parseSpec[T, FM], raw []byte, name, sourcePack string) (T, error) {
+	fmBytes, body, err := domain.SplitFrontmatter(raw)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	var fm FM
+	if len(fmBytes) > 0 {
+		_ = yaml.Unmarshal(fmBytes, &fm) // best-effort
+	}
+	return spec.build(name, fm, body, raw, "", sourcePack), nil
+}
+
+// ---------------------------------------------------------------------------
+// Content type specs
+// ---------------------------------------------------------------------------
+
+var ruleSpec = parseSpec[domain.Rule, domain.RuleFrontmatter]{
+	kind:  domain.CategoryRules,
+	label: "rule",
+	build: func(id string, fm domain.RuleFrontmatter, body, raw []byte, path, sp string) domain.Rule {
+		return domain.Rule{Name: id, Frontmatter: fm, Body: body, Raw: raw, SourcePath: path, SourcePack: sp}
+	},
+}
+
+var agentSpec = parseSpec[domain.Agent, domain.AgentFrontmatter]{
+	kind:  domain.CategoryAgents,
+	label: "agent",
+	build: func(id string, fm domain.AgentFrontmatter, body, raw []byte, path, sp string) domain.Agent {
 		name := id
 		if fm.Name != "" {
 			name = fm.Name
 		}
-
-		agents = append(agents, domain.Agent{
-			Name:        name,
-			Frontmatter: fm,
-			Body:        body,
-			Raw:         raw,
-			SourcePath:  path,
-			SourcePack:  sourcePack,
-		})
-	}
-	return agents, warnings, nil
+		return domain.Agent{Name: name, Frontmatter: fm, Body: body, Raw: raw, SourcePath: path, SourcePack: sp}
+	},
 }
 
-// parseWorkflows reads and parses workflow files, returning typed Workflow structs.
+var workflowSpec = parseSpec[domain.Workflow, domain.WorkflowFrontmatter]{
+	kind:  domain.CategoryWorkflows,
+	label: "workflow",
+	build: func(id string, fm domain.WorkflowFrontmatter, body, raw []byte, path, sp string) domain.Workflow {
+		return domain.Workflow{Name: id, Frontmatter: fm, Body: body, Raw: raw, SourcePath: path, SourcePack: sp}
+	},
+}
+
+var skillSpec = parseSpec[domain.Skill, domain.SkillFrontmatter]{
+	kind:  domain.CategorySkills,
+	label: "skill",
+	build: func(id string, fm domain.SkillFrontmatter, body, raw []byte, path, sp string) domain.Skill {
+		return domain.Skill{Name: id, Frontmatter: fm, Body: body, DirPath: filepath.Dir(path), SourcePack: sp}
+	},
+}
+
+// ---------------------------------------------------------------------------
+// File-based parse wrappers (used by profile resolution)
+// ---------------------------------------------------------------------------
+
+func parseRules(packRoot string, ids []string, sourcePack string) ([]domain.Rule, []domain.Warning, error) {
+	return parseContent(ruleSpec, packRoot, ids, sourcePack)
+}
+
+func parseAgents(packRoot string, ids []string, sourcePack string) ([]domain.Agent, []domain.Warning, error) {
+	return parseContent(agentSpec, packRoot, ids, sourcePack)
+}
+
 func parseWorkflows(packRoot string, ids []string, sourcePack string) ([]domain.Workflow, []domain.Warning, error) {
-	var workflows []domain.Workflow
-	var warnings []domain.Warning
-
-	for _, id := range ids {
-		path := filepath.Join(packRoot, filepath.FromSlash(domain.ContentWorkflows.PrimaryRelPath(id)))
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, nil, fmt.Errorf("reading workflow %s: %w", path, err)
-		}
-
-		fmBytes, body, err := domain.SplitFrontmatter(raw)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		var fm domain.WorkflowFrontmatter
-		if len(fmBytes) > 0 {
-			if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-				warnings = append(warnings, domain.Warning{
-					Path:    path,
-					Field:   "frontmatter",
-					Message: "invalid YAML: " + err.Error(),
-				})
-			}
-		}
-
-		workflows = append(workflows, domain.Workflow{
-			Name:        id,
-			Frontmatter: fm,
-			Body:        body,
-			Raw:         raw,
-			SourcePath:  path,
-			SourcePack:  sourcePack,
-		})
-	}
-	return workflows, warnings, nil
+	return parseContent(workflowSpec, packRoot, ids, sourcePack)
 }
 
-// parseSkills resolves skill directories, returning typed Skill structs.
-// Each skill's SKILL.md frontmatter is parsed for metadata.
 func parseSkills(packRoot string, ids []string, sourcePack string) ([]domain.Skill, []domain.Warning, error) {
-	var skills []domain.Skill
-	var warnings []domain.Warning
-
-	for _, id := range ids {
-		dirPath := filepath.Join(packRoot, domain.ContentSkills.DirName(), id)
-		skillMD := filepath.Join(packRoot, filepath.FromSlash(domain.ContentSkills.PrimaryRelPath(id)))
-
-		raw, err := os.ReadFile(skillMD)
-		if err != nil {
-			return nil, nil, fmt.Errorf("reading skill %s: %w", skillMD, err)
-		}
-
-		fmBytes, body, err := domain.SplitFrontmatter(raw)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		var fm domain.SkillFrontmatter
-		if len(fmBytes) > 0 {
-			if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
-				warnings = append(warnings, domain.Warning{
-					Path:    skillMD,
-					Field:   "frontmatter",
-					Message: "invalid YAML: " + err.Error(),
-				})
-			}
-		}
-
-		skills = append(skills, domain.Skill{
-			Name:        id,
-			Frontmatter: fm,
-			Body:        body,
-			DirPath:     dirPath,
-			SourcePack:  sourcePack,
-		})
-	}
-	return skills, warnings, nil
+	return parseContent(skillSpec, packRoot, ids, sourcePack)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,64 +139,22 @@ func parseSkills(packRoot string, ids []string, sourcePack string) ([]domain.Ski
 
 // ParseRuleBytes parses a single rule from raw bytes.
 func ParseRuleBytes(raw []byte, name, sourcePack string) (domain.Rule, error) {
-	fmBytes, body, err := domain.SplitFrontmatter(raw)
-	if err != nil {
-		return domain.Rule{}, err
-	}
-	var fm domain.RuleFrontmatter
-	if len(fmBytes) > 0 {
-		_ = yaml.Unmarshal(fmBytes, &fm) // best-effort
-	}
-	return domain.Rule{
-		Name:        name,
-		Frontmatter: fm,
-		Body:        body,
-		Raw:         raw,
-		SourcePack:  sourcePack,
-	}, nil
+	return parseBytesContent(ruleSpec, raw, name, sourcePack)
 }
 
 // ParseAgentBytes parses a single agent from raw bytes.
 func ParseAgentBytes(raw []byte, name, sourcePack string) (domain.Agent, error) {
-	fmBytes, body, err := domain.SplitFrontmatter(raw)
-	if err != nil {
-		return domain.Agent{}, err
-	}
-	var fm domain.AgentFrontmatter
-	if len(fmBytes) > 0 {
-		_ = yaml.Unmarshal(fmBytes, &fm) // best-effort
-	}
-	agentName := name
-	if fm.Name != "" {
-		agentName = fm.Name
-	}
-	return domain.Agent{
-		Name:        agentName,
-		Frontmatter: fm,
-		Body:        body,
-		Raw:         raw,
-		SourcePack:  sourcePack,
-	}, nil
+	return parseBytesContent(agentSpec, raw, name, sourcePack)
 }
 
 // ParseWorkflowBytes parses a single workflow from raw bytes.
 func ParseWorkflowBytes(raw []byte, name, sourcePack string) (domain.Workflow, error) {
-	fmBytes, body, err := domain.SplitFrontmatter(raw)
-	if err != nil {
-		return domain.Workflow{}, err
-	}
-	var fm domain.WorkflowFrontmatter
-	if len(fmBytes) > 0 {
-		_ = yaml.Unmarshal(fmBytes, &fm) // best-effort
-	}
-	return domain.Workflow{
-		Name:        name,
-		Frontmatter: fm,
-		Body:        body,
-		Raw:         raw,
-		SourcePack:  sourcePack,
-	}, nil
+	return parseBytesContent(workflowSpec, raw, name, sourcePack)
 }
+
+// ---------------------------------------------------------------------------
+// Render helpers
+// ---------------------------------------------------------------------------
 
 func RenderRuleBytes(rule domain.Rule) ([]byte, error) {
 	return renderTypedContent(rule.Frontmatter, rule.Body)

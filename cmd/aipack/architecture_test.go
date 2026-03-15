@@ -112,7 +112,7 @@ func TestArchitecture_HarnessAndRenderDoNotImportConfig(t *testing.T) {
 func TestCLIExitCodes_HelpReturnsZero(t *testing.T) {
 	t.Parallel()
 
-	commands := []string{"doctor", "validate", "save", "init", "clean", "sync", "render", "version", "manage", "pack", "profile", "search", "query"}
+	commands := []string{"doctor", "save", "init", "clean", "sync", "render", "version", "manage", "pack", "profile", "search", "query", "restore", "trace", "status", "install"}
 	for _, cmd := range commands {
 		cmd := cmd
 		t.Run(cmd, func(t *testing.T) {

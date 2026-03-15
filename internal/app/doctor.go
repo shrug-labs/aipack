@@ -5,12 +5,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/update"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // DoctorSchemaVersion is the doctor report format version.
@@ -89,11 +93,12 @@ type DoctorRequest struct {
 	Home        string // $HOME — threaded explicitly for testability
 	Status      bool   // populate Ecosystem in the report
 	Fix         bool   // auto-fix safe issues
+	Version     string // current CLI version for update check
 }
 
 // RunDoctor executes all doctor diagnostic checks and returns a report.
-func RunDoctor(req DoctorRequest) DoctorReport {
-	rep := DoctorReport{SchemaVersion: DoctorSchemaVersion, OK: false, Status: "fail", Checks: []CheckResult{}}
+func RunDoctor(req DoctorRequest) (rep DoctorReport) {
+	rep = DoctorReport{SchemaVersion: DoctorSchemaVersion, OK: false, Status: "fail", Checks: []CheckResult{}}
 	add := func(cr CheckResult) {
 		rep.Checks = append(rep.Checks, cr)
 	}
@@ -116,6 +121,24 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	syncCheck.Message = "sync-config loaded"
 	syncCheck.Details = map[string]any{"config_dir": configDir, "path": syncCfgPath}
 	add(syncCheck)
+
+	// CLI update check (informational, warning-only) — run async so the HTTP
+	// call doesn't block subsequent file-based checks.
+	updateIdx := len(rep.Checks)
+	rep.Checks = append(rep.Checks, CheckResult{}) // placeholder
+	updateCh := make(chan CheckResult, 1)
+	go func() { updateCh <- doctorCheckUpdate(req.Version, configDir) }()
+	defer func() {
+		select {
+		case result := <-updateCh:
+			rep.Checks[updateIdx] = result
+		case <-time.After(5 * time.Second):
+			rep.Checks[updateIdx] = CheckResult{
+				Name: "cli_update", Severity: "warning", Status: "skip", OK: true,
+				Message: "skipped: update check timed out",
+			}
+		}
+	}()
 
 	// git availability (warning-only — registry fetch and pack install need git)
 	add(doctorCheckGit())
@@ -163,6 +186,9 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	add(profileCheck)
 	rep.ProfilePath = pp
 
+	// Profile structure validation (warning-level).
+	add(doctorCheckProfileValidation(prof))
+
 	// packs + MCP inventory — reuse config.ResolveProfile + engine.LoadMCPInventoryForPacks
 	packsCheck := CheckResult{Name: "packs_resolved", Severity: "critical", Status: "fail", OK: false}
 	resolvedPacks, settingsPack, rcErr := config.ResolveProfile(prof, pp, configDir)
@@ -199,25 +225,25 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	add(packsCheck)
 
 	if req.Status {
-		rep.Ecosystem = buildEcosystemStatus(resolvedPacks, settingsPack, profileName, pp, configDir)
+		rep.Ecosystem = BuildEcosystemStatus(resolvedPacks, settingsPack, profileName, pp, configDir)
 	}
 
-	// required env vars
-	envCheck := CheckResult{Name: "mcp_env_vars_present", Severity: "critical", Status: "fail", OK: false}
-	missing, requiredBy := doctorRequiredMCPEnvVars(prof.Params, inventories, serverNames)
+	// required refs (params + env vars)
+	refsCheck := CheckResult{Name: "mcp_refs_present", Severity: "critical", Status: "fail", OK: false}
+	missing, requiredBy := doctorRequiredMCPRefs(prof.Params, inventories, serverNames)
 	if len(missing) > 0 {
-		envCheck.Message = "missing required env vars for enabled MCP servers"
-		envCheck.Remediation = "Set the missing env vars (presence only is checked); for example: export VAR=..."
-		envCheck.Details = map[string]any{"missing": missing, "required_by": requiredBy}
-		add(envCheck)
-		add(doctorSkippedCheck("mcp_server_paths_exist", "missing required env vars"))
+		refsCheck.Message = "missing required refs for enabled MCP servers"
+		refsCheck.Remediation = "Set missing env vars (export VAR=...) or add missing params to the profile"
+		refsCheck.Details = map[string]any{"missing": missing, "required_by": requiredBy}
+		add(refsCheck)
+		add(doctorSkippedCheck("mcp_server_paths_exist", "missing required refs"))
 		return rep
 	}
-	envCheck.OK = true
-	envCheck.Status = "pass"
-	envCheck.Message = "required MCP env vars present"
-	envCheck.Details = map[string]any{"required": sortedMapKeys(requiredBy)}
-	add(envCheck)
+	refsCheck.OK = true
+	refsCheck.Status = "pass"
+	refsCheck.Message = "required MCP refs present"
+	refsCheck.Details = map[string]any{"required": sortedMapKeys(requiredBy)}
+	add(refsCheck)
 
 	// MCP server path checks
 	pathsCheck := CheckResult{Name: "mcp_server_paths_exist", Severity: "critical", Status: "fail", OK: false}
@@ -237,8 +263,11 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 	// Ledger health checks (warning-level, fixable).
 	add(doctorCheckLedgerHealth(configDir, resolvedPacks, req.Fix))
 
-	// Manifest/disk drift check (warning-level, informational).
-	add(doctorCheckManifestDrift(configDir, resolvedPacks))
+	// Stale ledger check: warn about ledger files for the other scope.
+	add(doctorCheckStaleLedgers(configDir, syncCfg))
+
+	// Manifest/disk drift check (warning-level, fixable).
+	add(doctorCheckManifestDrift(configDir, resolvedPacks, req.Fix))
 
 	// Recompute overall OK: only critical failures set OK=false.
 	rep.OK = true
@@ -251,6 +280,24 @@ func RunDoctor(req DoctorRequest) DoctorReport {
 		}
 	}
 	return rep
+}
+
+// doctorCheckUpdate checks if a newer CLI version is available.
+func doctorCheckUpdate(currentVersion, configDir string) CheckResult {
+	check := CheckResult{Name: "cli_update", Severity: "warning", Status: "pass", OK: true}
+	r := update.Check(currentVersion, configDir)
+	if r == nil {
+		check.Message = "up to date"
+		return check
+	}
+	check.Status = "warn"
+	check.OK = false
+	check.Message = fmt.Sprintf("newer version available: %s (current: %s)", r.Latest, r.Current)
+	check.Remediation = "Run: brew upgrade aipack"
+	if r.UpdateURL != "" {
+		check.Details = map[string]any{"update_url": r.UpdateURL}
+	}
+	return check
 }
 
 // doctorCheckGit verifies git is available. Registry fetch and pack install
@@ -336,46 +383,56 @@ func doctorBuildPackInfoAndProviders(packs []config.ResolvedPack, inventory map[
 	return packInfos, providers
 }
 
-func doctorRequiredMCPEnvVars(params map[string]string, inv map[string]domain.MCPServer, enabledServers []string) ([]string, map[string][]string) {
+// doctorRequiredMCPRefs scans enabled MCP servers for {params.*} and {env:VAR}
+// references, checks which are available, and returns missing ones.
+func doctorRequiredMCPRefs(params map[string]string, inv map[string]domain.MCPServer, enabledServers []string) ([]string, map[string][]string) {
 	requiredBy := map[string]map[string]struct{}{}
-	addReq := func(varName string, server string) {
-		if varName == "" {
+	addReq := func(ref string, server string) {
+		if ref == "" {
 			return
 		}
-		m, ok := requiredBy[varName]
+		m, ok := requiredBy[ref]
 		if !ok {
 			m = map[string]struct{}{}
-			requiredBy[varName] = m
+			requiredBy[ref] = m
 		}
 		m[server] = struct{}{}
 	}
+
+	// Scan a string for all unresolved param and env references.
+	scanRefs := func(s string, server string) {
+		_ = util.WalkParamRefs(s, func(ref util.ParamRef) error {
+			if _, ok := params[ref.Name]; !ok {
+				addReq("param:"+ref.Name, server)
+			}
+			return nil
+		})
+		_ = util.WalkEnvRefs(s, func(ref util.EnvRef) error {
+			addReq("env:"+ref.Name, server)
+			return nil
+		})
+	}
+
 	for _, server := range enabledServers {
 		entry, ok := inv[server]
 		if !ok {
 			continue
 		}
 		for _, part := range entry.Command {
-			exp, err := engine.ExpandParams(params, part)
-			if err != nil {
-				addReq("<unresolved_params>", server)
-				continue
-			}
-			for _, name := range doctorExtractEnvRefNames(exp) {
-				addReq(name, server)
-			}
+			scanRefs(part, server)
 		}
 		for _, v := range entry.Env {
-			exp, err := engine.ExpandParams(params, v)
-			if err != nil {
-				addReq("<unresolved_params>", server)
-				continue
-			}
-			for _, name := range doctorExtractEnvRefNames(exp) {
-				addReq(name, server)
-			}
+			scanRefs(v, server)
+		}
+		if entry.URL != "" {
+			scanRefs(entry.URL, server)
+		}
+		for _, v := range entry.Headers {
+			scanRefs(v, server)
 		}
 	}
 
+	// Check which refs are actually missing.
 	missing := []string{}
 	flat := map[string][]string{}
 	keys := make([]string, 0, len(requiredBy))
@@ -390,42 +447,18 @@ func doctorRequiredMCPEnvVars(params map[string]string, inv map[string]domain.MC
 		}
 		sort.Strings(servers)
 		flat[k] = servers
-		if k == "<unresolved_params>" {
+
+		if strings.HasPrefix(k, "param:") {
+			// Already confirmed missing during scan (only added when not in params map).
 			missing = append(missing, k)
-			continue
-		}
-		if strings.TrimSpace(os.Getenv(k)) == "" {
-			missing = append(missing, k)
+		} else if strings.HasPrefix(k, "env:") {
+			envName := strings.TrimPrefix(k, "env:")
+			if strings.TrimSpace(os.Getenv(envName)) == "" {
+				missing = append(missing, k)
+			}
 		}
 	}
 	return missing, flat
-}
-
-func doctorExtractEnvRefNames(s string) []string {
-	set := map[string]struct{}{}
-	for {
-		start := strings.Index(s, "{env:")
-		if start < 0 {
-			break
-		}
-		rest := s[start:]
-		endRel := strings.Index(rest, "}")
-		if endRel < 0 {
-			break
-		}
-		end := start + endRel
-		name := strings.TrimSpace(s[start+len("{env:") : end])
-		if name != "" {
-			set[name] = struct{}{}
-		}
-		s = s[end+1:]
-	}
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[string]string, servers []string, providers map[string]ServerProvider) []map[string]any {
@@ -441,12 +474,7 @@ func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[strin
 			continue
 		}
 
-		cmd0, err := engine.ExpandParams(params, entry.Command[0])
-		if err != nil {
-			failures = append(failures, map[string]any{"server": server, "error": err.Error(), "inventory_path": prov.InventoryPath})
-			continue
-		}
-		cmd0, err = engine.ExpandEnvRefs(cmd0)
+		cmd0, err := engine.ExpandRefs(params, entry.Command[0])
 		if err != nil {
 			failures = append(failures, map[string]any{"server": server, "error": err.Error(), "inventory_path": prov.InventoryPath})
 			continue
@@ -464,12 +492,7 @@ func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[strin
 		}
 
 		for _, raw := range entry.Command[1:] {
-			part, err := engine.ExpandParams(params, raw)
-			if err != nil {
-				failures = append(failures, map[string]any{"server": server, "error": err.Error(), "inventory_path": prov.InventoryPath})
-				continue
-			}
-			part, err = engine.ExpandEnvRefs(part)
+			part, err := engine.ExpandRefs(params, raw)
 			if err != nil {
 				failures = append(failures, map[string]any{"server": server, "error": err.Error(), "inventory_path": prov.InventoryPath})
 				continue
@@ -630,6 +653,7 @@ func doctorCheckPackDrift(configDir string, syncCfg config.SyncConfig) CheckResu
 }
 
 // gitHeadHash reads the current HEAD commit hash from a git repo without shelling out.
+// Handles both loose refs (.git/refs/heads/...) and packed refs (.git/packed-refs).
 func gitHeadHash(dir string) (string, error) {
 	headPath := filepath.Join(dir, ".git", "HEAD")
 	data, err := os.ReadFile(headPath)
@@ -641,17 +665,34 @@ func gitHeadHash(dir string) (string, error) {
 	if !strings.HasPrefix(content, "ref: ") {
 		return content, nil
 	}
-	// Symbolic ref: read the ref file
+	// Symbolic ref: try the loose ref file first.
 	ref := strings.TrimPrefix(content, "ref: ")
 	refPath := filepath.Join(dir, ".git", ref)
 	data, err = os.ReadFile(refPath)
-	if err != nil {
-		return "", err
+	if err == nil {
+		return strings.TrimSpace(string(data)), nil
 	}
-	return strings.TrimSpace(string(data)), nil
+	// Loose ref missing — check packed-refs (created by git gc / git pack-refs).
+	packedPath := filepath.Join(dir, ".git", "packed-refs")
+	packed, err := os.ReadFile(packedPath)
+	if err != nil {
+		return "", fmt.Errorf("ref %s not found in loose refs or packed-refs", ref)
+	}
+	for _, line := range strings.Split(string(packed), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' || line[0] == '^' {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) == 2 && parts[1] == ref {
+			return parts[0], nil
+		}
+	}
+	return "", fmt.Errorf("ref %s not found in packed-refs", ref)
 }
 
-func buildEcosystemStatus(packs []config.ResolvedPack, settingsPack, profileName, profilePath, configDir string) *EcosystemStatus {
+// BuildEcosystemStatus constructs an EcosystemStatus summary from resolved packs.
+func BuildEcosystemStatus(packs []config.ResolvedPack, settingsPack, profileName, profilePath, configDir string) *EcosystemStatus {
 	es := &EcosystemStatus{
 		Profile:      profileName,
 		ProfilePath:  profilePath,
@@ -683,14 +724,35 @@ func buildEcosystemStatus(packs []config.ResolvedPack, settingsPack, profileName
 // Ledger health check
 // ---------------------------------------------------------------------------
 
+func ledgerFilesUnder(configDir string) ([]string, error) {
+	ledgerDir := filepath.Join(configDir, "ledger")
+	var files []string
+	err := filepath.WalkDir(ledgerDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".json") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
 // doctorCheckLedgerHealth scans all ledger files for orphaned entries (paths
 // that no longer exist on disk) and entries with missing SourcePack. With fix=true,
 // prunes orphans and fills SourcePack when a single pack is resolved.
 func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix bool) CheckResult {
 	check := CheckResult{Name: "ledger_health", Severity: "warning", Status: "pass", OK: true}
 
-	ledgerDir := filepath.Join(configDir, "ledger")
-	entries, err := os.ReadDir(ledgerDir)
+	files, err := ledgerFilesUnder(configDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			check.Message = "no ledger directory"
@@ -712,11 +774,7 @@ func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix 
 	totalMissingSP := 0
 	totalFixed := 0
 
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(ledgerDir, e.Name())
+	for _, path := range files {
 		lg, warn, lerr := engine.LoadLedger(path)
 		if lerr != nil || warn != "" {
 			continue
@@ -793,7 +851,8 @@ func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix 
 // doctorCheckManifestDrift compares each pack's manifest-declared content
 // against what actually exists on disk. Reports files on disk not in the
 // manifest ("undeclared") and manifest entries with no corresponding file
-// ("missing"). This is informational only — no auto-fix.
+// ("missing"). With fix=true, updates each pack's pack.json to match disk
+// (adds undeclared IDs, removes missing IDs).
 type driftItem struct {
 	Pack      string `json:"pack"`
 	Kind      string `json:"kind"`
@@ -801,7 +860,7 @@ type driftItem struct {
 	DriftType string `json:"drift_type"` // "undeclared" or "missing"
 }
 
-func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack) CheckResult {
+func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack, fix bool) CheckResult {
 	check := CheckResult{Name: "manifest_drift", Severity: "warning", Status: "pass", OK: true}
 
 	var drifts []driftItem
@@ -864,10 +923,86 @@ func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack) CheckResult
 		parts = append(parts, fmt.Sprintf("%d in manifest but not on disk", missing))
 	}
 	check.Message = strings.Join(parts, ", ")
-	check.Remediation = "Update pack.json to match disk, or remove nil content fields to enable auto-discovery"
 	check.Details = map[string]any{"drift": drifts}
 
+	if fix {
+		totalFixed := fixManifestDrift(packs, drifts)
+		if totalFixed > 0 {
+			check.Fixed = true
+			check.FixAction = fmt.Sprintf("updated %d pack manifest(s)", totalFixed)
+			check.Status = "fixed"
+			check.OK = true
+			return check
+		}
+	}
+
+	check.Remediation = "Run 'aipack doctor --fix' to update pack.json manifests, or remove nil content fields to enable auto-discovery"
 	return check
+}
+
+// fixManifestDrift applies drift fixes to pack manifests: adds undeclared IDs
+// and removes missing IDs. Returns the number of packs whose manifests were
+// successfully updated.
+func fixManifestDrift(packs []config.ResolvedPack, drifts []driftItem) int {
+	// Index packs by name for lookup.
+	packByName := make(map[string]config.ResolvedPack, len(packs))
+	for _, rp := range packs {
+		packByName[rp.Name] = rp
+	}
+
+	// Group drifts by pack.
+	driftsByPack := make(map[string][]driftItem)
+	for _, d := range drifts {
+		driftsByPack[d.Pack] = append(driftsByPack[d.Pack], d)
+	}
+
+	totalFixed := 0
+	for packName, items := range driftsByPack {
+		rp, ok := packByName[packName]
+		if !ok {
+			continue
+		}
+		manifest := rp.Manifest
+
+		for _, d := range items {
+			cat := kindToCategory(d.Kind)
+			if cat == "" {
+				continue
+			}
+			ptr := manifest.ContentIDsPtr(cat)
+			if ptr == nil {
+				continue
+			}
+			switch d.DriftType {
+			case "undeclared":
+				*ptr = append(*ptr, d.ID)
+			case "missing":
+				*ptr = slices.DeleteFunc(*ptr, func(s string) bool { return s == d.ID })
+			}
+		}
+
+		// Sort each slice for deterministic output.
+		sort.Strings(manifest.Rules)
+		sort.Strings(manifest.Agents)
+		sort.Strings(manifest.Workflows)
+		sort.Strings(manifest.Skills)
+
+		manifestPath := filepath.Join(rp.Root, "pack.json")
+		if err := config.SavePackManifest(manifestPath, manifest); err == nil {
+			totalFixed++
+		}
+	}
+	return totalFixed
+}
+
+func kindToCategory(kind string) domain.PackCategory {
+	cat := domain.PackCategory(kind)
+	switch cat {
+	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills:
+		return cat
+	default:
+		return ""
+	}
 }
 
 func toStringSet(items []string) map[string]struct{} {
@@ -893,4 +1028,88 @@ func appendDrift(drifts []driftItem, pack, kind string, onDisk, declared []strin
 		}
 	}
 	return drifts
+}
+
+func doctorCheckProfileValidation(prof config.ProfileConfig) CheckResult {
+	check := CheckResult{Name: "profile_validated", Severity: "warning", Status: "pass", OK: true}
+	errs := config.ValidateProfileConfig(prof)
+	if len(errs) > 0 {
+		check.Status = "warn"
+		check.OK = false
+		check.Message = fmt.Sprintf("%d profile validation issue(s)", len(errs))
+		check.Remediation = "Fix the issues in the profile YAML"
+		check.Details = map[string]any{"issues": errs}
+		return check
+	}
+	check.Message = "profile structure valid"
+	return check
+}
+
+// doctorCheckStaleLedgers warns about ledger files that may be orphaned from
+// a previous scope configuration. For example, if the user switched from
+// project scope to global scope, old project ledgers remain on disk.
+func doctorCheckStaleLedgers(configDir string, syncCfg config.SyncConfig) CheckResult {
+	check := CheckResult{Name: "stale_ledgers", Severity: "warning", Status: "pass", OK: true}
+
+	ledgerDir := filepath.Join(configDir, "ledger")
+	files, err := ledgerFilesUnder(configDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			check.Message = "no ledger directory"
+			return check
+		}
+		check.Status = "warn"
+		check.OK = false
+		check.Message = fmt.Sprintf("cannot read ledger directory: %s", err)
+		return check
+	}
+
+	// Build expected per-harness ledger filenames.
+	currentHarnesses := syncCfg.Defaults.Harnesses
+	if len(currentHarnesses) == 0 {
+		check.Message = "no harnesses configured"
+		return check
+	}
+	expected := map[string]struct{}{}
+	for _, h := range currentHarnesses {
+		expected[strings.ToLower(h)+".json"] = struct{}{}
+	}
+	scope := strings.TrimSpace(syncCfg.Defaults.Scope)
+
+	var stale []string
+	for _, path := range files {
+		rel, rerr := filepath.Rel(ledgerDir, path)
+		if rerr != nil {
+			continue
+		}
+		base := filepath.Base(path)
+		_, expectedName := expected[base]
+		isProjectLedger := strings.Contains(rel, string(filepath.Separator))
+
+		if scope == string(domain.ScopeProject) {
+			if isProjectLedger {
+				continue
+			}
+		} else if !isProjectLedger && expectedName {
+			continue
+		}
+
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		age := fmt.Sprintf("%.0f days old", time.Since(info.ModTime()).Hours()/24)
+		stale = append(stale, rel+" ("+age+", "+path+")")
+	}
+
+	if len(stale) > 0 {
+		check.Status = "warn"
+		check.OK = false
+		check.Message = fmt.Sprintf("%d ledger file(s) not matching current harness config", len(stale))
+		check.Remediation = "These may be from a previous harness configuration. Remove them if no longer needed."
+		check.Details = map[string]any{"stale": stale}
+	} else {
+		check.Message = "no stale ledgers"
+	}
+	return check
 }

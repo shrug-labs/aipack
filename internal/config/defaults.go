@@ -14,19 +14,8 @@ var InitSyncConfigBytes = []byte("schema_version: 1\n" +
 	"  scope: project\n")
 
 // InitProfileBytes is the content written into profiles/default.yaml by init.
-var InitProfileBytes = []byte("schema_version: 1\n" +
+var InitProfileBytes = []byte("schema_version: 2\n" +
 	"packs: []\n")
-
-// InitRegistryBytes is the content written into registry.yaml by init.
-var InitRegistryBytes = []byte("schema_version: 1\n" +
-	"packs: {}\n" +
-	"# Example:\n" +
-	"#   my-pack:\n" +
-	"#     repo: https://github.com/org/repo.git\n" +
-	"#     path: packs/my-pack       # subdirectory within repo (omit for root)\n" +
-	"#     description: My team's AI agent pack\n" +
-	"#     owner: Team Name\n" +
-	"#     contact: \"#slack-channel\"\n")
 
 // EnsureInit creates the config directory and writes default config files if
 // the directory does not already exist. Returns true if first-time creation
@@ -44,7 +33,6 @@ func EnsureInit(configDir string) (bool, error) {
 	}{
 		{SyncConfigPath(configDir), InitSyncConfigBytes},
 		{filepath.Join(configDir, "profiles", "default.yaml"), InitProfileBytes},
-		{filepath.Join(configDir, "registry.yaml"), InitRegistryBytes},
 	}
 	for _, f := range files {
 		if err := writeIfNotExists(f.path, f.content); err != nil {

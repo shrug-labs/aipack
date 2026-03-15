@@ -16,14 +16,13 @@ import (
 
 // ApplyRequest controls how the plan is applied.
 type ApplyRequest struct {
-	Force        bool // override conflicts for ALL file types
-	Prune        bool
-	Yes          bool // auto-confirm prune deletions
-	DryRun       bool
-	SkipSettings bool
-	Quiet        bool      // suppress stderr diagnostic output (for TUI)
-	Stderr       io.Writer // warning/diagnostic output (defaults to os.Stderr)
-	Req          PlanRequest
+	Force  bool // override conflicts for ALL file types
+	Prune  bool
+	Yes    bool // auto-confirm prune deletions
+	DryRun bool
+	Quiet  bool      // suppress stderr diagnostic output (for TUI)
+	Stderr io.Writer // warning/diagnostic output (defaults to os.Stderr)
+	Req    PlanRequest
 }
 
 // ApplyPlan applies a sync plan to disk.
@@ -52,6 +51,22 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 	}
 	if ledgerWarn != "" && !ar.Quiet {
 		fmt.Fprintln(ar.stderr(), "WARNING: "+ledgerWarn)
+	}
+
+	// Snapshot settings files before computing diffs (for restore).
+	// Only snapshot files that will actually be synced — snapshotting skipped
+	// files would produce confusing restore candidates.
+	var allSettings []domain.SettingsAction
+	if !ar.Req.SkipSettings {
+		allSettings = append(allSettings, plan.Settings...)
+	}
+	allSettings = append(allSettings, plan.MCP...)
+	cacheWarn, err := SnapshotSettingsFiles(allSettings, plan.Ledger, ar.DryRun)
+	if err != nil {
+		return err
+	}
+	if cacheWarn != "" && !ar.Quiet {
+		fmt.Fprintln(ar.stderr(), "WARNING: "+cacheWarn)
 	}
 
 	// Classify ALL files into a unified []FileDiff.
@@ -88,7 +103,7 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 		}
 	}
 
-	if !ar.SkipSettings {
+	if !ar.Req.SkipSettings {
 		settingsDiffs, err := ComputeSettingsDiffs(plan.Settings, lg)
 		if err != nil {
 			return err
@@ -96,34 +111,50 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 		diffs = append(diffs, settingsDiffs...)
 	}
 
-	// Plugins are NEVER gated by SkipSettings.
-	pluginDiffs, err := ComputeSettingsDiffs(plan.Plugins, lg)
+	// MCP configs are NEVER gated by SkipSettings.
+	mcpDiffs, err := ComputeSettingsDiffs(plan.MCP, lg)
 	if err != nil {
 		return err
 	}
-	diffs = append(diffs, pluginDiffs...)
+	diffs = append(diffs, mcpDiffs...)
 
 	// Apply each diff and update ledger.
 	// DiffIdentical files are also recorded so that files present on disk but
 	// missing from the ledger (e.g., after adding a harness) get their digest
 	// stored. For already-tracked files the digest is unchanged.
+	// Track which paths were recorded this cycle so we don't prune them below
+	// (Desired may be incomplete for copy-dir expansions).
 	now := time.Now()
+	recorded := map[string]struct{}{}
 	for _, d := range diffs {
 		applied, err := applyFileDiff(d, ar)
 		if err != nil {
 			return err
 		}
 		if !ar.DryRun && (applied || d.Kind == domain.DiffIdentical) {
-			lg.Record(filepath.Clean(d.Dst), d.Desired, d.SourcePack, d.ManagedOverlay, now)
+			p := filepath.Clean(d.Dst)
+			lg.Record(p, d.Desired, d.SourcePack, d.ManagedOverlay, now)
+			recorded[p] = struct{}{}
 		}
 	}
-
-	if ar.Prune {
-		desired, err := desiredForPrune(plan)
-		if err != nil {
-			return err
+	for _, m := range plan.MCPServers {
+		if ar.DryRun {
+			continue
 		}
-		// v2 improvement: managedRoots computed ONCE by caller and passed in.
+		key := m.LedgerKey()
+		lg.Record(key, m.Content, m.SourcePack, nil, now)
+		recorded[key] = struct{}{}
+	}
+
+	// Reconcile stale ledger entries: entries under managed roots that are
+	// no longer in the plan's desired set. This happens when a harness
+	// changes where it writes files (e.g., agents promoted to skills).
+	//
+	// Always remove stale entries from the ledger so that the dirty-status
+	// check (PruneCandidatesWithLedger) doesn't permanently flag them.
+	// Only delete actual files when Prune is explicitly requested.
+	{
+		desired := plan.Desired
 		pruneRoots := make([]string, len(managedRoots)+1)
 		copy(pruneRoots, managedRoots)
 		pruneRoots[len(managedRoots)] = filepath.Dir(plan.Ledger)
@@ -132,23 +163,50 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		cleanup := newEmptyDirCleanup(pruneRoots)
+		var cleanup *emptyDirCleanup
+		if ar.Prune {
+			cleanup = newEmptyDirCleanup(pruneRoots)
+		}
 		for _, k := range keys {
+			if domain.IsMCPLedgerKey(k) {
+				if _, ok := recorded[filepath.Clean(k)]; !ok && !ar.DryRun {
+					lg.Delete(k)
+				}
+				continue
+			}
 			if !isUnder(k, pruneRoots) {
 				continue
 			}
 			if _, ok := desired[filepath.Clean(k)]; ok {
 				continue
 			}
+			// Skip entries recorded in this apply cycle — they're current
+			// even if not explicitly in Desired (e.g., copy-dir children).
+			if _, ok := recorded[filepath.Clean(k)]; ok {
+				continue
+			}
 
 			// If the path is already gone, prune the ledger entry without prompting.
 			if _, err := os.Stat(k); err != nil {
 				if os.IsNotExist(err) {
-					lg.Delete(k)
+					if !ar.DryRun {
+						lg.Delete(k)
+					}
 					continue
 				}
 				return err
 			}
+
+			if !ar.Prune {
+				// File exists but is no longer desired — remove from ledger
+				// so it stops showing as a prune candidate, but leave the
+				// file on disk.
+				if !ar.DryRun {
+					lg.Delete(k)
+				}
+				continue
+			}
+
 			ok, err := shouldDelete(k, ar.Yes, lg.PrevDigest(k), ar.DryRun)
 			if err != nil {
 				return err
@@ -167,7 +225,9 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 			lg.Delete(k)
 			cleanup.MaybeCleanupParents(filepath.Dir(k))
 		}
-		cleanup.Flush()
+		if cleanup != nil {
+			cleanup.Flush()
+		}
 	}
 
 	return SaveLedger(plan.Ledger, lg, ar.DryRun)
@@ -192,15 +252,15 @@ func PruneCandidatesWithLedger(plan domain.Plan, managedRoots []string, lg domai
 	if plan.Ledger == "" {
 		return nil, nil
 	}
-	desired, err := desiredForPrune(plan)
-	if err != nil {
-		return nil, err
-	}
+	desired := plan.Desired
 	pruneRoots := make([]string, len(managedRoots)+1)
 	copy(pruneRoots, managedRoots)
 	pruneRoots[len(managedRoots)] = filepath.Dir(plan.Ledger)
 	var candidates []string
 	for k := range lg.Managed {
+		if domain.IsMCPLedgerKey(k) {
+			continue
+		}
 		if !isUnder(k, pruneRoots) {
 			continue
 		}
@@ -216,48 +276,6 @@ func PruneCandidatesWithLedger(plan domain.Plan, managedRoots []string, lg domai
 	return candidates, nil
 }
 
-func desiredForPrune(plan domain.Plan) (map[string]struct{}, error) {
-	desired := map[string]struct{}{}
-	for k := range plan.Desired {
-		desired[filepath.Clean(k)] = struct{}{}
-	}
-	for _, w := range plan.Writes {
-		desired[filepath.Clean(w.Dst)] = struct{}{}
-	}
-	for _, s := range plan.Settings {
-		desired[filepath.Clean(s.Dst)] = struct{}{}
-	}
-	for _, p := range plan.Plugins {
-		desired[filepath.Clean(p.Dst)] = struct{}{}
-	}
-	for _, c := range plan.Copies {
-		cdst := filepath.Clean(c.Dst)
-		desired[cdst] = struct{}{}
-		if c.Kind != domain.CopyKindDir {
-			continue
-		}
-		err := filepath.WalkDir(c.Src, func(p string, d os.DirEntry, werr error) error {
-			if werr != nil {
-				return werr
-			}
-			if d.IsDir() {
-				return nil
-			}
-			rel, err := filepath.Rel(c.Src, p)
-			if err != nil {
-				return err
-			}
-			target := filepath.Join(cdst, rel)
-			desired[filepath.Clean(target)] = struct{}{}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return desired, nil
-}
-
 // applyFileDiff applies a single file diff according to policy.
 func applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 	w := ar.stderr()
@@ -268,6 +286,7 @@ func applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 	case domain.DiffCreate:
 		if !ar.Quiet {
 			fmt.Fprintf(w, "  create: %s\n", d.Label)
+			printMergeOpsSummary(w, d.MergeOps)
 		}
 		if ar.DryRun {
 			return false, nil
@@ -280,6 +299,7 @@ func applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 	case domain.DiffManaged:
 		if !ar.Quiet {
 			fmt.Fprintf(w, "  update: %s\n", d.Label)
+			printMergeOpsSummary(w, d.MergeOps)
 		}
 		if ar.DryRun {
 			return false, nil
@@ -307,7 +327,7 @@ func applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		}
 		return false, nil
 	}
-	return false, nil
+	return false, fmt.Errorf("unhandled diff kind %q for %s", d.Kind, d.Label)
 }
 
 func showFileDiff(w io.Writer, d FileDiff) {
@@ -394,13 +414,22 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 			return fmt.Errorf("refusing to write settings outside managed roots: %s", dst)
 		}
 	}
-	for _, p := range plan.Plugins {
-		dst := filepath.Clean(p.Dst)
+	for _, m := range plan.MCP {
+		dst := filepath.Clean(m.Dst)
 		if dst == "" || dst == "." {
-			return fmt.Errorf("invalid plugin destination: %q", p.Dst)
+			return fmt.Errorf("invalid MCP destination: %q", m.Dst)
 		}
 		if !isUnder(dst, allowed) {
-			return fmt.Errorf("refusing to write plugin outside managed roots: %s", dst)
+			return fmt.Errorf("refusing to write MCP config outside managed roots: %s", dst)
+		}
+	}
+	for _, m := range plan.MCPServers {
+		dst := filepath.Clean(m.ConfigPath)
+		if dst == "" || dst == "." {
+			return fmt.Errorf("invalid MCP config path: %q", m.ConfigPath)
+		}
+		if !isUnder(dst, allowed) {
+			return fmt.Errorf("refusing to track MCP outside managed roots: %s", dst)
 		}
 	}
 	if plan.Ledger != "" {
@@ -462,4 +491,33 @@ func (c *emptyDirCleanup) cleanupUp(dir string) {
 		}
 		cur = filepath.Dir(cur)
 	}
+}
+
+// printMergeOpsSummary prints a one-line merge summary when ops are present.
+func printMergeOpsSummary(w io.Writer, ops []MergeOp) {
+	if len(ops) == 0 {
+		return
+	}
+	var adds, updates, removes int
+	for _, op := range ops {
+		switch op.Action {
+		case MergeAdd:
+			adds++
+		case MergeUpdate:
+			updates++
+		case MergeRemove:
+			removes++
+		}
+	}
+	var parts []string
+	if adds > 0 {
+		parts = append(parts, fmt.Sprintf("%d added", adds))
+	}
+	if updates > 0 {
+		parts = append(parts, fmt.Sprintf("%d updated", updates))
+	}
+	if removes > 0 {
+		parts = append(parts, fmt.Sprintf("%d removed", removes))
+	}
+	fmt.Fprintf(w, "    merge: %s\n", strings.Join(parts, ", "))
 }

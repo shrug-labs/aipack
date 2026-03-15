@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -163,11 +164,11 @@ func TestPlanSync_LedgerPath_Project(t *testing.T) {
 		t.Fatalf("PlanSync: %v", err)
 	}
 
-	if !strings.Contains(plan.Ledger, ".aipack") {
-		t.Errorf("Ledger %q should contain %q", plan.Ledger, ".aipack")
+	if !strings.Contains(plan.Ledger, ".config/aipack/ledger/") {
+		t.Errorf("Ledger %q should contain %q", plan.Ledger, ".config/aipack/ledger/")
 	}
-	if !strings.Contains(plan.Ledger, "ledger.json") {
-		t.Errorf("Ledger %q should contain %q", plan.Ledger, "ledger.json")
+	if !strings.HasSuffix(plan.Ledger, ".json") {
+		t.Errorf("Ledger %q should end with .json", plan.Ledger)
 	}
 }
 
@@ -178,15 +179,13 @@ func TestPlanSync_LedgerPath_Global(t *testing.T) {
 	profile := domain.NewProfile()
 	req := PlanRequest{
 		Scope:     domain.ScopeGlobal,
-		Harnesses: []domain.Harness{domain.HarnessClaudeCode, domain.HarnessCline},
+		Harnesses: []domain.Harness{domain.HarnessClaudeCode},
 		Home:      home,
 	}
 
-	// Provide a planner that returns empty fragments so PlanSync succeeds.
 	p1 := &mockPlanner{id: domain.HarnessClaudeCode}
-	p2 := &mockPlanner{id: domain.HarnessCline}
 
-	plan, err := PlanSync(profile, req, []Planner{p1, p2})
+	plan, err := PlanSync(profile, req, []Planner{p1})
 	if err != nil {
 		t.Fatalf("PlanSync: %v", err)
 	}
@@ -194,10 +193,8 @@ func TestPlanSync_LedgerPath_Global(t *testing.T) {
 	if !strings.HasPrefix(plan.Ledger, home) {
 		t.Errorf("Ledger %q should be under Home %q", plan.Ledger, home)
 	}
-	if !strings.Contains(plan.Ledger, string(domain.HarnessClaudeCode)) {
-		t.Errorf("Ledger %q should contain harness name %q", plan.Ledger, domain.HarnessClaudeCode)
-	}
-	if !strings.Contains(plan.Ledger, string(domain.HarnessCline)) {
-		t.Errorf("Ledger %q should contain harness name %q", plan.Ledger, domain.HarnessCline)
+	want := filepath.Join(home, ".config", "aipack", "ledger", "claudecode.json")
+	if plan.Ledger != want {
+		t.Errorf("Ledger = %q, want %q", plan.Ledger, want)
 	}
 }

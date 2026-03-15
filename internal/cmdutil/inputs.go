@@ -16,6 +16,7 @@ import (
 const DefaultHarnessEnv = "AIPACK_DEFAULT_HARNESS"
 
 // ResolveHarnesses resolves a list of harness name strings to typed Harness values.
+// A single entry of "all" expands to all known harnesses.
 // If the input list is empty, falls back to the AIPACK_DEFAULT_HARNESS env var.
 func ResolveHarnesses(harnesses []string) ([]domain.Harness, error) {
 	hsRaw := harnesses
@@ -26,6 +27,10 @@ func ResolveHarnesses(harnesses []string) ([]domain.Harness, error) {
 			return nil, fmt.Errorf("no harness configured (set --harness, defaults.harnesses in sync-config, or %s)", DefaultHarnessEnv)
 		}
 		hsRaw = envDefault
+	}
+
+	if len(hsRaw) == 1 && strings.ToLower(strings.TrimSpace(hsRaw[0])) == "all" {
+		return domain.AllHarnesses(), nil
 	}
 
 	var hs []domain.Harness
@@ -64,6 +69,57 @@ func ParseHarnessEnv(raw string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+// ResolveScopeDefault resolves scope using the standard precedence chain:
+// explicit flag value → sync-config default → "project".
+// Pass flagValue="default" when no flag was provided.
+func ResolveScopeDefault(flagValue, syncCfgScope string) (domain.Scope, error) {
+	var raw string
+	if flagValue != "default" {
+		raw = flagValue
+	} else if syncCfgScope != "" {
+		raw = syncCfgScope
+	} else {
+		raw = string(domain.ScopeProject)
+	}
+	return NormalizeScope(raw)
+}
+
+// ResolveHarnessesDefault resolves harnesses using the standard precedence chain:
+// explicit flag value → sync-config defaults → env var fallback.
+func ResolveHarnessesDefault(flagValue string, syncCfgHarnesses []string) ([]domain.Harness, error) {
+	var raw []string
+	if strings.TrimSpace(flagValue) != "" {
+		raw = append(raw, flagValue)
+	} else {
+		raw = syncCfgHarnesses
+	}
+	return ResolveHarnesses(raw)
+}
+
+// ResolveHarnessesOptional resolves harnesses for commands where --harness is an
+// optional filter rather than a required target selector.
+//
+// Precedence:
+//   - explicit flag value
+//   - sync-config defaults.harnesses
+//   - AIPACK_DEFAULT_HARNESS
+//   - all known harnesses
+func ResolveHarnessesOptional(flagValue string, syncCfgHarnesses []string) ([]domain.Harness, error) {
+	var raw []string
+	if strings.TrimSpace(flagValue) != "" {
+		raw = append(raw, flagValue)
+	} else {
+		raw = syncCfgHarnesses
+	}
+	if len(raw) == 0 {
+		raw = ParseHarnessEnv(os.Getenv(DefaultHarnessEnv))
+	}
+	if len(raw) == 0 {
+		return domain.AllHarnesses(), nil
+	}
+	return ResolveHarnesses(raw)
 }
 
 func NormalizeScope(scope string) (domain.Scope, error) {

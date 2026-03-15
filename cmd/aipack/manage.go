@@ -22,7 +22,7 @@ checking sync status, and managing installed packs.
 Requires an interactive terminal (TTY).
 
 Key bindings:
-  tab           Switch between Profiles and Packs tabs
+  tab           Switch between tabs (Profiles, Packs, Save, Sync, Search)
   j/k, up/down  Navigate lists
   enter         Toggle focus / expand tree
   space         Toggle items on/off

@@ -308,23 +308,16 @@ params:
 
 Syntax: `{env:VAR}`
 
-Environment variable references are transformed at sync time into the harness's native variable syntax:
+Environment variable references are resolved at sync time: the placeholder is replaced with the literal value from the process environment. If the variable is not set, the MCP server is skipped entirely and a warning is emitted.
 
-| Harness | `{env:HOME}` becomes |
-|---------|---------------------|
-| Claude Code | `${HOME}` |
-| Cline | `${HOME}` |
-| Codex | `$HOME` |
-| OpenCode | Resolved to actual value if set; literal `{env:HOME}` if unset |
-
-Pack authors write `{env:VAR}` once; the sync engine handles per-harness translation.
+Pack authors write `{env:VAR}` once; the sync engine resolves it identically for all harnesses.
 
 ### 5.3 Expansion order
 
 1. Parameter references (`{params.*}`) are expanded first, using values from the active profile.
-2. Environment references (`{env:*}`) are then transformed to harness-native syntax.
+2. Environment references (`{env:*}`) are then resolved to literal values from the process environment.
 
-This means parameters can contain environment references: `{params.mcp_dir}` could expand to `{env:HOME}/.local/share/mcp-servers`, which then becomes `${HOME}/.local/share/mcp-servers` for Claude Code.
+This means parameters can contain environment references: `{params.mcp_dir}` could expand to `{env:HOME}/.local/share/mcp-servers`, which then resolves to `/home/user/.local/share/mcp-servers` at sync time.
 
 ## 6. MCP Servers
 
@@ -593,8 +586,8 @@ Per-harness rendering details (file paths, config formats, merge behavior) are d
 |---------|-------|--------|-----------|--------|-----|----------|
 | Claude Code | Individual files | Directories | Command files | Subagent files | JSON | JSON merge |
 | OpenCode | Individual files | Directories | Command files | Individual files | JSON key | JSON merge |
-| Codex | Flattened markdown | Directories | Flattened | Flattened | TOML tables | TOML merge |
-| Cline | Individual files | Directories | Individual files | Individual files | Global JSON | N/A |
+| Codex | Flattened markdown | Directories | Promoted to skill dirs | Promoted to skill dirs | TOML tables | TOML merge |
+| Cline | Individual files | Directories | Individual files | Promoted to skill dirs | Global JSON | N/A |
 
 ## Appendix A: Complete `pack.json` Example
 

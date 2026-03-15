@@ -12,15 +12,16 @@ type stubHarness struct {
 	id domain.Harness
 }
 
-func (s stubHarness) ID() domain.Harness                                    { return s.id }
-func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error)      { return domain.Fragment{}, nil }
-func (s stubHarness) Render(RenderContext) (domain.Fragment, error)         { return domain.Fragment{}, nil }
-func (s stubHarness) ManagedRoots(domain.Scope, string, string) []string    { return nil }
-func (s stubHarness) SettingsPaths(domain.Scope, string, string) []string   { return nil }
-func (s stubHarness) StrictExtraDirs(domain.Scope, string, string) []string { return nil }
-func (s stubHarness) PackRelativePaths() []string                           { return nil }
-func (s stubHarness) StripManagedSettings([]byte, string) ([]byte, error)   { return nil, nil }
-func (s stubHarness) Capture(CaptureContext) (CaptureResult, error)         { return CaptureResult{}, nil }
+func (s stubHarness) ID() domain.Harness                                      { return s.id }
+func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error)        { return domain.Fragment{}, nil }
+func (s stubHarness) Render(RenderContext) (domain.Fragment, error)           { return domain.Fragment{}, nil }
+func (s stubHarness) ManagedRoots(domain.Scope, string, string) []string      { return nil }
+func (s stubHarness) SettingsPaths(domain.Scope, string, string) []string     { return nil }
+func (s stubHarness) StrictExtraDirs(domain.Scope, string, string) []string   { return nil }
+func (s stubHarness) PackRelativePaths() []string                             { return nil }
+func (s stubHarness) StripManagedSettings([]byte, string) ([]byte, error)     { return nil, nil }
+func (s stubHarness) Capture(CaptureContext) (CaptureResult, error)           { return CaptureResult{}, nil }
+func (s stubHarness) CleanActions(domain.Scope, string, string) []CleanAction { return nil }
 
 func TestNewRegistry_LookupAll(t *testing.T) {
 	t.Parallel()
@@ -55,7 +56,7 @@ func TestRegistry_All(t *testing.T) {
 	if len(all) != 3 {
 		t.Fatalf("All: got %d want 3", len(all))
 	}
-	// AllHarnesses returns canonical order: claudecode, opencode, codex, cline.
+	// AllHarnesses returns canonical order: cline, claudecode, codex, opencode.
 	if all[0].ID() != domain.HarnessClaudeCode {
 		t.Errorf("all[0]: got %q want claudecode", all[0].ID())
 	}
@@ -179,5 +180,50 @@ func TestMergeCaptureResults_ToolDedup(t *testing.T) {
 	// Should be sorted.
 	if tools[0] != "a" || tools[1] != "b" || tools[2] != "c" {
 		t.Errorf("tools = %v, want [a b c]", tools)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IdentifyHarness tests
+// ---------------------------------------------------------------------------
+
+func TestIdentifyHarness_ExactMatch(t *testing.T) {
+	t.Parallel()
+	h := stubHarnessWithRoots{stubHarness: stubHarness{id: domain.HarnessClaudeCode}, roots: []string{"/proj/.claude"}}
+	r := NewRegistry(h)
+	got := IdentifyHarness(r, domain.ScopeProject, "/proj", "/home", "/proj/.claude")
+	if got != domain.HarnessClaudeCode {
+		t.Errorf("got %q, want claudecode", got)
+	}
+}
+
+func TestIdentifyHarness_PrefixMatch(t *testing.T) {
+	t.Parallel()
+	h := stubHarnessWithRoots{stubHarness: stubHarness{id: domain.HarnessClaudeCode}, roots: []string{"/proj/.claude"}}
+	r := NewRegistry(h)
+	got := IdentifyHarness(r, domain.ScopeProject, "/proj", "/home", "/proj/.claude/rules/foo.md")
+	if got != domain.HarnessClaudeCode {
+		t.Errorf("got %q, want claudecode", got)
+	}
+}
+
+func TestIdentifyHarness_NoMatch(t *testing.T) {
+	t.Parallel()
+	h := stubHarnessWithRoots{stubHarness: stubHarness{id: domain.HarnessClaudeCode}, roots: []string{"/proj/.claude"}}
+	r := NewRegistry(h)
+	got := IdentifyHarness(r, domain.ScopeProject, "/proj", "/home", "/proj/.other/file.md")
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestIdentifyHarness_NoPrefixFalsePositive(t *testing.T) {
+	t.Parallel()
+	h := stubHarnessWithRoots{stubHarness: stubHarness{id: domain.HarnessClaudeCode}, roots: []string{"/proj/.claude"}}
+	r := NewRegistry(h)
+	// /proj/.claude-extra should NOT match /proj/.claude (not a separator-aware prefix)
+	got := IdentifyHarness(r, domain.ScopeProject, "/proj", "/home", "/proj/.claude-extra/file.md")
+	if got != "" {
+		t.Errorf("got %q, want empty (should not match partial dir name)", got)
 	}
 }

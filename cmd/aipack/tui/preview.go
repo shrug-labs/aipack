@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -10,13 +10,15 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"gopkg.in/yaml.v3"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // previewModel is a full-screen overlay that displays markdown file content
 // with parsed frontmatter and a scrollable body.
 type previewModel struct {
 	title    string
-	category string
+	category domain.PackCategory
 	packName string
 	filePath string
 
@@ -61,7 +63,7 @@ func (m *previewModel) renderViewport() {
 	var sb strings.Builder
 
 	// Header.
-	header := categorySingular(m.category) + "  " + m.title
+	header := m.category.SingularLabel() + "  " + m.title
 	if m.packName != "" {
 		header += "  " + dimStyle.Render("("+m.packName+")")
 	}
@@ -180,23 +182,24 @@ func openFileInEditor(filePath string) tea.Cmd {
 
 // loadPreview reads a markdown file asynchronously, parses frontmatter,
 // and returns a previewLoadedMsg.
-func loadPreview(title, category, packName, filePath string) tea.Cmd {
+func loadPreview(title string, category domain.PackCategory, packName, filePath string) tea.Cmd {
 	return func() tea.Msg {
 		const maxSize = 512 * 1024
-		data, err := os.ReadFile(filePath)
+		f, err := os.Open(filePath)
 		if err != nil {
 			return previewLoadedMsg{
 				title: title, category: category,
 				packName: packName, filePath: filePath, err: err,
 			}
 		}
-
-		content := string(data)
-		truncated := false
-		if len(data) > maxSize {
-			content = string(data[:maxSize])
-			truncated = true
+		defer f.Close()
+		buf := make([]byte, maxSize+1)
+		n, _ := io.ReadFull(f, buf)
+		truncated := n > maxSize
+		if truncated {
+			n = maxSize
 		}
+		content := string(buf[:n])
 
 		fm, body := parseFrontmatter(content)
 		if truncated {
@@ -214,32 +217,14 @@ func loadPreview(title, category, packName, filePath string) tea.Cmd {
 // parseFrontmatter splits YAML frontmatter from markdown body.
 // Returns ordered key-value pairs for display.
 func parseFrontmatter(content string) ([]fmEntry, string) {
-	scanner := bufio.NewScanner(strings.NewReader(content))
-
-	// Look for opening ---.
-	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
+	fm, body, err := domain.SplitFrontmatter([]byte(content))
+	if err != nil || len(fm) == 0 {
 		return nil, content
 	}
 
-	var fmLines []string
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "---" {
-			break
-		}
-		fmLines = append(fmLines, line)
-	}
-
-	// Remaining text is the body.
-	var bodyLines []string
-	for scanner.Scan() {
-		bodyLines = append(bodyLines, scanner.Text())
-	}
-	body := strings.TrimLeft(strings.Join(bodyLines, "\n"), "\n")
-
 	// Parse YAML preserving key order via yaml.v3 Node API.
 	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(strings.Join(fmLines, "\n")), &doc); err != nil {
+	if err := yaml.Unmarshal(fm, &doc); err != nil {
 		return nil, content
 	}
 
@@ -255,7 +240,7 @@ func parseFrontmatter(content string) ([]fmEntry, string) {
 		}
 	}
 
-	return entries, body
+	return entries, strings.TrimLeft(string(body), "\n")
 }
 
 // formatYAMLValue renders a yaml.Node value as a display string.
@@ -277,19 +262,4 @@ func formatYAMLValue(n *yaml.Node) string {
 		return "{" + strings.Join(pairs, ", ") + "}"
 	}
 	return fmt.Sprintf("%v", n.Value)
-}
-
-// categorySingular returns a singular display label for a tree category.
-func categorySingular(cat string) string {
-	switch cat {
-	case CatRules:
-		return "Rule"
-	case CatAgents:
-		return "Agent"
-	case CatWorkflows:
-		return "Workflow"
-	case CatSkills:
-		return "Skill"
-	}
-	return cat
 }

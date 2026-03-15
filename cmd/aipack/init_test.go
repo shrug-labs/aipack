@@ -40,13 +40,10 @@ func TestInit_HappyPath_WritesFiles(t *testing.T) {
 		t.Fatalf("profile contents mismatch\n--- got\n%s\n--- want\n%s", string(gotProf), string(config.InitProfileBytes))
 	}
 
+	// registry.yaml should not be created (registries are managed via registry fetch).
 	regPath := filepath.Join(configDir, "registry.yaml")
-	gotReg, err := os.ReadFile(regPath)
-	if err != nil {
-		t.Fatalf("read registry: %v", err)
-	}
-	if string(gotReg) != string(config.InitRegistryBytes) {
-		t.Fatalf("registry contents mismatch\n--- got\n%s\n--- want\n%s", string(gotReg), string(config.InitRegistryBytes))
+	if _, err := os.Stat(regPath); err == nil {
+		t.Fatal("registry.yaml should not be created by init")
 	}
 }
 
@@ -57,10 +54,8 @@ func TestInit_SkipWhenPresent_NoForce(t *testing.T) {
 
 	syncCfgPath := filepath.Join(configDir, "sync-config.yaml")
 	profPath := filepath.Join(configDir, "profiles", "default.yaml")
-	regPath := filepath.Join(configDir, "registry.yaml")
 	writeFile(t, syncCfgPath, []byte("old sync\n"))
 	writeFile(t, profPath, []byte("old prof\n"))
-	writeFile(t, regPath, []byte("old reg\n"))
 
 	_, stderr, code := runApp(t, "init", "--config-dir", configDir)
 	if code != cmdutil.ExitOK {
@@ -82,14 +77,6 @@ func TestInit_SkipWhenPresent_NoForce(t *testing.T) {
 	if string(gotProf) != "old prof\n" {
 		t.Fatalf("profile was overwritten unexpectedly: %q", string(gotProf))
 	}
-
-	gotReg, err := os.ReadFile(regPath)
-	if err != nil {
-		t.Fatalf("read registry: %v", err)
-	}
-	if string(gotReg) != "old reg\n" {
-		t.Fatalf("registry was overwritten unexpectedly: %q", string(gotReg))
-	}
 }
 
 func TestInit_ForceOverwrites(t *testing.T) {
@@ -99,10 +86,8 @@ func TestInit_ForceOverwrites(t *testing.T) {
 
 	syncCfgPath := filepath.Join(configDir, "sync-config.yaml")
 	profPath := filepath.Join(configDir, "profiles", "default.yaml")
-	regPath := filepath.Join(configDir, "registry.yaml")
 	writeFile(t, syncCfgPath, []byte("old sync\n"))
 	writeFile(t, profPath, []byte("old prof\n"))
-	writeFile(t, regPath, []byte("old reg\n"))
 
 	_, stderr, code := runApp(t, "init", "--config-dir", configDir, "--force")
 	if code != cmdutil.ExitOK {
@@ -124,14 +109,6 @@ func TestInit_ForceOverwrites(t *testing.T) {
 	}
 	if string(gotProf) != string(config.InitProfileBytes) {
 		t.Fatalf("profile contents mismatch\n--- got\n%s\n--- want\n%s", string(gotProf), string(config.InitProfileBytes))
-	}
-
-	gotReg, err := os.ReadFile(regPath)
-	if err != nil {
-		t.Fatalf("read registry: %v", err)
-	}
-	if string(gotReg) != string(config.InitRegistryBytes) {
-		t.Fatalf("registry contents mismatch\n--- got\n%s\n--- want\n%s", string(gotReg), string(config.InitRegistryBytes))
 	}
 }
 

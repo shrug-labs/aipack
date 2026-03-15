@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
@@ -44,6 +45,11 @@ type Harness interface {
 
 	// Capture extracts harness-native content for round-trip save.
 	Capture(ctx CaptureContext) (CaptureResult, error)
+
+	// CleanActions returns operations to reset this harness's managed state.
+	// Each harness owns the knowledge of what paths to remove and what config
+	// keys to clear — app/clean.go only handles I/O mechanics.
+	CleanActions(scope domain.Scope, baseDir, home string) []CleanAction
 }
 
 // RenderContext provides typed data for pack rendering.
@@ -66,6 +72,7 @@ type CaptureResult struct {
 
 	MCPServers   map[string]domain.MCPServer
 	AllowedTools map[string][]string
+	MCP          []domain.CapturedMCP
 
 	// Typed content populated during capture.
 	Rules     []domain.Rule
@@ -83,6 +90,51 @@ func NewCaptureResult() CaptureResult {
 		MCPServers:   map[string]domain.MCPServer{},
 		AllowedTools: map[string][]string{},
 	}
+}
+
+// MaterializeCapturedMCP builds per-server MCP records from the captured maps
+// using the given harness config path.
+func (r *CaptureResult) MaterializeCapturedMCP(harnessPath string) {
+	if harnessPath == "" {
+		return
+	}
+	names := make([]string, 0, len(r.MCPServers))
+	for name := range r.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	r.MCP = r.MCP[:0]
+	for _, name := range names {
+		server := r.MCPServers[name]
+		r.MCP = append(r.MCP, domain.CapturedMCP{
+			Server:       server,
+			HarnessPath:  filepath.Clean(harnessPath),
+			AllowedTools: append([]string{}, r.AllowedTools[name]...),
+		})
+	}
+}
+
+// PlannedMCPServers projects rendered/captured MCP servers back onto the
+// resolved profile metadata needed for sync tracking.
+func PlannedMCPServers(source []domain.MCPServer, captured map[string]domain.MCPServer) []domain.MCPServer {
+	sourceByName := make(map[string]domain.MCPServer, len(source))
+	for _, server := range source {
+		sourceByName[server.Name] = server
+	}
+	names := make([]string, 0, len(captured))
+	for name := range captured {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]domain.MCPServer, 0, len(names))
+	for _, name := range names {
+		server := captured[name]
+		if src, ok := sourceByName[name]; ok {
+			server.SourcePack = src.SourcePack
+		}
+		out = append(out, server)
+	}
+	return out
 }
 
 // CaptureSkills scans skillsDir for sub-directories and returns CopyActions
@@ -172,6 +224,7 @@ func MergeCaptureResults(results ...CaptureResult) (CaptureResult, error) {
 	for _, res := range results {
 		merged.Copies = append(merged.Copies, res.Copies...)
 		merged.Writes = append(merged.Writes, res.Writes...)
+		merged.MCP = append(merged.MCP, res.MCP...)
 		merged.Rules = append(merged.Rules, res.Rules...)
 		merged.Agents = append(merged.Agents, res.Agents...)
 		merged.Workflows = append(merged.Workflows, res.Workflows...)
@@ -265,4 +318,87 @@ func stringMapEqual(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// Shared types for plan and capture deduplication
+// ---------------------------------------------------------------------------
+
+// ContentDirs describes directory paths for standard content types.
+// Used as source paths in CaptureContent and destination paths in PlanStandardContent.
+type ContentDirs struct {
+	Rules     string
+	Agents    string
+	Workflows string
+	Skills    string
+}
+
+// PlanStandardContent populates a Fragment with standard content writes.
+// If transformAgent is non-nil, each agent is transformed before writing
+// (the callback should return the agent with Raw set to transformed bytes).
+func PlanStandardContent(
+	f *domain.Fragment,
+	p domain.Profile,
+	dirs ContentDirs,
+	transformAgent func(domain.Agent) (domain.Agent, error),
+) error {
+	f.AddRuleWrites(dirs.Rules, "", p.AllRules())
+
+	agents := p.AllAgents()
+	if transformAgent != nil {
+		out := make([]domain.Agent, 0, len(agents))
+		for _, a := range agents {
+			transformed, err := transformAgent(a)
+			if err != nil {
+				return err
+			}
+			out = append(out, transformed)
+		}
+		agents = out
+	}
+	f.AddAgentWrites(dirs.Agents, "", agents)
+
+	f.AddWorkflowWrites(dirs.Workflows, "", p.AllWorkflows())
+	f.AddSkillCopies(dirs.Skills, "", p.AllSkills())
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Clean support
+// ---------------------------------------------------------------------------
+
+// CleanFormat specifies how a clean action processes a path.
+type CleanFormat int
+
+const (
+	CleanRemove CleanFormat = iota // remove the path entirely
+	CleanJSON                      // parse as JSON, apply Edit, rewrite
+	CleanTOML                      // parse as TOML, apply Edit, rewrite
+)
+
+// CleanAction describes a single clean operation for a harness.
+type CleanAction struct {
+	Path   string
+	Format CleanFormat
+	Edit   func(root map[string]any) // non-nil for CleanJSON/CleanTOML
+}
+
+// ---------------------------------------------------------------------------
+// Path ownership
+// ---------------------------------------------------------------------------
+
+// IdentifyHarness returns the harness that manages the given path, using
+// each harness's ManagedRoots for prefix matching. Returns "" if no harness
+// claims the path.
+func IdentifyHarness(reg *Registry, scope domain.Scope, baseDir, home, path string) domain.Harness {
+	cleanPath := filepath.Clean(path)
+	for _, h := range reg.All() {
+		for _, root := range h.ManagedRoots(scope, baseDir, home) {
+			cleanRoot := filepath.Clean(root)
+			if cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator)) {
+				return h.ID()
+			}
+		}
+	}
+	return ""
 }

@@ -13,7 +13,7 @@ func TestMergeSettingsKeys_JSON_AddKeys(t *testing.T) {
 	prev := []byte(`{}`)
 	next := []byte(`{"managed_key": "managed_val"}`)
 
-	result, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +28,7 @@ func TestMergeSettingsKeys_JSON_AddKeys(t *testing.T) {
 	if m["managed_key"] != "managed_val" {
 		t.Errorf("managed_key not added: %v", m)
 	}
+	assertOp(t, ops, "managed_key", MergeAdd)
 }
 
 func TestMergeSettingsKeys_JSON_RemoveKeys(t *testing.T) {
@@ -36,7 +37,7 @@ func TestMergeSettingsKeys_JSON_RemoveKeys(t *testing.T) {
 	prev := []byte(`{"managed_key": "old_val"}`)
 	next := []byte(`{}`)
 
-	result, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +52,7 @@ func TestMergeSettingsKeys_JSON_RemoveKeys(t *testing.T) {
 	if m["user_key"] != "user_val" {
 		t.Errorf("user_key should be preserved: %v", m)
 	}
+	assertOp(t, ops, "managed_key", MergeRemove)
 }
 
 func TestMergeSettingsKeys_JSON_NestedMerge(t *testing.T) {
@@ -59,7 +61,7 @@ func TestMergeSettingsKeys_JSON_NestedMerge(t *testing.T) {
 	prev := []byte(`{"outer": {"managed_nested": "old"}}`)
 	next := []byte(`{"outer": {"managed_nested": "new"}}`)
 
-	result, err := mergeSettingsKeys(existing, prev, next, domain.HarnessOpenCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessOpenCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +77,7 @@ func TestMergeSettingsKeys_JSON_NestedMerge(t *testing.T) {
 	if outer["managed_nested"] != "new" {
 		t.Errorf("managed_nested not updated")
 	}
+	assertOp(t, ops, "outer.managed_nested", MergeUpdate)
 }
 
 func TestMergeSettingsKeys_JSON_ArrayMerge(t *testing.T) {
@@ -83,7 +86,7 @@ func TestMergeSettingsKeys_JSON_ArrayMerge(t *testing.T) {
 	prev := []byte(`{"items": ["old_managed"]}`)
 	next := []byte(`{"items": ["new_managed"]}`)
 
-	result, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +110,7 @@ func TestMergeSettingsKeys_JSON_ArrayMerge(t *testing.T) {
 	if !found["new_managed"] {
 		t.Error("new_managed should be added")
 	}
+	assertOp(t, ops, "items", MergeUpdate)
 }
 
 func TestMergeSettingsKeys_FirstSync(t *testing.T) {
@@ -115,7 +119,7 @@ func TestMergeSettingsKeys_FirstSync(t *testing.T) {
 	var prev []byte // nil = first sync
 	next := []byte(`{"managed_key": "managed_val"}`)
 
-	result, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +134,7 @@ func TestMergeSettingsKeys_FirstSync(t *testing.T) {
 	if m["managed_key"] != "managed_val" {
 		t.Error("managed_key should be added on first sync")
 	}
+	assertOp(t, ops, "managed_key", MergeAdd)
 }
 
 func TestMergeSettingsKeys_TOML(t *testing.T) {
@@ -138,19 +143,46 @@ func TestMergeSettingsKeys_TOML(t *testing.T) {
 	prev := []byte("")
 	next := []byte("managed_key = \"managed_val\"\n")
 
-	result, err := mergeSettingsKeys(existing, prev, next, domain.HarnessCodex)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessCodex)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result) == 0 {
 		t.Error("result should be non-empty")
 	}
+	assertOp(t, ops, "managed_key", MergeAdd)
 }
 
 func TestMergeSettingsKeys_UnsupportedHarness(t *testing.T) {
 	t.Parallel()
-	_, err := mergeSettingsKeys(nil, nil, nil, "unknown")
+	_, _, err := mergeSettingsKeys(nil, nil, nil, "unknown")
 	if err == nil {
 		t.Error("expected error for unknown harness")
 	}
+}
+
+func TestMergeSettingsKeys_NoOpsWhenIdentical(t *testing.T) {
+	t.Parallel()
+	existing := []byte(`{"managed_key": "val"}`)
+	prev := []byte(`{"managed_key": "val"}`)
+	next := []byte(`{"managed_key": "val"}`)
+
+	_, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 0 {
+		t.Errorf("expected no ops for identical merge, got %d: %v", len(ops), ops)
+	}
+}
+
+// assertOp checks that ops contains a MergeOp with the given key and action.
+func assertOp(t *testing.T, ops []MergeOp, key string, action MergeAction) {
+	t.Helper()
+	for _, op := range ops {
+		if op.Key == key && op.Action == action {
+			return
+		}
+	}
+	t.Errorf("expected merge op {Key: %q, Action: %q} not found in %v", key, action, ops)
 }

@@ -5,7 +5,8 @@ import "strings"
 // HasFrontmatterPrefix reports whether raw bytes begin with a YAML frontmatter
 // marker. Unlike SplitFrontmatter, it does not require a closing delimiter.
 func HasFrontmatterPrefix(b []byte) bool {
-	return strings.HasPrefix(string(b), "---")
+	s := string(b)
+	return strings.HasPrefix(s, "---\n") || strings.HasPrefix(s, "---\r\n")
 }
 
 // SplitFrontmatter splits a markdown file into YAML frontmatter and body.

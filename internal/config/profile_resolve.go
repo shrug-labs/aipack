@@ -220,16 +220,11 @@ func validateOverrides(packName string, label string, overrides map[string]struc
 	return nil
 }
 
-func defaultTrue(v *bool) bool {
-	if v == nil {
-		return true
-	}
-	return *v
-}
+// defaultTrue delegates to PackEnabled for nil-defaults-to-true semantics.
+var defaultTrue = PackEnabled
 
-func settingsEnabled(v *bool) bool {
-	return v != nil && *v
-}
+// settingsEnabled delegates to SettingsEnabled for nil-defaults-to-false semantics.
+var settingsEnabled = SettingsEnabled
 
 func resolveVector(packName string, label string, inventory []string, sel VectorSelector) ([]string, error) {
 	if sel.Include != nil && sel.Exclude != nil {

@@ -13,8 +13,8 @@ import (
 func TestSyncTargetInfo_TotalChanges(t *testing.T) {
 	t.Parallel()
 	target := syncTargetInfo{PlanSummary: app.PlanSummary{
-		NumWrites:   5,
-		NumCopies:   3,
+		NumRules:    5,
+		NumSkills:   3,
 		NumSettings: 2,
 	}}
 	if got := target.TotalChanges(); got != 10 {
@@ -109,8 +109,8 @@ func TestSyncTab_ScopeToggle(t *testing.T) {
 	m.width = 120
 	m.height = 40
 
-	// Move to scope field (last field).
-	m.cursor = m.fieldCount() - 1
+	// Move to scope field.
+	m.cursor = 1 + len(m.allHarnesses)
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
 	if cmd == nil {
@@ -139,6 +139,82 @@ func TestSyncTab_ScopeToggle_EndToEnd(t *testing.T) {
 	rm = result.(rootModel)
 	if rm.cfg.SyncCfg.Defaults.Scope != "project" {
 		t.Fatalf("expected scope=project, got %q", rm.cfg.SyncCfg.Defaults.Scope)
+	}
+}
+
+func TestSyncTab_PruneToggle(t *testing.T) {
+	t.Parallel()
+	m := newSyncTabModel("")
+	m.width = 120
+	m.height = 40
+
+	if m.prune {
+		t.Fatal("expected prune=false by default")
+	}
+
+	// Move to prune field and toggle on.
+	m.cursor = m.fieldCount() - 1
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if cmd != nil {
+		t.Fatal("expected prune toggle to be handled locally")
+	}
+	if !m.prune {
+		t.Fatal("expected prune=true after first toggle")
+	}
+
+	// Toggle off.
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if cmd != nil {
+		t.Fatal("expected prune toggle to be handled locally")
+	}
+	if m.prune {
+		t.Fatal("expected prune=false after second toggle")
+	}
+}
+
+func TestSyncTab_PKeyDoesNotTogglePrune(t *testing.T) {
+	t.Parallel()
+	m := newSyncTabModel("")
+	m.width = 120
+	m.height = 40
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if m.prune {
+		t.Fatal("expected prune to ignore the p shortcut")
+	}
+}
+
+func TestSyncTab_ViewShowsPrune(t *testing.T) {
+	t.Parallel()
+	m := newSyncTabModel("")
+	m.width = 120
+	m.height = 40
+
+	view := m.View()
+	if !strings.Contains(view, "Prune:     off") {
+		t.Fatalf("expected 'Prune:     off' when prune is false, got:\n%s", view)
+	}
+
+	m.prune = true
+	view = m.View()
+	if !strings.Contains(view, "Prune:     on") {
+		t.Fatalf("expected 'Prune:     on' when prune is true, got:\n%s", view)
+	}
+}
+
+func TestSyncTab_ViewHighlightsPruneAndAlignsHarnessesLabel(t *testing.T) {
+	t.Parallel()
+	m := newSyncTabModel("/tmp/config")
+	m.width = 120
+	m.height = 40
+	m.cursor = m.fieldCount() - 1
+
+	view := m.View()
+	if !strings.Contains(view, "> Prune:     off") {
+		t.Fatalf("expected prune field to be cursor-selectable, got:\n%s", view)
+	}
+	if !strings.Contains(view, "  Harnesses:") {
+		t.Fatalf("expected harnesses label to align with other fields, got:\n%s", view)
 	}
 }
 
@@ -173,14 +249,16 @@ func TestSyncTab_ViewShowsStatus(t *testing.T) {
 		syncState: syncSynced,
 		syncTarget: syncTargetInfo{
 			PlanSummary: app.PlanSummary{
-				NumWrites:   2,
-				NumCopies:   1,
+				NumRules:    2,
+				NumSkills:   1,
 				LedgerPath:  "/tmp/.aipack/ledger.json",
 				LedgerFiles: 42,
+				HarnessLedgers: []app.HarnessLedgerInfo{
+					{Harness: "cline", Path: "/tmp/.aipack/ledger/cline.json", Files: 42, UpdatedAt: 1740787815},
+				},
 			},
-			harnesses:  []string{"cline"},
-			scope:      "project",
-			ledgerTime: 1740787815,
+			harnesses: []string{"cline"},
+			scope:     "project",
 		},
 	}
 	m.width = 120
@@ -190,20 +268,23 @@ func TestSyncTab_ViewShowsStatus(t *testing.T) {
 	if !strings.Contains(view, "up to date") {
 		t.Fatalf("expected 'up to date' status, got:\n%s", view)
 	}
-	if !strings.Contains(view, "Writes:    2") {
-		t.Fatalf("expected 'Writes:    2', got:\n%s", view)
+	if !strings.Contains(view, "Rules:     2") {
+		t.Fatalf("expected 'Rules:     2', got:\n%s", view)
 	}
-	if !strings.Contains(view, "Copies:    1") {
-		t.Fatalf("expected 'Copies:    1', got:\n%s", view)
+	if !strings.Contains(view, "Skills:    1") {
+		t.Fatalf("expected 'Skills:    1', got:\n%s", view)
 	}
 	if !strings.Contains(view, "Total:     3") {
 		t.Fatalf("expected 'Total:     3', got:\n%s", view)
 	}
-	if !strings.Contains(view, "42 managed") {
-		t.Fatalf("expected '42 managed', got:\n%s", view)
+	if !strings.Contains(view, "42 files") {
+		t.Fatalf("expected '42 files', got:\n%s", view)
 	}
-	if !strings.Contains(view, "Ledger:") {
-		t.Fatalf("expected 'Ledger:' section, got:\n%s", view)
+	if !strings.Contains(view, "Ledgers:") {
+		t.Fatalf("expected 'Ledgers:' section, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Last sync:") {
+		t.Fatalf("expected 'Last sync:' line, got:\n%s", view)
 	}
 }
 

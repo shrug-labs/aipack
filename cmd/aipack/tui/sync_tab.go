@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
@@ -15,7 +16,8 @@ import (
 type syncTabModel struct {
 	syncCfg   config.SyncConfig // read-only snapshot, set by rootModel before Update/View
 	configDir string
-	cursor    int // index into flat field list
+	cursor    int  // index into flat field list
+	prune     bool // session-only toggle: delete stale managed files on sync
 
 	// Active profile state — populated by rootModel before View/Update.
 	activeSync syncTabSnapshot
@@ -39,9 +41,9 @@ func (m syncTabModel) Init() tea.Cmd {
 }
 
 // fieldCount returns the total number of navigable fields:
-// 1 (profile) + len(allHarnesses) + 1 (scope).
+// 1 (profile) + len(allHarnesses) + 1 (scope) + 1 (prune).
 func (m syncTabModel) fieldCount() int {
-	return 1 + len(m.allHarnesses) + 1
+	return 1 + len(m.allHarnesses) + 2
 }
 
 func (m syncTabModel) Update(msg tea.Msg) (syncTabModel, tea.Cmd) {
@@ -103,33 +105,22 @@ func (m syncTabModel) editField() (syncTabModel, tea.Cmd) {
 		return m, func() tea.Msg { return syncCycleScopeMsg{} }
 	}
 
+	if m.cursor == harnessEnd+1 {
+		m.prune = !m.prune
+		return m, nil
+	}
+
 	return m, nil
 }
 
-// toggleHarness returns a new SyncConfig with the named harness toggled on or off.
-// Builds a new slice to avoid mutating the caller's backing array.
+// toggleHarness delegates to app.ToggleSyncHarness.
 func toggleHarness(cfg config.SyncConfig, name string) config.SyncConfig {
-	for i, h := range cfg.Defaults.Harnesses {
-		if h == name {
-			out := make([]string, 0, len(cfg.Defaults.Harnesses)-1)
-			out = append(out, cfg.Defaults.Harnesses[:i]...)
-			out = append(out, cfg.Defaults.Harnesses[i+1:]...)
-			cfg.Defaults.Harnesses = out
-			return cfg
-		}
-	}
-	cfg.Defaults.Harnesses = append(cfg.Defaults.Harnesses, name)
-	return cfg
+	return app.ToggleSyncHarness(cfg, name)
 }
 
-// cycleScope returns a new SyncConfig with the scope toggled between project and global.
+// cycleScope delegates to app.CycleSyncScope.
 func cycleScope(cfg config.SyncConfig) config.SyncConfig {
-	if cfg.Defaults.Scope == string(domain.ScopeGlobal) {
-		cfg.Defaults.Scope = string(domain.ScopeProject)
-	} else {
-		cfg.Defaults.Scope = string(domain.ScopeGlobal)
-	}
-	return cfg
+	return app.CycleSyncScope(cfg)
 }
 
 func (m syncTabModel) harnessEnabled(name string) bool {
@@ -177,7 +168,7 @@ func (m syncTabModel) viewConfigPanel(width int) string {
 	cursor++
 
 	// Harness checkboxes.
-	sb.WriteString("Harnesses:\n")
+	sb.WriteString("  Harnesses:\n")
 	for _, h := range m.allHarnesses {
 		indicator = "  "
 		if m.cursor == cursor {
@@ -202,10 +193,19 @@ func (m syncTabModel) viewConfigPanel(width int) string {
 	}
 	sb.WriteString(fmt.Sprintf("%sScope:     %s\n", indicator, scope))
 
-	// Static config info.
-	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("Config:") + "\n")
-	sb.WriteString(fmt.Sprintf("  Config dir: %s\n", dimStyle.Render(shortPath(m.configDir))))
+	// Prune indicator (session toggle, not a navigable field).
+	pruneLabel := "off"
+	if m.prune {
+		pruneLabel = "on"
+	}
+	cursor++
+	indicator = "  "
+	if m.cursor == cursor {
+		indicator = selectedStyle.Render("> ")
+	}
+	sb.WriteString(fmt.Sprintf("%sPrune:     %s\n", indicator, pruneLabel))
+
+	sb.WriteString(fmt.Sprintf("  Config:    %s\n", dimStyle.Render(shortPath(m.configDir))))
 
 	return style.Render(sb.String())
 }
@@ -240,45 +240,38 @@ func (m syncTabModel) viewStatusPanel(width int) string {
 		sb.WriteString(errorStyle.Render(fmt.Sprintf("  %s", snap.syncErrText)) + "\n")
 	}
 
-	// Target info.
-	if len(snap.syncTarget.harnesses) > 0 || snap.syncTarget.scope != "" {
-		sb.WriteString("\n")
-		sb.WriteString("Target:\n")
-		if len(snap.syncTarget.harnesses) > 0 {
-			sb.WriteString(fmt.Sprintf("  Harness: %s\n", strings.Join(snap.syncTarget.harnesses, ", ")))
-		}
-		if snap.syncTarget.scope != "" {
-			sb.WriteString(fmt.Sprintf("  Scope:   %s\n", snap.syncTarget.scope))
-		}
-		if snap.syncTarget.projectDir != "" {
-			sb.WriteString(fmt.Sprintf("  Dir:     %s\n", shortPath(snap.syncTarget.projectDir)))
-		}
-	}
-
 	// Pending changes breakdown.
 	if snap.syncState == syncUnsynced || snap.syncState == syncSynced {
 		sb.WriteString("\n")
 		sb.WriteString("Pending Changes:\n")
-		sb.WriteString(fmt.Sprintf("  Writes:    %d\n", snap.syncTarget.NumWrites))
-		sb.WriteString(fmt.Sprintf("  Copies:    %d\n", snap.syncTarget.NumCopies))
+		sb.WriteString(fmt.Sprintf("  Rules:     %d\n", snap.syncTarget.NumRules))
+		sb.WriteString(fmt.Sprintf("  Workflows: %d\n", snap.syncTarget.NumWorkflows))
+		sb.WriteString(fmt.Sprintf("  Agents:    %d\n", snap.syncTarget.NumAgents))
+		sb.WriteString(fmt.Sprintf("  Skills:    %d\n", snap.syncTarget.NumSkills))
 		sb.WriteString(fmt.Sprintf("  Settings:  %d\n", snap.syncTarget.NumSettings))
-		sb.WriteString(fmt.Sprintf("  Plugins:   %d\n", snap.syncTarget.NumPlugins))
+		sb.WriteString(fmt.Sprintf("  MCP:       %d\n", snap.syncTarget.NumMCP))
 		sb.WriteString(fmt.Sprintf("  Prunes:    %d\n", snap.syncTarget.NumPrunes))
 		sb.WriteString(fmt.Sprintf("  Total:     %d\n", snap.syncTarget.TotalChanges()))
 	}
 
-	// Ledger info.
-	if snap.syncTarget.LedgerPath != "" || snap.syncTarget.LedgerFiles > 0 {
+	// Per-harness ledger info.
+	if len(snap.syncTarget.HarnessLedgers) > 0 {
 		sb.WriteString("\n")
-		sb.WriteString("Ledger:\n")
-		if snap.syncTarget.LedgerPath != "" {
-			sb.WriteString(fmt.Sprintf("  Path:    %s\n", shortPath(snap.syncTarget.LedgerPath)))
+		sb.WriteString("Ledgers:\n")
+		for _, hl := range snap.syncTarget.HarnessLedgers {
+			line := fmt.Sprintf("  %-12s %d files", hl.Harness, hl.Files)
+			if hl.UpdatedAt > 0 {
+				line += dimStyle.Render("  " + formatSyncAge(hl.UpdatedAt))
+			}
+			sb.WriteString(line + "\n")
 		}
-		sb.WriteString(fmt.Sprintf("  Files:   %d managed\n", snap.syncTarget.LedgerFiles))
-		if snap.syncTarget.ledgerTime > 0 {
-			t := time.Unix(snap.syncTarget.ledgerTime, 0)
-			sb.WriteString(fmt.Sprintf("  Updated: %s\n", t.Format("2006-01-02 15:04:05")))
-		}
+	}
+
+	// Last sync timestamp — use the most recent harness ledger.
+	if latest := latestLedgerTime(snap.syncTarget.HarnessLedgers); latest > 0 {
+		sb.WriteString("\n")
+		t := time.Unix(latest, 0)
+		sb.WriteString(fmt.Sprintf("Last sync: %s\n", dimStyle.Render(t.Format("2006-01-02 15:04:05"))))
 	}
 
 	// Warnings.
@@ -291,4 +284,30 @@ func (m syncTabModel) viewStatusPanel(width int) string {
 	}
 
 	return style.Render(sb.String())
+}
+
+// latestLedgerTime returns the most recent UpdatedAt across all harness ledgers.
+func latestLedgerTime(ledgers []app.HarnessLedgerInfo) int64 {
+	var latest int64
+	for _, hl := range ledgers {
+		if hl.UpdatedAt > latest {
+			latest = hl.UpdatedAt
+		}
+	}
+	return latest
+}
+
+// formatSyncAge returns a human-friendly relative time like "2m ago" or "3d ago".
+func formatSyncAge(epochS int64) string {
+	d := time.Since(time.Unix(epochS, 0))
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }

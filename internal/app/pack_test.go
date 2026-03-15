@@ -145,6 +145,53 @@ func TestPackAdd_Copy(t *testing.T) {
 	}
 }
 
+func TestPackAdd_InPlace(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSeedProfile(t, configDir, "default")
+
+	// Place pack directly inside packs dir — the dangerous case.
+	packDir := filepath.Join(configDir, "packs", "resident-pack")
+	writePackManifest(t, packDir, "resident-pack")
+	os.MkdirAll(filepath.Join(packDir, "rules"), 0o700)
+	os.WriteFile(filepath.Join(packDir, "rules", "keep-me.md"), []byte("# Alive\n"), 0o600)
+
+	var out bytes.Buffer
+	err := PackAdd(PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		Register:  true,
+		Profile:   "default",
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	// Content must survive.
+	got, err := os.ReadFile(filepath.Join(packDir, "rules", "keep-me.md"))
+	if err != nil {
+		t.Fatalf("pack content destroyed: %v", err)
+	}
+	if string(got) != "# Alive\n" {
+		t.Fatalf("content = %q", got)
+	}
+
+	// Origin recorded as local.
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if err != nil {
+		t.Fatalf("load sync-config: %v", err)
+	}
+	if meta := sc.InstalledPacks["resident-pack"]; meta.Method != config.MethodLocal {
+		t.Fatalf("method = %q, want %q", meta.Method, config.MethodLocal)
+	}
+
+	if !strings.Contains(out.String(), "registering in-place") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
 func TestPackAdd_NoRegister(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
@@ -1289,173 +1336,6 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 	}
 }
 
-// writePackRegistry writes a registry.yaml into a pack directory.
-func writePackRegistry(t *testing.T, packDir string, packs map[string]config.RegistryEntry) {
-	t.Helper()
-	reg := config.Registry{
-		SchemaVersion: 1,
-		Packs:         packs,
-	}
-	b, err := yaml.Marshal(&reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packDir, "registry.yaml"), b, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPackUpdate_Copy_MergesPackRegistry(t *testing.T) {
-	t.Parallel()
-	packDir := t.TempDir()
-	configDir := t.TempDir()
-	writePackManifest(t, packDir, "test-pack")
-	writeSeedSyncConfig(t, configDir)
-
-	// Bundle a registry.yaml with the pack.
-	writePackRegistry(t, packDir, map[string]config.RegistryEntry{
-		"extra-pack": {Repo: "https://github.com/example/extra-pack", Description: "An extra pack"},
-	})
-
-	// Install the pack (copy mode).
-	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
-		PackPath:  packDir,
-		ConfigDir: configDir,
-		Link:      false,
-		Register:  false,
-		NowFn:     func() time.Time { return fixedNow },
-	}, &out)
-	if err != nil {
-		t.Fatalf("PackAdd: %v", err)
-	}
-
-	// Verify registry was seeded on initial add.
-	regPath := filepath.Join(configDir, "registry.yaml")
-	reg, err := config.LoadRegistry(regPath)
-	if err != nil {
-		t.Fatalf("LoadRegistry after add: %v", err)
-	}
-	if _, ok := reg.Packs["extra-pack"]; !ok {
-		t.Fatal("expected extra-pack in registry after add")
-	}
-
-	// Now add a new entry to the source pack's registry.yaml (simulating
-	// an upstream pack update that adds a new registry entry).
-	writePackRegistry(t, packDir, map[string]config.RegistryEntry{
-		"extra-pack":  {Repo: "https://github.com/example/extra-pack", Description: "An extra pack"},
-		"second-pack": {Repo: "https://github.com/example/second-pack", Description: "A second pack"},
-	})
-
-	// Run PackUpdate — this should re-copy and re-merge the registry.
-	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
-		ConfigDir: configDir,
-		Name:      "test-pack",
-		NowFn:     func() time.Time { return fixedNow },
-	}, &out)
-	if err != nil {
-		t.Fatalf("PackUpdate: %v", err)
-	}
-	if len(results) != 1 || results[0].Status != "updated" {
-		t.Fatalf("expected 1 updated result, got %+v", results)
-	}
-
-	// Verify the new registry entry was merged.
-	reg, err = config.LoadRegistry(regPath)
-	if err != nil {
-		t.Fatalf("LoadRegistry after update: %v", err)
-	}
-	if _, ok := reg.Packs["extra-pack"]; !ok {
-		t.Fatal("expected extra-pack to still be in registry after update")
-	}
-	if _, ok := reg.Packs["second-pack"]; !ok {
-		t.Fatal("expected second-pack to be merged into registry after update")
-	}
-}
-
-func TestPackUpdate_Clone_MergesPackRegistry(t *testing.T) {
-	t.Parallel()
-	configDir := t.TempDir()
-	writeSeedSyncConfig(t, configDir)
-
-	// Custom git fn that writes both pack.json and registry.yaml.
-	fakeGit := func(args ...string) error {
-		if len(args) >= 4 && args[0] == "clone" {
-			dir := args[len(args)-1]
-			writePackManifest(t, dir, "my-pack")
-			writePackRegistry(t, dir, map[string]config.RegistryEntry{
-				"bundled-pack": {Repo: "https://github.com/example/bundled-pack", Description: "Bundled"},
-			})
-		}
-		return nil
-	}
-
-	// Install via URL (clone) with --seed to enable registry seeding.
-	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
-		URL:       "https://github.com/example/my-pack",
-		ConfigDir: configDir,
-		Register:  false,
-		Seed:      true,
-		RunGitFn:  fakeGit,
-		URLOKFn:   func(string) (bool, error) { return true, nil },
-		NowFn:     func() time.Time { return fixedNow },
-	}, &out)
-	if err != nil {
-		t.Fatalf("PackAdd URL: %v", err)
-	}
-
-	// Verify initial registry seed.
-	regPath := filepath.Join(configDir, "registry.yaml")
-	reg, err := config.LoadRegistry(regPath)
-	if err != nil {
-		t.Fatalf("LoadRegistry after add: reading registry: %v", err)
-	}
-	if _, ok := reg.Packs["bundled-pack"]; !ok {
-		t.Fatal("expected bundled-pack in registry after add")
-	}
-
-	// Update git fn adds a new registry entry.
-	updateGit := func(args ...string) error {
-		// On pull, update the pack dir's registry.yaml with a new entry.
-		if len(args) >= 3 && args[2] == "pull" {
-			packDir := filepath.Join(configDir, "packs", "my-pack")
-			writePackRegistry(t, packDir, map[string]config.RegistryEntry{
-				"bundled-pack": {Repo: "https://github.com/example/bundled-pack", Description: "Bundled"},
-				"new-pack":     {Repo: "https://github.com/example/new-pack", Description: "New"},
-			})
-		}
-		return nil
-	}
-
-	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
-		ConfigDir: configDir,
-		Name:      "my-pack",
-		RunGitFn:  updateGit,
-		NowFn:     func() time.Time { return fixedNow },
-	}, &out)
-	if err != nil {
-		t.Fatalf("PackUpdate: %v", err)
-	}
-	if len(results) != 1 || results[0].Status != "updated" {
-		t.Fatalf("expected 1 updated result, got %+v", results)
-	}
-
-	// Verify the new entry was merged.
-	reg, err = config.LoadRegistry(regPath)
-	if err != nil {
-		t.Fatalf("LoadRegistry after update: %v", err)
-	}
-	if _, ok := reg.Packs["bundled-pack"]; !ok {
-		t.Fatal("expected bundled-pack to still be in registry after update")
-	}
-	if _, ok := reg.Packs["new-pack"]; !ok {
-		t.Fatal("expected new-pack to be merged into registry after update")
-	}
-}
-
 // --- Commit hash tracking tests ---
 
 const fakeHash1 = "aabbccdd1122334455667788"
@@ -1731,7 +1611,21 @@ func writeTestRegistry(t *testing.T, configDir string, packs map[string]config.R
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "registry.yaml"), b, 0o600); err != nil {
+	// Write as a cached registry source.
+	cacheDir := config.RegistriesCacheDir(configDir)
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.SourceCachePath(configDir, "test-source"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Register the source in sync-config so LoadMergedRegistry finds it.
+	sc, _ := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	sc.SchemaVersion = 1
+	sc.RegistrySources = append(sc.RegistrySources, config.RegistrySourceEntry{
+		Name: "test-source", URL: "https://example.com/test-registry.yaml",
+	})
+	if err := config.SaveSyncConfig(config.SyncConfigPath(configDir), sc); err != nil {
 		t.Fatal(err)
 	}
 }

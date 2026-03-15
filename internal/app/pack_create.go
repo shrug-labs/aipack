@@ -1,12 +1,11 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/shrug-labs/aipack/internal/util"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 // PackCreateRequest describes a pack scaffolding request.
@@ -42,6 +41,7 @@ func PackCreate(req PackCreateRequest) error {
 		filepath.Join(dir, "prompts"),
 		filepath.Join(dir, "mcp"),
 		filepath.Join(dir, "configs"),
+		filepath.Join(dir, "profiles"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -56,26 +56,33 @@ func PackCreate(req PackCreateRequest) error {
 		}
 	}
 
-	manifest := map[string]any{
-		"schema_version": 1,
-		"name":           name,
-		"version":        "0.1.0",
-		"root":           ".",
-		"rules":          []any{},
-		"agents":         []any{},
-		"workflows":      []any{},
-		"skills":         []any{},
-		"prompts":        []any{},
-		"mcp":            map[string]any{"servers": map[string]any{}},
-		"configs":        map[string]any{"harness_settings": map[string]any{}},
+	// Write a seed profile that references this pack by name.
+	profileRel := filepath.Join("profiles", name+".yaml")
+	profilePath := filepath.Join(dir, profileRel)
+	profileContent := []byte("schema_version: 2\npacks:\n  - name: " + name + "\n")
+	if err := os.WriteFile(profilePath, profileContent, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", profilePath, err)
 	}
 
-	b, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal pack manifest: %w", err)
+	// Write a seed registry so authors can list related packs for discovery.
+	registryRel := "registry.yaml"
+	registryPath := filepath.Join(dir, registryRel)
+	registryContent := []byte("schema_version: 1\npacks: {}\n")
+	if err := os.WriteFile(registryPath, registryContent, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", registryPath, err)
 	}
-	b = append(b, '\n')
-	if err := util.WriteFileAtomicWithPerms(manifestPath, b, 0o755, 0o644); err != nil {
+
+	// Content vector fields are intentionally nil so that DiscoverContent
+	// auto-discovers them from the directory structure at sync time.
+	manifest := config.PackManifest{
+		SchemaVersion: 1,
+		Name:          name,
+		Version:       "0.1.0",
+		Root:          ".",
+		Profiles:      []string{profileRel},
+		Registries:    []string{registryRel},
+	}
+	if err := config.SavePackManifest(manifestPath, manifest); err != nil {
 		return fmt.Errorf("write %s: %w", manifestPath, err)
 	}
 	return nil

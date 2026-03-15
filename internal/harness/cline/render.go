@@ -20,7 +20,7 @@ type clineMCPServer struct {
 }
 
 // RenderBytes produces the cline_mcp_settings.json content from typed MCPServers.
-func RenderBytes(base []byte, servers []domain.MCPServer, resolveEnv bool) ([]byte, []domain.Warning, error) {
+func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
 		if err := json.Unmarshal(base, &root); err != nil {
@@ -28,8 +28,7 @@ func RenderBytes(base []byte, servers []domain.MCPServer, resolveEnv bool) ([]by
 		}
 	}
 
-	format := engine.EnvRefFormatBrace
-	expanded, warnings := engine.ExpandMCPForRender(servers, resolveEnv, format)
+	expanded, warnings := engine.ExpandMCPServers(servers)
 
 	mcp := map[string]clineMCPServer{}
 	for _, s := range expanded {

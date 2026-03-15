@@ -24,11 +24,12 @@ type FileDiff struct {
 	OnDisk         []byte          // nil for create
 	Diff           string          // unified diff string (empty for create/identical)
 	ManagedOverlay []byte          // managed-only content for ledger (set by MergeMode settings)
+	MergeOps       []MergeOp       // merge operations performed (nil for non-merge files)
 }
 
 // ClassifyFileKind classifies a file without computing a diff string.
 // Use when only the DiffKind is needed (e.g., non-verbose dry-run).
-func ClassifyFileKind(dst string, desired []byte, sourcePack string, lg domain.Ledger) (domain.DiffKind, error) {
+func ClassifyFileKind(dst string, desired []byte, lg domain.Ledger) (domain.DiffKind, error) {
 	dst = filepath.Clean(dst)
 	onDisk, err := os.ReadFile(dst)
 	if err != nil {
@@ -142,27 +143,39 @@ func ComputeSettingsDiffs(settings []domain.SettingsAction, lg domain.Ledger) ([
 				fileExists = false
 			}
 			desired := s.Desired
+			var mergeOps []MergeOp
 			if fileExists && len(existing) > 0 {
 				prevManaged := lg.PrevManagedOverlay(s.Dst)
-				merged, merr := mergeSettingsKeys(existing, prevManaged, s.Desired, s.Harness)
+				merged, mops, merr := mergeSettingsKeys(existing, prevManaged, s.Desired, s.Harness)
 				if merr != nil {
 					return nil, fmt.Errorf("merge %s: %w", s.Label, merr)
 				}
 				desired = merged
+				mergeOps = mops
 			}
 			var fd FileDiff
 			if !fileExists {
 				fd = FileDiff{Dst: filepath.Clean(s.Dst), Desired: desired, Label: s.Label, SourcePack: s.SourcePack, Kind: domain.DiffCreate}
+			} else if len(mergeOps) == 0 {
+				// No managed keys changed — file is identical from our
+				// perspective. Use on-disk content as desired so the
+				// ledger digest matches reality (avoids false dirty
+				// detection when the harness reformats the file).
+				fd = FileDiff{
+					Dst: filepath.Clean(s.Dst), Desired: existing, Label: s.Label,
+					SourcePack: s.SourcePack, Kind: domain.DiffIdentical, OnDisk: existing,
+				}
 			} else {
 				fd = classifyFilePreRead(s.Dst, desired, s.Label, s.SourcePack, lg, existing)
-			}
-			// MergeMode: the three-way merge already resolved conflicts by
-			// preserving user content. Reclassify as managed (safe to update)
-			// so apply doesn't require --force.
-			if fd.Kind == domain.DiffConflict {
-				fd.Kind = domain.DiffManaged
+				// MergeMode: the three-way merge already resolved conflicts
+				// by preserving user content. Reclassify as managed (safe to
+				// update) so apply doesn't require --force.
+				if fd.Kind == domain.DiffConflict {
+					fd.Kind = domain.DiffManaged
+				}
 			}
 			fd.ManagedOverlay = s.Desired
+			fd.MergeOps = mergeOps
 			out = append(out, fd)
 			continue
 		}

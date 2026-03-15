@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,94 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/domain"
 )
+
+// ---------------------------------------------------------------------------
+// ClassifyFileKind tests
+// ---------------------------------------------------------------------------
+
+func TestClassifyFileKind_Create(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "missing.md")
+	lg := domain.NewLedger()
+
+	kind, err := ClassifyFileKind(dst, []byte("content"), lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != domain.DiffCreate {
+		t.Errorf("Kind = %q, want %q", kind, domain.DiffCreate)
+	}
+}
+
+func TestClassifyFileKind_Identical(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "same.md")
+	content := []byte("hello\n")
+	if err := os.WriteFile(dst, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+
+	kind, err := ClassifyFileKind(dst, content, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != domain.DiffIdentical {
+		t.Errorf("Kind = %q, want %q", kind, domain.DiffIdentical)
+	}
+}
+
+func TestClassifyFileKind_Managed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "managed.md")
+	oldContent := []byte("old\n")
+	newContent := []byte("new\n")
+	if err := os.WriteFile(dst, oldContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(dst, oldContent, "pack1", nil, time.Now())
+
+	kind, err := ClassifyFileKind(dst, newContent, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != domain.DiffManaged {
+		t.Errorf("Kind = %q, want %q", kind, domain.DiffManaged)
+	}
+}
+
+func TestClassifyFileKind_Conflict(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "conflict.md")
+	origContent := []byte("original\n")
+	userModified := []byte("user edited\n")
+	newContent := []byte("new pack content\n")
+	if err := os.WriteFile(dst, origContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(dst, origContent, "pack1", nil, time.Now())
+	if err := os.WriteFile(dst, userModified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	kind, err := ClassifyFileKind(dst, newContent, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != domain.DiffConflict {
+		t.Errorf("Kind = %q, want %q", kind, domain.DiffConflict)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ClassifyFile tests
+// ---------------------------------------------------------------------------
 
 func TestClassifyFile_Create(t *testing.T) {
 	t.Parallel()
@@ -209,6 +298,122 @@ func TestComputeSettingsDiffs_MergeMode_EmptyDesired_NonExistent(t *testing.T) {
 	// Empty desired + non-existent file should be create, not identical.
 	if diffs[0].Kind != domain.DiffCreate {
 		t.Errorf("Kind = %q, want %q", diffs[0].Kind, domain.DiffCreate)
+	}
+}
+
+func TestComputeSettingsDiffs_MergeMode_NoOpsIsIdentical(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "settings.json")
+
+	// On-disk file has keys in a specific order (simulates harness-reformatted file).
+	onDisk := []byte(`{
+  "userState": "active",
+  "mcpServers": {
+    "svc": {
+      "command": "npx",
+      "args": ["svc-mcp"]
+    }
+  },
+  "anotherKey": true
+}
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Managed overlay is just mcpServers — same values as on-disk.
+	managed := []byte(`{
+  "mcpServers": {
+    "svc": {
+      "command": "npx",
+      "args": ["svc-mcp"]
+    }
+  }
+}
+`)
+
+	lg := domain.NewLedger()
+	// Simulate previous sync having recorded this file with the managed overlay.
+	lg.Record(dst, onDisk, "test", managed, time.Now())
+
+	diffs, err := ComputeSettingsDiffs([]domain.SettingsAction{
+		{Dst: dst, Desired: managed, Harness: domain.HarnessClaudeCode, Label: "test", MergeMode: true},
+	}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	if diffs[0].Kind != domain.DiffIdentical {
+		t.Errorf("Kind = %q, want %q — merge should be no-op when managed keys match on-disk", diffs[0].Kind, domain.DiffIdentical)
+	}
+	// Desired should be the on-disk content, not re-sorted.
+	if !bytes.Equal(diffs[0].Desired, onDisk) {
+		t.Error("Desired should be on-disk content when merge is no-op")
+	}
+}
+
+func TestComputeSettingsDiffs_MergeMode_ReformattedFileIsIdentical(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "settings.json")
+
+	// Simulates a harness that rewrote the file after sync (different key order,
+	// new keys added) but managed keys are unchanged.
+	onDisk := []byte(`{
+  "zeta": "added-by-harness",
+  "mcpServers": {
+    "svc": {
+      "command": "npx",
+      "args": ["svc-mcp"]
+    }
+  },
+  "alpha": 42
+}
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	managed := []byte(`{
+  "mcpServers": {
+    "svc": {
+      "command": "npx",
+      "args": ["svc-mcp"]
+    }
+  }
+}
+`)
+
+	// Previous sync recorded a DIFFERENT file content (before harness reformatted).
+	prevContent := []byte(`{
+  "alpha": 42,
+  "mcpServers": {
+    "svc": {
+      "command": "npx",
+      "args": ["svc-mcp"]
+    }
+  }
+}
+`)
+	lg := domain.NewLedger()
+	lg.Record(dst, prevContent, "test", managed, time.Now())
+
+	diffs, err := ComputeSettingsDiffs([]domain.SettingsAction{
+		{Dst: dst, Desired: managed, Harness: domain.HarnessClaudeCode, Label: "test", MergeMode: true},
+	}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	// Even though the full file digest changed (harness reformatted + added keys),
+	// managed keys are unchanged, so this should be identical.
+	if diffs[0].Kind != domain.DiffIdentical {
+		t.Errorf("Kind = %q, want %q — harness reformatting should not trigger update", diffs[0].Kind, domain.DiffIdentical)
 	}
 }
 

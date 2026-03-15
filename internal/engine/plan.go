@@ -68,11 +68,10 @@ func PlanSync(profile domain.Profile, req PlanRequest, harnesses []Planner) (dom
 }
 
 // ledgerPath computes the ledger file path for a plan request.
-// Delegates to LedgerPathForScope to avoid duplicating path logic.
+// Expects a single-harness PlanRequest (per-harness plan+apply).
 func ledgerPath(req PlanRequest) string {
-	names := make([]string, len(req.Harnesses))
-	for i, h := range req.Harnesses {
-		names[i] = string(h)
+	if len(req.Harnesses) == 0 {
+		return ""
 	}
-	return LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, names)
+	return LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, string(req.Harnesses[0]))
 }

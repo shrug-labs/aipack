@@ -253,9 +253,10 @@ func TestPlan_Settings_WithMCP(t *testing.T) {
 	}
 }
 
-func TestPlan_Settings_ResolvesAvailableEnvAndPreservesMissingRefs(t *testing.T) {
+func TestPlan_Settings_ResolvesEnvAndSkipsMissing(t *testing.T) {
 	t.Setenv("HOME", "/tmp/test-home")
 	t.Setenv("MON_ENV_FILE", "/tmp/mon.env")
+	os.Unsetenv("MISSING_VAR")
 	projectDir := t.TempDir()
 	ctx := engine.SyncContext{
 		Scope:     domain.ScopeProject,
@@ -289,13 +290,9 @@ func TestPlan_Settings_ResolvesAvailableEnvAndPreservesMissingRefs(t *testing.T)
 	if len(cmd) < 4 || cmd[2] != "/tmp/mon.env" || cmd[3] != "/tmp/test-home/server.py" {
 		t.Fatalf("available env refs should be resolved: got %v", cmd)
 	}
-	bad, ok := mcp["bad"].(map[string]any)
-	if !ok {
-		t.Fatal("bad server should be preserved in opencode.json")
-	}
-	env := bad["environment"].(map[string]any)
-	if env["TOKEN"] != "{env:MISSING_VAR}" {
-		t.Fatalf("env placeholder should be preserved: got %v", env["TOKEN"])
+	// Server with missing env var should be skipped entirely.
+	if _, ok := mcp["bad"]; ok {
+		t.Fatal("bad server should be skipped when env var is missing")
 	}
 }
 
@@ -321,25 +318,25 @@ func TestPlan_SkipSettings_MergeModePlugin(t *testing.T) {
 	if len(f.Settings) != 0 {
 		t.Fatalf("expected no settings (skip_settings=true), got %d", len(f.Settings))
 	}
-	if len(f.Plugins) == 0 {
-		t.Fatal("expected MergeMode plugin when skip_settings=true")
+	if len(f.MCP) == 0 {
+		t.Fatal("expected MergeMode MCP action when skip_settings=true")
 	}
-	if !f.Plugins[0].MergeMode {
-		t.Fatal("expected MergeMode=true on plugin")
+	if !f.MCP[0].MergeMode {
+		t.Fatal("expected MergeMode=true on MCP action")
 	}
 }
 
-func TestPlan_OhMyOpenCode_Plugin(t *testing.T) {
+func TestPlan_DropInConfig_DeployedAsIs(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
-	omoContent := []byte(`{"custom": true}`)
+	dropInContent := []byte(`{"custom": true}`)
 	ctx := engine.SyncContext{
 		Scope:     domain.ScopeProject,
 		TargetDir: projectDir,
 		Profile: domain.Profile{
-			Plugins: domain.PluginsBundle{
+			BaseSettings: domain.SettingsBundle{
 				domain.HarnessOpenCode: []domain.ConfigFile{
-					{Filename: "oh-my-opencode.json", Content: omoContent},
+					{Filename: "custom-theme.json", Content: dropInContent},
 				},
 			},
 		},
@@ -351,16 +348,20 @@ func TestPlan_OhMyOpenCode_Plugin(t *testing.T) {
 	}
 
 	found := false
-	for _, p := range f.Plugins {
-		if p.Label == "oh-my-opencode.json" {
+	for _, s := range f.Settings {
+		if s.Label == "custom-theme.json" {
 			found = true
-			if string(p.Desired) != string(omoContent) {
-				t.Fatalf("omo content mismatch")
+			if string(s.Desired) != string(dropInContent) {
+				t.Fatalf("drop-in content mismatch")
+			}
+			wantDst := filepath.Join(projectDir, ".opencode", "custom-theme.json")
+			if s.Dst != wantDst {
+				t.Fatalf("drop-in dst: got %q want %q", s.Dst, wantDst)
 			}
 		}
 	}
 	if !found {
-		t.Fatal("expected oh-my-opencode.json plugin action")
+		t.Fatal("expected drop-in settings action for custom-theme.json")
 	}
 }
 
@@ -373,7 +374,7 @@ func TestRenderBytes_MergesBase(t *testing.T) {
 		{Name: "foo", Command: []string{"echo", "hi"}, Env: map[string]string{}, AllowedTools: []string{"bar"}},
 	}
 
-	out, _, err := RenderBytes(base, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false}, false)
+	out, _, err := RenderBytes(base, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false})
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -422,7 +423,7 @@ func TestRenderBytes_ResolvesEnvRefs(t *testing.T) {
 		},
 	}
 
-	out, _, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false}, true)
+	out, _, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false})
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -444,16 +445,16 @@ func TestRenderBytes_ResolvesEnvRefs(t *testing.T) {
 	}
 }
 
-func TestRenderBytes_PreservesServerOnMissingEnvVar(t *testing.T) {
+func TestRenderBytes_SkipsServerOnMissingEnvVar(t *testing.T) {
 	t.Setenv("HOME", "/tmp/test-home")
-	t.Setenv("MISSING_VAR", "")
+	os.Unsetenv("MISSING_VAR")
 
 	servers := []domain.MCPServer{
 		{Name: "ok", Command: []string{"node", "{env:HOME}/ok.js"}, Env: map[string]string{}},
 		{Name: "bad", Command: []string{"node", "{env:MISSING_VAR}/bad.js"}, Env: map[string]string{}},
 	}
 
-	out, _, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false}, true)
+	out, warnings, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false})
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -467,13 +468,11 @@ func TestRenderBytes_PreservesServerOnMissingEnvVar(t *testing.T) {
 	if _, ok := mcp["ok"]; !ok {
 		t.Fatal("ok server should be present")
 	}
-	bad, ok := mcp["bad"].(map[string]any)
-	if !ok {
-		t.Fatal("bad server should be preserved when env var is missing")
+	if _, ok := mcp["bad"]; ok {
+		t.Fatal("bad server should be skipped when env var is missing")
 	}
-	cmd := bad["command"].([]any)
-	if len(cmd) < 2 || cmd[1] != "{env:MISSING_VAR}/bad.js" {
-		t.Fatalf("missing env ref should stay literal: got %v", cmd)
+	if len(warnings) == 0 {
+		t.Fatal("expected warning for skipped server")
 	}
 }
 
@@ -484,7 +483,7 @@ func TestRenderBytes_PopulatesTimeout(t *testing.T) {
 		{Name: "bar", Timeout: 0, Command: []string{"echo"}, Env: map[string]string{}},
 	}
 
-	out, _, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false}, false)
+	out, _, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false})
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -694,6 +693,83 @@ func TestCapture_Project_ParsesUnprefixedAllowedTools(t *testing.T) {
 	}
 }
 
+func TestCapture_Project_PreservesTimeout(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	opencodeDir := filepath.Join(projectDir, ".opencode")
+	if err := os.MkdirAll(opencodeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := []byte(`{
+	  "mcp": {
+	    "slow": {
+	      "enabled": true,
+	      "type": "local",
+	      "command": ["node", "server.js"],
+	      "timeout": 120000
+	    }
+	  },
+	  "tools": {}
+	}`)
+	if err := os.WriteFile(filepath.Join(opencodeDir, "opencode.json"), settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	srv, ok := res.MCPServers["slow"]
+	if !ok {
+		t.Fatal("expected captured 'slow' MCP server")
+	}
+	if srv.Timeout != 120 {
+		t.Fatalf("Timeout: got %d want 120 (seconds)", srv.Timeout)
+	}
+}
+
+func TestCapture_Project_MultiSegmentServerName(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	opencodeDir := filepath.Join(projectDir, ".opencode")
+	if err := os.MkdirAll(opencodeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Server "foo_bar" has an underscore in its name, so tool key "foo_bar_baz"
+	// should parse as server=foo_bar, tool=baz — not server=foo, tool=bar_baz.
+	// The old SplitN(tool, "_", 2) would incorrectly split at the first underscore.
+	settings := []byte(`{
+	  "mcp": {
+	    "foo_bar": {
+	      "enabled": true,
+	      "type": "local",
+	      "command": ["echo", "hi"]
+	    }
+	  },
+	  "tools": {
+	    "foo_bar_baz": true,
+	    "foo_bar_qux": true,
+	    "foo_bar_*": false
+	  }
+	}`)
+	if err := os.WriteFile(filepath.Join(opencodeDir, "opencode.json"), settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	got := res.AllowedTools["foo_bar"]
+	if len(got) != 2 || got[0] != "baz" || got[1] != "qux" {
+		t.Fatalf("AllowedTools[foo_bar] = %v, want [baz qux]", got)
+	}
+	// Should NOT have a "foo" prefix entry.
+	if tools, ok := res.AllowedTools["foo"]; ok {
+		t.Fatalf("should not have AllowedTools[foo], got %v", tools)
+	}
+}
+
 // --- StripManagedKeys tests ---
 
 func TestStripManagedKeys_RemovesMCPAndTools(t *testing.T) {
@@ -719,10 +795,10 @@ func TestStripManagedKeys_RemovesMCPAndTools(t *testing.T) {
 	}
 }
 
-func TestStripManagedKeys_OhMyOpenCode_PassThrough(t *testing.T) {
+func TestStripManagedKeys_DropIn_PassThrough(t *testing.T) {
 	t.Parallel()
 	input := []byte(`{"mcp": {"foo": {}}}`)
-	out, err := StripManagedKeys(input, "oh-my-opencode.json")
+	out, err := StripManagedKeys(input, "custom-theme.json")
 	if err != nil {
 		t.Fatalf("StripManagedKeys: %v", err)
 	}
@@ -732,7 +808,7 @@ func TestStripManagedKeys_OhMyOpenCode_PassThrough(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, ok := root["mcp"]; !ok {
-		t.Fatal("oh-my-opencode.json should pass through without stripping")
+		t.Fatal("drop-in config should pass through without stripping")
 	}
 }
 

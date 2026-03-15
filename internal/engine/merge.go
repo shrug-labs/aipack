@@ -3,15 +3,33 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
-// MergeSettingsKeys performs a three-way merge of managed content into existing
+// MergeAction describes what the three-way merge did to a key.
+type MergeAction string
+
+const (
+	MergeAdd    MergeAction = "add"
+	MergeUpdate MergeAction = "update"
+	MergeRemove MergeAction = "remove"
+)
+
+// MergeOp records a single merge decision at a specific key path.
+type MergeOp struct {
+	Key    string      // dot-separated key path (e.g. "mcpServers.atlassian")
+	Action MergeAction // what the merge did
+}
+
+// mergeSettingsKeys performs a three-way merge of managed content into existing
 // settings. prevManaged is the managed overlay from the previous sync (nil on
 // first sync). The format (JSON or TOML) is determined by the harness type.
+//
+// Returns the merged content and a list of merge operations describing what changed.
 //
 // Three-way merge semantics:
 //   - Objects: recurse by key. Keys removed from managed are deleted. Keys
@@ -24,69 +42,75 @@ import (
 //
 // Format dispatch is intentionally a switch on harness type rather than a
 // SettingsFormat() interface method — acceptable complexity for 4 harnesses.
-func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.Harness) ([]byte, error) {
+func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.Harness) ([]byte, []MergeOp, error) {
 	switch harness {
 	case domain.HarnessOpenCode, domain.HarnessCline, domain.HarnessClaudeCode:
 		return threeWayMergeJSON(existing, prevManaged, newManaged)
 	case domain.HarnessCodex:
 		return threeWayMergeTOML(existing, prevManaged, newManaged)
 	default:
-		return nil, fmt.Errorf("unsupported harness for merge: %s", harness)
+		return nil, nil, fmt.Errorf("unsupported harness for merge: %s", harness)
 	}
 }
 
-func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, error) {
+func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeOp, error) {
 	disk, err := parseJSONMap(onDisk)
 	if err != nil {
-		return nil, fmt.Errorf("parse on-disk JSON: %w", err)
+		return nil, nil, fmt.Errorf("parse on-disk JSON: %w", err)
 	}
 	prev, err := parseJSONMap(prevManaged)
 	if err != nil {
-		return nil, fmt.Errorf("parse prev-managed JSON: %w", err)
+		return nil, nil, fmt.Errorf("parse prev-managed JSON: %w", err)
 	}
 	next, err := parseJSONMap(newManaged)
 	if err != nil {
-		return nil, fmt.Errorf("parse new-managed JSON: %w", err)
+		return nil, nil, fmt.Errorf("parse new-managed JSON: %w", err)
 	}
 
-	threeWayMergeMap(disk, prev, next)
+	var ops []MergeOp
+	threeWayMergeMap(disk, prev, next, "", &ops)
 
 	out, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return append(out, '\n'), nil
+	return append(out, '\n'), ops, nil
 }
 
-func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, error) {
+func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeOp, error) {
 	disk, err := parseTOMLMap(onDisk)
 	if err != nil {
-		return nil, fmt.Errorf("parse on-disk TOML: %w", err)
+		return nil, nil, fmt.Errorf("parse on-disk TOML: %w", err)
 	}
 	prev, err := parseTOMLMap(prevManaged)
 	if err != nil {
-		return nil, fmt.Errorf("parse prev-managed TOML: %w", err)
+		return nil, nil, fmt.Errorf("parse prev-managed TOML: %w", err)
 	}
 	next, err := parseTOMLMap(newManaged)
 	if err != nil {
-		return nil, fmt.Errorf("parse new-managed TOML: %w", err)
+		return nil, nil, fmt.Errorf("parse new-managed TOML: %w", err)
 	}
 
-	threeWayMergeMap(disk, prev, next)
+	var ops []MergeOp
+	threeWayMergeMap(disk, prev, next, "", &ops)
 
 	out, err := toml.Marshal(disk)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return append(out, '\n'), nil
+	return out, ops, nil
 }
 
 // threeWayMergeMap recursively merges next (new managed) into disk, using prev
 // (old managed) to distinguish user-added keys from stale managed keys.
-func threeWayMergeMap(disk, prev, next map[string]any) {
+// Merge operations are appended to ops with dot-separated key paths.
+func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ops *[]MergeOp) {
 	// Keys removed from managed: delete from disk.
 	for k := range prev {
 		if _, inNext := next[k]; !inNext {
+			if _, inDisk := disk[k]; inDisk {
+				*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeRemove})
+			}
 			delete(disk, k)
 		}
 	}
@@ -98,6 +122,7 @@ func threeWayMergeMap(disk, prev, next map[string]any) {
 
 		if !inDisk {
 			disk[k] = nextVal
+			*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeAdd})
 			continue
 		}
 
@@ -108,7 +133,7 @@ func threeWayMergeMap(disk, prev, next map[string]any) {
 				prevMap = map[string]any{}
 			}
 			if diskMap, ok := diskVal.(map[string]any); ok {
-				threeWayMergeMap(diskMap, prevMap, nextMap)
+				threeWayMergeMap(diskMap, prevMap, nextMap, prefix+k+".", ops)
 				continue
 			}
 		}
@@ -117,16 +142,42 @@ func threeWayMergeMap(disk, prev, next map[string]any) {
 		if nextArr, ok := nextVal.([]any); ok {
 			prevArr, _ := prevVal.([]any)
 			if diskArr, ok := diskVal.([]any); ok {
-				disk[k] = threeWayMergeArray(diskArr, prevArr, nextArr)
+				merged := threeWayMergeArray(diskArr, prevArr, nextArr)
+				disk[k] = merged
+				if !sameStringSet(prevArr, nextArr) {
+					*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeUpdate})
+				}
 				continue
 			}
 		}
 
-		// Scalar or type change: managed value wins.
+		// Scalar or type change: managed value wins unconditionally.
+		// This means user edits to managed scalars are overwritten on next sync.
+		// This is intentional — scalars don't have set-merge semantics, so the
+		// managed value is the only authoritative source. Users who need custom
+		// scalar values should add them as new keys (which are preserved).
 		disk[k] = nextVal
+		if !reflect.DeepEqual(diskVal, nextVal) {
+			*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeUpdate})
+		}
 	}
 
 	// Keys only on disk (not in prev or next): user-added, preserved automatically.
+}
+
+// sameStringSet checks whether two arrays contain the same set of string items.
+func sameStringSet(a, b []any) bool {
+	sa := toStringSet(a)
+	sb := toStringSet(b)
+	if len(sa) != len(sb) {
+		return false
+	}
+	for k := range sa {
+		if !sb[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // threeWayMergeArray merges managed string arrays using set semantics.

@@ -124,6 +124,9 @@ func MCPConfigEqual(a, b map[string]MCPServerConfig) bool {
 		if !StringSlicesEqual(av.AllowedTools, bv.AllowedTools) {
 			return false
 		}
+		if !StringSlicesEqual(av.DisabledTools, bv.DisabledTools) {
+			return false
+		}
 	}
 	return true
 }

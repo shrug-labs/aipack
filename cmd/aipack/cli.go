@@ -8,6 +8,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/harness"
 	ccharness "github.com/shrug-labs/aipack/internal/harness/claudecode"
 	clharness "github.com/shrug-labs/aipack/internal/harness/cline"
@@ -17,22 +18,24 @@ import (
 
 // cliCore contains commands shared by all builds.
 type cliCore struct {
-	Init     InitCmd     `cmd:"" group:"Setup:" help:"Create default sync-config and profile files"`
-	Doctor   DoctorCmd   `cmd:"" group:"Setup:" help:"Run preflight checks on config, packs, and MCP servers"`
-	Validate ValidateCmd `cmd:"" group:"Setup:" help:"Validate a pack source tree"`
+	Init   InitCmd   `cmd:"" group:"Setup:" help:"Create default sync-config and profile files"`
+	Doctor DoctorCmd `cmd:"" group:"Setup:" help:"Run preflight checks on config, packs, and MCP servers"`
 
-	Sync   SyncCmd   `cmd:"" group:"Sync/Save:" help:"Apply pack content to harness locations"`
-	Render RenderCmd `cmd:"" group:"Sync/Save:" help:"Render pack content to a standalone output directory"`
-	Save   SaveCmd   `cmd:"" group:"Sync/Save:" help:"Save harness content back to source packs"`
-	Clean  CleanCmd  `cmd:"" group:"Sync/Save:" help:"Remove all managed files from harness locations"`
+	Sync    SyncCmd    `cmd:"" group:"Sync/Save:" help:"Apply pack content to harness locations"`
+	Render  RenderCmd  `cmd:"" group:"Sync/Save:" help:"Render pack content to a standalone output directory"`
+	Save    SaveCmd    `cmd:"" group:"Sync/Save:" help:"Save harness content back to source packs"`
+	Clean   CleanCmd   `cmd:"" group:"Sync/Save:" help:"Remove all managed files from harness locations"`
+	Restore RestoreCmd `cmd:"" group:"Sync/Save:" help:"Restore settings files from pre-sync or base cache"`
 
-	Install  InstallCmd  `cmd:"" group:"Pack Management:" help:"Install a pack from a local path, URL, or registry name"`
+	Install  InstallCmd  `cmd:"" hidden:"" help:"Alias for 'pack install'"`
 	Pack     PackCmd     `cmd:"" group:"Pack Management:" help:"Manage installed packs"`
 	Registry RegistryCmd `cmd:"" group:"Pack Management:" help:"Browse and search the pack registry"`
 	Profile  ProfileCmd  `cmd:"" group:"Profile Management:" help:"Manage sync profiles"`
 
 	Search SearchCmd `cmd:"" group:"Discovery:" help:"Search the pack index by name, tags, role, or kind"`
 	Query  QueryCmd  `cmd:"" group:"Discovery:" help:"Run raw SQL against the pack index"`
+	Status StatusCmd `cmd:"" group:"Discovery:" help:"Show ecosystem status: profile, packs, and content vectors"`
+	Trace  TraceCmd  `cmd:"" group:"Discovery:" help:"Trace a resource from pack source to harness destination"`
 	Manage ManageCmd `cmd:"" group:"Profile Management:" help:"Interactive TUI for managing profiles and packs"`
 
 	Prompt PromptCmd `cmd:"" group:"Prompts:" help:"Browse and copy prompts from installed packs"`
@@ -56,6 +59,13 @@ func (e ExitError) Error() string { return fmt.Sprintf("exit code %d", e.Code) }
 
 // exitPanic is used to catch Kong's internal Exit() calls (e.g. for --help).
 type exitPanic struct{ code int }
+
+func validateProjectDirForScope(scope domain.Scope, projectDir *string) error {
+	if scope == domain.ScopeGlobal && projectDir != nil {
+		return fmt.Errorf("--project-dir is not valid for effective scope global")
+	}
+	return nil
+}
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool, extraOpts ...kong.Option) int {
 	globals := &Globals{

@@ -14,11 +14,11 @@ func MCPProjectPath(projectDir string) string {
 	return filepath.Join(projectDir, ".mcp.json")
 }
 
-// MCPGlobalPath returns the global .mcp.json path (~/.mcp.json).
-// Claude Code reads global MCP config from the home directory root,
-// not from ~/.claude/.
+// MCPGlobalPath returns the global MCP config path (~/.claude.json).
+// Claude Code reads global MCP config from ~/.claude.json,
+// not from ~/.mcp.json or ~/.claude/.mcp.json.
 func MCPGlobalPath(home string) string {
-	return filepath.Join(home, ".mcp.json")
+	return filepath.Join(home, ".claude.json")
 }
 
 // SettingsGlobalPath returns the global settings.local.json path.

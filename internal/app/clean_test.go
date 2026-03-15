@@ -7,7 +7,19 @@ import (
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/harness"
+	ccharness "github.com/shrug-labs/aipack/internal/harness/claudecode"
+	clharness "github.com/shrug-labs/aipack/internal/harness/cline"
+	cxharness "github.com/shrug-labs/aipack/internal/harness/codex"
+	ocharness "github.com/shrug-labs/aipack/internal/harness/opencode"
 )
+
+func testRegistry() *harness.Registry {
+	return harness.NewRegistry(
+		ccharness.Harness{}, clharness.Harness{}, cxharness.Harness{}, ocharness.Harness{},
+	)
+}
 
 func TestRemovePathOp_Nonexistent(t *testing.T) {
 	t.Parallel()
@@ -46,7 +58,7 @@ func TestBuildCleanOps_ProjectScope(t *testing.T) {
 	home := t.TempDir()
 
 	harnesses := domain.AllHarnesses()
-	ops := buildCleanOps(domain.ScopeProject, home, dir, harnesses, false)
+	ops := buildCleanOps(domain.ScopeProject, home, dir, harnesses, false, testRegistry())
 
 	if len(ops) == 0 {
 		t.Fatal("expected non-empty ops for project scope with all harnesses")
@@ -79,39 +91,48 @@ func TestBuildCleanOps_ProjectScope(t *testing.T) {
 	}
 }
 
-func TestCleanClineOps_ProjectScope_DoesNotRemoveUnmanagedDotClineSkills(t *testing.T) {
+func TestCleanCline_ProjectScope_DoesNotRemoveUnmanagedDotClineSkills(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
-	ops := cleanClineOps(domain.ScopeProject, t.TempDir(), projectDir)
+	reg := testRegistry()
+	h, err := reg.Lookup(domain.HarnessCline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := h.CleanActions(domain.ScopeProject, projectDir, t.TempDir())
 
-	for _, op := range ops {
-		if op.path() == filepath.Join(projectDir, ".cline", "skills") {
-			t.Fatalf("unexpected clean op for unmanaged path %q", op.path())
+	for _, a := range actions {
+		if a.Path == filepath.Join(projectDir, ".cline", "skills") {
+			t.Fatalf("unexpected clean action for unmanaged path %q", a.Path)
 		}
 	}
 }
 
-func TestCleanClineOps_GlobalScope_RemovesManagedPaths(t *testing.T) {
+func TestCleanCline_GlobalScope_RemovesManagedPaths(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	ops := cleanClineOps(domain.ScopeGlobal, home, t.TempDir())
+	reg := testRegistry()
+	h, err := reg.Lookup(domain.HarnessCline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := h.CleanActions(domain.ScopeGlobal, home, home)
 
 	want := map[string]bool{
 		filepath.Join(home, ".cline", "skills"):                          false,
 		filepath.Join(home, "Documents", "Cline", "Rules", "aipack"):     false,
-		filepath.Join(home, "Documents", "Cline", "Agents", "aipack"):    false,
 		filepath.Join(home, "Documents", "Cline", "Workflows", "aipack"): false,
 	}
 
-	for _, op := range ops {
-		if _, ok := want[op.path()]; ok {
-			want[op.path()] = true
+	for _, a := range actions {
+		if _, ok := want[a.Path]; ok {
+			want[a.Path] = true
 		}
 	}
 
 	for path, found := range want {
 		if !found {
-			t.Fatalf("expected clean op for managed global path %q", path)
+			t.Fatalf("expected clean action for managed global path %q", path)
 		}
 	}
 }
@@ -126,11 +147,34 @@ func TestRunClean_InvalidHarness(t *testing.T) {
 			Harnesses:  []domain.Harness{"not-a-real-harness"},
 		},
 		Yes: true,
-	})
+	}, testRegistry())
 	if err == nil {
 		t.Fatal("expected error for invalid harness, got nil")
 	}
 	if got := err.Error(); !strings.Contains(got, "unknown harness") {
 		t.Fatalf("expected unknown harness error, got %q", got)
+	}
+}
+
+func TestBuildCleanOps_ProjectLedgerWipeIncludesLegacyAndPerHarnessLedgers(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	ops := buildCleanOps(domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessClaudeCode}, true, testRegistry())
+	paths := map[string]bool{}
+	for _, op := range ops {
+		paths[op.path()] = true
+	}
+
+	newLedgerPath := filepath.Join(filepath.Join(home, ".config", "aipack", "ledger"), engine.EncodeProjectPath(projectDir))
+	legacyLedgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
+
+	if !paths[newLedgerPath] {
+		t.Fatalf("expected project ledger wipe for %q", newLedgerPath)
+	}
+	if !paths[legacyLedgerPath] {
+		t.Fatalf("expected legacy project ledger wipe for %q", legacyLedgerPath)
 	}
 }

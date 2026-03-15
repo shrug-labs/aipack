@@ -14,9 +14,8 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/shrug-labs/aipack/internal/domain"
-	clinepaths "github.com/shrug-labs/aipack/internal/harness/cline"
-	codexpaths "github.com/shrug-labs/aipack/internal/harness/codex"
-	opencodepaths "github.com/shrug-labs/aipack/internal/harness/opencode"
+	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/harness"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -33,7 +32,7 @@ type CleanRequest struct {
 }
 
 // RunClean resets harness capability vectors without bricking the harness.
-func RunClean(req CleanRequest) error {
+func RunClean(req CleanRequest, reg *harness.Registry) error {
 	home := req.Home
 	if req.Scope == domain.ScopeGlobal && strings.TrimSpace(home) == "" {
 		return fmt.Errorf("HOME is not set (required for global scope)")
@@ -73,7 +72,7 @@ func RunClean(req CleanRequest) error {
 	}
 
 	if req.DryRun {
-		ops := buildCleanOps(req.Scope, home, req.ProjectDir, hs, req.WipeLedger)
+		ops := buildCleanOps(req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
 		for _, op := range ops {
 			fmt.Fprintf(stderr, "  would remove: %s\n", op.path())
 		}
@@ -84,7 +83,7 @@ func RunClean(req CleanRequest) error {
 		return fmt.Errorf("refusing to clean without --yes (non-interactive)")
 	}
 
-	ops := buildCleanOps(req.Scope, home, req.ProjectDir, hs, req.WipeLedger)
+	ops := buildCleanOps(req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
 
 	ctx := cleanRunContext{Yes: req.Yes, Stdin: stdin, Stderr: stderr}
 	for _, op := range ops {
@@ -220,27 +219,38 @@ func (o editTOMLOp) run(ctx cleanRunContext) error {
 	return util.WriteFileAtomic(o.FilePath, out)
 }
 
-func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool) []cleanOp {
+func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool, reg *harness.Registry) []cleanOp {
 	var ops []cleanOp
 
-	for _, h := range hs {
-		switch h {
-		case domain.HarnessOpenCode:
-			ops = append(ops, cleanOpenCodeOps(scope, home, projectDir)...)
-		case domain.HarnessCodex:
-			ops = append(ops, cleanCodexOps(scope, home, projectDir)...)
-		case domain.HarnessCline:
-			ops = append(ops, cleanClineOps(scope, home, projectDir)...)
-		case domain.HarnessClaudeCode:
-			ops = append(ops, cleanClaudeCodeOps(scope, home, projectDir)...)
+	baseDir := projectDir
+	if scope == domain.ScopeGlobal {
+		baseDir = home
+	}
+
+	for _, hid := range hs {
+		h, err := reg.Lookup(hid)
+		if err != nil {
+			continue
+		}
+		for _, ca := range h.CleanActions(scope, baseDir, home) {
+			switch ca.Format {
+			case harness.CleanRemove:
+				ops = append(ops, removePathOp{Path: ca.Path})
+			case harness.CleanJSON:
+				ops = append(ops, editJSONOp{FilePath: ca.Path, Edit: ca.Edit})
+			case harness.CleanTOML:
+				ops = append(ops, editTOMLOp{FilePath: ca.Path, Edit: ca.Edit})
+			}
 		}
 	}
 
-	if wipeLedger {
+	if wipeLedger && home != "" {
+		ledgerDir := filepath.Join(home, ".config", "aipack", "ledger")
 		if scope == domain.ScopeProject {
-			ops = append(ops, removePathOp{Path: filepath.Join(projectDir, ".aipack")})
-		} else if home != "" {
-			ops = append(ops, removePathOp{Path: filepath.Join(home, ".config", "aipack", "ledger")})
+			ops = append(ops, removePathOp{Path: filepath.Join(ledgerDir, engine.EncodeProjectPath(projectDir))})
+			ops = append(ops, removePathOp{Path: filepath.Join(projectDir, ".aipack", "ledger.json")})
+		} else {
+			ops = append(ops, removePathOp{Path: ledgerDir})
 		}
 	}
 
@@ -248,123 +258,6 @@ func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []doma
 		return ops[i].path() < ops[j].path()
 	})
 
-	return ops
-}
-
-func cleanOpenCodeOps(scope domain.Scope, home string, projectDir string) []cleanOp {
-	var ops []cleanOp
-	var base string
-	var configPath string
-	if scope == domain.ScopeProject {
-		base = filepath.Join(projectDir, ".opencode")
-		configPath, _ = opencodepaths.SettingsProjectPaths(projectDir)
-	} else {
-		base = filepath.Join(home, ".config", "opencode")
-		configPath, _ = opencodepaths.SettingsGlobalPaths(home)
-	}
-
-	ops = append(ops,
-		removePathOp{Path: filepath.Join(base, "agents")},
-		removePathOp{Path: filepath.Join(base, "commands")},
-		removePathOp{Path: filepath.Join(base, "skills")},
-		removePathOp{Path: filepath.Join(base, "rules")},
-	)
-
-	ops = append(ops, editJSONOp{FilePath: configPath, Edit: func(root map[string]any) {
-		root["mcp"] = map[string]any{}
-		root["tools"] = map[string]any{}
-		root["instructions"] = []any{}
-		root["skills"] = map[string]any{}
-	}})
-
-	return ops
-}
-
-func cleanCodexOps(scope domain.Scope, home string, projectDir string) []cleanOp {
-	var ops []cleanOp
-	var configPath string
-	if scope == domain.ScopeProject {
-		configPath = codexpaths.SettingsProjectPath(projectDir)
-		ops = append(ops,
-			removePathOp{Path: filepath.Join(projectDir, ".agents", "skills")},
-			removePathOp{Path: filepath.Join(projectDir, "AGENTS.override.md")},
-		)
-	} else {
-		configPath = codexpaths.SettingsGlobalPath(home)
-		codexHome := filepath.Join(home, ".codex")
-		ops = append(ops,
-			removePathOp{Path: filepath.Join(home, ".agents", "skills")},
-			removePathOp{Path: filepath.Join(codexHome, "rules")},
-			removePathOp{Path: filepath.Join(codexHome, "AGENTS.override.md")},
-		)
-	}
-
-	ops = append(ops, editTOMLOp{FilePath: configPath, Edit: func(root map[string]any) {
-		delete(root, "mcp_servers")
-		if m, ok := root["mcp"].(map[string]any); ok {
-			delete(m, "servers")
-			if len(m) == 0 {
-				delete(root, "mcp")
-			} else {
-				root["mcp"] = m
-			}
-		}
-	}})
-
-	return ops
-}
-
-func cleanClineOps(scope domain.Scope, home string, projectDir string) []cleanOp {
-	var ops []cleanOp
-	if scope == domain.ScopeProject {
-		ops = append(ops,
-			removePathOp{Path: filepath.Join(projectDir, ".clinerules")},
-		)
-		return ops
-	}
-
-	ops = append(ops,
-		removePathOp{Path: filepath.Join(home, ".cline", "skills")},
-		removePathOp{Path: clinepaths.RulesGlobalDir(home)},
-		removePathOp{Path: clinepaths.AgentsGlobalDir(home)},
-		removePathOp{Path: clinepaths.WorkflowsGlobalDir(home)},
-	)
-
-	settingsPath := clinepaths.SettingsGlobalPath(home)
-	if settingsPath != "" && filepath.Clean(settingsPath) != "." {
-		ops = append(ops, editJSONOp{FilePath: settingsPath, Edit: func(root map[string]any) {
-			root["mcpServers"] = map[string]any{}
-		}})
-	}
-
-	return ops
-}
-
-func cleanClaudeCodeOps(scope domain.Scope, home string, projectDir string) []cleanOp {
-	var ops []cleanOp
-	if scope == domain.ScopeProject {
-		ops = append(ops,
-			removePathOp{Path: filepath.Join(projectDir, ".claude", "rules")},
-			removePathOp{Path: filepath.Join(projectDir, ".claude", "agents")},
-			removePathOp{Path: filepath.Join(projectDir, ".claude", "commands")},
-			removePathOp{Path: filepath.Join(projectDir, ".claude", "skills")},
-		)
-		mcpPath := filepath.Join(projectDir, ".mcp.json")
-		ops = append(ops, editJSONOp{FilePath: mcpPath, Edit: func(root map[string]any) {
-			root["mcpServers"] = map[string]any{}
-		}})
-		settingsPath := filepath.Join(projectDir, ".claude", "settings.local.json")
-		ops = append(ops, editJSONOp{FilePath: settingsPath, Edit: func(root map[string]any) {
-			delete(root, "permissions")
-		}})
-	} else if home != "" {
-		ops = append(ops,
-			removePathOp{Path: filepath.Join(home, ".claude", "rules")},
-			removePathOp{Path: filepath.Join(home, ".claude", "agents")},
-			removePathOp{Path: filepath.Join(home, ".claude", "commands")},
-			removePathOp{Path: filepath.Join(home, ".claude", "skills")},
-		)
-	}
 	return ops
 }
 

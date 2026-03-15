@@ -10,44 +10,37 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
-// loadHarnessSettings loads harness settings files from packs based on the
-// resolved configuration. Returns typed ConfigFile structs with SourcePack
-// set at load time (no retroactive attribution).
+// loadHarnessSettings loads all harness config files (both settings templates
+// and drop-in configs) from packs. Files from harness_settings and
+// harness_plugins are merged into a single bundle.
 func loadHarnessSettings(packs []config.ResolvedPack, settingsPack string, harnesses []domain.Harness) (domain.SettingsBundle, []domain.Warning, error) {
 	return loadHarnessFileBundle(packs, settingsPack, harnesses, func(m config.PackManifest, h string) []string {
-		return m.Configs.HarnessSettings[h]
+		files := append([]string{}, m.Configs.HarnessSettings[h]...)
+		files = append(files, m.Configs.HarnessPlugins[h]...)
+		return files
 	}, "settings")
 }
 
-// loadHarnessPlugins loads harness plugin config files from packs.
-func loadHarnessPlugins(packs []config.ResolvedPack, settingsPack string, harnesses []domain.Harness) (domain.PluginsBundle, []domain.Warning, error) {
-	b, warnings, err := loadHarnessFileBundle(packs, settingsPack, harnesses, func(m config.PackManifest, h string) []string {
-		return m.Configs.HarnessPlugins[h]
-	}, "plugins")
-	return domain.PluginsBundle(b), warnings, err
-}
-
-// SettingsDecision describes how a harness should emit settings/plugin actions.
+// SettingsDecision describes how a harness should emit settings/MCP actions.
 type SettingsDecision struct {
-	EmitSettings  bool // true if full settings merge should be emitted
-	EmitMCPPlugin bool // true if MCP-only plugin action should be emitted
-	MergeMode     bool // true if managed-keys-only merge (skipSettings mode)
+	EmitSettings bool // true if full settings merge should be emitted
+	EmitMCP      bool // true if MCP-only action should be emitted
+	MergeMode    bool // true if managed-keys-only merge (skipSettings mode)
 }
 
 // ClassifySettings determines how settings should be emitted for a harness.
 //
 // Decision tree:
 //
-//	!skipSettings && hasManagedContent → EmitSettings (full merge)
-//	skipSettings && hasManagedContent → EmitMCPPlugin with MergeMode (managed keys only)
-//	hasMCP (regardless of skipSettings) → EmitMCPPlugin (MCP is never gated by skipSettings)
+//	!skipSettings && (hasMCP || hasManagedContent) → EmitSettings (full merge)
+//	skipSettings && (hasMCP || hasManagedContent) → EmitMCP with MergeMode (managed keys only)
 //	neither → nothing
 func ClassifySettings(hasMCP, hasManagedContent, skipSettings bool) SettingsDecision {
 	if !skipSettings && (hasMCP || hasManagedContent) {
 		return SettingsDecision{EmitSettings: true}
 	}
 	if skipSettings && (hasMCP || hasManagedContent) {
-		return SettingsDecision{EmitMCPPlugin: true, MergeMode: true}
+		return SettingsDecision{EmitMCP: true, MergeMode: true}
 	}
 	return SettingsDecision{}
 }

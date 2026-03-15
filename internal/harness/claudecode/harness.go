@@ -53,27 +53,20 @@ func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
 }
 
 func planContent(f *domain.Fragment, baseDir string, p domain.Profile) error {
-	f.AddRuleWrites(baseDir, filepath.Join(".claude", "rules"), p.AllRules())
-
-	for _, agent := range p.AllAgents() {
-		transformed, err := TransformAgent(agent)
+	base := filepath.Join(baseDir, ".claude")
+	return harness.PlanStandardContent(f, p, harness.ContentDirs{
+		Rules:     filepath.Join(base, "rules"),
+		Agents:    filepath.Join(base, "agents"),
+		Workflows: filepath.Join(base, "commands"),
+		Skills:    filepath.Join(base, "skills"),
+	}, func(a domain.Agent) (domain.Agent, error) {
+		transformed, err := TransformAgent(a)
 		if err != nil {
-			return fmt.Errorf("transform agent %s: %w", agent.Name, err)
+			return domain.Agent{}, fmt.Errorf("transform agent %s: %w", a.Name, err)
 		}
-		dst := filepath.Join(baseDir, ".claude", "agents", agent.Name+".md")
-		f.Writes = append(f.Writes, domain.WriteAction{
-			Dst:        dst,
-			Content:    transformed,
-			SourcePack: agent.SourcePack,
-			Src:        agent.SourcePath,
-		})
-		f.Desired = append(f.Desired, dst)
-	}
-
-	f.AddWorkflowWrites(baseDir, filepath.Join(".claude", "commands"), p.AllWorkflows())
-	f.AddSkillCopies(baseDir, filepath.Join(".claude", "skills"), p.AllSkills())
-
-	return nil
+		a.Raw = transformed
+		return a, nil
+	})
 }
 
 func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
@@ -88,24 +81,43 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	}
 
 	if len(ctx.Profile.MCPServers) > 0 {
-		mcpBytes, _, err := RenderMCPBytesFromTyped(ctx.Profile.MCPServers, false)
+		mcpBytes, _, err := RenderMCPBytesFromTyped(ctx.Profile.MCPServers)
 		if err != nil {
 			return fmt.Errorf("render MCP bytes: %w", err)
 		}
-		f.Plugins = append(f.Plugins, domain.SettingsAction{
+		planned := map[string]domain.MCPServer{}
+		parseMCPJSON(planned, mcpBytes)
+		mcpActions, err := domain.BuildMCPActions(
+			mcpPath,
+			domain.HarnessClaudeCode,
+			harness.PlannedMCPServers(ctx.Profile.MCPServers, planned),
+			false,
+		)
+		if err != nil {
+			return fmt.Errorf("build MCP actions: %w", err)
+		}
+		mcpLabel := ".mcp.json"
+		if ctx.Scope == domain.ScopeGlobal {
+			mcpLabel = ".claude.json"
+		}
+		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst:        mcpPath,
 			Desired:    mcpBytes,
 			Harness:    domain.HarnessClaudeCode,
-			Label:      ".mcp.json",
+			Label:      mcpLabel,
 			SourcePack: sp,
+			MergeMode:  true,
 		})
+		f.MCPServers = append(f.MCPServers, mcpActions...)
 		f.Desired = append(f.Desired, filepath.Clean(mcpPath))
 	}
 
+	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessClaudeCode, "settings.local.json")
 	hasMCP := len(ctx.Profile.MCPServers) > 0
-	decision := engine.ClassifySettings(hasMCP, hasMCP, ctx.SkipSettings)
-	if decision.EmitSettings || decision.EmitMCPPlugin {
-		out, err := RenderSettingsBytes(ctx.Profile.MCPServers)
+	hasManagedContent := hasMCP || len(base) > 0
+	decision := engine.ClassifySettings(hasMCP, hasManagedContent, ctx.SkipSettings)
+	if decision.EmitSettings || decision.EmitMCP {
+		out, err := RenderSettingsBytes(base, ctx.Profile.MCPServers)
 		if err != nil {
 			return fmt.Errorf("render settings bytes: %w", err)
 		}
@@ -121,7 +133,7 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 			f.Settings = append(f.Settings, action)
 		} else {
 			action.Label = "settings.local.json (managed keys)"
-			f.Plugins = append(f.Plugins, action)
+			f.MCP = append(f.MCP, action)
 		}
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	}
@@ -130,7 +142,8 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 
 // Render produces a Fragment for pack rendering.
 func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
-	out, err := RenderSettingsBytes(ctx.Profile.MCPServers)
+	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessClaudeCode, "settings.local.json")
+	out, err := RenderSettingsBytes(base, ctx.Profile.MCPServers)
 	if err != nil {
 		return domain.Fragment{}, err
 	}
@@ -170,66 +183,62 @@ func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error
 	return res, nil
 }
 
+// CleanActions returns operations to reset Claude Code managed state.
+func (Harness) CleanActions(scope domain.Scope, baseDir, home string) []harness.CleanAction {
+	base := filepath.Join(baseDir, ".claude")
+	actions := []harness.CleanAction{
+		{Path: filepath.Join(base, "rules")},
+		{Path: filepath.Join(base, "agents")},
+		{Path: filepath.Join(base, "commands")},
+		{Path: filepath.Join(base, "skills")},
+	}
+	if scope == domain.ScopeProject {
+		actions = append(actions,
+			harness.CleanAction{
+				Path:   MCPProjectPath(baseDir),
+				Format: harness.CleanJSON,
+				Edit:   func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+			},
+			harness.CleanAction{
+				Path:   SettingsProjectPath(baseDir),
+				Format: harness.CleanJSON,
+				Edit:   func(root map[string]any) { delete(root, "permissions") },
+			},
+		)
+	} else if home != "" {
+		actions = append(actions,
+			harness.CleanAction{
+				Path:   MCPGlobalPath(home),
+				Format: harness.CleanJSON,
+				Edit:   func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+			},
+			harness.CleanAction{
+				Path:   SettingsGlobalPath(home),
+				Format: harness.CleanJSON,
+				Edit:   func(root map[string]any) { delete(root, "permissions") },
+			},
+		)
+	}
+	return actions
+}
+
 // captureContent captures rules, agents, commands, and skills from baseDir/.claude/.
 func captureContent(res *harness.CaptureResult, baseDir string) {
-	// Skills.
-	skillCopies, skills := harness.CaptureSkills(
-		filepath.Join(baseDir, ".claude", "skills"),
-		"skills",
-	)
-	res.Copies = append(res.Copies, skillCopies...)
-	res.Skills = append(res.Skills, skills...)
-
-	// Commands (workflows).
-	copies, warnings := harness.CaptureContentDir(
-		filepath.Join(baseDir, ".claude", "commands"), "workflows", ".md",
-		func(raw []byte, name, src string) error {
-			w, err := engine.ParseWorkflowBytes(raw, name, "")
-			if err != nil {
-				return err
-			}
-			w.SourcePath = src
-			res.Workflows = append(res.Workflows, w)
-			return nil
-		})
-	res.Copies = append(res.Copies, copies...)
-	res.Warnings = append(res.Warnings, warnings...)
-
-	// Rules.
-	copies, warnings = harness.CaptureContentDir(
-		filepath.Join(baseDir, ".claude", "rules"), "rules", ".md",
-		func(raw []byte, name, src string) error {
-			r, err := engine.ParseRuleBytes(raw, name, "")
-			if err != nil {
-				return err
-			}
-			r.SourcePath = src
-			res.Rules = append(res.Rules, r)
-			return nil
-		})
-	res.Copies = append(res.Copies, copies...)
-	res.Warnings = append(res.Warnings, warnings...)
-
-	// Agents (reverse transform: camelCase → snake_case).
-	copies, warnings = harness.CaptureContentDir(
-		filepath.Join(baseDir, ".claude", "agents"), "agents", ".md",
-		func(raw []byte, _ string, src string) error {
-			agent, err := ReverseTransformAgent(raw, filepath.Base(src))
-			if err != nil {
-				return err
-			}
-			agent.SourcePath = src
-			res.Agents = append(res.Agents, agent)
-			return nil
-		})
-	res.Copies = append(res.Copies, copies...)
-	res.Warnings = append(res.Warnings, warnings...)
+	base := filepath.Join(baseDir, ".claude")
+	harness.CaptureContent(res, harness.ContentDirs{
+		Rules:     filepath.Join(base, "rules"),
+		Agents:    filepath.Join(base, "agents"),
+		Workflows: filepath.Join(base, "commands"),
+		Skills:    filepath.Join(base, "skills"),
+	}, func(raw []byte, _ string, src string) (domain.Agent, error) {
+		return ReverseTransformAgent(raw, filepath.Base(src))
+	})
 }
 
 // captureMCPAndSettings captures MCP servers and settings from the given paths.
 func captureMCPAndSettings(res *harness.CaptureResult, mcpPath, settingsPath string) error {
 	if b, ok, err := util.ReadFileIfExists(mcpPath); err != nil {
-		return fmt.Errorf("capture claudecode .mcp.json: %w", err)
+		return fmt.Errorf("capture claudecode MCP config: %w", err)
 	} else if ok {
 		res.Warnings = append(res.Warnings, parseMCPJSON(res.MCPServers, b)...)
 	}
@@ -242,14 +251,29 @@ func captureMCPAndSettings(res *harness.CaptureResult, mcpPath, settingsPath str
 		})
 		res.Warnings = append(res.Warnings, parseSettingsPermissions(res.MCPServers, res.AllowedTools, b)...)
 	}
+	res.MaterializeCapturedMCP(mcpPath)
 	return nil
 }
 
 func parseMCPJSON(servers map[string]domain.MCPServer, b []byte) []domain.Warning {
 	var warnings []domain.Warning
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(b, &raw); err != nil {
+
+	// Claude Code .mcp.json wraps servers in {"mcpServers": {...}}.
+	// Unwrap the envelope; fall back to flat format for tolerance.
+	var envelope struct {
+		MCPServers json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(b, &envelope); err != nil {
 		return []domain.Warning{{Message: fmt.Sprintf("failed to parse .mcp.json: %v", err)}}
+	}
+	serverBytes := b
+	if envelope.MCPServers != nil {
+		serverBytes = envelope.MCPServers
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(serverBytes, &raw); err != nil {
+		return []domain.Warning{{Message: fmt.Sprintf("failed to parse .mcp.json servers: %v", err)}}
 	}
 	names := make([]string, 0, len(raw))
 	for name := range raw {

@@ -12,24 +12,20 @@ import (
 
 type RegistryCmd struct {
 	List    RegistryListCmd    `cmd:"" help:"List all packs available in the registry"`
-	Search  RegistrySearchCmd  `cmd:"" help:"Search for packs by name or description"`
 	Fetch   RegistryFetchCmd   `cmd:"" help:"Fetch remote registry sources and cache them locally"`
 	Sources RegistrySourcesCmd `cmd:"" help:"List configured registry sources"`
-	Add     RegistryAddCmd     `cmd:"" help:"Add a registry source without fetching"`
 	Remove  RegistryRemoveCmd  `cmd:"" help:"Remove a registry source"`
 }
 
 func (c *RegistryCmd) Help() string {
-	return `Browse, search, and manage pack registry sources. The registry maps pack
-names to source repositories, enabling discovery and installation.
+	return `Browse and manage pack registry sources. The registry maps pack names to
+source repositories, enabling discovery and installation.
 
-The unified registry view merges:
-  1. Local entries from ~/.config/aipack/registry.yaml (highest priority)
-  2. Cached remote sources in ~/.config/aipack/registries/ (in source order)
+The registry view merges cached remote sources in ~/.config/aipack/registries/
+in source order (first-seen wins for name conflicts).
 
 Common workflow:
-  aipack registry add <url>       # configure a source
-  aipack registry fetch           # fetch all sources
+  aipack registry fetch <url>     # add and fetch a source
   aipack registry list            # see available packs
   aipack pack install <name>      # install a pack by name`
 }
@@ -47,7 +43,7 @@ func (c *RegistryListCmd) Help() string {
 source repo, and subdirectory path (if applicable).
 
 Examples:
-  # List all registry packs (local + cached sources)
+  # List all registry packs (from cached sources)
   aipack registry list
 
   # Use a specific registry file (single-file mode)
@@ -56,7 +52,7 @@ Examples:
   # Machine-readable JSON output
   aipack registry list --json
 
-See also: registry search, pack add`
+See also: registry fetch, pack install`
 }
 
 func (c *RegistryListCmd) Run(g *Globals) error {
@@ -88,58 +84,6 @@ func (c *RegistryListCmd) Run(g *Globals) error {
 	return nil
 }
 
-// --- registry search ---
-
-type RegistrySearchCmd struct {
-	Query     string `arg:"" help:"Search term to match against pack names and descriptions"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Registry  string `help:"Path to registry YAML file (single-file mode)" name:"registry" type:"path"`
-	JSON      bool   `help:"Emit machine-readable JSON array" name:"json"`
-}
-
-func (c *RegistrySearchCmd) Help() string {
-	return `Searches the registry for packs whose name or description contains the
-given query (case-insensitive substring match).
-
-Examples:
-  # Search for packs related to "api"
-  aipack registry search api
-
-  # Search with JSON output
-  aipack registry search openshift --json
-
-See also: registry list, pack add`
-}
-
-func (c *RegistrySearchCmd) Run(g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
-	if err != nil {
-		return err
-	}
-
-	results, err := app.RegistrySearch(app.RegistryListRequest{
-		ConfigDir:    cfgDir,
-		RegistryPath: c.Registry,
-	}, c.Query)
-	if err != nil {
-		return err
-	}
-
-	if c.JSON {
-		if results == nil {
-			results = []app.RegistrySearchResult{}
-		}
-		return cmdutil.WriteJSON(g.Stdout, results)
-	}
-
-	if len(results) == 0 {
-		fmt.Fprintf(g.Stdout, "No packs matching %q.\n", c.Query)
-		return nil
-	}
-	printRegistryResults(g, results)
-	return nil
-}
-
 // --- registry fetch ---
 
 type RegistryFetchCmd struct {
@@ -148,7 +92,6 @@ type RegistryFetchCmd struct {
 	Ref       string `help:"Git ref (branch/tag) — implies git-based fetch" name:"ref"`
 	Path      string `help:"File path within git repo (default: registry.yaml)" name:"path"`
 	Name      string `help:"Source name for caching (default: derived from URL)" name:"name"`
-	Prune     bool   `help:"Deprecated: cached registries are always kept in sync" name:"prune"`
 	Deep      bool   `help:"Clone each registry pack and index resource-level frontmatter for search" name:"deep"`
 }
 
@@ -183,7 +126,7 @@ Examples:
   # Fetch all configured sources
   aipack registry fetch
 
-See also: registry list, registry search, registry sources, registry add`
+See also: registry list, registry sources`
 }
 
 func (c *RegistryFetchCmd) Run(g *Globals) error {
@@ -203,7 +146,6 @@ func (c *RegistryFetchCmd) Run(g *Globals) error {
 		Ref:       c.Ref,
 		Path:      c.Path,
 		Name:      c.Name,
-		Prune:     c.Prune,
 	}, g.Stdout); err != nil {
 		return err
 	}
@@ -233,7 +175,7 @@ Examples:
   # Remove a source by name
   aipack registry remove my-tools
 
-See also: registry sources, registry fetch, registry add`
+See also: registry sources, registry fetch`
 }
 
 func (c *RegistryRemoveCmd) Run(g *Globals) error {
@@ -266,7 +208,7 @@ Examples:
   # Machine-readable JSON output
   aipack registry sources --json
 
-See also: registry add, registry fetch, registry remove`
+See also: registry fetch, registry remove`
 }
 
 func (c *RegistrySourcesCmd) Run(g *Globals) error {
@@ -289,7 +231,7 @@ func (c *RegistrySourcesCmd) Run(g *Globals) error {
 
 	if len(sources) == 0 {
 		fmt.Fprintln(g.Stdout, "No registry sources configured.")
-		fmt.Fprintln(g.Stdout, "Add one with: aipack registry add <url>")
+		fmt.Fprintln(g.Stdout, "Add one with: aipack registry fetch <url>")
 		return nil
 	}
 
@@ -309,59 +251,6 @@ func (c *RegistrySourcesCmd) Run(g *Globals) error {
 		fmt.Fprintf(g.Stdout, "    %s\n", strings.Join(details, ", "))
 	}
 	return nil
-}
-
-// --- registry add ---
-
-type RegistryAddCmd struct {
-	URL       string `arg:"" help:"URL of the registry source (git repo or HTTP)"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Ref       string `help:"Git ref (branch/tag) — implies git-based fetch" name:"ref"`
-	Path      string `help:"File path within git repo (default: registry.yaml)" name:"path"`
-	Name      string `help:"Source name for caching (default: derived from URL)" name:"name"`
-}
-
-func (c *RegistryAddCmd) Help() string {
-	return `Adds a registry source to sync-config without fetching it. The source
-will be fetched on the next 'aipack registry fetch'.
-
-Use this when you want to configure a source for later, or when you are
-offline and just want to record the URL.
-
-Both HTTPS and SSH URLs are supported:
-  - HTTPS: https://bitbucket.example.com/scm/TEAM/tools.git
-  - SSH:   git@bitbucket.example.com:TEAM/tools.git
-
-Examples:
-  # Add an SSH source (recommended — avoids credential prompts)
-  aipack registry add git@bitbucket.example.com:TEAM/tools.git
-
-  # Add an HTTPS source
-  aipack registry add https://bitbucket.example.com/scm/TEAM/tools.git
-
-  # Add with explicit ref and path
-  aipack registry add https://github.com/org/tools.git \
-    --ref main --path packs/registry.yaml
-
-  # Add with a custom name
-  aipack registry add git@github.com:org/tools.git --name team-tools
-
-See also: registry fetch, registry sources, registry remove`
-}
-
-func (c *RegistryAddCmd) Run(g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
-	if err != nil {
-		return err
-	}
-
-	return app.RegistryAddSource(app.RegistryAddSourceRequest{
-		ConfigDir: cfgDir,
-		URL:       c.URL,
-		Ref:       c.Ref,
-		Path:      c.Path,
-		Name:      c.Name,
-	}, g.Stdout)
 }
 
 func printRegistryResults(g *Globals, results []app.RegistrySearchResult) {

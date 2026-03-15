@@ -105,32 +105,6 @@ schema_version: 1
 	}
 }
 
-func TestResolveRegistryPath_FlagOverride(t *testing.T) {
-	t.Parallel()
-	got := ResolveRegistryPath("/explicit/path.yaml", "", "/config")
-	if got != "/explicit/path.yaml" {
-		t.Errorf("got %q, want /explicit/path.yaml", got)
-	}
-}
-
-func TestResolveRegistryPath_SyncConfigDefault(t *testing.T) {
-	t.Parallel()
-	got := ResolveRegistryPath("", "/from/sync-config.yaml", "/config")
-	if got != "/from/sync-config.yaml" {
-		t.Errorf("got %q, want /from/sync-config.yaml", got)
-	}
-}
-
-func TestResolveRegistryPath_DefaultFallback(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	got := ResolveRegistryPath("", "", dir)
-	want := filepath.Join(dir, "registry.yaml")
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
 // --- DeriveSourceName tests ---
 
 func TestDeriveSourceName(t *testing.T) {
@@ -211,51 +185,41 @@ func TestIsGitURL(t *testing.T) {
 
 // --- LoadMergedRegistry tests ---
 
-func TestLoadMergedRegistry_LocalOnly(t *testing.T) {
+func TestLoadMergedRegistry_NoSources(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-
-	localYAML := `schema_version: 1
-packs:
-  local-pack:
-    repo: https://github.com/org/local
-`
-	os.WriteFile(filepath.Join(dir, "registry.yaml"), []byte(localYAML), 0o600)
 
 	reg, err := LoadMergedRegistry(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(reg.Packs) != 1 {
-		t.Fatalf("expected 1 pack, got %d", len(reg.Packs))
-	}
-	if _, ok := reg.Packs["local-pack"]; !ok {
-		t.Error("missing local-pack")
+	if len(reg.Packs) != 0 {
+		t.Fatalf("expected 0 packs, got %d", len(reg.Packs))
 	}
 }
 
-func TestLoadMergedRegistry_LocalPlusCached(t *testing.T) {
+func TestLoadMergedRegistry_MultipleSources(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	localYAML := `schema_version: 1
+	source1YAML := `schema_version: 1
 packs:
-  local-pack:
-    repo: https://github.com/org/local
+  pack-a:
+    repo: https://github.com/org/a
 `
-	os.WriteFile(filepath.Join(dir, "registry.yaml"), []byte(localYAML), 0o600)
-
-	cachedYAML := `schema_version: 1
+	source2YAML := `schema_version: 1
 packs:
-  remote-pack:
-    repo: https://github.com/org/remote
+  pack-b:
+    repo: https://github.com/org/b
 `
 	os.MkdirAll(RegistriesCacheDir(dir), 0o700)
-	os.WriteFile(SourceCachePath(dir, "my-source"), []byte(cachedYAML), 0o600)
+	os.WriteFile(SourceCachePath(dir, "source-1"), []byte(source1YAML), 0o600)
+	os.WriteFile(SourceCachePath(dir, "source-2"), []byte(source2YAML), 0o600)
 
 	sc := SyncConfig{SchemaVersion: 1}
 	sc.RegistrySources = []RegistrySourceEntry{
-		{Name: "my-source", URL: "https://example.com"},
+		{Name: "source-1", URL: "https://example.com/s1"},
+		{Name: "source-2", URL: "https://example.com/s2"},
 	}
 	SaveSyncConfig(SyncConfigPath(dir), sc)
 
@@ -265,42 +229,6 @@ packs:
 	}
 	if len(reg.Packs) != 2 {
 		t.Fatalf("expected 2 packs, got %d", len(reg.Packs))
-	}
-}
-
-func TestLoadMergedRegistry_LocalWinsConflict(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	localYAML := `schema_version: 1
-packs:
-  my-pack:
-    repo: https://github.com/org/local
-    description: local wins
-`
-	os.WriteFile(filepath.Join(dir, "registry.yaml"), []byte(localYAML), 0o600)
-
-	cachedYAML := `schema_version: 1
-packs:
-  my-pack:
-    repo: https://github.com/org/remote
-    description: remote loses
-`
-	os.MkdirAll(RegistriesCacheDir(dir), 0o700)
-	os.WriteFile(SourceCachePath(dir, "remote"), []byte(cachedYAML), 0o600)
-
-	sc := SyncConfig{SchemaVersion: 1}
-	sc.RegistrySources = []RegistrySourceEntry{
-		{Name: "remote", URL: "https://example.com"},
-	}
-	SaveSyncConfig(SyncConfigPath(dir), sc)
-
-	reg, err := LoadMergedRegistry(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if reg.Packs["my-pack"].Description != "local wins" {
-		t.Errorf("expected local to win conflict, got %q", reg.Packs["my-pack"].Description)
 	}
 }
 

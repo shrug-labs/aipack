@@ -6,6 +6,42 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.9.0]
+
+### Added
+
+- **`aipack restore`**: Restores settings files from the pre-sync cache. Each sync snapshots existing settings before overwriting; restore copies them back. Supports `--harness`, `--scope`, `--dry-run`, `--json`.
+- **`aipack status`**: Shows ecosystem status — active profile, installed packs with content inventories, and totals. Supports `--profile`, `--profile-path`, `--json`.
+- **`aipack trace`**: Traces a resource from pack source through the sync pipeline to each harness destination, showing file path and on-disk state. Valid types: `rule`, `agent`, `workflow`, `skill`, `mcp`. Supports `--harness`, `--scope`, `--json`.
+- **`pack enable` / `pack disable`**: Enable or disable a pack in a profile without installing or deleting it from disk. Replaces the previous `pack add` / `pack remove`.
+- **`sync --watch`**: Continuous sync mode — performs an initial sync, then watches pack source directories and config files for changes and re-syncs automatically.
+- **`sync --verbose` (`-v`)**: Shows content diffs for changed files during sync.
+- **`sync --json`**: Machine-readable JSON output for sync operations.
+- **Pre-sync settings cache**: Sync now snapshots each settings file before overwriting, stored in a `presync/` directory alongside the ledger. Enables `aipack restore`.
+- **Codex agent/workflow promotion**: Agents and workflows are now promoted to `.agents/skills/<name>/SKILL.md` with enriched YAML frontmatter (`source_type: agent` or `source_type: workflow`) that preserves metadata for round-trip capture. Previously these were flattened into `AGENTS.override.md`.
+- **Cline agent promotion**: Agents are promoted to skill directories in `.clinerules/skills/` with enriched frontmatter, matching the Codex promotion approach.
+- **Doctor checks**: `cli_update` (newer version available), `profile_validated` (YAML structure), `packs_registered` (unregistered pack dirs), `pack_version_drift` (local origin comparison), `stale_ledgers` (orphaned ledger files).
+- **Automatic update checking**: `aipack sync` and `aipack version` check GitHub for newer releases in the background (cached for 6 hours, no blocking). Disable with `AIPACK_NO_UPDATE_CHECK=1`. Skipped for dev builds.
+
+### Changed
+
+- **Env var expansion unified**: All harnesses now resolve `{env:VAR}` identically at sync time — the placeholder is replaced with the literal value from the process environment. If the variable is not set, the MCP server is skipped entirely and a warning is emitted. Previously each harness translated to its own native syntax.
+- **`--prune` separated from `--force`**: `--force` only overrides file conflicts. `--prune` independently controls deletion of stale managed files not in the current plan. Previously `--force` implied prune.
+- **`pack install` missing-pack behavior**: Running `pack install` with no arguments no longer installs all missing packs by default. Use `-m`/`--missing` to install missing packs from the active profile.
+- **`registry fetch` absorbs `registry add`**: Fetching a URL now auto-saves it as a source in sync-config, removing the need for a separate add step.
+- **Claude Code global MCP path**: Changed from `~/.claude/.mcp.json` to `~/.claude.json`.
+- **Claude Code global settings path**: Changed from `~/.claude/settings.json` to `~/.claude/settings.local.json`.
+- **Save modes**: Reduced from three (round-trip, snapshot, to-pack) to two (round-trip and to-pack). `--to-pack` now supports `--types` filter.
+- **TUI tabs**: Registry tab replaced with Save tab in `aipack manage`.
+- **Go version**: Bumped from 1.23 to 1.24.
+
+### Removed
+
+- **`--snapshot` save mode**: Use `--to-pack <name>` instead.
+- **`registry add`**: Absorbed into `registry fetch`, which now auto-saves sources.
+- **`registry search`**: Use `aipack search` for full-text search across packs and registries.
+- **`pack add` / `pack remove`**: Replaced by `pack enable` / `pack disable`.
+
 ## [0.8.0]
 
 ### Added

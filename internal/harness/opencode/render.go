@@ -17,14 +17,8 @@ type opencodeMCPEntry struct {
 	Timeout     int               `json:"timeout"`
 }
 
-func buildMCPEntries(servers []domain.MCPServer, resolveEnv bool) (map[string]opencodeMCPEntry, []domain.Warning) {
-	expanded := servers
-	var warnings []domain.Warning
-	if resolveEnv {
-		expanded, warnings = engine.ExpandMCPForRenderBestEffort(servers)
-	} else {
-		expanded, warnings = engine.ExpandMCPForRender(servers, false, "")
-	}
+func buildMCPEntries(servers []domain.MCPServer) (map[string]opencodeMCPEntry, []domain.MCPServer, []domain.Warning) {
+	expanded, warnings := engine.ExpandMCPServers(servers)
 
 	mcp := map[string]opencodeMCPEntry{}
 	for _, s := range expanded {
@@ -48,7 +42,7 @@ func buildMCPEntries(servers []domain.MCPServer, resolveEnv bool) (map[string]op
 		}
 		mcp[s.Name] = entry
 	}
-	return mcp, warnings
+	return mcp, expanded, warnings
 }
 
 func buildToolsMap(servers []domain.MCPServer) map[string]bool {
@@ -72,7 +66,7 @@ func buildToolsMap(servers []domain.MCPServer) map[string]bool {
 }
 
 // RenderBytes produces the full opencode.json content.
-func RenderBytes(base []byte, servers []domain.MCPServer, instr InstructionsSpec, skills SkillsSpec, resolveEnv bool) ([]byte, []domain.Warning, error) {
+func RenderBytes(base []byte, servers []domain.MCPServer, instr InstructionsSpec, skills SkillsSpec) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
 		if err := json.Unmarshal(base, &root); err != nil {
@@ -80,9 +74,9 @@ func RenderBytes(base []byte, servers []domain.MCPServer, instr InstructionsSpec
 		}
 	}
 
-	entries, warnings := buildMCPEntries(servers, resolveEnv)
+	entries, expanded, warnings := buildMCPEntries(servers)
 	root["mcp"] = entries
-	root["tools"] = buildToolsMap(servers)
+	root["tools"] = buildToolsMap(expanded)
 	MergeInstructions(root, instr)
 	MergeSkills(root, skills)
 
@@ -94,12 +88,12 @@ func RenderBytes(base []byte, servers []domain.MCPServer, instr InstructionsSpec
 }
 
 // RenderManagedKeysOnly produces a JSON object containing ONLY the sync-managed
-// keys (mcp, tools, instructions, skills). Used for MergeMode Plugin actions.
-func RenderManagedKeysOnly(servers []domain.MCPServer, instr InstructionsSpec, skills SkillsSpec, resolveEnv bool) ([]byte, []domain.Warning, error) {
+// keys (mcp, tools, instructions, skills). Used for MergeMode MCP actions.
+func RenderManagedKeysOnly(servers []domain.MCPServer, instr InstructionsSpec, skills SkillsSpec) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
-	entries, warnings := buildMCPEntries(servers, resolveEnv)
+	entries, expanded, warnings := buildMCPEntries(servers)
 	root["mcp"] = entries
-	root["tools"] = buildToolsMap(servers)
+	root["tools"] = buildToolsMap(expanded)
 
 	if instr.Manage && len(instr.Desired) > 0 {
 		root["instructions"] = instr.Desired
@@ -116,8 +110,9 @@ func RenderManagedKeysOnly(servers []domain.MCPServer, instr InstructionsSpec, s
 }
 
 // StripManagedKeys removes sync-managed keys from rendered settings.
+// Only the base settings file has managed keys; drop-in configs are returned as-is.
 func StripManagedKeys(rendered []byte, filename string) ([]byte, error) {
-	if filename == "oh-my-opencode.json" {
+	if filename != baseSettingsFile {
 		return rendered, nil
 	}
 	root := map[string]any{}

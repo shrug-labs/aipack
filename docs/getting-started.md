@@ -175,14 +175,14 @@ File: `mcp/jira.json`
 Two kinds of placeholders keep server definitions portable:
 
 - **`{params.KEY}`** — expanded from the active profile at sync time. Use for values that differ between teams or environments (URLs, project names).
-- **`{env:VAR}`** — translated to each harness's native variable syntax. Use for secrets and user-specific values that shouldn't be committed.
+- **`{env:VAR}`** — resolved at sync time to the literal value from the process environment. If the variable is not set, the MCP server is skipped and a warning is emitted. Use for secrets and user-specific values that shouldn't be committed.
 
 The manifest can declare default tool approvals, and profiles can override them per server. See the [Pack Format Specification](./pack-format.md#6-mcp-servers) for the full field reference and the [JSON Schema](../schemas/mcp-server.schema.json) for editor validation.
 
 ## Validate your pack
 
 ```bash
-aipack validate /path/to/my-team-pack
+aipack pack validate /path/to/my-team-pack
 ```
 
 Validate checks manifest structure, content inventory (declared files exist on disk, MCP server names match filenames), and content policy (frontmatter presence, no secrets, no hardcoded paths). It reports findings without modifying anything. JSON Schemas for `pack.json` and MCP server files are also available for [editor validation](./pack-format.md#appendix-c-json-schemas).

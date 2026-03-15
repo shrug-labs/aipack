@@ -17,9 +17,9 @@ type AdoptFileRequest struct {
 	TargetSpec
 	ConfigDir   string
 	PackName    string
-	HarnessPath string // absolute path to the harness file
-	Category    string // rules, agents, workflows, skills, mcp
-	RelPath     string // relative name within category (e.g. "triage" for rules/triage.md)
+	HarnessPath string              // absolute path to the harness file
+	Category    domain.PackCategory // rules, agents, workflows, skills, mcp
+	RelPath     string              // relative name within category (e.g. "triage" for rules/triage.md)
 }
 
 // ResolvePackRootWithFallback resolves the pack root from a manifest, falling
@@ -29,14 +29,6 @@ func ResolvePackRootWithFallback(manifestPath string, manifest config.PackManife
 		return root
 	}
 	return fallback
-}
-
-// CategoryExt returns the file extension for a content category.
-func CategoryExt(category string) string {
-	if category == "mcp" {
-		return ".json"
-	}
-	return ".md"
 }
 
 // AdoptFile copies a single untracked harness file into the named pack's
@@ -52,7 +44,7 @@ func AdoptFile(req AdoptFileRequest) error {
 	resolvedRoot := ResolvePackRootWithFallback(manifestPath, manifest, packRoot)
 
 	// Build destination path: <pack_root>/<category>/<relpath>.md (or .json for mcp).
-	dst := filepath.Join(resolvedRoot, req.Category, req.RelPath+CategoryExt(req.Category))
+	dst := filepath.Join(resolvedRoot, req.Category.DirName(), req.RelPath+req.Category.Ext())
 
 	// Read source content.
 	src := filepath.Clean(req.HarnessPath)
@@ -75,7 +67,7 @@ func AdoptFile(req AdoptFileRequest) error {
 	}
 
 	// Update ledger so this file is now tracked.
-	ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses)
+	ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses[0])
 	lg, _, err := engine.LoadLedger(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("loading ledger: %w", err)
@@ -117,7 +109,7 @@ func MoveFile(req MoveFileRequest) error {
 	}
 	srcResolvedRoot := ResolvePackRootWithFallback(srcManifestPath, srcManifest, srcPackRoot)
 
-	srcFile := filepath.Join(srcResolvedRoot, req.Category, req.RelPath+CategoryExt(req.Category))
+	srcFile := filepath.Join(srcResolvedRoot, req.Category.DirName(), req.RelPath+req.Category.Ext())
 
 	// Delete the file from the source pack.
 	if err := os.Remove(srcFile); err != nil && !os.IsNotExist(err) {
@@ -134,27 +126,10 @@ func MoveFile(req MoveFileRequest) error {
 	return nil
 }
 
-// manifestListForCategory returns a pointer to the manifest's content list for
-// the given category, or nil for "mcp" and unknown categories.
-func manifestListForCategory(m *config.PackManifest, category string) *[]string {
-	switch category {
-	case "rules":
-		return &m.Rules
-	case "agents":
-		return &m.Agents
-	case "workflows":
-		return &m.Workflows
-	case "skills":
-		return &m.Skills
-	default:
-		return nil
-	}
-}
-
 // addToManifest adds an ID to the appropriate manifest list if not present.
 // Returns true if the manifest was modified.
-func addToManifest(m *config.PackManifest, category, id string) bool {
-	if category == "mcp" {
+func addToManifest(m *config.PackManifest, category domain.PackCategory, id string) bool {
+	if category == domain.CategoryMCP {
 		if m.MCP.Servers == nil {
 			m.MCP.Servers = map[string]config.MCPDefaults{}
 		}
@@ -165,7 +140,7 @@ func addToManifest(m *config.PackManifest, category, id string) bool {
 		return false
 	}
 
-	list := manifestListForCategory(m, category)
+	list := m.ContentIDsPtr(category)
 	if list == nil {
 		return false
 	}
@@ -180,8 +155,8 @@ func addToManifest(m *config.PackManifest, category, id string) bool {
 
 // removeFromManifest removes an ID from the appropriate manifest list.
 // Returns true if the manifest was modified.
-func removeFromManifest(m *config.PackManifest, category, id string) bool {
-	if category == "mcp" {
+func removeFromManifest(m *config.PackManifest, category domain.PackCategory, id string) bool {
+	if category == domain.CategoryMCP {
 		if _, exists := m.MCP.Servers[id]; exists {
 			delete(m.MCP.Servers, id)
 			return true
@@ -189,7 +164,7 @@ func removeFromManifest(m *config.PackManifest, category, id string) bool {
 		return false
 	}
 
-	list := manifestListForCategory(m, category)
+	list := m.ContentIDsPtr(category)
 	if list == nil {
 		return false
 	}
@@ -200,4 +175,69 @@ func removeFromManifest(m *config.PackManifest, category, id string) bool {
 		}
 	}
 	return false
+}
+
+// MoveContentRequest holds parameters for the high-level content move operation.
+type MoveContentRequest struct {
+	ConfigDir string
+	ID        string
+	Category  domain.PackCategory
+	FromPack  string
+	ToPack    string
+}
+
+// MoveContent moves a content item from one pack to another, resolving all
+// internal state (active profile, manifests, paths) from configDir.
+func MoveContent(req MoveContentRequest) error {
+	res, _, err := ResolveActiveProfile(req.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("resolving active profile: %w", err)
+	}
+
+	srcPackRoot := filepath.Join(req.ConfigDir, "packs", req.FromPack)
+	srcManifestPath := filepath.Join(srcPackRoot, "pack.json")
+	srcManifest, err := config.LoadPackManifest(srcManifestPath)
+	if err != nil {
+		return fmt.Errorf("loading source pack manifest: %w", err)
+	}
+	resolvedRoot := ResolvePackRootWithFallback(srcManifestPath, srcManifest, srcPackRoot)
+	harnessPath := filepath.Join(resolvedRoot, req.Category.DirName(), req.ID+req.Category.Ext())
+
+	return MoveFile(MoveFileRequest{
+		AdoptFileRequest: AdoptFileRequest{
+			TargetSpec:  res.TargetSpec,
+			ConfigDir:   req.ConfigDir,
+			PackName:    req.ToPack,
+			HarnessPath: harnessPath,
+			Category:    req.Category,
+			RelPath:     req.ID,
+		},
+		FromPackName: req.FromPack,
+	})
+}
+
+// AdoptContentRequest holds parameters for the high-level content adopt operation.
+type AdoptContentRequest struct {
+	ConfigDir   string
+	HarnessPath string
+	Category    domain.PackCategory
+	RelPath     string
+	PackName    string
+}
+
+// AdoptContent adopts an untracked harness file into a pack, resolving all
+// internal state (active profile targeting) from configDir.
+func AdoptContent(req AdoptContentRequest) error {
+	res, _, err := ResolveActiveProfile(req.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("resolving active profile: %w", err)
+	}
+	return AdoptFile(AdoptFileRequest{
+		TargetSpec:  res.TargetSpec,
+		ConfigDir:   req.ConfigDir,
+		PackName:    req.PackName,
+		HarnessPath: req.HarnessPath,
+		Category:    req.Category,
+		RelPath:     req.RelPath,
+	})
 }

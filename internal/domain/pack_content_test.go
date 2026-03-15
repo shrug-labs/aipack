@@ -2,17 +2,17 @@ package domain
 
 import "testing"
 
-func TestAuthoredContentPrimaryRelPath(t *testing.T) {
+func TestPackCategoryPrimaryRelPath(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		kind AuthoredContentKind
+		kind PackCategory
 		id   string
 		want string
 	}{
-		{kind: ContentRules, id: "triage", want: "rules/triage.md"},
-		{kind: ContentAgents, id: "reviewer", want: "agents/reviewer.md"},
-		{kind: ContentWorkflows, id: "ship", want: "workflows/ship.md"},
-		{kind: ContentSkills, id: "oncall", want: "skills/oncall/SKILL.md"},
+		{kind: CategoryRules, id: "triage", want: "rules/triage.md"},
+		{kind: CategoryAgents, id: "reviewer", want: "agents/reviewer.md"},
+		{kind: CategoryWorkflows, id: "ship", want: "workflows/ship.md"},
+		{kind: CategorySkills, id: "oncall", want: "skills/oncall/SKILL.md"},
 	}
 	for _, tt := range tests {
 		if got := tt.kind.PrimaryRelPath(tt.id); got != tt.want {
@@ -27,12 +27,12 @@ func TestMatchPrimaryContentFile(t *testing.T) {
 		rel    string
 		wantID string
 		wantOK bool
-		wantK  AuthoredContentKind
+		wantK  PackCategory
 	}{
-		{rel: "rules/triage.md", wantID: "triage", wantOK: true, wantK: ContentRules},
-		{rel: "agents/reviewer.md", wantID: "reviewer", wantOK: true, wantK: ContentAgents},
-		{rel: "workflows/ship.md", wantID: "ship", wantOK: true, wantK: ContentWorkflows},
-		{rel: "skills/oncall/SKILL.md", wantID: "oncall", wantOK: true, wantK: ContentSkills},
+		{rel: "rules/triage.md", wantID: "triage", wantOK: true, wantK: CategoryRules},
+		{rel: "agents/reviewer.md", wantID: "reviewer", wantOK: true, wantK: CategoryAgents},
+		{rel: "workflows/ship.md", wantID: "ship", wantOK: true, wantK: CategoryWorkflows},
+		{rel: "skills/oncall/SKILL.md", wantID: "oncall", wantOK: true, wantK: CategorySkills},
 		{rel: "skills/oncall/notes.md", wantOK: false},
 		{rel: "docs/guide.md", wantOK: false},
 	}

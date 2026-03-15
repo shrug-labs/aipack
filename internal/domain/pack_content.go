@@ -5,49 +5,27 @@ import (
 	"strings"
 )
 
-type AuthoredContentKind string
+const SkillEntryFile = "SKILL.md"
 
-const (
-	ContentRules     AuthoredContentKind = "rules"
-	ContentAgents    AuthoredContentKind = "agents"
-	ContentWorkflows AuthoredContentKind = "workflows"
-	ContentSkills    AuthoredContentKind = "skills"
-	SkillEntryFile                       = "SKILL.md"
-)
-
-func AuthoredContentKinds() []AuthoredContentKind {
-	return []AuthoredContentKind{ContentRules, ContentAgents, ContentWorkflows, ContentSkills}
-}
-
-func (k AuthoredContentKind) DirName() string {
-	return string(k)
-}
-
-func (k AuthoredContentKind) PrimaryRelPath(id string) string {
-	switch k {
-	case ContentSkills:
-		return filepath.ToSlash(filepath.Join(k.DirName(), id, SkillEntryFile))
-	default:
-		return filepath.ToSlash(filepath.Join(k.DirName(), id+".md"))
-	}
-}
-
-func MatchPrimaryContentFile(rel string) (AuthoredContentKind, string, bool) {
+// MatchPrimaryContentFile matches a pack-relative path against the primary
+// content file patterns for authored categories (rules, agents, workflows,
+// skills). Returns the category, resource ID, and true on match.
+func MatchPrimaryContentFile(rel string) (PackCategory, string, bool) {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	if len(parts) < 2 {
 		return "", "", false
 	}
-	switch AuthoredContentKind(parts[0]) {
-	case ContentRules, ContentAgents, ContentWorkflows:
+	switch PackCategory(parts[0]) {
+	case CategoryRules, CategoryAgents, CategoryWorkflows:
 		if len(parts) != 2 || !strings.HasSuffix(parts[1], ".md") {
 			return "", "", false
 		}
-		return AuthoredContentKind(parts[0]), strings.TrimSuffix(parts[1], ".md"), true
-	case ContentSkills:
+		return PackCategory(parts[0]), strings.TrimSuffix(parts[1], ".md"), true
+	case CategorySkills:
 		if len(parts) != 3 || parts[2] != SkillEntryFile {
 			return "", "", false
 		}
-		return ContentSkills, parts[1], true
+		return CategorySkills, parts[1], true
 	default:
 		return "", "", false
 	}

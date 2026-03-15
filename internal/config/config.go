@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -83,4 +84,24 @@ func (c *ProfileConfig) mergeDeprecatedParams() {
 	}
 	c.Globals = nil
 	c.Global = nil
+}
+
+// ValidateProfileConfig checks a parsed profile for structural issues.
+func ValidateProfileConfig(cfg ProfileConfig) []string {
+	var errs []string
+	if cfg.SchemaVersion != ProfileSchemaVersion {
+		errs = append(errs, fmt.Sprintf("unsupported schema_version %d (expected %d)", cfg.SchemaVersion, ProfileSchemaVersion))
+	}
+	seen := map[string]struct{}{}
+	for i, p := range cfg.Packs {
+		if p.Name == "" {
+			errs = append(errs, fmt.Sprintf("packs[%d]: empty name", i))
+			continue
+		}
+		if _, ok := seen[p.Name]; ok {
+			errs = append(errs, fmt.Sprintf("packs[%d]: duplicate name %q", i, p.Name))
+		}
+		seen[p.Name] = struct{}{}
+	}
+	return errs
 }

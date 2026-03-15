@@ -168,7 +168,6 @@ type RegistryFetchRequest struct {
 	Ref       string // git ref (branch/tag); presence implies git-based fetch
 	Path      string // file path within repo (git only); default: registry.yaml
 	Name      string // explicit source name; empty = derive from URL
-	Prune     bool   // deprecated: cached registries are always overwritten
 
 	// FetchFn overrides how bytes are fetched from an HTTP URL (for testing).
 	FetchFn func(url string) ([]byte, error)
@@ -181,10 +180,6 @@ type RegistryFetchRequest struct {
 // With an explicit URL, fetches that single source and saves it to sync-config.
 // Without a URL, fetches all sources in registry_sources (or the compiled-in default).
 func RegistryFetch(req RegistryFetchRequest, stdout io.Writer) error {
-	if req.Prune {
-		fmt.Fprintln(stdout, "note: --prune is no longer needed; cached registries are kept in sync automatically")
-	}
-
 	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
 	if err != nil {
 		return fmt.Errorf("loading sync-config: %w", err)

@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/util"
 
@@ -59,6 +61,10 @@ type PackAddRequest struct {
 func PacksDir(configDir string) string {
 	return filepath.Join(configDir, "packs")
 }
+
+// IsRegistryName returns true if arg looks like a registry pack name
+// rather than a local path (no path separators, not an existing path).
+var IsRegistryName = cmdutil.IsRegistryName
 
 // PackAdd installs a pack to the canonical location and optionally registers it in a profile.
 func PackAdd(req PackAddRequest, stdout io.Writer) error {
@@ -123,8 +129,22 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 		return fmt.Errorf("creating packs directory: %w", err)
 	}
 
-	method := config.MethodCopy
-	if req.Link {
+	// Detect when the source pack already lives inside the packs directory.
+	// Without this guard, packRemoveExisting would delete the pack before
+	// the symlink/copy could use it. Resolve symlinks for a reliable comparison.
+	var method string
+	resolvedPackDir := packDir
+	if resolved, err := filepath.EvalSymlinks(packDir); err == nil {
+		resolvedPackDir = resolved
+	}
+	resolvedDestDir := destDir
+	if resolved, err := filepath.EvalSymlinks(destDir); err == nil {
+		resolvedDestDir = resolved
+	}
+	if resolvedPackDir == resolvedDestDir {
+		method = config.MethodLocal
+		fmt.Fprintf(stdout, "Already installed: %s (registering in-place)\n", destDir)
+	} else if req.Link {
 		method = config.MethodLink
 		packRemoveExisting(destDir, stdout)
 		if err := os.Symlink(packDir, destDir); err != nil {
@@ -132,6 +152,7 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "Linked: %s -> %s\n", destDir, packDir)
 	} else {
+		method = config.MethodCopy
 		// Copy to a temp dir first, then atomic rename to prevent partial state.
 		tmpDir, err := os.MkdirTemp(packsDir, ".copy-*")
 		if err != nil {
@@ -171,7 +192,6 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 		}
 	}
 
-	packSeedRegistry(req.ConfigDir, destDir, stdout)
 	packSeedProfiles(req.ConfigDir, destDir, manifest.Profiles, stdout)
 
 	if req.Register {
@@ -277,7 +297,6 @@ func packAddFromURL(req PackAddRequest, stdout io.Writer) error {
 	}
 
 	if req.Seed {
-		packSeedRegistry(req.ConfigDir, result.destDir, stdout)
 		packSeedProfiles(req.ConfigDir, result.destDir, result.manifest.Profiles, stdout)
 	} else {
 		packPreviewSeeding(result.destDir, result.manifest.Profiles, stdout)
@@ -803,30 +822,6 @@ func extractSubtree(parentDir, cloneDir, subPath string) (string, error) {
 	return tmp, nil
 }
 
-// packSeedRegistry copies a registry.yaml bundled in the installed pack to
-// the user's config directory if no registry exists there yet.
-func packSeedRegistry(configDir, packDir string, stdout io.Writer) {
-	src := filepath.Join(packDir, "registry.yaml")
-	if !util.PathExists(src) {
-		return // no bundled registry
-	}
-	dest := filepath.Join(configDir, "registry.yaml")
-	if util.PathExists(dest) {
-		// Registry already exists — merge new entries rather than overwriting.
-		packMergeRegistry(src, dest, stdout)
-		return
-	}
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return
-	}
-	if err := util.WriteFileAtomicWithPerms(dest, data, 0o700, 0o600); err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to seed registry: %v\n", err)
-		return
-	}
-	fmt.Fprintf(stdout, "Seeded registry from pack: %s\n", dest)
-}
-
 // packSeedProfiles copies profile YAML files from the installed pack to
 // configDir/profiles/ if they don't already exist there.
 func packSeedProfiles(configDir, packDir string, profiles []string, stdout io.Writer) {
@@ -863,54 +858,18 @@ func packSeedProfiles(configDir, packDir string, profiles []string, stdout io.Wr
 // packPreviewSeeding prints what would be seeded without applying changes.
 // Used for remote installs when --seed is not specified.
 func packPreviewSeeding(packDir string, profiles []string, stdout io.Writer) {
-	// Collect candidates first, then print once.
 	var lines []string
-	if util.PathExists(filepath.Join(packDir, "registry.yaml")) {
-		lines = append(lines, "  registry: registry.yaml")
-	}
 	for _, relPath := range profiles {
 		if util.PathExists(filepath.Join(packDir, relPath)) {
 			lines = append(lines, fmt.Sprintf("  profile:  %s", relPath))
 		}
 	}
 	if len(lines) > 0 {
-		fmt.Fprintln(stdout, "This pack bundles registry/profile content (use --seed to apply):")
+		fmt.Fprintln(stdout, "This pack bundles profile content (use --seed to apply):")
 		for _, l := range lines {
 			fmt.Fprintln(stdout, l)
 		}
 	}
-}
-
-// packMergeRegistry merges entries from src into dest, adding only packs
-// that don't already exist in dest.
-func packMergeRegistry(src, dest string, stdout io.Writer) {
-	srcReg, err := config.LoadRegistry(src)
-	if err != nil {
-		return
-	}
-	destReg, err := config.LoadRegistry(dest)
-	if err != nil {
-		return
-	}
-	added := 0
-	for name, entry := range srcReg.Packs {
-		if _, exists := destReg.Packs[name]; !exists {
-			destReg.Packs[name] = entry
-			added++
-		}
-	}
-	if added == 0 {
-		return
-	}
-	out, err := yaml.Marshal(&destReg)
-	if err != nil {
-		return
-	}
-	if err := util.WriteFileAtomicWithPerms(dest, out, 0o700, 0o600); err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to merge registry entries: %v\n", err)
-		return
-	}
-	fmt.Fprintf(stdout, "Merged %d new pack(s) into registry: %s\n", added, dest)
 }
 
 // packRecordOrigin saves the install metadata for a pack in sync-config.
@@ -1040,6 +999,23 @@ type PackShowEntry struct {
 	Skills      []string `json:"skills"`
 	Prompts     []string `json:"prompts"`
 	MCPServers  []string `json:"mcp_servers"`
+}
+
+// ContentIDs returns the resource IDs for the given category.
+func (e PackShowEntry) ContentIDs(cat domain.PackCategory) []string {
+	switch cat {
+	case domain.CategoryRules:
+		return e.Rules
+	case domain.CategoryAgents:
+		return e.Agents
+	case domain.CategoryWorkflows:
+		return e.Workflows
+	case domain.CategorySkills:
+		return e.Skills
+	case domain.CategoryMCP:
+		return e.MCPServers
+	}
+	return nil
 }
 
 // packUpdateContext holds resolved dependencies for updating packs.
@@ -1181,7 +1157,6 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 			Origin: meta.Origin, Method: method, InstalledAt: ctx.nowFn().UTC().Format(time.RFC3339),
 			Ref: ref, SubPath: meta.SubPath, CommitHash: newHash,
 		})
-		packSeedRegistry(ctx.configDir, packDir, ctx.stdout)
 		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, ctx.stdout)
 		msg := "pulled latest"
 		if newHash != "" {
@@ -1212,7 +1187,6 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 			Origin: origin, Method: method, InstalledAt: ctx.nowFn().UTC().Format(time.RFC3339),
 		})
 		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, ctx.stdout)
-		packSeedRegistry(ctx.configDir, packDir, ctx.stdout)
 		fmt.Fprintf(ctx.stdout, "Updated (copy): %s from %s\n", name, origin)
 		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: "re-copied from " + origin}
 
@@ -1266,7 +1240,6 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 			Origin: origin, Method: method, InstalledAt: ctx.nowFn().UTC().Format(time.RFC3339),
 			Ref: ref, SubPath: subPath, CommitHash: result.commitHash,
 		})
-		packSeedRegistry(ctx.configDir, result.destDir, ctx.stdout)
 		fmt.Fprintf(ctx.stdout, "Updated (archive): %s from %s\n", name, origin)
 		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: "re-fetched from " + origin}
 
@@ -1280,6 +1253,10 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		}
 		fmt.Fprintf(ctx.stdout, "OK (link): %s -> %s\n", name, target)
 		return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "symlink target exists"}
+
+	case config.MethodLocal:
+		fmt.Fprintf(ctx.stdout, "OK (local): %s\n", name)
+		return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "installed in-place"}
 
 	default:
 		if !hasMeta {

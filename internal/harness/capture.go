@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 // CaptureContentDir reads files matching ext from srcDir, creates flat
@@ -49,4 +50,65 @@ func CaptureContentDir(
 	}
 
 	return copies, warnings
+}
+
+// CaptureContent captures rules, agents, workflows, and skills from the given
+// directory layout. This is the standard capture loop used by harnesses that
+// store each content type in a separate directory.
+//
+// ParseAgent is an optional custom agent parser (e.g., for reverse-transforming
+// harness-native schema). If nil, agents are parsed with engine.ParseAgentBytes.
+func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []byte, name, src string) (domain.Agent, error)) {
+	// Rules.
+	copies, warnings := CaptureContentDir(dirs.Rules, "rules", ".md",
+		func(raw []byte, name, src string) error {
+			r, err := engine.ParseRuleBytes(raw, name, "")
+			if err != nil {
+				return err
+			}
+			r.SourcePath = src
+			res.Rules = append(res.Rules, r)
+			return nil
+		})
+	res.Copies = append(res.Copies, copies...)
+	res.Warnings = append(res.Warnings, warnings...)
+
+	// Agents.
+	agentParser := parseAgent
+	if agentParser == nil {
+		agentParser = func(raw []byte, name, _ string) (domain.Agent, error) {
+			return engine.ParseAgentBytes(raw, name, "")
+		}
+	}
+	copies, warnings = CaptureContentDir(dirs.Agents, "agents", ".md",
+		func(raw []byte, name, src string) error {
+			a, err := agentParser(raw, name, src)
+			if err != nil {
+				return err
+			}
+			a.SourcePath = src
+			res.Agents = append(res.Agents, a)
+			return nil
+		})
+	res.Copies = append(res.Copies, copies...)
+	res.Warnings = append(res.Warnings, warnings...)
+
+	// Workflows.
+	copies, warnings = CaptureContentDir(dirs.Workflows, "workflows", ".md",
+		func(raw []byte, name, src string) error {
+			w, err := engine.ParseWorkflowBytes(raw, name, "")
+			if err != nil {
+				return err
+			}
+			w.SourcePath = src
+			res.Workflows = append(res.Workflows, w)
+			return nil
+		})
+	res.Copies = append(res.Copies, copies...)
+	res.Warnings = append(res.Warnings, warnings...)
+
+	// Skills.
+	skillCopies, skills := CaptureSkills(dirs.Skills, "skills")
+	res.Copies = append(res.Copies, skillCopies...)
+	res.Skills = append(res.Skills, skills...)
 }

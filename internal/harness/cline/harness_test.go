@@ -27,7 +27,7 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 					{Name: "team", Raw: []byte("# Team rules"), SourcePack: "pack-a"},
 				},
 				Agents: []domain.Agent{
-					{Name: "reviewer", Raw: []byte("# Reviewer"), SourcePack: "pack-a", SourcePath: "/pack/agents/reviewer.md"},
+					{Name: "reviewer", Body: []byte("Review code carefully"), SourcePack: "pack-a", SourcePath: "/pack/agents/reviewer.md"},
 				},
 			}},
 		},
@@ -42,7 +42,8 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 	wantRule := filepath.Join(projectDir, ".clinerules", "team.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
-	wantAgent := filepath.Join(projectDir, ".clinerules", "agents", "reviewer.md")
+	// Agent promoted to skill → .clinerules/skills/reviewer/SKILL.md
+	wantAgent := filepath.Join(projectDir, ".clinerules", "skills", "reviewer", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 }
 
@@ -99,7 +100,7 @@ func TestPlan_Global_Content(t *testing.T) {
 					{Name: "global-rule", Raw: []byte("# Global"), SourcePack: "pack-a"},
 				},
 				Agents: []domain.Agent{
-					{Name: "planner", Raw: []byte("# Planner"), SourcePack: "pack-a"},
+					{Name: "planner", Body: []byte("Plan the work"), SourcePack: "pack-a"},
 				},
 				Workflows: []domain.Workflow{
 					{Name: "deploy", Raw: []byte("# Deploy"), SourcePack: "pack-a"},
@@ -116,18 +117,16 @@ func TestPlan_Global_Content(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	globalRulesDir := RulesGlobalDir(home)
-	globalWfDir := WorkflowsGlobalDir(home)
-
 	// Rule → RulesGlobalDir/global-rule.md
-	wantRule := filepath.Join(globalRulesDir, "global-rule.md")
+	wantRule := filepath.Join(RulesGlobalDir(home), "global-rule.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
-	wantAgent := filepath.Join(AgentsGlobalDir(home), "planner.md")
+	// Agent promoted to skill → ~/.cline/skills/planner/SKILL.md
+	wantAgent := filepath.Join(home, ".cline", "skills", "planner", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 
 	// Workflow → WorkflowsGlobalDir/deploy.md
-	wantWf := filepath.Join(globalWfDir, "deploy.md")
+	wantWf := filepath.Join(WorkflowsGlobalDir(home), "deploy.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
 	// Skill → ~/.cline/skills/diagnose
@@ -143,7 +142,7 @@ func TestPlan_Global_Content(t *testing.T) {
 	}
 }
 
-func TestPlan_Global_MCPAsPlugin(t *testing.T) {
+func TestPlan_Global_MCP(t *testing.T) {
 	home := t.TempDir()
 	// Need HOME set for SettingsGlobalPath.
 	t.Setenv("HOME", home)
@@ -163,16 +162,16 @@ func TestPlan_Global_MCPAsPlugin(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// MCP goes into Plugins for Cline (always, not gated by SkipSettings).
-	if len(f.Plugins) == 0 {
-		t.Fatal("expected MCP settings plugin")
+	// MCP goes into MCP actions for Cline (always, not gated by SkipSettings).
+	if len(f.MCP) == 0 {
+		t.Fatal("expected MCP settings action")
 	}
-	if f.Plugins[0].Harness != domain.HarnessCline {
-		t.Fatalf("plugin harness: got %q want %q", f.Plugins[0].Harness, domain.HarnessCline)
+	if f.MCP[0].Harness != domain.HarnessCline {
+		t.Fatalf("MCP harness: got %q want %q", f.MCP[0].Harness, domain.HarnessCline)
 	}
 }
 
-func TestPlan_Global_NoMCP_NoPlugin(t *testing.T) {
+func TestPlan_Global_NoMCP(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	ctx := engine.SyncContext{
@@ -185,8 +184,8 @@ func TestPlan_Global_NoMCP_NoPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if len(f.Plugins) != 0 {
-		t.Fatalf("expected no plugins when no MCP servers; got %d", len(f.Plugins))
+	if len(f.MCP) != 0 {
+		t.Fatalf("expected no MCP actions when no MCP servers; got %d", len(f.MCP))
 	}
 }
 
@@ -207,7 +206,7 @@ func TestRenderBytes_MergesBase(t *testing.T) {
 		{Name: "foo", Timeout: 30, Command: []string{"echo", "hi"}, Env: map[string]string{}},
 	}
 
-	out, _, err := RenderBytes(base, servers, false)
+	out, _, err := RenderBytes(base, servers)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -244,7 +243,7 @@ func TestRenderBytes_ResolvesEnvRefs(t *testing.T) {
 		},
 	}
 
-	out, _, err := RenderBytes(nil, servers, true)
+	out, _, err := RenderBytes(nil, servers)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -266,8 +265,8 @@ func TestRenderBytes_ResolvesEnvRefs(t *testing.T) {
 	}
 }
 
-func TestRenderBytes_TransformsEnvRefsToNativeFormat(t *testing.T) {
-	t.Parallel()
+func TestRenderBytes_EnvRefsResolved(t *testing.T) {
+	t.Setenv("HOME", "/tmp/resolved-home")
 	servers := []domain.MCPServer{
 		{
 			Name:    "bb",
@@ -276,7 +275,7 @@ func TestRenderBytes_TransformsEnvRefsToNativeFormat(t *testing.T) {
 		},
 	}
 
-	out, _, err := RenderBytes(nil, servers, false)
+	out, _, err := RenderBytes(nil, servers)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -289,9 +288,9 @@ func TestRenderBytes_TransformsEnvRefsToNativeFormat(t *testing.T) {
 	mcp := got["mcpServers"].(map[string]any)
 	bb := mcp["bb"].(map[string]any)
 	args := bb["args"].([]any)
-	// Cline native format: ${VAR}
-	if len(args) == 0 || !strings.Contains(args[0].(string), "${HOME}") {
-		t.Fatalf("expected ${HOME} in args: %v", args)
+	// Env refs resolved from process environment at sync time.
+	if len(args) == 0 || !strings.Contains(args[0].(string), "/tmp/resolved-home") {
+		t.Fatalf("expected resolved HOME in args: %v", args)
 	}
 }
 
@@ -301,7 +300,7 @@ func TestRenderBytes_PopulatesAlwaysAllow(t *testing.T) {
 		{Name: "foo", Command: []string{"echo", "hi"}, Env: map[string]string{}, AllowedTools: []string{"bar", "baz"}},
 	}
 
-	out, _, err := RenderBytes(nil, servers, false)
+	out, _, err := RenderBytes(nil, servers)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -329,7 +328,7 @@ func TestRenderBytes_PopulatesTimeout(t *testing.T) {
 		{Name: "bar", Timeout: 0, Command: []string{"echo"}, Env: map[string]string{}},
 	}
 
-	out, _, err := RenderBytes(nil, servers, false)
+	out, _, err := RenderBytes(nil, servers)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -378,7 +377,7 @@ func TestStripManagedKeys_RemovesMCPServers(t *testing.T) {
 func TestCapture_Project(t *testing.T) {
 	projectDir := t.TempDir()
 
-	// Create .clinerules/ with rule and agent files.
+	// Create .clinerules/ with a rule file.
 	rulesDir := filepath.Join(projectDir, ".clinerules")
 	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -386,11 +385,14 @@ func TestCapture_Project(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rulesDir, "team.md"), []byte("# Team"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	agentsDir := filepath.Join(rulesDir, "agents")
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+
+	// Create a promoted agent in skills dir.
+	agentSkillDir := filepath.Join(rulesDir, "skills", "reviewer")
+	if err := os.MkdirAll(agentSkillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(agentsDir, "reviewer.md"), []byte("---\nname: reviewer\ntools:\n  - bash\n---\nReview\n"), 0o600); err != nil {
+	promotedAgent := "---\nname: reviewer\ndescription: Reviews code\nsource_type: agent\ntools:\n  - bash\n---\n\nReview\n"
+	if err := os.WriteFile(filepath.Join(agentSkillDir, "SKILL.md"), []byte(promotedAgent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -415,20 +417,17 @@ func TestCapture_Project(t *testing.T) {
 		t.Fatal("expected Rules to be populated")
 	}
 	if len(res.Agents) == 0 {
-		t.Fatal("expected Agents to be populated")
+		t.Fatal("expected Agents to be populated from promoted skill")
 	}
 	if len(res.Workflows) == 0 {
 		t.Fatal("expected Workflows to be populated")
 	}
 
-	// Check copies: flat Dst paths (harness-agnostic).
-	foundRule, foundAgent, foundWf := false, false, false
+	// Check copies: rule and workflow have flat copy paths.
+	foundRule, foundWf := false, false
 	for _, c := range res.Copies {
 		if c.Dst == filepath.Join("rules", "team.md") {
 			foundRule = true
-		}
-		if c.Dst == filepath.Join("agents", "reviewer.md") {
-			foundAgent = true
 		}
 		if c.Dst == filepath.Join("workflows", "deploy.md") {
 			foundWf = true
@@ -437,11 +436,19 @@ func TestCapture_Project(t *testing.T) {
 	if !foundRule {
 		t.Fatal("expected rule copy at rules/team.md")
 	}
-	if !foundAgent {
-		t.Fatal("expected agent copy at agents/reviewer.md")
-	}
 	if !foundWf {
 		t.Fatal("expected workflow copy at workflows/deploy.md")
+	}
+
+	// Agent is captured as a write (re-rendered), not a copy.
+	foundAgentWrite := false
+	for _, w := range res.Writes {
+		if w.Dst == filepath.Join("agents", "reviewer.md") {
+			foundAgentWrite = true
+		}
+	}
+	if !foundAgentWrite {
+		t.Fatal("expected agent write at agents/reviewer.md")
 	}
 
 	// Typed fields.
@@ -456,15 +463,59 @@ func TestCapture_Project(t *testing.T) {
 	}
 }
 
+func TestCapture_Project_MCP(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	// Create MCP settings at the global path.
+	settingsPath := SettingsGlobalPath(home)
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpJSON := []byte(`{"mcpServers":{"test-server":{"command":"echo","args":["hi"],"env":{}}}}`)
+	if err := os.WriteFile(settingsPath, mcpJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		Home:       home,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	// MCP settings should be captured even in project scope.
+	foundSettings := false
+	for _, w := range res.Writes {
+		if w.Dst == filepath.Join("configs", "cline", "cline_mcp_settings.json") {
+			foundSettings = true
+		}
+	}
+	if !foundSettings {
+		t.Fatal("expected MCP settings write in project-scope capture")
+	}
+	if len(res.MCPServers) == 0 {
+		t.Fatal("expected MCP servers to be parsed from captured settings")
+	}
+	if _, ok := res.MCPServers["test-server"]; !ok {
+		t.Fatal("expected test-server in captured MCP servers")
+	}
+}
+
 func TestCapture_Global_Agents(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 
-	agentsDir := AgentsGlobalDir(home)
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+	// Create a promoted agent in the global skills directory.
+	agentSkillDir := filepath.Join(home, ".cline", "skills", "planner")
+	if err := os.MkdirAll(agentSkillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(agentsDir, "planner.md"), []byte("---\nname: planner\ntools:\n  - bash\n---\nPlan\n"), 0o600); err != nil {
+	promotedAgent := "---\nname: planner\ndescription: Plans work\nsource_type: agent\ntools:\n  - bash\n---\n\nPlan\n"
+	if err := os.WriteFile(filepath.Join(agentSkillDir, "SKILL.md"), []byte(promotedAgent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -478,14 +529,15 @@ func TestCapture_Global_Agents(t *testing.T) {
 	if len(res.Agents) != 1 || res.Agents[0].Name != "planner" {
 		t.Fatalf("expected typed agent 'planner'; got %v", res.Agents)
 	}
+	// Promoted agents are captured as writes (re-rendered), not copies.
 	found := false
-	for _, c := range res.Copies {
-		if c.Dst == filepath.Join("agents", "planner.md") {
+	for _, w := range res.Writes {
+		if w.Dst == filepath.Join("agents", "planner.md") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected agent copy at agents/planner.md")
+		t.Fatalf("expected agent write at agents/planner.md")
 	}
 }
 
@@ -497,22 +549,29 @@ func TestManagedRootsProject(t *testing.T) {
 	roots := ManagedRootsProject(projectDir)
 
 	wantClinerules := filepath.Join(projectDir, ".clinerules")
-	wantAgents := filepath.Join(projectDir, ".clinerules", "agents")
+	wantWorkflows := filepath.Join(projectDir, ".clinerules", "workflows")
+	wantSkills := filepath.Join(projectDir, ".clinerules", "skills")
 	found := false
-	foundAgents := false
+	foundWorkflows := false
+	foundSkills := false
 	for _, r := range roots {
-		if r == wantClinerules {
+		switch r {
+		case wantClinerules:
 			found = true
-		}
-		if r == wantAgents {
-			foundAgents = true
+		case wantWorkflows:
+			foundWorkflows = true
+		case wantSkills:
+			foundSkills = true
 		}
 	}
 	if !found {
 		t.Fatalf("missing .clinerules in managed roots; got %v", roots)
 	}
-	if !foundAgents {
-		t.Fatalf("missing .clinerules/agents in managed roots; got %v", roots)
+	if !foundWorkflows {
+		t.Fatalf("missing .clinerules/workflows in managed roots; got %v", roots)
+	}
+	if !foundSkills {
+		t.Fatalf("missing .clinerules/skills in managed roots; got %v", roots)
 	}
 }
 
@@ -521,18 +580,13 @@ func TestManagedRootsGlobal(t *testing.T) {
 	home := t.TempDir()
 	roots := ManagedRootsGlobal(home)
 
-	// Should include global rules dir and workflows dir.
 	wantRules := RulesGlobalDir(home)
-	wantAgents := AgentsGlobalDir(home)
 	wantWf := WorkflowsGlobalDir(home)
 
-	foundRules, foundAgents, foundWf := false, false, false
+	foundRules, foundWf := false, false
 	for _, r := range roots {
 		if r == wantRules {
 			foundRules = true
-		}
-		if r == wantAgents {
-			foundAgents = true
 		}
 		if r == wantWf {
 			foundWf = true
@@ -540,9 +594,6 @@ func TestManagedRootsGlobal(t *testing.T) {
 	}
 	if !foundRules {
 		t.Fatalf("missing rules dir in global managed roots; got %v", roots)
-	}
-	if !foundAgents {
-		t.Fatalf("missing agents dir in global managed roots; got %v", roots)
 	}
 	if !foundWf {
 		t.Fatalf("missing workflows dir in global managed roots; got %v", roots)
