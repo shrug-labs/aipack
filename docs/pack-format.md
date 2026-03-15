@@ -4,13 +4,7 @@ Version: 0.1 (draft)
 
 ## Abstract
 
-A **pack** is a portable, versioned bundle of AI agent configuration. It contains rules, skills, workflows, agent definitions, MCP server configs, and harness settings — authored once and rendered into any supported coding assistant's native format by a sync engine.
-
-Packs solve three problems:
-
-1. **Portability** — agent configuration is authored in a harness-independent format and rendered per-harness at sync time.
-2. **Composition** — multiple packs from different sources (personal, team, organization) compose via profiles with explicit layering and conflict resolution.
-3. **Distribution** — packs are git-native artifacts, installable from any git repository with no infrastructure beyond what teams already use.
+A **pack** is a portable, versioned bundle of AI agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — authored once and rendered into any supported coding assistant's native format at sync time. Packs are harness-independent (write once, render per-harness), composable (personal, team, and org packs layer via profiles with explicit conflict resolution), and git-native (installable from any repository with no infrastructure beyond what teams already use).
 
 ## 1. Pack Structure
 
@@ -102,7 +96,7 @@ An **explicit empty array** (`"rules": []`) disables discovery for that vector �
 
 An **explicit non-empty array** (`"rules": ["rule-one", "rule-two"]`) acts as a filter — only listed IDs are included, even if the directory contains more files.
 
-This convention-over-configuration approach means minimal packs need only a `pack.json` with name and schema version. The directory structure is the inventory.
+Minimal packs need only a `pack.json` with name and schema version — the directory structure is the inventory.
 
 ## 3. Content Format
 
@@ -121,7 +115,7 @@ The frontmatter block is delimited by `---` on its own line. Everything before t
 
 ### Why markdown?
 
-The content IS the prompt. AI agents read markdown natively — no transformation is needed between what the author writes and what the agent consumes. Frontmatter carries metadata for the sync engine; the body carries instructions for the agent.
+Pack content is the prompt — agents read markdown natively, so no transformation is needed between what the author writes and what the agent consumes. Frontmatter carries metadata for the sync engine; the body is what the agent reads.
 
 ## 4. Content Vectors
 
@@ -578,16 +572,7 @@ The sync engine guarantees the following for all supported harnesses:
 4. **Conflict detection** — user modifications to managed files are detected via content digest and surfaced as diffs rather than silently overwritten.
 5. **Determinism** — given identical inputs and profile, sync produces byte-identical outputs across runs.
 
-Per-harness rendering details (file paths, config formats, merge behavior) are documented in the [aipack reference](./aipack.md#per-harness-behavior) and are implementation concerns of the sync engine, not part of the pack format specification.
-
-### Supported harnesses
-
-| Harness | Rules | Skills | Workflows | Agents | MCP | Settings |
-|---------|-------|--------|-----------|--------|-----|----------|
-| Claude Code | Individual files | Directories | Command files | Subagent files | JSON | JSON merge |
-| OpenCode | Individual files | Directories | Command files | Individual files | JSON key | JSON merge |
-| Codex | Flattened markdown | Directories | Promoted to skill dirs | Promoted to skill dirs | TOML tables | TOML merge |
-| Cline | Individual files | Directories | Individual files | Promoted to skill dirs | Global JSON | N/A |
+Per-harness rendering details (file paths, config formats, merge behavior) are documented in the [aipack reference](./aipack.md#per-harness-reference) and are implementation concerns of the sync engine, not part of the pack format specification. Four harnesses are supported: Claude Code, OpenCode, Codex, and Cline.
 
 ## Appendix A: Complete `pack.json` Example
 

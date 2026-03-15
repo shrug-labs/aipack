@@ -358,3 +358,4 @@ By default, `aipack sync` targets whichever harnesses are configured in `~/.conf
 
 - [Pack Format Specification](./pack-format.md) — full format reference including content vectors, MCP servers, harness settings, environment references, and JSON Schemas
 - [aipack Reference](./aipack.md) — complete CLI reference, per-harness behavior, sync contract, and save modes
+- [Configuration and State](./configuration.md) — config directory layout, sync-config reference, ledger and state management

@@ -128,52 +128,16 @@ sync. New team members are fully configured.
 - **[Getting Started: Authoring and Sharing Packs](docs/getting-started.md)** — create a pack from scratch or existing content, share it with your team, compose multiple packs
 - **[Pack Format Specification](docs/pack-format.md)** — full format reference including content vectors, MCP servers, profiles, distribution, and JSON Schemas
 - **[aipack Reference](docs/aipack.md)** — complete CLI reference, top-level command surface, per-harness behavior, and sync/save behavior
+- **[Configuration and State](docs/configuration.md)** — config directory layout, sync-config reference, ledger and state management
+- **[CLI Specification](docs/cli-spec.md)** — command tree, JSON output contracts, and enumerations for tooling integration
 
 ## Key Concepts
 
-### Packs
+A **pack** is a directory of agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — with a `pack.json` manifest. Content is markdown with YAML frontmatter. Drop files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `mcp/`) and the sync engine discovers them automatically. Full format reference: [Pack Format Specification](docs/pack-format.md).
 
-A pack is a directory containing agent configuration:
+**Profiles** control which packs to sync and how — content filtering, parameter expansion, MCP server overrides, role-based scoping. Teams bundle profiles with packs so onboarding is `pack install --seed` + `profile set` + `sync`. See [Getting Started](docs/getting-started.md#profiles) for worked examples.
 
-```
-my-pack/
-├── pack.json          # manifest (name, version, description)
-├── rules/             # always-on constraints (<50 lines each)
-├── skills/            # on-demand knowledge (SKILL.md + supporting files)
-├── workflows/         # step-by-step procedures
-├── agents/            # tool-using personas
-├── mcp/               # MCP server configurations
-└── configs/           # harness settings templates
-```
-
-### Profiles
-
-Profiles select which packs to sync and how. Stored as YAML under `~/.config/aipack/profiles/`.
-
-```yaml
-# ~/.config/aipack/profiles/default.yaml
-schema_version: 2
-packs:
-  - name: my-team-pack
-  - name: personal
-```
-
-Packs are referenced by name and resolved from `~/.config/aipack/packs/<name>/`. Multiple packs compose in profile order. Conflicts are detected and surfaced.
-
-### Sync
-
-Sync reads your profile, resolves all packs, and writes to harness-native locations:
-
-```bash
-aipack sync                          # sync active profile to default scope/harnesses
-aipack sync --scope project          # project-local config only
-aipack sync --scope global           # user-global config only
-aipack sync --harness claudecode     # one harness only
-aipack sync --dry-run                # preview changes
-aipack sync --force                  # overwrite conflicts
-```
-
-Sync is non-destructive by default. Modified files show a unified diff and are skipped unless `--force` is used.
+**Sync** resolves the active profile and writes to harness-native locations. Non-destructive by default — user modifications are detected via content digest and shown as diffs rather than overwritten.
 
 ## Features
 

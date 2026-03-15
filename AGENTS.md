@@ -1,73 +1,78 @@
 # aipack
 
-Go 1.24 module. Generic pack sync engine — works with any content pack installed via `aipack pack install`.
+Go 1.24 module. Pack sync engine — author agent configuration once, render to any supported harness (Claude Code, OpenCode, Codex, Cline).
 
-## Terminology
+## Architecture
 
-| Term | Definition |
-|------|-----------|
-| **Pack** | Portable, versioned bundle of AI agent configuration (rules, agents, workflows, skills, MCP servers, harness configs) |
-| **Harness** | Tool wrapping an LLM with context/tool/orchestration (Cline, Codex, OpenCode, Claude Code, Cursor, Windsurf, Aider, Amp) |
-| **Profile** | Composition layer selecting which packs, content, and settings to sync to which harnesses |
-| **Sync** | Writing pack content to harness-specific locations and formats |
-| **Render** | Generating portable, self-contained pack output (not tied to a harness) |
+Three layers enforced by `cmd/aipack/architecture_test.go`:
 
-## Capability vector mapping
+| Layer | Path | Role |
+|-------|------|------|
+| CLI | `cmd/aipack/` | Kong adapters — parse flags, delegate to app |
+| Service | `internal/app/` | Request → Run → Result. No CLI deps, no I/O globals |
+| Domain | `internal/` (config, domain, engine, harness, render) | Business logic, no upward imports |
 
-Each harness implements vectors differently. Quick reference (see `docs/aipack.md` for full details including scope, MCP formats, merge behavior, env var expansion, and limitations):
+Import rules (test-enforced, violations fail `go test`):
+- `internal/` NEVER imports `cmd/`
+- `harness/` and `render/` NEVER import `config/` (depend on domain + engine only)
+- No imports of deleted v1 packages (full blocklist in `architecture_test.go`)
 
-| Vector | Claude Code | OpenCode | Codex | Cline |
-|--------|-------------|----------|-------|-------|
-| Rules | `.claude/rules/<file>.md` | Individual files + `instructions` ref | Flattened into `AGENTS.override.md` | Individual files in `.clinerules/` |
-| Agents | `.claude/agents/<file>.md` | Individual files in `.opencode/agents/` | Promoted to `.agents/skills/<name>/SKILL.md` | Promoted to `.clinerules/skills/<name>/SKILL.md` |
-| Workflows | `.claude/commands/<file>.md` | `.opencode/commands/` | Promoted to `.agents/skills/<name>/SKILL.md` | `.clinerules/workflows/` |
-| Skills | `.claude/skills/` | `.opencode/skills/` + `skills.paths` ref | `.agents/skills/` | `.clinerules/skills/` |
-| MCP | `.mcp.json` + `settings.local.json` permissions | `opencode.json` `mcp` key | `config.toml` `[mcp_servers]` | Global VS Code storage only |
-| Settings | `settings.local.json` (always merge) | `opencode.json` (template) | `config.toml` (template) | N/A |
+## Key abstractions
 
-## Architecture constraints
+Services in `internal/app/` follow a Request → Run → Result pattern with injected I/O — no global state. See the existing services for the shape.
 
-Three-layer structure enforced by `cmd/aipack/architecture_test.go`:
+Sync produces a **Plan** by accumulating **Fragments** from each harness adapter. Settings and MCP are separate plan vectors with different gating behavior — details in `internal/harness/AGENTS.md`.
 
-- `cmd/aipack/` → CLI adapters: thin wrappers that parse flags and delegate
-- `internal/app/` → Services: `Request` struct → `Run()` → `Result` or error
-- `internal/` → Domain packages
-
-**Import rules:**
-- NEVER import `cmd/` from `internal/`
-- `app` MUST NOT import `internal/render`
-- Domain packages: no upward imports, only peer domain packages + stdlib + third-party
+Four harness adapters (`claudecode`, `opencode`, `codex`, `cline`) handle both forward sync (Plan) and reverse save (Capture). Scope branching is per-harness. Interface contract and patterns: `internal/harness/AGENTS.md`.
 
 ## Conventions
 
 - Wrap errors with `%w` — always preserve context
-- Use `cmdutil.ExitOK` (0), `ExitFail` (1), `ExitUsage` (2)
-- CLI adapters: Kong `Run(g *Globals) error` pattern
+- Exit codes: `cmdutil.ExitOK` (0), `ExitFail` (1), `ExitUsage` (2)
 - Tests: `t.Parallel()` where safe, `t.TempDir()` for isolation, NEVER `t.Parallel()` with `t.Setenv()`
-- `--skip-settings` skips harness settings only; MCP configs still sync
-- Plan has two non-content vectors: Settings (gated by `--skip-settings`), MCP (never gated)
-- Drop-in config files (any non-base config in a pack's harness directory) are settings, not a separate vector
+- Use `make fmt` (not raw `gofmt -w`) for formatting
+- `--skip-settings` skips settings only; MCP configs and plugins always sync
+- Version injected via ldflags at build time (`-X main.version`, `-X main.commit`)
+- All commits require `Signed-off-by` — use `git commit --signoff`
 
 ## Directory map
 
-- `cmd/aipack/` — CLI entry + command adapters
-- `internal/app/` — service layer (sync, save, clean, doctor, init, pack)
-- `internal/config/` — config parsing, profile resolution, sync config
-- `internal/domain/` — domain types (plan, content, profile, ledger, settings)
-- `internal/engine/` — sync engine (parse, resolve, plan, diff, apply, merge, MCP)
-- `internal/harness/` — per-harness plan/render/capture (claudecode, cline, codex, opencode)
-- `internal/render/` — pack rendering (portable output)
-- `internal/update/` — CLI version update checking
-- `schemas/` — embedded JSON Schemas for pack.json and MCP server validation
-- `internal/cmdutil/` — CLI utilities (flag resolution, harness/scope normalization)
-- `internal/util/` — shared utilities (file I/O, digests)
-- `docs/aipack.md` — tool reference (sync contract, per-harness behavior)
+| Path | Contents |
+|------|----------|
+| `cmd/aipack/` | CLI adapters (Kong) — see `cmd/aipack/AGENTS.md` |
+| `cmd/aipack/tui/` | Bubbletea TUI for `aipack manage` |
+| `internal/app/` | Service layer: sync, save, clean, doctor, pack, trace, etc. |
+| `internal/config/` | Config parsing, profile resolution, sync-config, manifest, discovery |
+| `internal/domain/` | Core types: Plan, Fragment, Content, Profile, Ledger, Actions |
+| `internal/engine/` | Sync pipeline: parse, resolve, plan, diff, apply, merge |
+| `internal/harness/` | Per-harness adapters — see `internal/harness/AGENTS.md` |
+| `internal/index/` | SQLite FTS5 search index |
+| `internal/render/` | Portable pack rendering (harness-independent) |
+| `internal/cmdutil/` | CLI utilities: exit codes, flag resolution, harness normalization |
+| `internal/util/` | Shared utilities: file I/O, digests |
+| `schemas/` | Embedded JSON Schemas (pack.json, MCP server) |
+| `docs/` | User documentation — `docs/aipack.md` is authoritative for sync behavior |
 
 ## Workflow
 
 - Before editing: read nearby code and related tests
 - After editing: `go test ./...`, then `go vet ./...`
-- Pre-commit gate: `go build ./...` → `go test ./...` → `make fmt` → check `git diff` for fmt changes → stage any fmt changes → commit
-- Use `make fmt` (not raw `gofmt -w`) — it's the canonical formatting target
-- If CLI behavior changed: update CLI help text in the same change
-- If sync behavior changed: update `docs/aipack.md`
+- Before declaring done: `make build && make test && go vet ./...` must all pass
+- Pre-commit: `go build ./...` → `go test ./...` → `make fmt` → check `git diff` for fmt changes → stage any → commit
+- Feature work going to main: single atomic commit, not per-task intermediaries
+- Commits use `git commit --signoff`
+
+### What to update when
+
+| You changed... | Also update |
+|---------------|-------------|
+| CLI flags or behavior | Help text in the same file |
+| Sync behavior or per-harness rendering | `docs/aipack.md` (authoritative reference) |
+| JSON output shape | `docs/cli-spec.md` (output contracts) |
+| Pack format or profile schema | `docs/pack-format.md` |
+| Any user-visible feature, fix, or breaking change | `CHANGELOG.md` Unreleased section |
+| Config directory layout or sync-config schema | `docs/configuration.md` |
+
+### Release process
+
+`VERSION` is the source of truth. Full process in `RELEASING.md`: bump VERSION → update CHANGELOG → verify (`make fmt-check && make test && go vet ./... && make dist`) → commit → tag `vX.Y.Z` → push tag. The tag triggers CI to build and publish release assets.
