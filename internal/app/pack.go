@@ -1336,6 +1336,10 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 
 	manifestPath := filepath.Join(packDir, "pack.json")
 	if m, err := config.LoadPackManifest(manifestPath); err == nil {
+		packRoot := config.ResolvePackRoot(manifestPath, m.Root)
+		if packRoot != "" {
+			_ = config.DiscoverContent(&m, packRoot)
+		}
 		entry.Version = m.Version
 		entry.Rules = m.Rules
 		entry.Agents = m.Agents

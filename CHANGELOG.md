@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.9.1]
+
+### Fixed
+
+- **Content discovery in status/show**: `aipack status`, `aipack manage`, and `aipack pack show` now run content auto-discovery, so packs relying on convention-based layout (no explicit content lists in `pack.json`) display their rules, skills, agents, and workflows correctly.
+
 ## [0.9.0]
 
 ### Added

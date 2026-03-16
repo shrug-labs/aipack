@@ -54,6 +54,10 @@ func ResolveProfilePacks(configDir string, packs []config.PackEntry) ([]ProfileP
 		if packRoot == "" {
 			packRoot = filepath.Join(configDir, "packs", pe.Name)
 		}
+		if err := config.DiscoverContent(&manifest, packRoot); err != nil {
+			errs = append(errs, fmt.Sprintf("pack %q content discovery: %v", pe.Name, err))
+			continue
+		}
 		resolved = append(resolved, ProfilePackInfo{
 			Index:    i,
 			Name:     pe.Name,

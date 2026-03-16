@@ -1150,6 +1150,52 @@ func TestPackShow_HappyPath(t *testing.T) {
 	}
 }
 
+func TestPackShow_DiscoversContentFromDisk(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+
+	// Write a manifest with no content fields — discovery should find them.
+	writePackManifest(t, packDir, "discover-pack")
+
+	// Create content on disk.
+	rulesDir := filepath.Join(packDir, "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "my-rule.md"), []byte("# rule"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(packDir, "skills", "my-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	writeSeedSyncConfig(t, configDir)
+	var out bytes.Buffer
+	_ = PackAdd(PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		Register:  false,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+
+	entry, err := PackShow(configDir, "discover-pack")
+	if err != nil {
+		t.Fatalf("PackShow: %v", err)
+	}
+	if len(entry.Rules) != 1 || entry.Rules[0] != "my-rule" {
+		t.Fatalf("Rules = %v, want [my-rule]", entry.Rules)
+	}
+	if len(entry.Skills) != 1 || entry.Skills[0] != "my-skill" {
+		t.Fatalf("Skills = %v, want [my-skill]", entry.Skills)
+	}
+}
+
 func TestPackShow_NotInstalled(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()

@@ -1,11 +1,43 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
+
+func TestResolveProfilePacks_DiscoversContent(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+
+	// Create a pack with no content fields in the manifest but content on disk.
+	packDir := filepath.Join(configDir, "packs", "disco")
+	writePackManifest(t, packDir, "disco")
+
+	rulesDir := filepath.Join(packDir, "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "found.md"), []byte("# rule"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := []config.PackEntry{{Name: "disco"}}
+	resolved, errs := ResolveProfilePacks(configDir, entries)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("resolved = %d, want 1", len(resolved))
+	}
+	ids := resolved[0].Manifest.ContentIDs(domain.CategoryRules)
+	if len(ids) != 1 || ids[0] != "found" {
+		t.Fatalf("Rules = %v, want [found]", ids)
+	}
+}
 
 func TestBuildContentTree_BasicSelection(t *testing.T) {
 	t.Parallel()
