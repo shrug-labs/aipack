@@ -119,15 +119,15 @@ func TestBuildContentTree_MCPServers(t *testing.T) {
 		Root:          ".",
 		MCP: config.MCPPack{
 			Servers: map[string]config.MCPDefaults{
-				"atlassian": {},
-				"dope":      {},
+				"atlassian":   {},
+				"deploy-tool": {},
 			},
 		},
 	}
 	entries := []config.PackEntry{{
 		Name: "test-pack",
 		MCP: map[string]config.MCPServerConfig{
-			"dope": {Enabled: &f},
+			"deploy-tool": {Enabled: &f},
 		},
 	}}
 	packs := []ProfilePackInfo{{Index: 0, Name: "test-pack", Root: "/tmp", Manifest: manifest}}
@@ -144,8 +144,8 @@ func TestBuildContentTree_MCPServers(t *testing.T) {
 		t.Fatalf("mcp items = %d, want 2", len(mcpItems))
 	}
 	for _, item := range mcpItems {
-		if item.ID == "dope" && item.Enabled {
-			t.Error("dope should be disabled")
+		if item.ID == "deploy-tool" && item.Enabled {
+			t.Error("deploy-tool should be disabled")
 		}
 		if item.ID == "atlassian" && !item.Enabled {
 			t.Error("atlassian should be enabled by default")
@@ -232,8 +232,8 @@ func TestApplyContentTree_MCPToggle(t *testing.T) {
 		Root:          ".",
 		MCP: config.MCPPack{
 			Servers: map[string]config.MCPDefaults{
-				"atlassian": {},
-				"dope":      {},
+				"atlassian":   {},
+				"deploy-tool": {},
 			},
 		},
 	}
@@ -242,9 +242,9 @@ func TestApplyContentTree_MCPToggle(t *testing.T) {
 
 	tree := BuildContentTree(packs, entries)
 
-	// Disable "dope".
+	// Disable "deploy-tool".
 	for i := range tree.Items {
-		if tree.Items[i].ID == "dope" {
+		if tree.Items[i].ID == "deploy-tool" {
 			tree.Items[i].Enabled = false
 		}
 	}
@@ -255,10 +255,10 @@ func TestApplyContentTree_MCPToggle(t *testing.T) {
 	if mcpCfg == nil {
 		t.Fatal("MCP config should be set after apply")
 	}
-	if dopeCfg, ok := mcpCfg["dope"]; !ok {
-		t.Error("dope should be in MCP config")
-	} else if dopeCfg.Enabled == nil || *dopeCfg.Enabled {
-		t.Error("dope should be disabled")
+	if dtCfg, ok := mcpCfg["deploy-tool"]; !ok {
+		t.Error("deploy-tool should be in MCP config")
+	} else if dtCfg.Enabled == nil || *dtCfg.Enabled {
+		t.Error("deploy-tool should be disabled")
 	}
 }
 

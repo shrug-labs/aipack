@@ -601,7 +601,7 @@ func (m packsModel) viewListPanel(width, height int) string {
 }
 
 // viewPackInfoPanel renders the lower-left pack info block.
-// The registry section is pinned to the bottom of the panel.
+// Registry section sits directly below the pack details, separated by a rule.
 func (m packsModel) viewPackInfoPanel(width, height int) string {
 	li := m.currentListItem()
 	if li == nil {
@@ -612,114 +612,55 @@ func (m packsModel) viewPackInfoPanel(width, height int) string {
 	labelW := 12
 	registryStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
 
-	// Top section: pack details.
-	var top strings.Builder
-	top.WriteString(selectedStyle.Render(li.name) + "\n")
+	var sb strings.Builder
+	sb.WriteString(selectedStyle.Render(li.name) + "\n")
 
 	if item := m.currentItem(); item != nil {
 		if item.entry.Version != "" {
-			top.WriteString(infoField("Version", "v"+item.entry.Version, labelW) + "\n")
+			sb.WriteString(infoField("Version", "v"+item.entry.Version, labelW) + "\n")
 		}
 		if item.entry.Method != "" {
 			name, style := methodDisplay(item.entry.Method)
-			top.WriteString(infoField("Method", style.Render(name), labelW) + "\n")
+			sb.WriteString(infoField("Method", style.Render(name), labelW) + "\n")
 		}
 		if item.fileSizes != nil {
 			if total, ok := item.fileSizes["total"]; ok && total > 0 {
-				top.WriteString(infoField("Size", formatSize(total), labelW) + "\n")
+				sb.WriteString(infoField("Size", formatSize(total), labelW) + "\n")
 			}
 		}
 		if installedAt := formatInstallDate(item.entry.InstalledAt); installedAt != "" {
-			top.WriteString(infoField("Installed", installedAt, labelW) + "\n")
+			sb.WriteString(infoField("Installed", installedAt, labelW) + "\n")
 		}
 		src := sourceForMethod(item.entry.Method, item.entry.Origin, item.entry.Path)
 		if item.entry.Method == "link" || item.entry.Method == "copy" || item.entry.Method == "local" {
 			_, style := methodDisplay(item.entry.Method)
 			src = style.Render(src)
 		}
-		top.WriteString(infoField("Source", src, labelW) + "\n")
+		sb.WriteString(infoField("Source", src, labelW) + "\n")
 	} else {
-		top.WriteString(dimStyle.Render("Not installed locally.") + "\n")
+		sb.WriteString(dimStyle.Render("Not installed locally.") + "\n")
 	}
 
-	if !li.inRegistry {
-		return renderPackPanel(width, height, false, top.String())
-	}
-
-	// Bottom section: registry, pinned to panel bottom.
-	// Build fields first (without description), then compute how many
-	// lines are left for the description to fill.
-	var bot strings.Builder
-	bot.WriteString(registryStyle.Render("Registry") + "\n")
-	bot.WriteString(infoField("Name", li.name, labelW) + "\n")
-	if li.owner != "" {
-		bot.WriteString(infoField("Owner", li.owner, labelW) + "\n")
-	}
-	if li.repo != "" {
-		bot.WriteString(infoField("Repo", repoBaseName(li.repo, li.regPath), labelW) + "\n")
-	}
-	if li.ref != "" {
-		bot.WriteString(infoField("Ref", li.ref, labelW) + "\n")
-	}
-
-	topLines := strings.Count(top.String(), "\n")
-	botLines := strings.Count(bot.String(), "\n")
-
-	// Determine how many lines the description can use.
-	if li.description != "" {
-		descW := max(innerW-labelW, 10)
-		available := height - topLines - botLines - 2 // -2 for gap + about line
-		descMaxLines := max(min(available, 3), 1)
-		desc := wrapAndTruncate(strings.TrimSpace(li.description), descW, descMaxLines)
-		bot.WriteString(infoField("About", desc, labelW) + "\n")
-		botLines += strings.Count(desc, "\n") + 1
-	}
-
-	// Horizontal rule between pack details and registry, with the header
-	// sitting just below the rule after a small gap.
-	rule := dimStyle.Render(strings.Repeat("─", innerW))
-	gap := height - topLines - botLines - 2 // -2 for rule + gap line
-	if gap < 1 {
-		gap = 1
-	}
-
-	return renderPackPanel(width, height, false, top.String()+strings.Repeat("\n", gap)+rule+"\n"+bot.String())
-}
-
-// wrapAndTruncate wraps text to the given width and truncates after maxLines.
-func wrapAndTruncate(text string, width, maxLines int) string {
-	if width < 8 {
-		width = 8
-	}
-	if maxLines < 1 {
-		maxLines = 1
-	}
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return ""
-	}
-
-	var lines []string
-	current := words[0]
-	for _, word := range words[1:] {
-		next := current + " " + word
-		if lipgloss.Width(next) <= width {
-			current = next
-			continue
+	if li.inRegistry {
+		if li.description != "" {
+			sb.WriteString(infoField("About", strings.TrimSpace(li.description), labelW) + "\n")
 		}
-		lines = append(lines, current)
-		current = word
-		if len(lines) == maxLines {
-			lines[maxLines-1] += "..."
-			return strings.Join(lines, "\n"+strings.Repeat(" ", 12))
+		sb.WriteString("\n")
+		sb.WriteString(dimStyle.Render(strings.Repeat("─", innerW)) + "\n")
+		sb.WriteString(registryStyle.Render("Registry") + "\n")
+		sb.WriteString(infoField("Name", li.name, labelW) + "\n")
+		if li.owner != "" {
+			sb.WriteString(infoField("Owner", li.owner, labelW) + "\n")
+		}
+		if li.repo != "" {
+			sb.WriteString(infoField("Repo", repoBaseName(li.repo, li.regPath), labelW) + "\n")
+		}
+		if li.ref != "" {
+			sb.WriteString(infoField("Ref", li.ref, labelW) + "\n")
 		}
 	}
-	lines = append(lines, current)
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-		lines[maxLines-1] += "..."
-	}
-	return strings.Join(lines, "\n"+strings.Repeat(" ", 12))
+
+	return renderPackPanel(width, height, false, sb.String())
 }
 
 // sourceForMethod returns the Source value for the details pane.

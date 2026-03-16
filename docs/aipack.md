@@ -242,7 +242,7 @@ aipack registry fetch git@bitbucket.example.com:TEAM/tools.git
 
 # Fetch with explicit ref and path
 aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git \
-  --ref team/ai-runbooks --path ai-runbooks/registry.yaml
+  --ref team/ops-tools --path ops-tools/registry.yaml
 
 # Override the cached source name
 aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git --name my-tools

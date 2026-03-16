@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -173,8 +172,4 @@ func escapeJSON(s string) string {
 		return string(b[1 : len(b)-1])
 	}
 	return s
-}
-
-func quoteYAML(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }

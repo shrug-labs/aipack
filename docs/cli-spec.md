@@ -115,12 +115,12 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 
 ```json
 {
-  "profile": "ocm",
-  "profile_path": "/Users/x/.config/aipack/profiles/ocm.yaml",
+  "profile": "ops",
+  "profile_path": "/Users/x/.config/aipack/profiles/ops.yaml",
   "config_dir": "/Users/x/.config/aipack",
   "packs": [
     {
-      "name": "ocm-ai-runbooks",
+      "name": "my-team-ops",
       "version": "2026.03.15",
       "rules": 3,
       "agents": 1,
@@ -135,7 +135,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
   "total_workflows": 11,
   "total_skills": 10,
   "total_mcp_servers": 5,
-  "settings_pack": "ocm-ai-runbooks"
+  "settings_pack": "my-team-ops"
 }
 ```
 
@@ -244,7 +244,7 @@ Overall `ok` is false only when a critical-severity check fails. Warning-level c
     }
   ],
   "ecosystem": {
-    "profile": "ocm",
+    "profile": "ops",
     "profile_path": "/Users/x/.config/aipack/profiles/developer.yaml",
     "config_dir": "/Users/x/.config/aipack",
     "packs": [],

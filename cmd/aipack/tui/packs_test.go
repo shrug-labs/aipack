@@ -365,7 +365,7 @@ func TestPacksModel_PackInfoIsCompact(t *testing.T) {
 		description: "A longish description for compact rendering.",
 		repo:        "ssh://git/example/repo.git",
 		ref:         "main",
-		owner:       "ocm",
+		owner:       "myteam",
 	}}
 	m.registryState = asyncLoaded
 	m.rebuildList()
@@ -397,7 +397,7 @@ func TestPacksModel_ListPanelOmitsStatusBadges(t *testing.T) {
 	m.registry = []registryItem{{
 		name:  "beta",
 		repo:  "ssh://git/example/repo.git",
-		owner: "ocm",
+		owner: "myteam",
 	}}
 	m.registryState = asyncLoaded
 	m.rebuildList()

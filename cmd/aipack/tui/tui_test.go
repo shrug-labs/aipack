@@ -1082,3 +1082,155 @@ func TestHelpText_VPlanOnProfilesAndSync(t *testing.T) {
 		t.Fatalf("expected packs help NOT to contain 'v:plan', got %q", help)
 	}
 }
+
+func TestNumberKeys_DirectTabSwitch(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(RunConfig{})
+
+	// Start on Profiles (tab 0), press "3" to jump to Save (tab 2).
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	rm := result.(rootModel)
+	if rm.activeTab != tabSave {
+		t.Fatalf("expected tab 2 (save) after pressing 3, got %d", rm.activeTab)
+	}
+
+	// Press "1" to jump back to Profiles.
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	rm = result.(rootModel)
+	if rm.activeTab != tabProfiles {
+		t.Fatalf("expected tab 0 (profiles) after pressing 1, got %d", rm.activeTab)
+	}
+
+	// Press "5" to jump to Search.
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("5")})
+	rm = result.(rootModel)
+	if rm.activeTab != tabSearch {
+		t.Fatalf("expected tab 4 (search) after pressing 5, got %d", rm.activeTab)
+	}
+
+	// Pressing same number is a no-op.
+	result, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("5")})
+	rm = result.(rootModel)
+	if rm.activeTab != tabSearch {
+		t.Fatalf("expected tab unchanged at search, got %d", rm.activeTab)
+	}
+	if cmd != nil {
+		t.Fatal("expected no cmd when pressing current tab number")
+	}
+}
+
+func TestDestructiveConfirmDialog_DefaultsToNo(t *testing.T) {
+	t.Parallel()
+	d := newDestructiveConfirmDialog("test", "Delete everything?")
+	if d.focused != 1 {
+		t.Fatalf("expected destructive dialog focused=1 (No), got %d", d.focused)
+	}
+
+	// Pressing enter without moving focus should NOT confirm.
+	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected cmd after pressing enter")
+	}
+	msg := cmd()
+	result, ok := msg.(dialogResultMsg)
+	if !ok {
+		t.Fatalf("expected dialogResultMsg, got %T", msg)
+	}
+	if result.confirmed {
+		t.Fatal("expected confirmed=false when defaulting to No")
+	}
+}
+
+func TestStatusClearMsg_AutoClearsStatus(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(RunConfig{})
+	m.statusText = "some status"
+	m.statusID = 5
+
+	// Matching ID clears the status.
+	result, _ := m.Update(statusClearMsg{id: 5})
+	rm := result.(rootModel)
+	if rm.statusText != "" {
+		t.Fatalf("expected status cleared, got %q", rm.statusText)
+	}
+
+	// Non-matching ID is ignored.
+	rm.statusText = "another status"
+	rm.statusID = 10
+	result, _ = rm.Update(statusClearMsg{id: 7})
+	rm = result.(rootModel)
+	if rm.statusText != "another status" {
+		t.Fatalf("expected status unchanged for stale ID, got %q", rm.statusText)
+	}
+}
+
+func TestStatusLine_ShowsActiveProfile(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(RunConfig{})
+	m.width = 100
+	m.profiles.items = []profileItem{
+		{
+			name:      "default",
+			isActive:  true,
+			syncState: syncSynced,
+			cfg:       config.ProfileConfig{Packs: []config.PackEntry{{Name: "a"}, {Name: "b"}}},
+		},
+	}
+
+	line := m.statusLine()
+	if !strings.Contains(line, "default") {
+		t.Fatalf("expected status line to contain profile name, got %q", line)
+	}
+	if !strings.Contains(line, "2 packs") {
+		t.Fatalf("expected status line to show pack count, got %q", line)
+	}
+}
+
+func TestHelpText_ContainsNumberKeys(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(RunConfig{})
+
+	m.activeTab = tabProfiles
+	help := m.helpText()
+	if !strings.Contains(help, "1-5") {
+		t.Fatalf("expected profiles help to contain '1-5', got %q", help)
+	}
+
+	m.activeTab = tabSync
+	help = m.helpText()
+	if !strings.Contains(help, "1-5") {
+		t.Fatalf("expected sync help to contain '1-5', got %q", help)
+	}
+}
+
+func TestHelpText_GroupSeparators(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(RunConfig{})
+
+	m.activeTab = tabProfiles
+	help := m.helpText()
+	if !strings.Contains(help, "│") {
+		t.Fatalf("expected profiles help to contain separator │, got %q", help)
+	}
+}
+
+func TestUpdate_StatusChangeSchedulesClear(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(RunConfig{})
+	m.profiles.items = []profileItem{
+		{name: "test", syncState: syncSynced},
+	}
+
+	// Trigger a status-setting message (profileCreatedMsg with error).
+	result, cmd := m.Update(profileCreatedMsg{name: "x", err: fmt.Errorf("fail")})
+	rm := result.(rootModel)
+	if rm.statusText == "" {
+		t.Fatal("expected status text to be set on error")
+	}
+	if rm.statusID == 0 {
+		t.Fatal("expected statusID to be incremented")
+	}
+	if cmd == nil {
+		t.Fatal("expected timer cmd to be batched")
+	}
+}

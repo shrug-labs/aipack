@@ -272,8 +272,8 @@ func TestRegistryFetch_GitArbitraryRepo(t *testing.T) {
 	err := RegistryFetch(RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://bitbucket.example.com/scm/TEAM/my-tools.git",
-		Ref:       "team/ai-runbooks",
-		Path:      "ai-runbooks/registry.yaml",
+		Ref:       "team/ops-tools",
+		Path:      "ops-tools/registry.yaml",
 		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
 			capturedRepo = repo
 			capturedRef = ref
@@ -288,10 +288,10 @@ func TestRegistryFetch_GitArbitraryRepo(t *testing.T) {
 	if capturedRepo != "https://bitbucket.example.com/scm/TEAM/my-tools.git" {
 		t.Errorf("repo = %q", capturedRepo)
 	}
-	if capturedRef != "team/ai-runbooks" {
+	if capturedRef != "team/ops-tools" {
 		t.Errorf("ref = %q", capturedRef)
 	}
-	if capturedPath != "ai-runbooks/registry.yaml" {
+	if capturedPath != "ops-tools/registry.yaml" {
 		t.Errorf("path = %q", capturedPath)
 	}
 
@@ -301,10 +301,10 @@ func TestRegistryFetch_GitArbitraryRepo(t *testing.T) {
 		t.Fatalf("expected 1 source, got %d", len(sc.RegistrySources))
 	}
 	src := sc.RegistrySources[0]
-	if src.Ref != "team/ai-runbooks" {
+	if src.Ref != "team/ops-tools" {
 		t.Errorf("source Ref = %q", src.Ref)
 	}
-	if src.Path != "ai-runbooks/registry.yaml" {
+	if src.Path != "ops-tools/registry.yaml" {
 		t.Errorf("source Path = %q", src.Path)
 	}
 }

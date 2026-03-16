@@ -210,9 +210,9 @@ func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 	}{
 		{
 			name:     "name mismatch",
-			key:      "oci-mcp",
-			jsonName: "oci_mcp",
-			wantErr:  `name field is "oci_mcp" in oci-mcp.json (must match manifest key)`,
+			key:      "custom-mcp",
+			jsonName: "custom_mcp",
+			wantErr:  `name field is "custom_mcp" in custom-mcp.json (must match manifest key)`,
 		},
 		{
 			name:     "empty name field",
@@ -222,14 +222,14 @@ func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 		},
 		{
 			name:     "matching name passes",
-			key:      "dope",
-			jsonName: "dope",
+			key:      "deploy-tool",
+			jsonName: "deploy-tool",
 			wantErr:  "",
 		},
 		{
 			name:     "case-insensitive match passes",
-			key:      "Dope",
-			jsonName: "dope",
+			key:      "Deploy-tool",
+			jsonName: "deploy-tool",
 			wantErr:  "",
 		},
 	}

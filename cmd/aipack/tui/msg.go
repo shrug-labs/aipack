@@ -285,6 +285,9 @@ type savePipelineDoneMsg struct {
 	err    error
 }
 
+// statusClearMsg is sent by a timer to auto-clear transient status text.
+type statusClearMsg struct{ id int }
+
 // syncStatus represents the sync state of a profile.
 type syncStatus int
 

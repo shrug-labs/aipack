@@ -71,7 +71,7 @@ registry_sources:         # managed by registry fetch
   - name: team-tools
     url: ssh://git@bitbucket.example.com:7999/TEAM/tools.git
     ref: main
-    path: ai-runbooks/registry.yaml
+    path: ops-tools/registry.yaml
 ```
 
 ### defaults

@@ -435,7 +435,7 @@ packs:
         allowed_tools:
           - confluence_search
           - confluence_get_page
-      dope:
+      deploy-tool:
         enabled: false
 
   - name: personal
@@ -457,7 +457,7 @@ Each content vector supports `include` and `exclude` lists for fine-grained cont
 | `exclude: [x, y]` | All content except listed IDs |
 | `include: []` | No content from this vector |
 
-Include and exclude support glob patterns (e.g., `ocm-*`).
+Include and exclude support glob patterns (e.g., `team-*`).
 
 ### 8.3 MCP server overrides
 
@@ -592,7 +592,7 @@ Per-harness rendering details (file paths, config formats, merge behavior) are d
           "jira_get_issue"
         ]
       },
-      "dope": {
+      "deploy-tool": {
         "default_allowed_tools": [
           "get_alarms",
           "search_logs",

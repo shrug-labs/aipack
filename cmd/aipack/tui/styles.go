@@ -74,37 +74,7 @@ var (
 
 	panelHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 
-	panelStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("238")).
-			Padding(0, 1)
-
-	panelFocusedStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("205")).
-				Padding(0, 1)
-
-	panelMutedHeaderStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("250"))
-
 	panelSubtleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-
-	badgeInstalledStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("46"))
-
-	badgeAvailableStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("81"))
-
-	badgeDetachedStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("214"))
-
-	badgeMetaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
-
-	listMetaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 
 	categoryHeaderStyle = lipgloss.NewStyle().
 				Bold(true).

@@ -25,7 +25,7 @@ func TestSaveTabMCPUsesServerNameInListAndDetail(t *testing.T) {
 				Category:    domain.CategoryMCP,
 				State:       app.FileConflict,
 				Size:        366,
-				PackName:    "ocm-ai-runbooks",
+				PackName:    "my-team-ops",
 			},
 			Selected: true,
 		}},

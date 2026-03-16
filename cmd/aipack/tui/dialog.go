@@ -49,6 +49,17 @@ func newConfirmDialog(id, title string) dialogModel {
 	}
 }
 
+// newDestructiveConfirmDialog creates a confirm dialog that defaults to "No",
+// protecting against accidental confirmation of destructive actions.
+func newDestructiveConfirmDialog(id, title string) dialogModel {
+	return dialogModel{
+		kind:    dialogConfirm,
+		id:      id,
+		title:   title,
+		focused: 1, // default to "No"
+	}
+}
+
 func newTextInputDialog(id, title string) dialogModel {
 	return dialogModel{
 		kind:  dialogTextInput,

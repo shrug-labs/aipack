@@ -118,7 +118,7 @@ Examples:
 
   # Fetch with explicit ref and path
   aipack registry fetch https://bitbucket.example.com/scm/TEAM/tools.git \
-    --ref team/ai-runbooks --path ai-runbooks/registry.yaml
+    --ref team/ops-tools --path ops-tools/registry.yaml
 
   # Fetch from an HTTP URL
   aipack registry fetch https://example.com/registry.yaml

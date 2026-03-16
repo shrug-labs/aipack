@@ -6,6 +6,24 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.9.2]
+
+### Added
+
+- **Number-key tab switching**: Press 1-5 to jump directly to any tab. Help bar updated to show `1-5/tab:switch`.
+- **Persistent status line**: Shows active profile name, sync state, and pack count below the content area. Transient messages appear on the right and auto-clear after 3 seconds.
+- **Destructive confirm dialogs**: Delete and remove confirmations now default to "No", preventing accidental data loss from a stray Enter.
+
+### Improved
+
+- **Pack info panel**: Simplified layout — registry details flow directly below pack details separated by a horizontal rule instead of being pinned to the bottom with variable gaps.
+- **Help bar readability**: Related key groups separated by `│` dividers.
+
+### Fixed
+
+- Removed unused TUI styles, dead prompt helpers, and stale test utilities.
+- Genericized internal team references in documentation examples.
+
 ## [0.9.1]
 
 ### Fixed

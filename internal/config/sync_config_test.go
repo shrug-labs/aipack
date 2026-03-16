@@ -20,15 +20,15 @@ func TestLoadSyncConfig_Missing_IsEmpty(t *testing.T) {
 func TestLoadSyncConfig_ParsesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sync-config.yaml")
-	if err := os.WriteFile(path, []byte("schema_version: 1\ndefaults:\n  profile: ocm\n  harnesses: [cline, opencode]\n  scope: project\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("schema_version: 1\ndefaults:\n  profile: ops\n  harnesses: [cline, opencode]\n  scope: project\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	cfg, err := LoadSyncConfig(path)
 	if err != nil {
 		t.Fatalf("LoadSyncConfig: %v", err)
 	}
-	if cfg.Defaults.Profile != "ocm" {
-		t.Fatalf("expected profile=ocm, got %q", cfg.Defaults.Profile)
+	if cfg.Defaults.Profile != "ops" {
+		t.Fatalf("expected profile=ops, got %q", cfg.Defaults.Profile)
 	}
 	if len(cfg.Defaults.Harnesses) != 2 {
 		t.Fatalf("expected 2 harnesses, got %d", len(cfg.Defaults.Harnesses))

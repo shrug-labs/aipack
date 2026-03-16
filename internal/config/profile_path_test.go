@@ -15,8 +15,8 @@ func TestNormalizeProfileName_Valid(t *testing.T) {
 	}{
 		{name: "default empty", in: "", want: "default"},
 		{name: "default whitespace", in: "   ", want: "default"},
-		{name: "simple", in: "ocm", want: "ocm"},
-		{name: "with separators allowed chars", in: "ocm-prod_1.2", want: "ocm-prod_1.2"},
+		{name: "simple", in: "ops", want: "ops"},
+		{name: "with separators allowed chars", in: "ops-prod_1.2", want: "ops-prod_1.2"},
 	}
 
 	for _, tc := range tests {

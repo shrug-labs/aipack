@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -103,7 +104,8 @@ type rootModel struct {
 	dirty      bool
 	quitting   bool
 	exitErr    error
-	statusText string // transient status message (cleared on next key press)
+	statusText string // transient status message (auto-cleared after timeout)
+	statusID   int    // monotonic counter to match statusClearMsg to current status
 	width      int
 	height     int
 
@@ -147,6 +149,29 @@ func (m rootModel) Init() tea.Cmd {
 }
 
 func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Auto-clear transient status text after timeout.
+	if msg, ok := msg.(statusClearMsg); ok {
+		if msg.id == m.statusID {
+			m.statusText = ""
+		}
+		return m, nil
+	}
+
+	// Snapshot current status so we can detect changes after the update.
+	oldStatus := m.statusText
+
+	result, cmd := m.update(msg)
+	rm := result.(rootModel)
+
+	// If status text changed to something non-empty, schedule auto-clear.
+	if rm.statusText != oldStatus && rm.statusText != "" {
+		rm.statusID++
+		cmd = tea.Batch(cmd, scheduleStatusClear(rm.statusID))
+	}
+	return rm, cmd
+}
+
+func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Dialog result must be handled before the dialog intercept,
 	// otherwise the dialog swallows its own result message.
 	if msg, ok := msg.(dialogResultMsg); ok {
@@ -247,13 +272,11 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		m.statusText = "" // Clear transient status on any key press.
-
 		// When search tab input is focused, only handle navigation keys globally;
 		// delegate everything else so character input works.
 		if m.activeTab == tabSearch && m.search.focus == searchFocusInput {
 			switch msg.String() {
-			case "tab", "shift+tab", "ctrl+c":
+			case "tab", "shift+tab", "ctrl+c", "1", "2", "3", "4", "5":
 				// Fall through to normal global handling below.
 			default:
 				var cmd tea.Cmd
@@ -264,25 +287,13 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "tab":
-			m.activeTab = (m.activeTab + 1) % tabCount
-			if m.activeTab == tabSave {
-				m.saveTab.loading = true
-				return m, detectHarnesses(m.cfg.Registry)
-			}
-			if m.activeTab == tabSearch && !m.search.searched && !m.search.loading {
-				m.search.loading = true
-				return m, runSearch(m.search.configDir, "", "", "", "")
-			}
-			return m, nil
+			return m.switchToTab((m.activeTab + 1) % tabCount)
 		case "shift+tab":
-			m.activeTab = (m.activeTab - 1 + tabCount) % tabCount
-			if m.activeTab == tabSave {
-				m.saveTab.loading = true
-				return m, detectHarnesses(m.cfg.Registry)
-			}
-			if m.activeTab == tabSearch && !m.search.searched && !m.search.loading {
-				m.search.loading = true
-				return m, runSearch(m.search.configDir, "", "", "", "")
+			return m.switchToTab((m.activeTab - 1 + tabCount) % tabCount)
+		case "1", "2", "3", "4", "5":
+			target := tabID(msg.String()[0] - '1')
+			if target != m.activeTab {
+				return m.switchToTab(target)
 			}
 			return m, nil
 		case "esc":
@@ -965,7 +976,7 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 				fmt.Sprintf("Set %q as the active/default profile?", item.name))
 			m.dialog = &d
 		case actDelete:
-			d := newConfirmDialog(dialogDeleteProfile,
+			d := newDestructiveConfirmDialog(dialogDeleteProfile,
 				fmt.Sprintf("Delete profile %q?", item.name))
 			m.dialog = &d
 		}
@@ -1032,7 +1043,7 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			return m, nil
 		case actPackDelete:
 			if pi := m.packs.currentItem(); pi != nil {
-				d := newConfirmDialog(dialogPackRemove,
+				d := newDestructiveConfirmDialog(dialogPackRemove,
 					fmt.Sprintf("Delete pack %q from disk?", pi.entry.Name))
 				m.dialog = &d
 			}
@@ -1076,7 +1087,7 @@ func (m rootModel) handleSaveActionResult(msg dialogResultMsg) (tea.Model, tea.C
 	case actDeleteFile:
 		if f := m.saveTab.currentFile(); f != nil {
 			m.pendingDeletePath = f.HarnessPath
-			d := newConfirmDialog(dialogDeleteSaveFile,
+			d := newDestructiveConfirmDialog(dialogDeleteSaveFile,
 				fmt.Sprintf("Delete %s from harness?", filepath.Base(f.HarnessPath)))
 			m.dialog = &d
 			return m, nil
@@ -1087,6 +1098,20 @@ func (m rootModel) handleSaveActionResult(msg dialogResultMsg) (tea.Model, tea.C
 			m.saveTab, cmd = m.saveTab.advanceToPack()
 			return m, cmd
 		}
+	}
+	return m, nil
+}
+
+// switchToTab changes the active tab and fires any init commands needed.
+func (m rootModel) switchToTab(target tabID) (tea.Model, tea.Cmd) {
+	m.activeTab = target
+	if target == tabSave {
+		m.saveTab.loading = true
+		return m, detectHarnesses(m.cfg.Registry)
+	}
+	if target == tabSearch && !m.search.searched && !m.search.loading {
+		m.search.loading = true
+		return m, runSearch(m.search.configDir, "", "", "", "")
 	}
 	return m, nil
 }
@@ -1383,17 +1408,14 @@ func (m rootModel) View() string {
 		help = helpBarStyle.Render(m.helpText())
 	}
 
+	// Status line: persistent profile context on the left, transient message on the right.
+	statusLine := m.statusLine()
+
 	// Fix content height so help bar is pinned to the bottom.
-	contentH := m.height - lipgloss.Height(tabBar) - lipgloss.Height(help)
-	if m.statusText != "" {
-		contentH -= lipgloss.Height(m.statusText)
-	}
+	contentH := m.height - lipgloss.Height(tabBar) - lipgloss.Height(statusLine) - lipgloss.Height(help)
 	content = lipgloss.NewStyle().Height(max(0, contentH)).MaxHeight(max(0, contentH)).Render(content)
 
-	if m.statusText != "" {
-		return fmt.Sprintf("%s\n%s\n%s\n%s", tabBar, content, m.statusText, help)
-	}
-	return fmt.Sprintf("%s\n%s\n%s", tabBar, content, help)
+	return fmt.Sprintf("%s\n%s\n%s\n%s", tabBar, content, statusLine, help)
 }
 
 // --- Action menu system ---
@@ -1650,6 +1672,37 @@ func (m rootModel) showWarnings() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// statusLine returns a persistent info bar showing active profile + transient status.
+func (m rootModel) statusLine() string {
+	// Left side: active profile summary.
+	var left string
+	if item := m.profiles.activeItem(); item != nil {
+		dot := statusDotInactive
+		switch item.syncState {
+		case syncSynced:
+			dot = statusDotActive
+		case syncLoading:
+			dot = statusDotLoading
+		}
+		packCount := len(item.cfg.Packs)
+		noun := "packs"
+		if packCount == 1 {
+			noun = "pack"
+		}
+		left = fmt.Sprintf(" %s %s (%d %s)", dot, item.name, packCount, noun)
+	}
+
+	// Right side: transient status message (or empty).
+	right := m.statusText
+
+	// Compose: left-align profile, right-align status.
+	leftW := lipgloss.Width(left)
+	rightW := lipgloss.Width(right)
+	gap := max(2, m.width-leftW-rightW)
+	line := panelSubtleStyle.Render(left) + strings.Repeat(" ", gap) + right
+	return line
+}
+
 // helpText returns context-sensitive key binding hints.
 func (m rootModel) helpText() string {
 	base := ""
@@ -1657,38 +1710,48 @@ func (m rootModel) helpText() string {
 	case tabProfiles:
 		switch m.profiles.focus {
 		case panelProfiles:
-			base = "j/k:navigate  enter:packs  .:actions  v:plan  s:sync  ctrl+s:save  r:refresh  tab:switch  esc:quit"
+			base = "j/k:navigate  enter:packs  .:actions │ v:plan  s:sync  ctrl+s:save  r:refresh │ 1-5/tab:switch  esc:quit"
 		case panelPacks:
-			base = "j/k:navigate  space:toggle  enter:tree  .:actions  esc:back"
+			base = "j/k:navigate  space:toggle  enter:tree  .:actions │ esc:back"
 		case panelTree:
-			base = "j/k:navigate  space:toggle  enter:preview  e:edit  v:plan  s:sync  ctrl+s:save  esc:back"
+			base = "j/k:navigate  space:toggle  enter:preview  e:edit │ v:plan  s:sync  ctrl+s:save │ esc:back"
 		}
 	case tabPacks:
 		switch m.packs.focus {
 		case packPanelContent:
-			return "j/k:navigate  enter:preview  e:edit  .:actions  esc:back"
+			return "j/k:navigate  enter:preview  e:edit  .:actions │ esc:back"
 		case packPanelPreview:
-			return "j/k:scroll  enter:preview  e:edit  .:actions  esc:back"
+			return "j/k:scroll  enter:preview  e:edit  .:actions │ esc:back"
 		default:
-			return "j/k:navigate  enter:content  .:actions  r:refresh  tab:switch  esc:quit"
+			return "j/k:navigate  enter:content  .:actions  r:refresh │ 1-5/tab:switch  esc:quit"
 		}
 	case tabSave:
 		base = m.saveTab.helpText()
 		if base == "" {
-			base = "tab:switch  esc:quit"
+			base = "1-5/tab:switch  esc:quit"
 		}
 	case tabSync:
-		base = "j/k:navigate  space:toggle  .:actions  v:plan  s:sync  ctrl+s:save  r:refresh  tab:switch  esc:quit"
+		base = "j/k:navigate  space:toggle  .:actions │ v:plan  s:sync  ctrl+s:save  r:refresh │ 1-5/tab:switch  esc:quit"
 	case tabSearch:
 		if m.search.focus == searchFocusInput {
-			return "enter:search  down:results  ctrl+u:clear  tab:switch  ctrl+c:quit"
+			return "enter:search  down:results  ctrl+u:clear │ 1-5/tab:switch  ctrl+c:quit"
 		}
-		return "j/k:navigate  enter:preview  /:search  f:kind  space:show  tab:switch  esc:back"
+		return "j/k:navigate  enter:preview  /:search  f:kind  space:show │ 1-5/tab:switch  esc:back"
 	default:
-		return "tab:switch  esc:quit"
+		return "1-5/tab:switch  esc:quit"
 	}
 	if item := m.profiles.activeItem(); item != nil && len(item.syncWarnings) > 0 {
 		base += "  " + warningStyle.Render("w:warnings")
 	}
 	return base
+}
+
+const statusClearDuration = 3 * time.Second
+
+// scheduleStatusClear returns a tea.Cmd that clears the status text
+// after statusClearDuration, if the status ID still matches.
+func scheduleStatusClear(id int) tea.Cmd {
+	return tea.Tick(statusClearDuration, func(time.Time) tea.Msg {
+		return statusClearMsg{id: id}
+	})
 }

@@ -495,16 +495,16 @@ func (m saveTabModel) currentCandidate() *app.SaveCandidate {
 func (m saveTabModel) helpText() string {
 	switch m.stage {
 	case saveStageHarness:
-		return "j/k:navigate  enter:select  tab:switch  esc:quit"
+		return "j/k:navigate  enter:select │ 1-5/tab:switch  esc:quit"
 	case saveStageVectors:
-		return "j/k:navigate  space:toggle  enter:discover  esc:back"
+		return "j/k:navigate  space:toggle  enter:discover │ esc:back"
 	case saveStageFiles:
-		return "j/k:navigate  space:toggle  a:toggle-all  v:diff  enter:preview  s:save  esc:back"
+		return "j/k:navigate  space:toggle  a:toggle-all  v:diff  enter:preview │ s:save  esc:back"
 	case saveStageDestPack:
 		if m.newPackInput {
-			return "type name  enter:create  esc:cancel"
+			return "type name  enter:create │ esc:cancel"
 		}
-		return "j/k:navigate  enter:select  esc:back"
+		return "j/k:navigate  enter:select │ esc:back"
 	case saveStageResult:
 		return "enter/esc:done"
 	}
