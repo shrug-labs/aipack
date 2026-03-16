@@ -526,9 +526,10 @@ func (m packsModel) View() string {
 	col1 := m.viewListAndInfoPanel(col1W, colH)
 	col2 := m.viewContentPanel(col2W, colH)
 	col3 := m.viewPreviewPanel(col3W, colH)
-	sep := verticalSeparator(colH, sepW)
+	sep1 := verticalSeparator(colH, sepW, m.focus == packPanelContent)
+	sep2 := verticalSeparator(colH, sepW, m.focus == packPanelPreview)
 
-	joined := lipgloss.JoinHorizontal(lipgloss.Top, col1, sep, col2, sep, col3)
+	joined := lipgloss.JoinHorizontal(lipgloss.Top, col1, sep1, col2, sep2, col3)
 	return contentStyle.Render(joined)
 }
 
@@ -951,20 +952,24 @@ func renderPackPanel(width, height int, focused bool, content string) string {
 	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(content)
 }
 
-func verticalSeparator(height, width int) string {
+func verticalSeparator(height, width int, focused bool) string {
 	if height < 1 {
 		height = 1
 	}
 	if width < 1 {
 		width = 1
 	}
+	style := dimStyle
+	if focused {
+		style = selectedStyle
+	}
 	lines := make([]string, height)
 	for i := range lines {
 		if width == 1 {
-			lines[i] = dimStyle.Render("│")
+			lines[i] = style.Render("│")
 			continue
 		}
-		lines[i] = strings.Repeat(" ", width/2) + dimStyle.Render("│") + strings.Repeat(" ", width-width/2-1)
+		lines[i] = strings.Repeat(" ", width/2) + style.Render("│") + strings.Repeat(" ", width-width/2-1)
 	}
 	return strings.Join(lines, "\n")
 }

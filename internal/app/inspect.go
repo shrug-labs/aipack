@@ -434,6 +434,11 @@ func relPathFromDst(cat domain.PackCategory, dst string, kind domain.CopyKind) s
 	if kind == domain.CopyKindDir || cat == domain.CategorySettings {
 		return base
 	}
+	// Promoted skills land as skills/<id>/SKILL.md — extract the skill ID
+	// from the parent directory instead of using the leaf filename.
+	if cat == domain.CategorySkills && base == domain.SkillEntryFile {
+		return filepath.Base(filepath.Dir(dst))
+	}
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 

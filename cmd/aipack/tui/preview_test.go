@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -84,6 +86,35 @@ func TestPreviewModel_EmptyContent(t *testing.T) {
 	view := p.View()
 	if !strings.Contains(view, "(empty)") {
 		t.Fatalf("expected (empty) in view, got:\n%s", view)
+	}
+}
+
+func TestLoadPreview_SkillDirectory(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp skill directory with a SKILL.md entry file.
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "agent-configuration")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntitle: Agent Configuration\n---\n\nSkill body content here."
+	if err := os.WriteFile(filepath.Join(skillDir, domain.SkillEntryFile), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// loadPreview returns a tea.Cmd; execute it to get the message.
+	cmd := loadPreview("agent-configuration", domain.CategorySkills, "aipack-core", skillDir)
+	msg := cmd().(previewLoadedMsg)
+
+	if msg.err != nil {
+		t.Fatalf("unexpected error: %v", msg.err)
+	}
+	if len(msg.frontmatter) == 0 {
+		t.Fatal("expected frontmatter entries, got none")
+	}
+	if !strings.Contains(msg.body, "Skill body content here") {
+		t.Fatalf("expected skill body in preview, got: %q", msg.body)
 	}
 }
 

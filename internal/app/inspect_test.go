@@ -163,3 +163,45 @@ func TestInspectHarness_MCPMetadataDoesNotCauseConflictAfterSync(t *testing.T) {
 	}
 	t.Fatal("expected MCP file in inspect result")
 }
+
+func TestRelPathFromDst(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cat  domain.PackCategory
+		dst  string
+		kind domain.CopyKind
+		want string
+	}{
+		{
+			name: "rule file strips extension",
+			cat:  domain.CategoryRules, dst: "rules/triage.md",
+			kind: domain.CopyKindFile, want: "triage",
+		},
+		{
+			name: "skill directory returns dir name",
+			cat:  domain.CategorySkills, dst: "skills/agent-configuration",
+			kind: domain.CopyKindDir, want: "agent-configuration",
+		},
+		{
+			name: "promoted skill SKILL.md returns parent dir name",
+			cat:  domain.CategorySkills, dst: "skills/execute-plan/SKILL.md",
+			kind: domain.CopyKindFile, want: "execute-plan",
+		},
+		{
+			name: "settings returns basename as-is",
+			cat:  domain.CategorySettings, dst: "settings.json",
+			kind: domain.CopyKindFile, want: "settings.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := relPathFromDst(tt.cat, tt.dst, tt.kind)
+			if got != tt.want {
+				t.Errorf("relPathFromDst(%q, %q, %v) = %q, want %q",
+					tt.cat, tt.dst, tt.kind, got, tt.want)
+			}
+		})
+	}
+}

@@ -1040,7 +1040,7 @@ func fileStateLabel(s app.FileState) string {
 }
 
 func saveCandidateLabel(f app.HarnessFile) string {
-	if f.Category == domain.CategoryMCP && f.RelPath != "" {
+	if f.RelPath != "" {
 		return f.RelPath
 	}
 	return filepath.Base(f.HarnessPath)

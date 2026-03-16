@@ -772,6 +772,31 @@ func TestCreatePack_DuplicateErrors(t *testing.T) {
 	}
 }
 
+func TestPacksView_SeparatorHighlightsWithFocus(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:  "test-pack",
+			Path:  "/tmp/pack",
+			Rules: []string{"rule-a"},
+		}},
+	})
+	m.width = 120
+	m.height = 20
+
+	// In list focus, both separators should be dim.
+	m.focus = packPanelList
+	viewList := m.View()
+
+	// In content focus, the view should differ (left separator lights up).
+	m.focus = packPanelContent
+	viewContent := m.View()
+
+	if viewList == viewContent {
+		t.Fatal("expected view to change when focus moves from list to content")
+	}
+}
+
 func TestPacksModel_UninstalledNoContentFocus(t *testing.T) {
 	t.Parallel()
 	m := packsModel{

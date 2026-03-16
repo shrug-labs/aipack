@@ -6,6 +6,14 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.9.3]
+
+### Fixed
+
+- Save TUI now shows proper names for all file types instead of raw filenames (e.g. "execute-plan" not "SKILL.md").
+- Skill preview loads content from directory-based skills instead of showing "(empty)".
+- Packs tab vertical separators highlight when navigating between columns.
+
 ## [0.9.2]
 
 ### Added

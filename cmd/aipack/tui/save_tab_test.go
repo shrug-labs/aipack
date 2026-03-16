@@ -51,6 +51,80 @@ func TestSaveTabMCPUsesServerNameInListAndDetail(t *testing.T) {
 	}
 }
 
+func TestSaveCandidateLabel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		file app.HarnessFile
+		want string
+	}{
+		{
+			name: "rule uses filename without extension",
+			file: app.HarnessFile{
+				HarnessPath: "/home/.claude/rules/triage.md",
+				RelPath:     "triage",
+				Category:    domain.CategoryRules,
+			},
+			want: "triage",
+		},
+		{
+			name: "MCP uses RelPath server name",
+			file: app.HarnessFile{
+				HarnessPath: "/home/.claude.json",
+				RelPath:     "atlassian",
+				Category:    domain.CategoryMCP,
+			},
+			want: "atlassian",
+		},
+		{
+			name: "real skill directory uses skill ID",
+			file: app.HarnessFile{
+				HarnessPath: "/home/.claude/skills/agent-configuration",
+				RelPath:     "agent-configuration",
+				Category:    domain.CategorySkills,
+				Kind:        domain.CopyKindDir,
+			},
+			want: "agent-configuration",
+		},
+		{
+			name: "promoted workflow as skill uses skill ID not SKILL.md",
+			file: app.HarnessFile{
+				HarnessPath: "/home/.claude/skills/execute-plan/SKILL.md",
+				RelPath:     "execute-plan",
+				Category:    domain.CategorySkills,
+				Kind:        domain.CopyKindFile,
+			},
+			want: "execute-plan",
+		},
+		{
+			name: "workflow file uses name without extension",
+			file: app.HarnessFile{
+				HarnessPath: "/home/.claude/workflows/deploy.md",
+				RelPath:     "deploy",
+				Category:    domain.CategoryWorkflows,
+			},
+			want: "deploy",
+		},
+		{
+			name: "empty RelPath falls back to basename",
+			file: app.HarnessFile{
+				HarnessPath: "/home/.claude/rules/unknown.md",
+				Category:    domain.CategoryRules,
+			},
+			want: "unknown.md",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := saveCandidateLabel(tt.file)
+			if got != tt.want {
+				t.Errorf("saveCandidateLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSaveTabHelpTextMentionsDiffKey(t *testing.T) {
 	t.Parallel()
 

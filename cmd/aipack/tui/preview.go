@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -185,7 +186,14 @@ func openFileInEditor(filePath string) tea.Cmd {
 func loadPreview(title string, category domain.PackCategory, packName, filePath string) tea.Cmd {
 	return func() tea.Msg {
 		const maxSize = 512 * 1024
-		f, err := os.Open(filePath)
+
+		// Skills are directories — read the entry file inside.
+		target := filePath
+		if info, err := os.Stat(filePath); err == nil && info.IsDir() {
+			target = filepath.Join(filePath, domain.SkillEntryFile)
+		}
+
+		f, err := os.Open(target)
 		if err != nil {
 			return previewLoadedMsg{
 				title: title, category: category,
