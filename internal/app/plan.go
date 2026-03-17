@@ -351,21 +351,15 @@ func (c ContentCounts) Total() int {
 	return c.Rules + c.Workflows + c.Agents + c.Skills
 }
 
-// CountContentTypes tallies content items from a raw Plan by inferring
-// content type from destination paths.
-func CountContentTypes(plan domain.Plan) ContentCounts {
-	var s PlanSummary
-	for _, w := range plan.Writes {
-		incrContentCount(&s, inferContentKind(w.Dst))
-	}
-	for _, cp := range plan.Copies {
-		incrContentCount(&s, inferContentKind(cp.Dst))
-	}
+// CountProfileContent tallies content items from the profile's typed
+// collections. This counts source resources, not plan-level file writes,
+// so counts are stable regardless of how many harnesses are targeted.
+func CountProfileContent(p domain.Profile) ContentCounts {
 	return ContentCounts{
-		Rules:     s.NumRules,
-		Workflows: s.NumWorkflows,
-		Agents:    s.NumAgents,
-		Skills:    s.NumSkills,
+		Rules:     len(p.AllRules()),
+		Workflows: len(p.AllWorkflows()),
+		Agents:    len(p.AllAgents()),
+		Skills:    len(p.AllSkills()),
 	}
 }
 

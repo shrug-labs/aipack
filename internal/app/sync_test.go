@@ -85,12 +85,11 @@ func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
 		t.Fatalf("RunSync: %v", err)
 	}
 
-	counts := CountContentTypes(result.Plan)
-	if counts.Rules != 1 || counts.Skills != 1 {
-		t.Fatalf("counts = %+v, want 1 rule and 1 skill", counts)
+	if got := len(result.Plan.Copies); got != 2 {
+		t.Fatalf("copies = %d, want 2 (1 rule + 1 skill)", got)
 	}
-	if len(result.Plan.Settings) != 1 {
-		t.Fatalf("settings_count = %d, want 1", len(result.Plan.Settings))
+	if got := len(result.Plan.Settings); got != 1 {
+		t.Fatalf("settings = %d, want 1", got)
 	}
 }
 

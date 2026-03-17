@@ -36,6 +36,58 @@ func (s planHarnessStub) Capture(harness.CaptureContext) (harness.CaptureResult,
 }
 func (s planHarnessStub) CleanActions(domain.Scope, string, string) []harness.CleanAction { return nil }
 
+func TestCountProfileContent_StableAcrossHarnesses(t *testing.T) {
+	t.Parallel()
+
+	// Profile has known source counts: 2 rules, 1 skill, 1 workflow, 1 agent.
+	profile := domain.Profile{
+		Packs: []domain.Pack{
+			{
+				Name:      "core",
+				Rules:     []domain.Rule{{Name: "anti-slop"}, {Name: "verify"}},
+				Skills:    []domain.Skill{{Name: "debugging"}},
+				Workflows: []domain.Workflow{{Name: "deploy"}},
+				Agents:    []domain.Agent{{Name: "reviewer"}},
+			},
+		},
+		MCPServers: []domain.MCPServer{
+			{Name: "atlassian"}, {Name: "bitbucket"}, {Name: "dope"}, {Name: "oci"},
+		},
+	}
+
+	// A merged plan has 1 MCP config file per harness, not 1 per server.
+	mergedPlan := domain.Plan{
+		MCP: []domain.SettingsAction{
+			{Dst: "/project/.claude/settings.json", Harness: domain.HarnessClaudeCode},
+		},
+	}
+
+	// CountProfileContent should return source counts, stable regardless of
+	// harness count or destination directory names.
+	profileCounts := CountProfileContent(profile)
+	if profileCounts.Rules != 2 {
+		t.Errorf("Rules = %d, want 2", profileCounts.Rules)
+	}
+	if profileCounts.Skills != 1 {
+		t.Errorf("Skills = %d, want 1", profileCounts.Skills)
+	}
+	if profileCounts.Workflows != 1 {
+		t.Errorf("Workflows = %d, want 1", profileCounts.Workflows)
+	}
+	if profileCounts.Agents != 1 {
+		t.Errorf("Agents = %d, want 1", profileCounts.Agents)
+	}
+
+	// Bug 2: MCP count should reflect unique servers from the profile,
+	// not the number of config files in the plan.
+	if len(mergedPlan.MCP) == len(profile.MCPServers) {
+		t.Fatal("plan.MCP count unexpectedly equals profile.MCPServers — test premise is wrong")
+	}
+	if len(profile.MCPServers) != 4 {
+		t.Errorf("MCPServers = %d, want 4", len(profile.MCPServers))
+	}
+}
+
 func TestPlanWithDiffs_ClassifiesMCPServersFirstClass(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

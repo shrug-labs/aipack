@@ -155,7 +155,8 @@ func (c *SyncCmd) Run(g *Globals) error {
 			return watchDirs, err
 		}
 		p := res.Plan
-		counts := app.CountContentTypes(p)
+		counts := app.CountProfileContent(loaded.profile)
+		mcpCount := len(loaded.profile.MCPServers)
 		if c.JSON {
 			return watchDirs, cmdutil.WriteJSON(g.Stdout, map[string]any{
 				"dry_run":   c.DryRun,
@@ -164,7 +165,7 @@ func (c *SyncCmd) Run(g *Globals) error {
 				"agents":    counts.Agents,
 				"skills":    counts.Skills,
 				"settings":  len(p.Settings),
-				"mcp":       len(p.MCP),
+				"mcp":       mcpCount,
 			})
 		}
 		verb := "sync OK"
@@ -175,7 +176,7 @@ func (c *SyncCmd) Run(g *Globals) error {
 			return watchDirs, nil
 		}
 		fmt.Fprintf(g.Stdout, "%s: %s, %d settings, %d mcp\n",
-			verb, counts.String(), len(p.Settings), len(p.MCP))
+			verb, counts.String(), len(p.Settings), mcpCount)
 
 		return watchDirs, nil
 	}

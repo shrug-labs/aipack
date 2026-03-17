@@ -6,6 +6,14 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.9.4]
+
+### Fixed
+
+- Sync summary counts content from the profile's typed collections instead of inferring from plan destination paths. Fixes double-counting when targeting multiple harnesses and misclassification of workflows promoted to skill directories by Codex.
+- MCP server count in sync output reflects the number of configured servers, not the number of config files written.
+- Removed dead `CountContentTypes` function.
+
 ## [0.9.3]
 
 ### Fixed
