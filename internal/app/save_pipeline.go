@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,13 +72,13 @@ func DetectHarnessesWithContent(scope domain.Scope, projectDir, home string, reg
 
 // DiscoverContentVectors runs Capture on one harness and returns which
 // PackCategories have at least one file on disk.
-func DiscoverContentVectors(harnessID domain.Harness, scope domain.Scope, projectDir, home string, reg *harness.Registry) ([]domain.PackCategory, error) {
+func DiscoverContentVectors(ctx context.Context, harnessID domain.Harness, scope domain.Scope, projectDir, home string, reg *harness.Registry) ([]domain.PackCategory, error) {
 	h, err := reg.Lookup(harnessID)
 	if err != nil {
 		return nil, err
 	}
-	ctx := harness.CaptureContext{Scope: scope, ProjectDir: projectDir, Home: home}
-	res, err := h.Capture(ctx)
+	cctx := harness.CaptureContext{Scope: scope, ProjectDir: projectDir, Home: home}
+	res, err := h.Capture(ctx, cctx)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +126,7 @@ func DiscoverContentVectors(harnessID domain.Harness, scope domain.Scope, projec
 //
 // The warnings return collects non-fatal issues (e.g. profile resolution
 // failures) that callers should surface to the user.
-func DiscoverSaveFiles(req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
+func DiscoverSaveFiles(ctx context.Context, req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
 	var warnings []string
 
 	// Resolve pack roots from active profile for classification.
@@ -152,7 +153,7 @@ func DiscoverSaveFiles(req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCa
 
 	packRoots := resolvePackRoots(res.Profile)
 
-	inspResult, err := InspectHarness(InspectRequest{
+	inspResult, err := InspectHarness(ctx, InspectRequest{
 		TargetSpec: ts,
 		PackRoots:  packRoots,
 	}, reg)
@@ -181,7 +182,7 @@ func DiscoverSaveFiles(req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCa
 
 // DiscoverSaveFilesAllScopes runs discovery for both project and global scopes,
 // merging and deduplicating results. Each candidate carries its source Scope.
-func DiscoverSaveFilesAllScopes(req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
+func DiscoverSaveFilesAllScopes(ctx context.Context, req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
 	var allCandidates []SaveCandidate
 	var allWarnings []string
 
@@ -191,7 +192,7 @@ func DiscoverSaveFilesAllScopes(req DiscoverSaveRequest, reg *harness.Registry) 
 		}
 		scopeReq := req
 		scopeReq.Scope = scope
-		candidates, warnings, err := DiscoverSaveFiles(scopeReq, reg)
+		candidates, warnings, err := DiscoverSaveFiles(ctx, scopeReq, reg)
 		if err != nil {
 			allWarnings = append(allWarnings, fmt.Sprintf("%s scope: %v", scope, err))
 			continue
@@ -215,13 +216,13 @@ func DiscoverSaveFilesAllScopes(req DiscoverSaveRequest, reg *harness.Registry) 
 }
 
 // DiscoverContentVectorsAllScopes merges content vectors from both scopes.
-func DiscoverContentVectorsAllScopes(harnessID domain.Harness, projectDir, home string, reg *harness.Registry) ([]domain.PackCategory, error) {
+func DiscoverContentVectorsAllScopes(ctx context.Context, harnessID domain.Harness, projectDir, home string, reg *harness.Registry) ([]domain.PackCategory, error) {
 	found := map[domain.PackCategory]bool{}
 	for _, scope := range []domain.Scope{domain.ScopeProject, domain.ScopeGlobal} {
 		if scope == domain.ScopeProject && projectDir == "" {
 			continue
 		}
-		vectors, err := DiscoverContentVectors(harnessID, scope, projectDir, home, reg)
+		vectors, err := DiscoverContentVectors(ctx, harnessID, scope, projectDir, home, reg)
 		if err != nil {
 			continue
 		}

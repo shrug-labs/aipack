@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -28,7 +29,7 @@ Examples:
 See also: doctor, pack install`
 }
 
-func (c *ValidateCmd) Run(g *Globals) error {
+func (c *ValidateCmd) Run(ctx context.Context, g *Globals) error {
 	rep := app.RunPackValidate(app.PackValidateRequest{PackRoot: c.PackRoot})
 	if c.JSON {
 		if err := cmdutil.WriteJSON(g.Stdout, rep); err != nil {

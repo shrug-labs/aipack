@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -36,14 +35,14 @@ type RunResult struct {
 }
 
 // Run starts the TUI program in alt-screen mode.
-func Run(cfg RunConfig) (RunResult, error) {
+func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	// Cancel on SIGHUP so Bubble Tea exits before macOS revokes the pty.
 	// Without this, a closed terminal leaves the process stuck in an
 	// uninterruptible read() on the defunct pty file descriptor.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGHUP, os.Interrupt)
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
 	defer stop()
 
-	m := newRootModel(cfg)
+	m := newRootModel(ctx, cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
 	final, err := p.Run()
 	if err != nil {
@@ -89,6 +88,7 @@ const (
 )
 
 type rootModel struct {
+	ctx       context.Context
 	cfg       RunConfig
 	activeTab tabID
 
@@ -129,12 +129,13 @@ type rootModel struct {
 	pendingDeletePath string
 }
 
-func newRootModel(cfg RunConfig) rootModel {
+func newRootModel(ctx context.Context, cfg RunConfig) rootModel {
 	return rootModel{
+		ctx:      ctx,
 		cfg:      cfg,
-		profiles: newProfilesModel(cfg.ConfigDir),
+		profiles: newProfilesModel(ctx, cfg.ConfigDir),
 		packs:    newPacksModel(cfg.ConfigDir),
-		saveTab:  newSaveTabModel(cfg.ConfigDir, cfg.Registry),
+		saveTab:  newSaveTabModel(ctx, cfg.ConfigDir, cfg.Registry),
 		syncTab:  newSyncTabModel(cfg.ConfigDir),
 		search:   newSearchTabModel(cfg.ConfigDir),
 	}
@@ -723,10 +724,10 @@ func (m rootModel) updatePlanView(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "s":
 			if m.planView.isSavePlan && m.savePlanCtx != nil {
-				ctx := m.savePlanCtx
+				spc := m.savePlanCtx
 				m.planView = nil
 				m.statusText = dimStyle.Render("saving...")
-				return m, runSave(m.cfg.ConfigDir, ctx.profileName, m.cfg.Registry)
+				return m, runSave(m.ctx, m.cfg.ConfigDir, spc.profileName, m.cfg.Registry)
 			}
 		}
 	}
@@ -805,7 +806,7 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 			if profile == "" {
 				profile = "default"
 			}
-			return m, installFromSearch(m.cfg.ConfigDir, name, profile)
+			return m, installFromSearch(m.ctx, m.cfg.ConfigDir, name, profile)
 		}
 		m.pendingSearchInstall = ""
 	}
@@ -920,7 +921,7 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 	case dialogPackAdd:
 		if msg.confirmed && msg.value != "" {
 			m.statusText = dimStyle.Render("adding pack...")
-			return m, addPack(m.cfg.ConfigDir, msg.value)
+			return m, addPack(m.ctx, m.cfg.ConfigDir, msg.value)
 		}
 	case dialogPackRemove:
 		if msg.confirmed {
@@ -1049,11 +1050,11 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 		case actUpdate:
 			if pi := m.packs.currentItem(); pi != nil {
 				m.statusText = dimStyle.Render(fmt.Sprintf("updating %s...", pi.entry.Name))
-				return m, updatePack(m.cfg.ConfigDir, pi.entry.Name, false)
+				return m, updatePack(m.ctx, m.cfg.ConfigDir, pi.entry.Name, false)
 			}
 		case actUpdateAll:
 			m.statusText = dimStyle.Render("updating all packs...")
-			return m, updatePack(m.cfg.ConfigDir, "", true)
+			return m, updatePack(m.ctx, m.cfg.ConfigDir, "", true)
 		}
 	}
 	return m, nil
@@ -1170,7 +1171,7 @@ func (m rootModel) startSave() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.statusText = dimStyle.Render("checking for changes...")
-	return m, runSavePlan(m.cfg.ConfigDir, item.name, m.cfg.Registry)
+	return m, runSavePlan(m.ctx, m.cfg.ConfigDir, item.name, m.cfg.Registry)
 }
 
 // startSync initiates the sync flow: auto-save if dirty, then prompt sync.
@@ -1214,7 +1215,7 @@ func (m rootModel) doSync(scope, harness string) (tea.Model, tea.Cmd) {
 	m.statusText = dimStyle.Render("syncing...")
 	m.pendingExit = false
 
-	return m, runSync(m.cfg.ConfigDir, item.name, item.path, scope, harness, m.cfg.SyncCfg, m.cfg.Registry)
+	return m, runSync(m.ctx, m.cfg.ConfigDir, item.name, item.path, scope, harness, m.cfg.SyncCfg, m.cfg.Registry)
 }
 
 // promptSync shows the sync options dialog for the target profile.

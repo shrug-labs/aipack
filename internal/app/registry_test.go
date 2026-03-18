@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -156,7 +157,7 @@ func TestRegistryFetch_CachesRemoteRegistry(t *testing.T) {
 	dir := t.TempDir()
 
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://example.com/registry.yaml",
 		FetchFn:   fakeFetchFn(testRemoteRegistryYAML),
@@ -192,7 +193,7 @@ func TestRegistryFetch_SavesSourceToSyncConfig(t *testing.T) {
 	dir := t.TempDir()
 
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://example.com/registry.yaml",
 		FetchFn:   fakeFetchFn(testRemoteRegistryYAML),
@@ -223,7 +224,7 @@ func TestRegistryFetch_CacheOverwrite(t *testing.T) {
 
 	// First fetch: 2 packs.
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://example.com/registry.yaml",
 		FetchFn:   fakeFetchFn(testRemoteRegistryYAML),
@@ -240,7 +241,7 @@ packs:
     description: Epsilon runbooks v2
 `
 	buf.Reset()
-	err = RegistryFetch(RegistryFetchRequest{
+	err = RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://example.com/registry.yaml",
 		FetchFn:   fakeFetchFn(updatedYAML),
@@ -269,7 +270,7 @@ func TestRegistryFetch_GitArbitraryRepo(t *testing.T) {
 
 	var capturedRepo, capturedRef, capturedPath string
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://bitbucket.example.com/scm/TEAM/my-tools.git",
 		Ref:       "team/ops-tools",
@@ -315,7 +316,7 @@ func TestRegistryFetch_GitAutoDetect(t *testing.T) {
 
 	var capturedRef, capturedPath string
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://github.com/org/my-packs.git",
 		// No --ref or --path: should auto-detect git and use defaults.
@@ -368,7 +369,7 @@ packs:
 	}
 
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		FetchFn: func(url string) ([]byte, error) {
 			data, ok := fetchCalls[url]
@@ -412,7 +413,7 @@ func TestRegistryFetch_AllSourcesFail(t *testing.T) {
 	config.SaveSyncConfig(config.SyncConfigPath(dir), sc)
 
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		FetchFn: func(url string) ([]byte, error) {
 			return nil, fmt.Errorf("network error")
@@ -432,7 +433,7 @@ func TestRegistryFetch_UsesDefaultGit(t *testing.T) {
 
 	var capturedRepo, capturedRef, capturedPath string
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
 			capturedRepo = repo
@@ -471,7 +472,7 @@ func TestRegistryFetch_URLFromSyncConfig(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		FetchFn:   fetchFn,
 	}, &buf)
@@ -490,7 +491,7 @@ func TestRegistryRemove(t *testing.T) {
 
 	// Set up a source via fetch.
 	var buf bytes.Buffer
-	err := RegistryFetch(RegistryFetchRequest{
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
 		ConfigDir: dir,
 		URL:       "https://example.com/registry.yaml",
 		FetchFn:   fakeFetchFn(testRemoteRegistryYAML),

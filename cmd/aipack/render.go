@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ Examples:
 See also: sync, pack show`
 }
 
-func (c *RenderCmd) Run(g *Globals) error {
+func (c *RenderCmd) Run(ctx context.Context, g *Globals) error {
 	loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
 	if exitCode >= 0 {
 		return ExitError{Code: exitCode}
@@ -60,7 +61,7 @@ func (c *RenderCmd) Run(g *Globals) error {
 		}
 	}
 
-	if err := app.RunRender(loaded.profile, out, g.Registry); err != nil {
+	if err := app.RunRender(ctx, loaded.profile, out, g.Registry); err != nil {
 		return err
 	}
 	if c.JSON {

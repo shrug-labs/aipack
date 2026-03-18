@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -43,7 +44,7 @@ func TestPackList_JSON_WithPack(t *testing.T) {
 	writePackManifestCmd(t, packDir, "test-pack")
 
 	var addOut [0]byte
-	_ = app.PackAdd(app.PackAddRequest{
+	_ = app.PackAdd(context.Background(), app.PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,

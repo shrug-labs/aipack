@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,13 +56,13 @@ type InspectResult struct {
 
 // InspectActive inspects harness file state using the active profile from
 // sync-config defaults, resolving all context from configDir.
-func InspectActive(configDir string, reg *harness.Registry) (InspectResult, []domain.Warning, error) {
+func InspectActive(ctx context.Context, configDir string, reg *harness.Registry) (InspectResult, []domain.Warning, error) {
 	res, warnings, err := ResolveActiveProfile(configDir)
 	if err != nil {
 		return InspectResult{}, warnings, err
 	}
 	packRoots := resolvePackRoots(res.Profile)
-	result, err := InspectHarness(InspectRequest{
+	result, err := InspectHarness(ctx, InspectRequest{
 		TargetSpec: res.TargetSpec,
 		PackRoots:  packRoots,
 	}, reg)
@@ -70,7 +71,7 @@ func InspectActive(configDir string, reg *harness.Registry) (InspectResult, []do
 
 // InspectHarness captures all harness content and classifies every file
 // against the ledger, returning a complete file inventory.
-func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, error) {
+func InspectHarness(ctx context.Context, req InspectRequest, reg *harness.Registry) (InspectResult, error) {
 	home := req.Home
 	var result InspectResult
 
@@ -94,14 +95,14 @@ func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, e
 	result.HasLedger = len(lg.Managed) > 0
 	result.LedgerFiles = len(lg.Managed)
 
-	ctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
+	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
 
 	for _, hid := range req.Harnesses {
 		h, err := reg.Lookup(hid)
 		if err != nil {
 			return result, err
 		}
-		res, err := h.Capture(ctx)
+		res, err := h.Capture(ctx, cctx)
 		if err != nil {
 			return result, err
 		}

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -29,7 +30,7 @@ type ApplyRequest struct {
 // Error policy: loading/reading failures that degrade gracefully are returned
 // as warnings (e.g. stale ledger, failed stale-file removal). Writing
 // failures that leave inconsistent state are fatal errors.
-func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) ([]domain.Warning, error) {
+func ApplyPlan(ctx context.Context, plan domain.Plan, ar ApplyRequest, managedRoots []string) ([]domain.Warning, error) {
 	var warnings []domain.Warning
 	allowed := make([]string, len(managedRoots)+1)
 	copy(allowed, managedRoots)

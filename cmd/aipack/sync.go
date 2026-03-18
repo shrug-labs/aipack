@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"time"
 
@@ -77,7 +76,7 @@ func (c *SyncCmd) Validate() error {
 	return nil
 }
 
-func (c *SyncCmd) Run(g *Globals) error {
+func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 	watchDirsForFlags := func() []string {
 		dirs, err := resolveWatchDirs(c.Profile, c.ProfilePath, c.ConfigDir)
 		if err != nil {
@@ -132,7 +131,7 @@ func (c *SyncCmd) Run(g *Globals) error {
 			syncStdout = io.Discard
 		}
 
-		res, syncWarnings, err := app.RunSync(loaded.profile, app.SyncRequest{
+		res, syncWarnings, err := app.RunSync(ctx, loaded.profile, app.SyncRequest{
 			TargetSpec: app.TargetSpec{
 				Scope:      scope,
 				ProjectDir: projectDirValue,
@@ -217,14 +216,11 @@ func (c *SyncCmd) Run(g *Globals) error {
 			}
 		}
 
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer stop()
-
 		return app.RunWatch(ctx, resolveAndSync, configFiles, g.Stderr)
 	}
 
 	// Non-watch: single sync.
-	updateCh := update.CheckAsync(version, os.Getenv("HOME"))
+	updateCh := update.CheckAsync(ctx, version, os.Getenv("HOME"))
 	_, err := resolveAndSync()
 	if err != nil {
 		return err

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ type TraceResult struct {
 
 // RunTrace traces a resource through the sync pipeline, showing where it comes
 // from and where it would land in each harness location.
-func RunTrace(profile domain.Profile, req TraceRequest, reg *harness.Registry) (TraceResult, error) {
+func RunTrace(ctx context.Context, profile domain.Profile, req TraceRequest, reg *harness.Registry) (TraceResult, error) {
 	result := TraceResult{
 		ResourceType: req.ResourceType,
 		ResourceName: req.ResourceName,
@@ -81,7 +82,7 @@ func RunTrace(profile domain.Profile, req TraceRequest, reg *harness.Registry) (
 			ProjectDir: req.ProjectDir,
 			Home:       req.Home,
 		}
-		plan, err := engine.PlanSync(profile, planReq, planners)
+		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
 			continue
 		}
@@ -95,7 +96,7 @@ func RunTrace(profile domain.Profile, req TraceRequest, reg *harness.Registry) (
 		if err != nil {
 			continue
 		}
-		captured, err := h.Capture(harness.CaptureContext{
+		captured, err := h.Capture(ctx, harness.CaptureContext{
 			Scope:      req.Scope,
 			ProjectDir: req.ProjectDir,
 			Home:       req.Home,

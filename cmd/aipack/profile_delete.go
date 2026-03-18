@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -24,7 +25,7 @@ Examples:
 See also: profile create, profile list`
 }
 
-func (c *ProfileDeleteCmd) Run(g *Globals) error {
+func (c *ProfileDeleteCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err

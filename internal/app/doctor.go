@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -97,7 +98,7 @@ type DoctorRequest struct {
 }
 
 // RunDoctor executes all doctor diagnostic checks and returns a report.
-func RunDoctor(req DoctorRequest) (rep DoctorReport) {
+func RunDoctor(ctx context.Context, req DoctorRequest) (rep DoctorReport) {
 	rep = DoctorReport{SchemaVersion: DoctorSchemaVersion, OK: false, Status: "fail", Checks: []CheckResult{}}
 	add := func(cr CheckResult) {
 		rep.Checks = append(rep.Checks, cr)
@@ -127,7 +128,7 @@ func RunDoctor(req DoctorRequest) (rep DoctorReport) {
 	updateIdx := len(rep.Checks)
 	rep.Checks = append(rep.Checks, CheckResult{}) // placeholder
 	updateCh := make(chan CheckResult, 1)
-	go func() { updateCh <- doctorCheckUpdate(req.Version, configDir) }()
+	go func() { updateCh <- doctorCheckUpdate(ctx, req.Version, configDir) }()
 	defer func() {
 		select {
 		case result := <-updateCh:
@@ -283,9 +284,9 @@ func RunDoctor(req DoctorRequest) (rep DoctorReport) {
 }
 
 // doctorCheckUpdate checks if a newer CLI version is available.
-func doctorCheckUpdate(currentVersion, configDir string) CheckResult {
+func doctorCheckUpdate(ctx context.Context, currentVersion, configDir string) CheckResult {
 	check := CheckResult{Name: "cli_update", Severity: "warning", Status: "pass", OK: true}
-	r := update.Check(currentVersion, configDir)
+	r := update.Check(ctx, currentVersion, configDir)
 	if r == nil {
 		check.Message = "up to date"
 		return check

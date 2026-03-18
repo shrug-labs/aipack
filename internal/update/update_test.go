@@ -2,6 +2,7 @@ package update
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -32,7 +33,7 @@ func TestFetchChecksum(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, err := fetchChecksum(&http.Client{}, srv.URL, "aipack-darwin-arm64")
+	got, err := fetchChecksum(context.Background(), srv.URL, "aipack-darwin-arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +48,7 @@ func TestFetchChecksum_Missing(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchChecksum(&http.Client{}, srv.URL, "aipack-darwin-arm64")
+	_, err := fetchChecksum(context.Background(), srv.URL, "aipack-darwin-arm64")
 	if err == nil || !strings.Contains(err.Error(), "no checksum found") {
 		t.Fatalf("expected 'no checksum found' error, got: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestFetchChecksum_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchChecksum(&http.Client{}, srv.URL, "anything")
+	_, err := fetchChecksum(context.Background(), srv.URL, "anything")
 	if err == nil {
 		t.Fatal("expected error on HTTP 404")
 	}
@@ -67,7 +68,7 @@ func TestFetchChecksum_HTTPError(t *testing.T) {
 
 func TestUpdate_DevVersion(t *testing.T) {
 	var buf bytes.Buffer
-	err := Update("dev", &buf)
+	err := Update(context.Background(), "dev", &buf)
 	if err == nil || !strings.Contains(err.Error(), "dev build") {
 		t.Fatalf("expected dev build error, got: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestUpdate_DevVersion(t *testing.T) {
 
 func TestUpdate_EmptyVersion(t *testing.T) {
 	var buf bytes.Buffer
-	err := Update("", &buf)
+	err := Update(context.Background(), "", &buf)
 	if err == nil || !strings.Contains(err.Error(), "dev build") {
 		t.Fatalf("expected dev build error, got: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestUpdate_AlreadyLatest(t *testing.T) {
 	t.Cleanup(func() { releaseURL = origURL })
 
 	var buf bytes.Buffer
-	if err := Update("0.9.0", &buf); err != nil {
+	if err := Update(context.Background(), "0.9.0", &buf); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "already the latest") {
@@ -140,7 +141,7 @@ func TestUpdate_HappyPath(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := Update("0.9.0", &buf); err != nil {
+	if err := Update(context.Background(), "0.9.0", &buf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -190,7 +191,7 @@ func TestUpdate_ChecksumMismatch(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := Update("0.9.0", &buf)
+	err := Update(context.Background(), "0.9.0", &buf)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected checksum mismatch error, got: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestUpdate_BinaryNotFound(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := Update("0.9.0", &buf)
+	err := Update(context.Background(), "0.9.0", &buf)
 	if err == nil || !strings.Contains(err.Error(), "no release binary found") {
 		t.Fatalf("expected 'no release binary found' error, got: %v", err)
 	}

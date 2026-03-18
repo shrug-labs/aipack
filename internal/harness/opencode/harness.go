@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -52,7 +53,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 }
 
 // Plan produces a Fragment from typed content.
-func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
+func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
 	if err := harness.PlanStandardContent(&f, ctx.Profile, contentDirsForScope(ctx.Scope, ctx.TargetDir), opencodeAgentTransform); err != nil {
@@ -162,7 +163,7 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 }
 
 // Render produces a Fragment for pack rendering.
-func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
+func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
 	instr := InstructionsSpec{Manage: false}
 	skills := SkillsSpec{Manage: false}
@@ -186,7 +187,7 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 // Capture extracts OpenCode content for round-trip save.
 // Only the base settings file (opencode.json) is captured. Drop-in config
 // files are pack-provided and should not be round-tripped from the harness.
-func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
+func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
 	paths := PathsForScope(ctx.Scope)

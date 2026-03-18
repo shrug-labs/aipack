@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -43,7 +44,7 @@ Examples:
 See also: profile edit, profile list, pack list`
 }
 
-func (c *ManageCmd) Run(g *Globals) error {
+func (c *ManageCmd) Run(ctx context.Context, g *Globals) error {
 	if !g.StdinTTY {
 		fmt.Fprintln(g.Stderr, "manage requires an interactive terminal")
 		return ExitError{Code: cmdutil.ExitUsage}
@@ -59,7 +60,7 @@ func (c *ManageCmd) Run(g *Globals) error {
 		return err
 	}
 
-	_, err = tui.Run(tui.RunConfig{
+	_, err = tui.Run(ctx, tui.RunConfig{
 		ConfigDir: cfgDir,
 		SyncCfg:   syncCfg,
 		Registry:  g.Registry,

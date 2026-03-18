@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -137,7 +138,7 @@ type SyncResult struct {
 //
 // Error policy: loading/reading failures that degrade gracefully are returned
 // as warnings. Writing failures that leave inconsistent state are fatal errors.
-func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
+func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
 	var warnings []domain.Warning
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
@@ -175,7 +176,7 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 			SkipSettings: req.SkipSettings,
 		}
 
-		plan, err := engine.PlanSync(profile, planReq, planners)
+		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
 			return SyncResult{}, warnings, err
 		}
@@ -197,7 +198,7 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 			Req:    planReq,
 		}
 
-		applyWarnings, err := engine.ApplyPlan(plan, applyReq, managedRoots)
+		applyWarnings, err := engine.ApplyPlan(ctx, plan, applyReq, managedRoots)
 		warnings = append(warnings, applyWarnings...)
 		if err != nil {
 			return SyncResult{}, warnings, err
@@ -207,7 +208,7 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 
 	if req.DryRun {
 		if req.Verbose {
-			summary, err := PlanWithDiffs(profile, req, reg)
+			summary, err := PlanWithDiffs(ctx, profile, req, reg)
 			if err != nil {
 				return SyncResult{}, warnings, err
 			}

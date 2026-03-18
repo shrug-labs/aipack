@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ Examples:
 See also: profile show, init`
 }
 
-func (c *ProfileListCmd) Run(g *Globals) error {
+func (c *ProfileListCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -111,7 +112,7 @@ Examples:
 See also: profile list, profile create, pack install`
 }
 
-func (c *ProfileSetCmd) Run(g *Globals) error {
+func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -125,7 +126,7 @@ func (c *ProfileSetCmd) Run(g *Globals) error {
 	fmt.Fprintf(g.Stdout, "Active profile: %s\n", c.Name)
 
 	if c.Install {
-		results, err := app.PackInstallMissing(app.PackInstallMissingRequest{
+		results, err := app.PackInstallMissing(ctx, app.PackInstallMissingRequest{
 			ConfigDir:   cfgDir,
 			ProfileName: c.Name,
 		}, g.Stdout)
@@ -180,7 +181,7 @@ Examples:
 See also: profile list, sync, doctor`
 }
 
-func (c *ProfileShowCmd) Run(g *Globals) error {
+func (c *ProfileShowCmd) Run(ctx context.Context, g *Globals) error {
 	loaded, code := loadProfile(c.Name, c.ProfilePath, c.ConfigDir, g.Stderr)
 	if code >= 0 {
 		return ExitError{Code: code}

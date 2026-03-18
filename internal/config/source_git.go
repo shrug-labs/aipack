@@ -35,22 +35,22 @@ func CheckGit() error {
 }
 
 // EnsureClone clones a repo into dir (using the real git binary) if .git is not already present.
-func EnsureClone(repoURL, dir, ref string) error {
-	return ensureClone(repoURL, dir, ref, runGit)
+func EnsureClone(ctx context.Context, repoURL, dir, ref string) error {
+	return ensureClone(ctx, repoURL, dir, ref, runGit)
 }
 
 // EnsureCloneWith is like EnsureClone but accepts a custom git runner for testing.
-func EnsureCloneWith(repoURL, dir, ref string, runGitFn func(args ...string) error) error {
-	return ensureClone(repoURL, dir, ref, runGitFn)
+func EnsureCloneWith(ctx context.Context, repoURL, dir, ref string, runGitFn func(ctx context.Context, args ...string) error) error {
+	return ensureClone(ctx, repoURL, dir, ref, runGitFn)
 }
 
-func ensureClone(repoURL string, dir string, ref string, runGitFn func(args ...string) error) error {
+func ensureClone(ctx context.Context, repoURL string, dir string, ref string, runGitFn func(ctx context.Context, args ...string) error) error {
 	if err := CheckGit(); err != nil {
 		return err
 	}
 	if st, err := os.Stat(filepath.Join(dir, ".git")); err == nil && st.IsDir() {
 		if ref != "" {
-			return checkoutRef(dir, ref, runGitFn)
+			return checkoutRef(ctx, dir, ref, runGitFn)
 		}
 		return nil
 	}
@@ -61,7 +61,7 @@ func ensureClone(repoURL string, dir string, ref string, runGitFn func(args ...s
 	// single network round-trip). Fall back to clone-then-fetch for arbitrary
 	// refs (e.g. commit SHAs) that --branch doesn't support.
 	if ref != "" {
-		err := runGitFn("clone", "--depth", "1", "--branch", ref, repoURL, dir)
+		err := runGitFn(ctx, "clone", "--depth", "1", "--branch", ref, repoURL, dir)
 		if err == nil {
 			return nil
 		}
@@ -71,29 +71,29 @@ func ensureClone(repoURL string, dir string, ref string, runGitFn func(args ...s
 			return mkErr
 		}
 	}
-	if err := runGitFn("clone", "--depth", "1", repoURL, dir); err != nil {
+	if err := runGitFn(ctx, "clone", "--depth", "1", repoURL, dir); err != nil {
 		return err
 	}
 	if ref != "" {
-		return checkoutRef(dir, ref, runGitFn)
+		return checkoutRef(ctx, dir, ref, runGitFn)
 	}
 	return nil
 }
 
-func checkoutRef(dir string, ref string, runGitFn func(args ...string) error) error {
-	if err := runGitFn("-C", dir, "fetch", "--depth", "1", "origin", ref); err != nil {
+func checkoutRef(ctx context.Context, dir string, ref string, runGitFn func(ctx context.Context, args ...string) error) error {
+	if err := runGitFn(ctx, "-C", dir, "fetch", "--depth", "1", "origin", ref); err != nil {
 		return err
 	}
-	return runGitFn("-C", dir, "checkout", "--force", "FETCH_HEAD")
+	return runGitFn(ctx, "-C", dir, "checkout", "--force", "FETCH_HEAD")
 }
 
 // GitHeadHash returns the HEAD commit SHA for the git repo at dir.
-func GitHeadHash(dir string) (string, error) {
-	return gitHeadHash(dir)
+func GitHeadHash(ctx context.Context, dir string) (string, error) {
+	return gitHeadHash(ctx, dir)
 }
 
-func gitHeadHash(dir string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func gitHeadHash(ctx context.Context, dir string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD")
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -105,12 +105,12 @@ func gitHeadHash(dir string) (string, error) {
 }
 
 // RunGit runs a git command with the given arguments.
-func RunGit(args ...string) error {
-	return runGit(args...)
+func RunGit(ctx context.Context, args ...string) error {
+	return runGit(ctx, args...)
 }
 
-func runGit(args ...string) error {
-	_, err := runGitCore(args...)
+func runGit(ctx context.Context, args ...string) error {
+	_, err := runGitCore(ctx, args...)
 	return err
 }
 
@@ -130,16 +130,16 @@ var ErrArchivePathNotFound = errors.New("archive path not found")
 // Directory paths are fetched recursively by git archive.
 //
 // Returns ErrArchiveNotSupported if the remote does not support git archive.
-func GitArchiveFiles(repoURL, ref string, paths []string) ([]byte, error) {
-	return gitArchiveFiles(repoURL, ref, paths, runGitOutput)
+func GitArchiveFiles(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) {
+	return gitArchiveFiles(ctx, repoURL, ref, paths, runGitOutput)
 }
 
 // GitArchiveFilesWith is like GitArchiveFiles but accepts a custom git runner for testing.
-func GitArchiveFilesWith(repoURL, ref string, paths []string, runFn func(args ...string) ([]byte, error)) ([]byte, error) {
-	return gitArchiveFiles(repoURL, ref, paths, runFn)
+func GitArchiveFilesWith(ctx context.Context, repoURL, ref string, paths []string, runFn func(ctx context.Context, args ...string) ([]byte, error)) ([]byte, error) {
+	return gitArchiveFiles(ctx, repoURL, ref, paths, runFn)
 }
 
-func gitArchiveFiles(repoURL, ref string, paths []string, runFn func(args ...string) ([]byte, error)) ([]byte, error) {
+func gitArchiveFiles(ctx context.Context, repoURL, ref string, paths []string, runFn func(ctx context.Context, args ...string) ([]byte, error)) ([]byte, error) {
 	if err := CheckGit(); err != nil {
 		return nil, err
 	}
@@ -148,13 +148,13 @@ func gitArchiveFiles(repoURL, ref string, paths []string, runFn func(args ...str
 	}
 	args := []string{"archive", "--remote=" + repoURL, ref}
 	args = append(args, paths...)
-	return runFn(args...)
+	return runFn(ctx, args...)
 }
 
 // runGitCore runs a git command with shared setup (timeout, env, error formatting)
 // and returns stdout bytes. Both runGit and runGitOutput delegate to this.
-func runGitCore(args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+func runGitCore(ctx context.Context, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	// Prevent git from prompting for credentials in non-interactive contexts.
@@ -182,8 +182,8 @@ func runGitCore(args ...string) ([]byte, error) {
 
 // runGitOutput runs a git command and returns its stdout as bytes.
 // Adds archive-specific error classification on top of runGitCore.
-func runGitOutput(args ...string) ([]byte, error) {
-	out, err := runGitCore(args...)
+func runGitOutput(ctx context.Context, args ...string) ([]byte, error) {
+	out, err := runGitCore(ctx, args...)
 	if err != nil {
 		return nil, classifyArchiveError(err)
 	}

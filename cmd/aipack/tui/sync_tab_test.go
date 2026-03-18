@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestSyncTab_HarnessToggle(t *testing.T) {
 
 func TestSyncTab_HarnessToggle_EndToEnd(t *testing.T) {
 	t.Parallel()
-	rm := newRootModel(RunConfig{ConfigDir: "/tmp/cfg"})
+	rm := newRootModel(context.Background(), RunConfig{ConfigDir: "/tmp/cfg"})
 	rm.cfg.SyncCfg.Defaults.Harnesses = []string{"cline"}
 	rm.profiles.items = []profileItem{{name: "test", isActive: true, syncState: syncSynced}}
 
@@ -124,7 +125,7 @@ func TestSyncTab_ScopeToggle(t *testing.T) {
 
 func TestSyncTab_ScopeToggle_EndToEnd(t *testing.T) {
 	t.Parallel()
-	rm := newRootModel(RunConfig{ConfigDir: "/tmp/cfg"})
+	rm := newRootModel(context.Background(), RunConfig{ConfigDir: "/tmp/cfg"})
 	rm.cfg.SyncCfg.Defaults.Scope = "project"
 	rm.profiles.items = []profileItem{{name: "test", isActive: true, syncState: syncSynced}}
 
@@ -226,7 +227,7 @@ func TestSyncTab_ViewShowsStatus(t *testing.T) {
 
 func TestSyncTab_StatusDotOnTab(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{{name: "test", isActive: true}}
 
 	// Default: syncPending — no dot.
@@ -277,7 +278,7 @@ func TestSyncTab_ProfilesLoadedUpdatesNames(t *testing.T) {
 
 func TestSyncTab_SnapshotDerivedFromActiveProfile(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "test", isActive: true, syncState: syncSynced, syncTarget: syncTargetInfo{
 			harnesses: []string{"cline"},
@@ -307,7 +308,7 @@ func TestSyncTab_SnapshotDerivedFromActiveProfile(t *testing.T) {
 
 func TestSyncTab_SyncConfigSavedPropagates(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{ConfigDir: "/tmp/cfg"})
+	m := newRootModel(context.Background(), RunConfig{ConfigDir: "/tmp/cfg"})
 	m.profiles.items = []profileItem{
 		{name: "test", isActive: true, syncState: syncSynced},
 	}

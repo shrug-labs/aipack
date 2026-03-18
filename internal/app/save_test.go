@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -247,11 +248,13 @@ type stubHarness struct {
 
 func (s stubHarness) ID() domain.Harness                                 { return s.id }
 func (s stubHarness) Layout(domain.Scope, string, string) harness.Layout { return harness.Layout{} }
-func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error)   { return domain.Fragment{}, nil }
-func (s stubHarness) Render(harness.RenderContext) (domain.Fragment, error) {
+func (s stubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s stubHarness) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
+func (s stubHarness) Render(_ context.Context, _ harness.RenderContext) (domain.Fragment, error) {
+	return domain.Fragment{}, nil
+}
+func (s stubHarness) Capture(_ context.Context, _ harness.CaptureContext) (harness.CaptureResult, error) {
 	return s.capture, nil
 }
 
@@ -345,7 +348,7 @@ func TestRunRoundTrip_PackSideConflict_Errors(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	_, err := RunRoundTrip(RoundTripRequest{
+	_, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -408,7 +411,7 @@ func TestRunRoundTrip_PackSideConflict_Force(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -487,7 +490,7 @@ func TestRunRoundTrip_AgentPackAlreadyNeutral_DoesNotConflict(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -556,7 +559,7 @@ func TestRunRoundTrip_DirSave_PropagatesDeletions(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -634,7 +637,7 @@ func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -678,7 +681,7 @@ func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 	}
 
 	// A second round-trip with the same content should now be clean.
-	result2, err := RunRoundTrip(RoundTripRequest{
+	result2, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -760,7 +763,7 @@ func TestRunRoundTrip_SkillDir_NoFalseConflict_AfterSync(t *testing.T) {
 	reg := harness.NewRegistry(stub)
 
 	// Round-trip should save cleanly without --force.
-	result, err := RunRoundTrip(RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -847,7 +850,7 @@ func TestRunRoundTrip_ContentWrite_SavedDirectly(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -931,7 +934,7 @@ func TestRunRoundTrip_ContentWrite_UnchangedSkipped(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -44,7 +45,7 @@ func newContractEnv(t *testing.T, hid domain.Harness) *contractEnv {
 // sync applies a profile with force and auto-confirm.
 func (e *contractEnv) sync(profile domain.Profile) SyncResult {
 	e.t.Helper()
-	result, warnings, err := RunSync(profile, SyncRequest{
+	result, warnings, err := RunSync(context.Background(), profile, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: e.projectDir,

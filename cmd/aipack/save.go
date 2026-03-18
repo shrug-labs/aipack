@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,14 +122,14 @@ func (c *SaveCmd) Validate() error {
 	return nil
 }
 
-func (c *SaveCmd) Run(g *Globals) error {
+func (c *SaveCmd) Run(ctx context.Context, g *Globals) error {
 	if c.ToPack != "" {
-		return c.runToPack(g)
+		return c.runToPack(ctx, g)
 	}
-	return c.runRoundTrip(g)
+	return c.runRoundTrip(ctx, g)
 }
 
-func (c *SaveCmd) runRoundTrip(g *Globals) error {
+func (c *SaveCmd) runRoundTrip(ctx context.Context, g *Globals) error {
 	loaded, code := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
 	if code >= 0 {
 		return ExitError{Code: code}
@@ -146,7 +147,7 @@ func (c *SaveCmd) runRoundTrip(g *Globals) error {
 		packRoots[p.Name] = p.Root
 	}
 
-	result, err := app.RunRoundTrip(app.RoundTripRequest{
+	result, err := app.RunRoundTrip(ctx, app.RoundTripRequest{
 		TargetSpec: app.TargetSpec{
 			Scope:      env.scope,
 			ProjectDir: env.projectDir,
@@ -204,7 +205,7 @@ func (c *SaveCmd) runRoundTrip(g *Globals) error {
 	return nil
 }
 
-func (c *SaveCmd) runToPack(g *Globals) error {
+func (c *SaveCmd) runToPack(ctx context.Context, g *Globals) error {
 	env, err := c.resolveSaveEnv(true)
 	if err != nil {
 		fmt.Fprintln(g.Stderr, "ERROR:", err)
@@ -240,7 +241,7 @@ func (c *SaveCmd) runToPack(g *Globals) error {
 	var aggregated app.SavePipelineResult
 	foundCandidates := false
 	for _, harnessID := range env.harnesses {
-		candidates, discoverWarnings, err := app.DiscoverSaveFiles(app.DiscoverSaveRequest{
+		candidates, discoverWarnings, err := app.DiscoverSaveFiles(ctx, app.DiscoverSaveRequest{
 			HarnessID:  harnessID,
 			Categories: categories,
 			Scope:      env.scope,

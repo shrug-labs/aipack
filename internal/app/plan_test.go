@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,13 +22,13 @@ func (s planHarnessStub) ID() domain.Harness { return s.id }
 func (s planHarnessStub) Layout(domain.Scope, string, string) harness.Layout {
 	return harness.Layout{ValidationRoots: s.roots}
 }
-func (s planHarnessStub) Plan(engine.SyncContext) (domain.Fragment, error) {
+func (s planHarnessStub) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return s.fragment, nil
 }
-func (s planHarnessStub) Render(harness.RenderContext) (domain.Fragment, error) {
+func (s planHarnessStub) Render(_ context.Context, _ harness.RenderContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s planHarnessStub) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
+func (s planHarnessStub) Capture(_ context.Context, _ harness.CaptureContext) (harness.CaptureResult, error) {
 	return s.capture, nil
 }
 
@@ -131,7 +132,7 @@ func TestPlanWithDiffs_ClassifiesMCPServersFirstClass(t *testing.T) {
 		roots: []string{filepath.Dir(configPath)},
 	})
 
-	summary, err := PlanWithDiffs(domain.Profile{}, SyncRequest{
+	summary, err := PlanWithDiffs(context.Background(), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			Harnesses:  []domain.Harness{"codex"},
@@ -210,7 +211,7 @@ func TestPlanWithDiffs_ClassifiesTrackedMCPConflictFromLiveConfig(t *testing.T) 
 		roots: []string{filepath.Dir(configPath)},
 	})
 
-	summary, err := PlanWithDiffs(domain.Profile{}, SyncRequest{
+	summary, err := PlanWithDiffs(context.Background(), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			Harnesses:  []domain.Harness{"codex"},
@@ -272,7 +273,7 @@ func TestPlanWithDiffs_SkipsCleanPromotedContentUsingSourceDigest(t *testing.T) 
 		roots: []string{filepath.Dir(dstPath)},
 	})
 
-	summary, err := PlanWithDiffs(domain.Profile{}, SyncRequest{
+	summary, err := PlanWithDiffs(context.Background(), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			Harnesses:  []domain.Harness{"codex"},

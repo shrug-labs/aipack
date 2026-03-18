@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -54,7 +55,7 @@ Categories: ops, dev, infra, governance, meta
 See also: query (for raw SQL), registry list (for browsing the registry)`
 }
 
-func (c *SearchCmd) Run(g *Globals) error {
+func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 	var installed *bool
 	if c.Installed {
 		t := true
@@ -137,7 +138,7 @@ Examples:
 See also: search (for convenience FTS search)`
 }
 
-func (c *QueryCmd) Run(g *Globals) error {
+func (c *QueryCmd) Run(ctx context.Context, g *Globals) error {
 	home := os.Getenv("HOME")
 
 	if c.Schema {

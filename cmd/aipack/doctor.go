@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -44,8 +45,8 @@ Examples:
 See also: init, sync, status`
 }
 
-func (c *DoctorCmd) Run(g *Globals) error {
-	rep := app.RunDoctor(app.DoctorRequest{
+func (c *DoctorCmd) Run(ctx context.Context, g *Globals) error {
+	rep := app.RunDoctor(ctx, app.DoctorRequest{
 		ConfigDir:   c.ConfigDir,
 		ProfilePath: c.ProfilePath,
 		ProfileName: c.Profile,

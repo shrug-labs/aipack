@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -55,7 +56,7 @@ Examples:
 See also: registry fetch, pack install`
 }
 
-func (c *RegistryListCmd) Run(g *Globals) error {
+func (c *RegistryListCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -129,7 +130,7 @@ Examples:
 See also: registry list, registry sources`
 }
 
-func (c *RegistryFetchCmd) Run(g *Globals) error {
+func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 	// Validate: --path requires git mode.
 	if c.Path != "" && c.URL != "" && !config.IsGitURL(c.URL, c.Ref) {
 		return fmt.Errorf("--path requires a git URL (ending in .git) or --ref")
@@ -140,7 +141,7 @@ func (c *RegistryFetchCmd) Run(g *Globals) error {
 		return err
 	}
 
-	if err := app.RegistryFetch(app.RegistryFetchRequest{
+	if err := app.RegistryFetch(ctx, app.RegistryFetchRequest{
 		ConfigDir: cfgDir,
 		URL:       c.URL,
 		Ref:       c.Ref,
@@ -151,7 +152,7 @@ func (c *RegistryFetchCmd) Run(g *Globals) error {
 	}
 
 	if c.Deep {
-		return app.RegistryDeepIndex(app.RegistryDeepIndexRequest{
+		return app.RegistryDeepIndex(ctx, app.RegistryDeepIndexRequest{
 			ConfigDir: cfgDir,
 		}, g.Stdout)
 	}
@@ -178,7 +179,7 @@ Examples:
 See also: registry sources, registry fetch`
 }
 
-func (c *RegistryRemoveCmd) Run(g *Globals) error {
+func (c *RegistryRemoveCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -211,7 +212,7 @@ Examples:
 See also: registry fetch, registry remove`
 }
 
-func (c *RegistrySourcesCmd) Run(g *Globals) error {
+func (c *RegistrySourcesCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err

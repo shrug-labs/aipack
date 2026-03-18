@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -214,7 +215,7 @@ func TestProfilePackNames(t *testing.T) {
 
 func TestProfileSavedMsg_RerunsSyncCheck(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "test", path: "/tmp/test.yaml", isActive: true, syncState: syncUnsynced},
 	}

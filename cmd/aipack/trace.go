@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func (c *TraceCmd) Validate() error {
 	return nil
 }
 
-func (c *TraceCmd) Run(g *Globals) error {
+func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 	loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
 	if exitCode >= 0 {
 		return ExitError{Code: exitCode}
@@ -85,7 +86,7 @@ func (c *TraceCmd) Run(g *Globals) error {
 		return err
 	}
 
-	result, err := app.RunTrace(loaded.profile, app.TraceRequest{
+	result, err := app.RunTrace(ctx, loaded.profile, app.TraceRequest{
 		TargetSpec: app.TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectDir,

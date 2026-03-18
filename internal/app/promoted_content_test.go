@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestInspectHarness_ClassifiesPromotedContentWritesAsAgents(t *testing.T) {
 		},
 	})
 
-	result, err := InspectHarness(InspectRequest{
+	result, err := InspectHarness(context.Background(), InspectRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,

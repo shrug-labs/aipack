@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -19,7 +20,7 @@ type PromptCmd struct {
 
 type PromptListCmd struct{}
 
-func (c *PromptListCmd) Run(g *Globals) error {
+func (c *PromptListCmd) Run(ctx context.Context, g *Globals) error {
 	configDir, err := resolvePromptConfigDir()
 	if err != nil {
 		return ExitError{cmdutil.ExitFail}
@@ -51,7 +52,7 @@ type PromptCopyCmd struct {
 	Name string `arg:"" help:"Prompt name to copy"`
 }
 
-func (c *PromptCopyCmd) Run(g *Globals) error {
+func (c *PromptCopyCmd) Run(ctx context.Context, g *Globals) error {
 	configDir, err := resolvePromptConfigDir()
 	if err != nil {
 		return ExitError{cmdutil.ExitFail}
@@ -69,7 +70,7 @@ type PromptShowCmd struct {
 	Name string `arg:"" help:"Prompt name to display"`
 }
 
-func (c *PromptShowCmd) Run(g *Globals) error {
+func (c *PromptShowCmd) Run(ctx context.Context, g *Globals) error {
 	configDir, err := resolvePromptConfigDir()
 	if err != nil {
 		return ExitError{cmdutil.ExitFail}

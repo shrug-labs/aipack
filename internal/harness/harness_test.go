@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -14,9 +15,15 @@ type stubHarness struct {
 
 func (s stubHarness) ID() domain.Harness                               { return s.id }
 func (s stubHarness) Layout(domain.Scope, string, string) Layout       { return Layout{} }
-func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error) { return domain.Fragment{}, nil }
-func (s stubHarness) Render(RenderContext) (domain.Fragment, error)    { return domain.Fragment{}, nil }
-func (s stubHarness) Capture(CaptureContext) (CaptureResult, error)    { return CaptureResult{}, nil }
+func (s stubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
+	return domain.Fragment{}, nil
+}
+func (s stubHarness) Render(_ context.Context, _ RenderContext) (domain.Fragment, error) {
+	return domain.Fragment{}, nil
+}
+func (s stubHarness) Capture(_ context.Context, _ CaptureContext) (CaptureResult, error) {
+	return CaptureResult{}, nil
+}
 
 func TestNewRegistry_LookupAll(t *testing.T) {
 	t.Parallel()

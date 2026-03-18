@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -112,13 +113,13 @@ func loadPacks(configDir string) tea.Cmd {
 // checkSyncStatus runs a dry-run sync plan for a profile to check if it's synced.
 // It accepts the in-memory ProfileConfig so that unsaved toggles are reflected
 // immediately. It delegates to app.PlanWithDiffs for all classify+filter logic.
-func checkSyncStatus(configDir, profileName, profilePath string, profileCfg config.ProfileConfig, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
+func checkSyncStatus(ctx context.Context, configDir, profileName, profilePath string, profileCfg config.ProfileConfig, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return syncStatusMsg{profileName: profileName, err: fmt.Errorf("resolving working directory: %w", err)}
 		}
-		ctx, warnings, err := app.ResolveProfile(app.ResolveRequest{
+		resolved, warnings, err := app.ResolveProfile(app.ResolveRequest{
 			ConfigDir:   configDir,
 			ProfilePath: profilePath,
 			ProfileCfg:  profileCfg,
@@ -130,15 +131,15 @@ func checkSyncStatus(configDir, profileName, profilePath string, profileCfg conf
 			return syncStatusMsg{profileName: profileName, warnings: warnings, err: err}
 		}
 
-		summary, err := app.PlanWithDiffs(ctx.Profile, app.SyncRequest{
-			TargetSpec: ctx.TargetSpec,
+		summary, err := app.PlanWithDiffs(ctx, resolved.Profile, app.SyncRequest{
+			TargetSpec: resolved.TargetSpec,
 		}, reg)
 		if err != nil {
 			return syncStatusMsg{profileName: profileName, warnings: warnings, err: err}
 		}
 		warnings = append(warnings, summary.Warnings...)
 
-		target := planSummaryToTarget(ctx, summary)
+		target := planSummaryToTarget(resolved, summary)
 		hasChanges := target.TotalChanges() > 0
 		return syncStatusMsg{profileName: profileName, synced: !hasChanges, target: target, warnings: warnings}
 	}
@@ -161,7 +162,7 @@ func planSummaryToTarget(ctx app.ResolveResult, ps app.PlanSummary) syncTargetIn
 
 // runSync executes a full sync (plan + apply) for a profile.
 // It delegates to app.RunSync — the single source of truth for sync orchestration.
-func runSync(configDir, profileName, profilePath, scope, harnessFlag string, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
+func runSync(ctx context.Context, configDir, profileName, profilePath, scope, harnessFlag string, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
 		profileCfg, err := config.LoadProfile(profilePath)
 		if err != nil {
@@ -172,7 +173,7 @@ func runSync(configDir, profileName, profilePath, scope, harnessFlag string, syn
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, err: fmt.Errorf("resolving working directory: %w", err)}
 		}
-		ctx, warnings, err := app.ResolveProfile(app.ResolveRequest{
+		resolved, warnings, err := app.ResolveProfile(app.ResolveRequest{
 			ConfigDir:   configDir,
 			ProfilePath: profilePath,
 			ProfileCfg:  profileCfg,
@@ -187,24 +188,24 @@ func runSync(configDir, profileName, profilePath, scope, harnessFlag string, syn
 		// Apply explicit overrides from dialog chain.
 		if scope != "" {
 			if s, ok := domain.ParseScope(scope); ok {
-				ctx.Scope = s
+				resolved.Scope = s
 			}
 		}
 		if harnessFlag != "" {
 			if h, ok := domain.ParseHarness(harnessFlag); ok {
-				ctx.Harnesses = []domain.Harness{h}
+				resolved.Harnesses = []domain.Harness{h}
 			}
 		}
 
-		projectDir := ctx.ProjectDir
-		if ctx.Scope != domain.ScopeProject {
+		projectDir := resolved.ProjectDir
+		if resolved.Scope != domain.ScopeProject {
 			projectDir = ""
 		}
 
-		ts := ctx.TargetSpec
+		ts := resolved.TargetSpec
 		ts.ProjectDir = projectDir
 
-		result, syncWarnings, err := app.RunSync(ctx.Profile, app.SyncRequest{
+		result, syncWarnings, err := app.RunSync(ctx, resolved.Profile, app.SyncRequest{
 			TargetSpec: ts,
 			Force:      true,
 			Yes:        true,
@@ -233,7 +234,7 @@ func saveSyncConfig(configDir string, cfg config.SyncConfig) tea.Cmd {
 // addPack installs a pack from a path, URL, or registry name.
 // For bare names (no path separators, not an existing path), it performs a
 // registry lookup — matching the CLI's `pack install` behavior.
-func addPack(configDir, input string) tea.Cmd {
+func addPack(ctx context.Context, configDir, input string) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackAddRequest{
 			ConfigDir: configDir,
@@ -256,7 +257,7 @@ func addPack(configDir, input string) tea.Cmd {
 			req.PackPath = input
 			req.Link = true
 		}
-		err := app.PackAdd(req, io.Discard)
+		err := app.PackAdd(ctx, req, io.Discard)
 		name := req.Name
 		if name == "" {
 			name = filepath.Base(input)
@@ -305,14 +306,14 @@ func removePack(configDir, name string) tea.Cmd {
 }
 
 // updatePack updates one or all installed packs.
-func updatePack(configDir, name string, all bool) tea.Cmd {
+func updatePack(ctx context.Context, configDir, name string, all bool) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackUpdateRequest{
 			ConfigDir: configDir,
 			Name:      name,
 			All:       all,
 		}
-		results, err := app.PackUpdate(req, io.Discard)
+		results, err := app.PackUpdate(ctx, req, io.Discard)
 		return packUpdatedMsg{name: name, results: results, err: err}
 	}
 }
@@ -363,9 +364,9 @@ func computePackSizes(entry app.PackShowEntry) tea.Cmd {
 }
 
 // runSavePlan runs a dry-run round-trip save and returns plan entries for preview.
-func runSavePlan(configDir, profileName string, reg *harness.Registry) tea.Cmd {
+func runSavePlan(ctx context.Context, configDir, profileName string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		result, warnings, err := app.SaveRoundTripPlan(configDir, reg)
+		result, warnings, err := app.SaveRoundTripPlan(ctx, configDir, reg)
 		if err != nil {
 			return savePlanMsg{profileName: profileName, warnings: warnings, err: err}
 		}
@@ -399,9 +400,9 @@ func runSavePlan(configDir, profileName string, reg *harness.Registry) tea.Cmd {
 }
 
 // runSave executes a round-trip save (harness → source packs) for a profile.
-func runSave(configDir, profileName string, reg *harness.Registry) tea.Cmd {
+func runSave(ctx context.Context, configDir, profileName string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		result, warnings, err := app.SaveRoundTrip(configDir, true, reg)
+		result, warnings, err := app.SaveRoundTrip(ctx, configDir, true, reg)
 		if err != nil {
 			return saveDoneMsg{profileName: profileName, warnings: warnings, err: err}
 		}
@@ -456,7 +457,7 @@ func runSearch(configDir, query, kind, category, installed string) tea.Cmd {
 
 // installFromSearch installs a pack by registry name and registers it in the
 // active profile so it's immediately usable after the next sync.
-func installFromSearch(configDir, name, profile string) tea.Cmd {
+func installFromSearch(ctx context.Context, configDir, name, profile string) tea.Cmd {
 	return func() tea.Msg {
 		entry, err := app.RegistryLookup(app.RegistryListRequest{ConfigDir: configDir}, name)
 		if err != nil {
@@ -471,7 +472,7 @@ func installFromSearch(configDir, name, profile string) tea.Cmd {
 			Register:  true,
 			Profile:   profile,
 		}
-		err = app.PackAdd(req, io.Discard)
+		err = app.PackAdd(ctx, req, io.Discard)
 		return searchInstallMsg{name: name, err: err}
 	}
 }
@@ -507,22 +508,22 @@ func detectHarnesses(reg *harness.Registry) tea.Cmd {
 
 // discoverVectors runs capture on one harness and returns available content vectors.
 // Merges results from both project and global scopes.
-func discoverVectors(harnessID domain.Harness, configDir string, reg *harness.Registry) tea.Cmd {
+func discoverVectors(ctx context.Context, harnessID domain.Harness, configDir string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
 		res, _, err := app.ResolveActiveProfile(configDir)
 		if err != nil {
 			return vectorsDiscoveredMsg{err: err}
 		}
-		vectors, err := app.DiscoverContentVectorsAllScopes(harnessID, res.TargetSpec.ProjectDir, res.TargetSpec.Home, reg)
+		vectors, err := app.DiscoverContentVectorsAllScopes(ctx, harnessID, res.TargetSpec.ProjectDir, res.TargetSpec.Home, reg)
 		return vectorsDiscoveredMsg{vectors: vectors, err: err}
 	}
 }
 
 // discoverSaveFiles runs capture + classification for one harness filtered to categories.
 // Merges results from both project and global scopes.
-func discoverSaveFiles(req app.DiscoverSaveRequest, reg *harness.Registry) tea.Cmd {
+func discoverSaveFiles(ctx context.Context, req app.DiscoverSaveRequest, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		candidates, warnings, err := app.DiscoverSaveFilesAllScopes(req, reg)
+		candidates, warnings, err := app.DiscoverSaveFilesAllScopes(ctx, req, reg)
 		return saveFilesDiscoveredMsg{candidates: candidates, warnings: warnings, err: err}
 	}
 }

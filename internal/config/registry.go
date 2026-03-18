@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -83,8 +85,14 @@ func ValidateRegistry(reg Registry) []string {
 }
 
 // FetchRegistryFromURL fetches raw YAML bytes from a remote URL.
-func FetchRegistryFromURL(rawURL string) ([]byte, error) {
-	resp, err := http.Get(rawURL) //nolint:gosec
+func FetchRegistryFromURL(ctx context.Context, rawURL string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetching registry: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching registry: %w", err)
 	}
@@ -98,23 +106,29 @@ func FetchRegistryFromURL(rawURL string) ([]byte, error) {
 // FetchFileViaGit fetches a single file from a remote git repo. It tries
 // git archive --remote first (fetches only the requested file) and falls
 // back to a shallow clone when the remote doesn't support archive.
-func FetchFileViaGit(repoURL, ref, filePath string) ([]byte, error) {
-	return fetchFileViaGit(repoURL, ref, filePath, RunGit, GitArchiveFiles)
+func FetchFileViaGit(ctx context.Context, repoURL, ref, filePath string) ([]byte, error) {
+	return fetchFileViaGit(ctx, repoURL, ref, filePath, RunGit, GitArchiveFiles)
 }
 
 // FetchFileViaGitWith is like FetchFileViaGit but accepts custom runners for testing.
-func FetchFileViaGitWith(repoURL, ref, filePath string, runGitFn func(args ...string) error, archiveFn func(repoURL, ref string, paths []string) ([]byte, error)) ([]byte, error) {
-	return fetchFileViaGit(repoURL, ref, filePath, runGitFn, archiveFn)
+func FetchFileViaGitWith(ctx context.Context, repoURL, ref, filePath string,
+	runGitFn func(ctx context.Context, args ...string) error,
+	archiveFn func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error),
+) ([]byte, error) {
+	return fetchFileViaGit(ctx, repoURL, ref, filePath, runGitFn, archiveFn)
 }
 
-func fetchFileViaGit(repoURL, ref, filePath string, runGitFn func(args ...string) error, archiveFn func(repoURL, ref string, paths []string) ([]byte, error)) ([]byte, error) {
+func fetchFileViaGit(ctx context.Context, repoURL, ref, filePath string,
+	runGitFn func(ctx context.Context, args ...string) error,
+	archiveFn func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error),
+) ([]byte, error) {
 	if err := CheckGit(); err != nil {
 		return nil, err
 	}
 
 	// Try archive first — fetches only the requested file.
 	if archiveFn != nil {
-		data, err := extractFileFromArchive(archiveFn, repoURL, ref, filePath)
+		data, err := extractFileFromArchive(ctx, archiveFn, repoURL, ref, filePath)
 		if err == nil {
 			return data, nil
 		}
@@ -135,7 +149,7 @@ func fetchFileViaGit(repoURL, ref, filePath string, runGitFn func(args ...string
 		args = append(args, "--branch", ref)
 	}
 	args = append(args, repoURL, tmp)
-	if err := runGitFn(args...); err != nil {
+	if err := runGitFn(ctx, args...); err != nil {
 		return nil, fmt.Errorf("cloning %s: %w", repoURL, err)
 	}
 	data, err := os.ReadFile(filepath.Join(tmp, filePath))
@@ -147,8 +161,8 @@ func fetchFileViaGit(repoURL, ref, filePath string, runGitFn func(args ...string
 
 // extractFileFromArchive fetches a single file via git archive and extracts
 // its content from the resulting tar stream.
-func extractFileFromArchive(archiveFn func(string, string, []string) ([]byte, error), repoURL, ref, filePath string) ([]byte, error) {
-	tarData, err := archiveFn(repoURL, ref, []string{filePath})
+func extractFileFromArchive(ctx context.Context, archiveFn func(context.Context, string, string, []string) ([]byte, error), repoURL, ref, filePath string) ([]byte, error) {
+	tarData, err := archiveFn(ctx, repoURL, ref, []string{filePath})
 	if err != nil {
 		return nil, err
 	}

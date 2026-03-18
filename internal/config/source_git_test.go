@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,7 +15,7 @@ func TestEnsureCloneWith_FreshClone(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "repo")
 	var calls []string
-	mock := func(args ...string) error {
+	mock := func(_ context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		// Simulate git clone creating .git dir.
 		if len(args) >= 1 && args[0] == "clone" {
@@ -25,7 +26,7 @@ func TestEnsureCloneWith_FreshClone(t *testing.T) {
 		return nil
 	}
 
-	if err := EnsureCloneWith("https://example.com/repo.git", dir, "", mock); err != nil {
+	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "", mock); err != nil {
 		t.Fatalf("EnsureCloneWith: %v", err)
 	}
 	if len(calls) != 1 {
@@ -40,7 +41,7 @@ func TestEnsureCloneWith_FreshCloneWithRef(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "repo")
 	var calls []string
-	mock := func(args ...string) error {
+	mock := func(_ context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		if len(args) >= 1 && args[0] == "clone" {
 			if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
@@ -50,7 +51,7 @@ func TestEnsureCloneWith_FreshCloneWithRef(t *testing.T) {
 		return nil
 	}
 
-	if err := EnsureCloneWith("https://example.com/repo.git", dir, "v1.0", mock); err != nil {
+	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "v1.0", mock); err != nil {
 		t.Fatalf("EnsureCloneWith: %v", err)
 	}
 	// --branch succeeds: single clone call.
@@ -66,7 +67,7 @@ func TestEnsureCloneWith_FreshCloneWithRef_Fallback(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "repo")
 	var calls []string
-	mock := func(args ...string) error {
+	mock := func(_ context.Context, args ...string) error {
 		call := strings.Join(args, " ")
 		calls = append(calls, call)
 		// --branch fails (e.g. commit SHA), plain clone succeeds.
@@ -81,7 +82,7 @@ func TestEnsureCloneWith_FreshCloneWithRef_Fallback(t *testing.T) {
 		return nil
 	}
 
-	if err := EnsureCloneWith("https://example.com/repo.git", dir, "abc123", mock); err != nil {
+	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "abc123", mock); err != nil {
 		t.Fatalf("EnsureCloneWith: %v", err)
 	}
 	// --branch fails + clone + fetch + checkout = 4 calls.
@@ -105,12 +106,12 @@ func TestEnsureCloneWith_AlreadyCloned(t *testing.T) {
 	}
 
 	var calls []string
-	mock := func(args ...string) error {
+	mock := func(_ context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
 	}
 
-	if err := EnsureCloneWith("https://example.com/repo.git", dir, "", mock); err != nil {
+	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "", mock); err != nil {
 		t.Fatalf("EnsureCloneWith: %v", err)
 	}
 	// No git calls — already cloned, no ref.
@@ -127,12 +128,12 @@ func TestEnsureCloneWith_AlreadyClonedWithRef(t *testing.T) {
 	}
 
 	var calls []string
-	mock := func(args ...string) error {
+	mock := func(_ context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
 	}
 
-	if err := EnsureCloneWith("https://example.com/repo.git", dir, "main", mock); err != nil {
+	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "main", mock); err != nil {
 		t.Fatalf("EnsureCloneWith: %v", err)
 	}
 	// fetch + checkout = 2 calls (skip clone).
@@ -144,11 +145,11 @@ func TestEnsureCloneWith_AlreadyClonedWithRef(t *testing.T) {
 func TestEnsureCloneWith_CloneFails(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "repo")
-	mock := func(args ...string) error {
+	mock := func(_ context.Context, args ...string) error {
 		return fmt.Errorf("git failed")
 	}
 
-	err := EnsureCloneWith("https://example.com/repo.git", dir, "", mock)
+	err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "", mock)
 	if err == nil {
 		t.Fatal("expected error when clone fails")
 	}
@@ -160,7 +161,7 @@ func TestEnsureCloneWith_CloneFails(t *testing.T) {
 func TestEnsureCloneWith_FetchFails(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "repo")
-	mock := func(args ...string) error {
+	mock := func(_ context.Context, args ...string) error {
 		call := strings.Join(args, " ")
 		// --branch fails, plain clone succeeds, fetch fails.
 		if strings.Contains(call, "--branch") {
@@ -175,7 +176,7 @@ func TestEnsureCloneWith_FetchFails(t *testing.T) {
 		return nil
 	}
 
-	err := EnsureCloneWith("https://example.com/repo.git", dir, "v1.0", mock)
+	err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "v1.0", mock)
 	if err == nil {
 		t.Fatal("expected error when fetch fails")
 	}
@@ -247,11 +248,11 @@ func TestGitArchiveFilesWith_Success(t *testing.T) {
 	t.Parallel()
 	wantData := []byte("fake-tar-data")
 	var capturedArgs []string
-	mock := func(args ...string) ([]byte, error) {
+	mock := func(_ context.Context, args ...string) ([]byte, error) {
 		capturedArgs = args
 		return wantData, nil
 	}
-	got, err := GitArchiveFilesWith("git@example.com:org/repo.git", "main", []string{"pack.json", "rules/"}, mock)
+	got, err := GitArchiveFilesWith(context.Background(), "git@example.com:org/repo.git", "main", []string{"pack.json", "rules/"}, mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -272,11 +273,11 @@ func TestGitArchiveFilesWith_Success(t *testing.T) {
 func TestGitArchiveFilesWith_DefaultRef(t *testing.T) {
 	t.Parallel()
 	var capturedArgs []string
-	mock := func(args ...string) ([]byte, error) {
+	mock := func(_ context.Context, args ...string) ([]byte, error) {
 		capturedArgs = args
 		return []byte("data"), nil
 	}
-	_, err := GitArchiveFilesWith("git@example.com:org/repo.git", "", []string{"file.txt"}, mock)
+	_, err := GitArchiveFilesWith(context.Background(), "git@example.com:org/repo.git", "", []string{"file.txt"}, mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -291,10 +292,10 @@ func TestGitArchiveFilesWith_DefaultRef(t *testing.T) {
 
 func TestGitArchiveFilesWith_ArchiveNotSupported(t *testing.T) {
 	t.Parallel()
-	mock := func(args ...string) ([]byte, error) {
+	mock := func(_ context.Context, args ...string) ([]byte, error) {
 		return nil, ErrArchiveNotSupported
 	}
-	_, err := GitArchiveFilesWith("https://github.com/org/repo.git", "main", []string{"file.txt"}, mock)
+	_, err := GitArchiveFilesWith(context.Background(), "https://github.com/org/repo.git", "main", []string{"file.txt"}, mock)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -305,10 +306,10 @@ func TestGitArchiveFilesWith_ArchiveNotSupported(t *testing.T) {
 
 func TestGitArchiveFilesWith_ArchivePathNotFound(t *testing.T) {
 	t.Parallel()
-	mock := func(args ...string) ([]byte, error) {
+	mock := func(_ context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: pathspec 'rules/missing.md' did not match", ErrArchivePathNotFound)
 	}
-	_, err := GitArchiveFilesWith("git@example.com:org/repo.git", "main", []string{"rules/missing.md"}, mock)
+	_, err := GitArchiveFilesWith(context.Background(), "git@example.com:org/repo.git", "main", []string{"rules/missing.md"}, mock)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -322,10 +323,10 @@ func TestGitArchiveFilesWith_ArchivePathNotFound(t *testing.T) {
 
 func TestGitArchiveFilesWith_GenericError(t *testing.T) {
 	t.Parallel()
-	mock := func(args ...string) ([]byte, error) {
+	mock := func(_ context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("git archive failed: something went wrong")
 	}
-	_, err := GitArchiveFilesWith("git@example.com:org/repo.git", "main", []string{"file.txt"}, mock)
+	_, err := GitArchiveFilesWith(context.Background(), "git@example.com:org/repo.git", "main", []string{"file.txt"}, mock)
 	if err == nil {
 		t.Fatal("expected error")
 	}

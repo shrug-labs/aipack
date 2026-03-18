@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +41,7 @@ func TestPlan_Project_AgentsOverride_WithRulesAndAgents(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestPlan_Project_AgentsOverride_NoExistingAgents(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestPlan_Project_WithWorkflows(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestPlan_Project_Skills(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -219,7 +220,7 @@ func TestPlan_Project_Settings(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -496,7 +497,7 @@ func TestCapture_Project(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -542,7 +543,7 @@ startup_timeout_sec = 10
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -845,7 +846,7 @@ func TestCapturePromoted_Agent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -915,7 +916,7 @@ func TestCapturePromoted_Workflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -968,7 +969,7 @@ func TestCapturePromoted_PlainSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -1016,7 +1017,7 @@ func TestCapturePromoted_RoundTrip(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -1033,7 +1034,7 @@ func TestCapturePromoted_RoundTrip(t *testing.T) {
 	}
 
 	// Capture back.
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})

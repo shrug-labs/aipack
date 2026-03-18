@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -291,7 +292,7 @@ func TestRunTrace_ClassifiesPromotedContentWithSourceDigest(t *testing.T) {
 		roots: []string{filepath.Dir(dstPath)},
 	})
 
-	result, err := RunTrace(profile, TraceRequest{
+	result, err := RunTrace(context.Background(), profile, TraceRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -374,7 +375,7 @@ func TestRunTrace_ClassifiesTrackedMCPConflictFromLiveConfig(t *testing.T) {
 		roots: []string{filepath.Dir(configPath)},
 	})
 
-	result, err := RunTrace(profile, TraceRequest{
+	result, err := RunTrace(context.Background(), profile, TraceRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,

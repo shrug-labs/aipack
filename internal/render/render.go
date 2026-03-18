@@ -1,6 +1,7 @@
 package render
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -14,12 +15,12 @@ import (
 
 // Run renders pack outputs to a fresh system temp directory and returns the
 // output directory path.
-func Run(profile domain.Profile, harnesses []harness.Harness) (string, error) {
+func Run(ctx context.Context, profile domain.Profile, harnesses []harness.Harness) (string, error) {
 	outDir, err := os.MkdirTemp("", "aipack-render-")
 	if err != nil {
 		return "", err
 	}
-	if err := RunToDir(profile, outDir, harnesses); err != nil {
+	if err := RunToDir(ctx, profile, outDir, harnesses); err != nil {
 		_ = os.RemoveAll(outDir)
 		return "", err
 	}
@@ -28,7 +29,7 @@ func Run(profile domain.Profile, harnesses []harness.Harness) (string, error) {
 
 // RunToDir renders all pack content into outDir using the v2 harness Render methods.
 // Each harness produces a Fragment of writes; all writes are applied atomically.
-func RunToDir(profile domain.Profile, outDir string, harnesses []harness.Harness) error {
+func RunToDir(ctx context.Context, profile domain.Profile, outDir string, harnesses []harness.Harness) error {
 	outDirAbs, err := filepath.Abs(outDir)
 	if err != nil {
 		return err
@@ -49,13 +50,13 @@ func RunToDir(profile domain.Profile, outDir string, harnesses []harness.Harness
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	ctx := harness.RenderContext{
+	rctx := harness.RenderContext{
 		OutDir:  tmpDir,
 		Profile: profile,
 	}
 
 	for _, h := range harnesses {
-		frag, err := h.Render(ctx)
+		frag, err := h.Render(ctx, rctx)
 		if err != nil {
 			return err
 		}

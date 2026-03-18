@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -45,7 +46,7 @@ func (c *RestoreCmd) Validate() error {
 	return nil
 }
 
-func (c *RestoreCmd) Run(g *Globals) error {
+func (c *RestoreCmd) Run(ctx context.Context, g *Globals) error {
 	home := os.Getenv("HOME")
 
 	// Load sync-config for scope and harness resolution.

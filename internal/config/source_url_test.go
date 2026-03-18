@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -381,7 +382,7 @@ func TestURLOK_Success(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ok, err := urlOK(ts.URL)
+	ok, err := urlOK(context.Background(), ts.URL)
 	if err != nil {
 		t.Fatalf("urlOK: %v", err)
 	}
@@ -397,7 +398,7 @@ func TestURLOK_NotFound(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ok, err := urlOK(ts.URL)
+	ok, err := urlOK(context.Background(), ts.URL)
 	if err != nil {
 		t.Fatalf("urlOK: %v", err)
 	}
@@ -413,7 +414,7 @@ func TestURLOK_ServerError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	_, err := urlOK(ts.URL)
+	_, err := urlOK(context.Background(), ts.URL)
 	if err == nil {
 		t.Fatal("expected error for 500")
 	}

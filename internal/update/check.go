@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -119,7 +120,7 @@ type cache struct {
 // Check queries GitHub for the latest release and compares it to currentVersion.
 // It caches the result under configDir to avoid repeated API calls. Returns nil
 // when no update is available, the check is disabled, or any error occurs.
-func Check(currentVersion, configDir string) *Result {
+func Check(ctx context.Context, currentVersion, configDir string) *Result {
 	if currentVersion == "dev" || currentVersion == "" {
 		return nil
 	}
@@ -141,7 +142,7 @@ func Check(currentVersion, configDir string) *Result {
 	}
 
 	// Cache is stale or missing — fetch from GitHub.
-	latest, url, err := fetchLatest()
+	latest, url, err := fetchLatest(ctx)
 	if err != nil {
 		return nil // fail silently
 	}
@@ -166,16 +167,21 @@ type ghRelease struct {
 	HTMLURL string `json:"html_url"`
 }
 
-func fetchLatest() (version, url string, err error) {
+func fetchLatest(ctx context.Context) (version, url string, err error) {
 	if distribution == "internal" {
-		return fetchLatestInternal()
+		return fetchLatestInternal(ctx)
 	}
-	return fetchLatestGitHub()
+	return fetchLatestGitHub(ctx)
 }
 
-func fetchLatestGitHub() (version, url string, err error) {
-	client := &http.Client{Timeout: requestTimeout}
-	resp, err := client.Get(releaseURL)
+func fetchLatestGitHub(ctx context.Context) (version, url string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releaseURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -193,12 +199,17 @@ func fetchLatestGitHub() (version, url string, err error) {
 
 // fetchLatestInternal fetches the latest version from a plain text file
 // at internalVersionURL. The file should contain just the version string.
-func fetchLatestInternal() (version, url string, err error) {
+func fetchLatestInternal(ctx context.Context) (version, url string, err error) {
 	if internalVersionURL == "" {
 		return "", "", fmt.Errorf("internal version URL not configured")
 	}
-	client := &http.Client{Timeout: requestTimeout}
-	resp, err := client.Get(internalVersionURL)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, internalVersionURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -240,7 +251,7 @@ func saveCache(path string, c cache) error {
 // CheckAsync starts a background update check and returns a channel that
 // will receive exactly one *Result (possibly nil). Callers should read the
 // channel after their main work completes to avoid blocking on network I/O.
-func CheckAsync(currentVersion, home string) <-chan *Result {
+func CheckAsync(ctx context.Context, currentVersion, home string) <-chan *Result {
 	ch := make(chan *Result, 1)
 	go func() {
 		configDir, err := config.DefaultConfigDir(home)
@@ -248,7 +259,7 @@ func CheckAsync(currentVersion, home string) <-chan *Result {
 			ch <- nil
 			return
 		}
-		ch <- Check(currentVersion, configDir)
+		ch <- Check(ctx, currentVersion, configDir)
 	}()
 	return ch
 }

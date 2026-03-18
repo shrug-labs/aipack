@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/alecthomas/kong"
 
@@ -69,6 +73,9 @@ func validateProjectDirForScope(scope domain.Scope, projectDir *string) error {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool, extraOpts ...kong.Option) int {
+	goCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	globals := &Globals{
 		Stdout:   stdout,
 		Stderr:   stderr,
@@ -86,6 +93,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool
 		kong.Writers(stdout, stderr),
 		kong.Exit(func(code int) { panic(exitPanic{code: code}) }),
 		kong.Bind(globals),
+		kong.BindTo(goCtx, (*context.Context)(nil)),
 		kong.UsageOnError(),
 	}
 	opts = append(opts, extraOpts...)
@@ -108,11 +116,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool
 			code = cmdutil.ExitFail
 			return
 		}
-		ctx, err := parser.Parse(args)
+		kctx, err := parser.Parse(args)
 		if err != nil {
 			parser.FatalIfErrorf(err)
 		}
-		err = ctx.Run(globals)
+		err = kctx.Run(globals)
 		if err == nil {
 			code = cmdutil.ExitOK
 			return

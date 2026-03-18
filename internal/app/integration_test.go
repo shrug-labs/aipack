@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -91,7 +92,7 @@ func reducedProfile(t *testing.T, packRoot string) domain.Profile {
 // harness and returns the result. Fails the test on error.
 func syncAndApply(t *testing.T, profile domain.Profile, scope domain.Scope, projectDir, home string, hid domain.Harness, reg *harness.Registry) SyncResult {
 	t.Helper()
-	result, warnings, err := RunSync(profile, SyncRequest{
+	result, warnings, err := RunSync(context.Background(), profile, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectDir,
@@ -169,7 +170,7 @@ func assertPlanWithinRoots(t *testing.T, profile domain.Profile, reg *harness.Re
 		projectDir = ""
 	}
 
-	plan, err := engine.PlanSync(profile, engine.PlanRequest{
+	plan, err := engine.PlanSync(context.Background(), profile, engine.PlanRequest{
 		Scope:      scope,
 		ProjectDir: projectDir,
 		Home:       home,
@@ -316,7 +317,7 @@ func TestSyncThenCapture_ContentFidelity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	captureResult, err := h.Capture(harness.CaptureContext{
+	captureResult, err := h.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 		Home:       home,
@@ -711,7 +712,7 @@ func TestConvergence_CorruptedOwnedFiles(t *testing.T) {
 			}
 
 			// Re-sync with force — should recover, not fail.
-			_, _, err := RunSync(profile, SyncRequest{
+			_, _, err := RunSync(context.Background(), profile, SyncRequest{
 				TargetSpec: TargetSpec{
 					Scope:      domain.ScopeProject,
 					ProjectDir: projectDir,

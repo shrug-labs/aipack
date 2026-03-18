@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -179,14 +180,14 @@ type RegistryFetchRequest struct {
 // RegistryFetch fetches remote registries and caches them locally.
 // With an explicit URL, fetches that single source and saves it to sync-config.
 // Without a URL, fetches all sources in registry_sources (or the compiled-in default).
-func RegistryFetch(req RegistryFetchRequest, stdout io.Writer) error {
+func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writer) error {
 	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
 	if err != nil {
 		return fmt.Errorf("loading sync-config: %w", err)
 	}
 
 	if req.URL != "" {
-		if _, err := registryFetchOne(req, &sc, stdout); err != nil {
+		if _, err := registryFetchOne(ctx, req, &sc, stdout); err != nil {
 			return err
 		}
 		return config.SaveSyncConfig(config.SyncConfigPath(req.ConfigDir), sc)
@@ -224,7 +225,7 @@ func RegistryFetch(req RegistryFetchRequest, stdout io.Writer) error {
 			FetchFn:    req.FetchFn,
 			GitFetchFn: req.GitFetchFn,
 		}
-		n, err := registryFetchOne(oneReq, &sc, stdout)
+		n, err := registryFetchOne(ctx, oneReq, &sc, stdout)
 		if err != nil {
 			fmt.Fprintf(stdout, "warning: %s: %v\n", src.Name, err)
 			continue
@@ -251,7 +252,7 @@ func RegistryFetch(req RegistryFetchRequest, stdout io.Writer) error {
 // registryFetchOne fetches a single registry source, caches it, and upserts it
 // into the in-memory sync-config. The caller is responsible for saving sync-config.
 // Returns the number of packs in the fetched registry.
-func registryFetchOne(req RegistryFetchRequest, sc *config.SyncConfig, stdout io.Writer) (int, error) {
+func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.SyncConfig, stdout io.Writer) (int, error) {
 	url := req.URL
 	ref := req.Ref
 	filePath := req.Path
@@ -283,13 +284,17 @@ func registryFetchOne(req RegistryFetchRequest, sc *config.SyncConfig, stdout io
 	if isGit {
 		gitFetchFn := req.GitFetchFn
 		if gitFetchFn == nil {
-			gitFetchFn = config.FetchFileViaGit
+			gitFetchFn = func(repo, ref, path string) ([]byte, error) {
+				return config.FetchFileViaGit(ctx, repo, ref, path)
+			}
 		}
 		data, err = gitFetchFn(url, ref, filePath)
 	} else {
 		fetchFn := req.FetchFn
 		if fetchFn == nil {
-			fetchFn = config.FetchRegistryFromURL
+			fetchFn = func(u string) ([]byte, error) {
+				return config.FetchRegistryFromURL(ctx, u)
+			}
 		}
 		data, err = fetchFn(url)
 	}
@@ -445,7 +450,7 @@ type RegistryDeepIndexRequest struct {
 // RegistryDeepIndex clones each uninstalled registry pack and indexes its
 // resource-level frontmatter into the search index. Already-installed packs
 // are skipped because sync provides richer data.
-func RegistryDeepIndex(req RegistryDeepIndexRequest, stdout io.Writer) error {
+func RegistryDeepIndex(ctx context.Context, req RegistryDeepIndexRequest, stdout io.Writer) error {
 	reg, err := loadRegistryForRequest(RegistryListRequest{
 		ConfigDir:    req.ConfigDir,
 		RegistryPath: req.RegistryPath,
@@ -462,7 +467,9 @@ func RegistryDeepIndex(req RegistryDeepIndexRequest, stdout io.Writer) error {
 
 	cloneFn := req.GitCloneFn
 	if cloneFn == nil {
-		cloneFn = config.EnsureClone
+		cloneFn = func(repoURL, dir, ref string) error {
+			return config.EnsureClone(ctx, repoURL, dir, ref)
+		}
 	}
 
 	indexed := 0

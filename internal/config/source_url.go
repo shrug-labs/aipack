@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,8 +25,8 @@ func ProbePackURL(raw string) (PackURLInfo, error) {
 }
 
 // URLOK checks whether the given URL returns an HTTP 2xx response.
-func URLOK(raw string) (bool, error) {
-	return urlOK(raw)
+func URLOK(ctx context.Context, raw string) (bool, error) {
+	return urlOK(ctx, raw)
 }
 
 func probePackURL(raw string) (PackURLInfo, error) {
@@ -310,13 +311,14 @@ func parseBitbucketServerRepo(u *url.URL) (bitbucketRepoInfo, bool) {
 	return bitbucketRepoInfo{}, false
 }
 
-func urlOK(raw string) (bool, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", raw, nil)
+func urlOK(ctx context.Context, raw string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return false, err
 	}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return false, err
 	}

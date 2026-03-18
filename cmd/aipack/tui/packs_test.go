@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -476,7 +477,7 @@ func TestPacksModel_PreviewPanelShowsPlaceholderInListFocus(t *testing.T) {
 
 func TestPacksModel_HelpTextChangesInContentFocus(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabPacks
 
 	help := m.helpText()
@@ -508,7 +509,7 @@ func TestPacksModel_HelpTextChangesInContentFocus(t *testing.T) {
 
 func TestPacksTab_AddDialogResult(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabPacks
 
 	// Simulate dialog result for pack-add.
@@ -527,7 +528,7 @@ func TestPacksTab_AddDialogResult(t *testing.T) {
 
 func TestPacksTab_RemoveDialogResult(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabPacks
 	m.packs = newTestPacksModel([]packItemDetail{
 		{entry: app.PackShowEntry{Name: "test-pack"}},
@@ -548,7 +549,7 @@ func TestPacksTab_RemoveDialogResult(t *testing.T) {
 
 func TestPackAddedMsg_ReloadsPacks(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, cmd := m.Update(packAddedMsg{name: "new-pack"})
 	rm := result.(rootModel)
@@ -562,7 +563,7 @@ func TestPackAddedMsg_ReloadsPacks(t *testing.T) {
 
 func TestPackAddedMsg_Error(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, _ := m.Update(packAddedMsg{name: "bad-pack", err: fmt.Errorf("not found")})
 	rm := result.(rootModel)
@@ -573,7 +574,7 @@ func TestPackAddedMsg_Error(t *testing.T) {
 
 func TestPackRemovedMsg_ReloadsPacksAndProfiles(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, cmd := m.Update(packRemovedMsg{name: "old-pack"})
 	rm := result.(rootModel)
@@ -587,7 +588,7 @@ func TestPackRemovedMsg_ReloadsPacksAndProfiles(t *testing.T) {
 
 func TestPackUpdatedMsg_ShowsSummary(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, cmd := m.Update(packUpdatedMsg{
 		name: "test-pack",
@@ -606,7 +607,7 @@ func TestPackUpdatedMsg_ShowsSummary(t *testing.T) {
 
 func TestPacksTab_KeysIgnoredInContentFocus(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabPacks
 	m.packs = newTestPacksModel([]packItemDetail{
 		{entry: app.PackShowEntry{Name: "test-pack", Path: "/tmp/pack", Rules: []string{"r1"}}},
@@ -653,7 +654,7 @@ func TestPacksModel_RegistryLoaded(t *testing.T) {
 
 func TestPacksTab_CreatePackDialogChain(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabPacks
 
 	// Step 1: Action menu opens with "Create pack" option.
@@ -679,7 +680,7 @@ func TestPacksTab_CreatePackDialogChain(t *testing.T) {
 
 func TestPackCreatedMsg_ReloadsPacksAndProfiles(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, cmd := m.Update(packCreatedMsg{name: "fresh-pack"})
 	rm := result.(rootModel)
@@ -693,7 +694,7 @@ func TestPackCreatedMsg_ReloadsPacksAndProfiles(t *testing.T) {
 
 func TestPackCreatedMsg_Error(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, _ := m.Update(packCreatedMsg{name: "bad", err: fmt.Errorf("already exists")})
 	rm := result.(rootModel)

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -22,7 +23,7 @@ type InitRequest struct {
 
 // RunInit initializes the user's config directory with a sync-config.yaml and
 // an empty default profile, then fetches the default registry.
-func RunInit(req InitRequest, stdout io.Writer) error {
+func RunInit(ctx context.Context, req InitRequest, stdout io.Writer) error {
 	if strings.TrimSpace(req.ConfigDir) == "" {
 		return fmt.Errorf("config dir is required")
 	}
@@ -55,7 +56,7 @@ func RunInit(req InitRequest, stdout io.Writer) error {
 	if req.RegistryFetchFn != nil {
 		fetchReq.GitFetchFn = req.RegistryFetchFn
 	}
-	if err := RegistryFetch(fetchReq, stdout); err != nil {
+	if err := RegistryFetch(ctx, fetchReq, stdout); err != nil {
 		fmt.Fprintf(stdout, "warning: registry fetch failed: %v\n", err)
 		fmt.Fprintln(stdout, "Run 'aipack registry fetch' to retry later.")
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -49,7 +50,7 @@ func (c *CleanCmd) Validate() error {
 	return nil
 }
 
-func (c *CleanCmd) Run(g *Globals) error {
+func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 	// Load sync-config for scope and harness resolution.
 	var syncCfg config.SyncConfig
 	if cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, os.Getenv("HOME")); err == nil {

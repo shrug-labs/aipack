@@ -3,6 +3,7 @@ package app
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,7 +60,7 @@ func TestPackAdd_Link(t *testing.T) {
 	writeSeedProfile(t, configDir, "default")
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -116,7 +117,7 @@ func TestPackAdd_Copy(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      false,
@@ -157,7 +158,7 @@ func TestPackAdd_InPlace(t *testing.T) {
 	os.WriteFile(filepath.Join(packDir, "rules", "keep-me.md"), []byte("# Alive\n"), 0o600)
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -200,7 +201,7 @@ func TestPackAdd_NoRegister(t *testing.T) {
 	writeSeedProfile(t, configDir, "default")
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -231,7 +232,7 @@ func TestPackAdd_NameOverride(t *testing.T) {
 	writePackManifest(t, packDir, "original-name")
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Name:      "custom-name",
@@ -268,7 +269,7 @@ func TestPackList_AfterAdd(t *testing.T) {
 	writePackManifest(t, packDir, "test-pack")
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -300,7 +301,7 @@ func TestPackRemove(t *testing.T) {
 	writePackManifest(t, packDir, "test-pack")
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -338,9 +339,9 @@ func TestPackAdd_ReplacesExisting(t *testing.T) {
 	writePackManifest(t, packDir2, "test-pack")
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{PackPath: packDir1, ConfigDir: configDir, Link: true, Register: false}, &out)
+	_ = PackAdd(context.Background(), PackAddRequest{PackPath: packDir1, ConfigDir: configDir, Link: true, Register: false}, &out)
 	out.Reset()
-	err := PackAdd(PackAddRequest{PackPath: packDir2, ConfigDir: configDir, Link: true, Register: false}, &out)
+	err := PackAdd(context.Background(), PackAddRequest{PackPath: packDir2, ConfigDir: configDir, Link: true, Register: false}, &out)
 	if err != nil {
 		t.Fatalf("second PackAdd: %v", err)
 	}
@@ -374,11 +375,11 @@ func TestPackAdd_Idempotent_NoDuplicateProfileEntries(t *testing.T) {
 
 	// Run PackAdd twice.
 	var out bytes.Buffer
-	if err := PackAdd(req, &out); err != nil {
+	if err := PackAdd(context.Background(), req, &out); err != nil {
 		t.Fatalf("first PackAdd: %v", err)
 	}
 	out.Reset()
-	if err := PackAdd(req, &out); err != nil {
+	if err := PackAdd(context.Background(), req, &out); err != nil {
 		t.Fatalf("second PackAdd: %v", err)
 	}
 
@@ -421,9 +422,9 @@ func writeSeedSyncConfig(t *testing.T, configDir string) {
 
 // fakeCloneGitFn returns a RunGitFn that fakes a git clone by writing a pack.json
 // into the target directory (the last argument to "git clone ... <dir>").
-func fakeCloneGitFn(t *testing.T, packName string) func(args ...string) error {
+func fakeCloneGitFn(t *testing.T, packName string) func(ctx context.Context, args ...string) error {
 	t.Helper()
-	return func(args ...string) error {
+	return func(_ context.Context, args ...string) error {
 		// "clone --depth 1 <url> <dir>" or "-C <dir> fetch ..." etc.
 		if len(args) >= 4 && args[0] == "clone" {
 			dir := args[len(args)-1]
@@ -439,12 +440,12 @@ func TestPackAdd_URL_ClonesIntoPacksDir(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -467,12 +468,12 @@ func TestPackAdd_URL_GenericRepository_SkipsPackURLProbe(t *testing.T) {
 
 	var out bytes.Buffer
 	urlChecks := 0
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://example.com/team/my-pack.git",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn: func(string) (bool, error) {
+		URLOKFn: func(context.Context, string) (bool, error) {
 			urlChecks++
 			return true, nil
 		},
@@ -497,14 +498,14 @@ func TestPackAdd_URL_CloudDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
 
 	var out bytes.Buffer
 	var cloneURL string
-	gitFn := func(args ...string) error {
+	gitFn := func(_ context.Context, args ...string) error {
 		if len(args) >= 4 && args[0] == "clone" {
 			cloneURL = args[3]
 			writePackManifest(t, args[len(args)-1], "my-pack")
 		}
 		return nil
 	}
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-region-1%2Cdevops_scm_central",
 		ConfigDir: configDir,
 		Register:  false,
@@ -526,7 +527,7 @@ func TestPackAdd_URL_GitHubBlobSubdir_InstallsExtractedPackAndRecordsSubPath(t *
 
 	var out bytes.Buffer
 	urlChecks := 0
-	gitFn := func(args ...string) error {
+	gitFn := func(_ context.Context, args ...string) error {
 		if len(args) >= 4 && args[0] == "clone" {
 			dir := args[len(args)-1]
 			writePackManifest(t, filepath.Join(dir, "packs", "team"), "team-pack")
@@ -536,12 +537,12 @@ func TestPackAdd_URL_GitHubBlobSubdir_InstallsExtractedPackAndRecordsSubPath(t *
 		}
 		return nil
 	}
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/repo/blob/main/packs/team/pack.json",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  gitFn,
-		URLOKFn: func(raw string) (bool, error) {
+		URLOKFn: func(_ context.Context, raw string) (bool, error) {
 			urlChecks++
 			if raw != "https://raw.githubusercontent.com/example/repo/main/packs/team/pack.json" {
 				t.Fatalf("unexpected pack URL %q", raw)
@@ -585,7 +586,7 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	installGit := func(args ...string) error {
+	installGit := func(_ context.Context, args ...string) error {
 		if len(args) >= 4 && args[0] == "clone" {
 			dir := args[len(args)-1]
 			writePackManifest(t, filepath.Join(dir, "packs", "team"), "team-pack")
@@ -595,12 +596,12 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 		}
 		return nil
 	}
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/repo/blob/main/packs/team/pack.json",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  installGit,
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -609,7 +610,7 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 
 	cloneCalls := 0
 	pullCalled := false
-	updateGit := func(args ...string) error {
+	updateGit := func(_ context.Context, args ...string) error {
 		if len(args) >= 4 && args[0] == "clone" {
 			cloneCalls++
 			dir := args[len(args)-1]
@@ -624,7 +625,7 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 		return nil
 	}
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "team-pack",
 		RunGitFn:  updateGit,
@@ -658,13 +659,13 @@ func TestPackAdd_URL_RegistersInProfile(t *testing.T) {
 	writeSeedProfile(t, configDir, "default")
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  true,
 		Profile:   "default",
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -692,12 +693,12 @@ func TestPackAdd_URL_RecordsOriginInSyncConfig(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -731,7 +732,7 @@ func TestPackAdd_PathRecordsOriginInSyncConfig(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -766,7 +767,7 @@ func TestPackRemove_ClearsOriginFromSyncConfig(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -800,7 +801,7 @@ func TestPackRemove_DeregistersFromProfile(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -853,7 +854,7 @@ func TestPackList_ShowsOriginInfo(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -881,7 +882,7 @@ func TestPackAdd_URL_And_Path_MutuallyExclusive(t *testing.T) {
 	configDir := t.TempDir()
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  "/some/path",
 		URL:       "https://github.com/example/pack",
 		ConfigDir: configDir,
@@ -899,7 +900,7 @@ func TestPackAdd_NeitherURLNorPath(t *testing.T) {
 	configDir := t.TempDir()
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		ConfigDir: configDir,
 	}, &out)
 	if err == nil {
@@ -914,7 +915,7 @@ func TestPackAdd_RegisterMissingProfile(t *testing.T) {
 	writePackManifest(t, packDir, "test-pack")
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Register:  true,
@@ -946,7 +947,7 @@ func TestPackUpdate_Link_VerifiesTarget(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -955,7 +956,7 @@ func TestPackUpdate_Link_VerifiesTarget(t *testing.T) {
 	}, &out)
 
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "test-pack",
 		NowFn:     func() time.Time { return fixedNow },
@@ -979,7 +980,7 @@ func TestPackUpdate_Copy_ReCopies(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      false,
@@ -994,7 +995,7 @@ func TestPackUpdate_Copy_ReCopies(t *testing.T) {
 	}
 
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "test-pack",
 		NowFn:     func() time.Time { return fixedNow },
@@ -1027,17 +1028,17 @@ func TestPackUpdate_Clone_PullsFFOnly(t *testing.T) {
 
 	// Simulate a cloned pack.
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 
 	pullCalled := false
-	fakeGit := func(args ...string) error {
+	fakeGit := func(_ context.Context, args ...string) error {
 		if len(args) >= 3 && args[2] == "pull" {
 			pullCalled = true
 		}
@@ -1045,7 +1046,7 @@ func TestPackUpdate_Clone_PullsFFOnly(t *testing.T) {
 	}
 
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		RunGitFn:  fakeGit,
@@ -1076,11 +1077,11 @@ func TestPackUpdate_All(t *testing.T) {
 	writePackManifest(t, pack2, "pack-b")
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{PackPath: pack1, ConfigDir: configDir, Link: true, Register: false, NowFn: func() time.Time { return fixedNow }}, &out)
-	_ = PackAdd(PackAddRequest{PackPath: pack2, ConfigDir: configDir, Link: true, Register: false, NowFn: func() time.Time { return fixedNow }}, &out)
+	_ = PackAdd(context.Background(), PackAddRequest{PackPath: pack1, ConfigDir: configDir, Link: true, Register: false, NowFn: func() time.Time { return fixedNow }}, &out)
+	_ = PackAdd(context.Background(), PackAddRequest{PackPath: pack2, ConfigDir: configDir, Link: true, Register: false, NowFn: func() time.Time { return fixedNow }}, &out)
 
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		All:       true,
 		NowFn:     func() time.Time { return fixedNow },
@@ -1098,7 +1099,7 @@ func TestPackUpdate_NotInstalled(t *testing.T) {
 	configDir := t.TempDir()
 
 	var out bytes.Buffer
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "nonexistent",
 		NowFn:     func() time.Time { return fixedNow },
@@ -1124,7 +1125,7 @@ func TestPackShow_HappyPath(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -1176,7 +1177,7 @@ func TestPackShow_DiscoversContentFromDisk(t *testing.T) {
 
 	writeSeedSyncConfig(t, configDir)
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -1216,7 +1217,7 @@ func TestPackList_BrokenSymlink(t *testing.T) {
 	writePackManifest(t, packDir, "test-pack")
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
@@ -1283,7 +1284,7 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 
 	// --- Step 1: Add (copy, with profile registration) ---
 	var addOut bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      false, // copy mode
@@ -1314,7 +1315,7 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 	}
 
 	// --- Step 3: Update (copy method: re-copies from origin) ---
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "lifecycle-pack",
 		NowFn:     func() time.Time { return fixedNow },
@@ -1387,8 +1388,8 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 const fakeHash1 = "aabbccdd1122334455667788"
 const fakeHash2 = "11223344556677889900aabb"
 
-func fakeHashFn(hash string) func(string) (string, error) {
-	return func(string) (string, error) { return hash, nil }
+func fakeHashFn(hash string) func(context.Context, string) (string, error) {
+	return func(context.Context, string) (string, error) { return hash, nil }
 }
 
 func TestPackAdd_URL_RecordsCommitHash(t *testing.T) {
@@ -1397,12 +1398,12 @@ func TestPackAdd_URL_RecordsCommitHash(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 		GitHashFn: fakeHashFn(fakeHash1),
 	}, &out)
@@ -1427,12 +1428,12 @@ func TestPackUpdate_Clone_TracksCommitHash(t *testing.T) {
 
 	// Install with hash1.
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 		GitHashFn: fakeHashFn(fakeHash1),
 	}, &out)
@@ -1441,9 +1442,9 @@ func TestPackUpdate_Clone_TracksCommitHash(t *testing.T) {
 	}
 
 	// Update — new hash.
-	fakeGit := func(args ...string) error { return nil }
+	fakeGit := func(_ context.Context, args ...string) error { return nil }
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		RunGitFn:  fakeGit,
@@ -1485,20 +1486,20 @@ func TestPackUpdate_Clone_UpToDate(t *testing.T) {
 
 	// Install with hash1.
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 		GitHashFn: fakeHashFn(fakeHash1),
 	}, &out)
 
 	// Update with same hash — should be up-to-date.
-	fakeGit := func(args ...string) error { return nil }
+	fakeGit := func(_ context.Context, args ...string) error { return nil }
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		RunGitFn:  fakeGit,
@@ -1525,12 +1526,12 @@ func TestPackShow_IncludesCommitHash(t *testing.T) {
 	writeSeedSyncConfig(t, configDir)
 
 	var out bytes.Buffer
-	_ = PackAdd(PackAddRequest{
+	_ = PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-		URLOKFn:   func(string) (bool, error) { return true, nil },
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 		GitHashFn: fakeHashFn(fakeHash1),
 	}, &out)
@@ -1739,7 +1740,7 @@ func TestPackInstallMissing_AllPresent(t *testing.T) {
 	writePackManifest(t, filepath.Join(configDir, "packs", "beta"), "beta")
 
 	var out bytes.Buffer
-	results, err := PackInstallMissing(PackInstallMissingRequest{
+	results, err := PackInstallMissing(context.Background(), PackInstallMissingRequest{
 		ConfigDir:   configDir,
 		ProfileName: "test",
 	}, &out)
@@ -1764,7 +1765,7 @@ func TestPackInstallMissing_NotInRegistry(t *testing.T) {
 	// beta is missing and no registry entry for it.
 
 	var out bytes.Buffer
-	results, err := PackInstallMissing(PackInstallMissingRequest{
+	results, err := PackInstallMissing(context.Background(), PackInstallMissingRequest{
 		ConfigDir:   configDir,
 		ProfileName: "test",
 	}, &out)
@@ -1793,7 +1794,7 @@ func TestPackInstallMissing_InstallsFromRegistry(t *testing.T) {
 	})
 
 	var capturedReq PackAddRequest
-	fakePack := func(req PackAddRequest, w io.Writer) error {
+	fakePack := func(_ context.Context, req PackAddRequest, w io.Writer) error {
 		capturedReq = req
 		// Simulate install by creating the pack dir.
 		writePackManifest(t, filepath.Join(req.ConfigDir, "packs", req.Name), req.Name)
@@ -1801,7 +1802,7 @@ func TestPackInstallMissing_InstallsFromRegistry(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	results, err := PackInstallMissing(PackInstallMissingRequest{
+	results, err := PackInstallMissing(context.Background(), PackInstallMissingRequest{
 		ConfigDir:   configDir,
 		ProfileName: "test",
 		PackAddFn:   fakePack,
@@ -1846,7 +1847,7 @@ func TestPackInstallMissing_PackAddError(t *testing.T) {
 	})
 
 	calls := 0
-	failOnBeta := func(req PackAddRequest, w io.Writer) error {
+	failOnBeta := func(_ context.Context, req PackAddRequest, w io.Writer) error {
 		calls++
 		if req.Name == "beta" {
 			return fmt.Errorf("simulated failure")
@@ -1856,7 +1857,7 @@ func TestPackInstallMissing_PackAddError(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	results, err := PackInstallMissing(PackInstallMissingRequest{
+	results, err := PackInstallMissing(context.Background(), PackInstallMissingRequest{
 		ConfigDir:   configDir,
 		ProfileName: "test",
 		PackAddFn:   failOnBeta,
@@ -1912,9 +1913,9 @@ func buildTestTar(t *testing.T, files map[string]string) []byte {
 // fakeArchiveFn returns an ArchiveFn that serves different content based on
 // the requested ref. manifestJSON is the pack.json content; extraFiles is
 // extra content keyed by filename.
-func fakeArchiveFn(t *testing.T, manifestJSON string, extraFiles map[string]string) func(repoURL, ref string, paths []string) ([]byte, error) {
+func fakeArchiveFn(t *testing.T, manifestJSON string, extraFiles map[string]string) func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) {
 	t.Helper()
-	return func(repoURL, ref string, paths []string) ([]byte, error) {
+	return func(_ context.Context, repoURL, ref string, paths []string) ([]byte, error) {
 		files := make(map[string]string)
 		for _, p := range paths {
 			if strings.HasSuffix(p, "pack.json") {
@@ -1979,7 +1980,7 @@ func TestPackUpdate_Archive_ReResolvesRegistryRef(t *testing.T) {
 	writeSeedProfile(t, configDir, "default")
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "ssh://git@example.com/repo.git",
 		ConfigDir: configDir,
 		Ref:       "old-branch",
@@ -2006,13 +2007,13 @@ func TestPackUpdate_Archive_ReResolvesRegistryRef(t *testing.T) {
 
 	// Track which ref the archive function receives during update.
 	var capturedRefs []string
-	trackingArchive := func(repoURL, ref string, paths []string) ([]byte, error) {
+	trackingArchive := func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) {
 		capturedRefs = append(capturedRefs, ref)
-		return fakeArchiveFn(t, manifest, newFiles)(repoURL, ref, paths)
+		return fakeArchiveFn(t, manifest, newFiles)(ctx, repoURL, ref, paths)
 	}
 
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		NowFn:     func() time.Time { return fixedNow },
@@ -2061,7 +2062,7 @@ func TestPackUpdate_Archive_FallsBackWhenNotInRegistry(t *testing.T) {
 	writeSeedProfile(t, configDir, "default")
 
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "ssh://git@example.com/repo.git",
 		ConfigDir: configDir,
 		Ref:       "main",
@@ -2076,13 +2077,13 @@ func TestPackUpdate_Archive_FallsBackWhenNotInRegistry(t *testing.T) {
 
 	// Update with no registry — should use stored metadata ref.
 	var capturedRefs []string
-	trackingArchive := func(repoURL, ref string, paths []string) ([]byte, error) {
+	trackingArchive := func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) {
 		capturedRefs = append(capturedRefs, ref)
-		return fakeArchiveFn(t, manifest, files)(repoURL, ref, paths)
+		return fakeArchiveFn(t, manifest, files)(ctx, repoURL, ref, paths)
 	}
 
 	out.Reset()
-	results, err := PackUpdate(PackUpdateRequest{
+	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		NowFn:     func() time.Time { return fixedNow },
@@ -2118,7 +2119,7 @@ func TestPackAdd_URL_Install_ShowsContentUnchanged(t *testing.T) {
 
 	// First install.
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "ssh://git@example.com/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",
@@ -2133,7 +2134,7 @@ func TestPackAdd_URL_Install_ShowsContentUnchanged(t *testing.T) {
 
 	// Second install with same content.
 	out.Reset()
-	err = PackAdd(PackAddRequest{
+	err = PackAdd(context.Background(), PackAddRequest{
 		URL:       "ssh://git@example.com/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",
@@ -2164,7 +2165,7 @@ func TestPackAdd_URL_Install_ShowsChanges(t *testing.T) {
 
 	// First install.
 	var out bytes.Buffer
-	err := PackAdd(PackAddRequest{
+	err := PackAdd(context.Background(), PackAddRequest{
 		URL:       "ssh://git@example.com/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",
@@ -2179,7 +2180,7 @@ func TestPackAdd_URL_Install_ShowsChanges(t *testing.T) {
 
 	// Second install with different content.
 	out.Reset()
-	err = PackAdd(PackAddRequest{
+	err = PackAdd(context.Background(), PackAddRequest{
 		URL:       "ssh://git@example.com/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",

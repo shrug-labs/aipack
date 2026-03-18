@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -16,8 +17,8 @@ var (
 
 type VersionCmd struct{}
 
-func (c *VersionCmd) Run(g *Globals) error {
-	updateCh := update.CheckAsync(version, os.Getenv("HOME"))
+func (c *VersionCmd) Run(ctx context.Context, g *Globals) error {
+	updateCh := update.CheckAsync(ctx, version, os.Getenv("HOME"))
 
 	fmt.Fprintf(g.Stdout, "aipack %s (%s)\n", version, commit)
 

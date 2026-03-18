@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -55,7 +56,7 @@ Examples:
 See also: pack install, pack show`
 }
 
-func (c *PackCreateCmd) Run(g *Globals) error {
+func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 	if err := app.PackCreate(app.PackCreateRequest{Dir: c.Dir, Name: c.Name}); err != nil {
 		return err
 	}
@@ -160,7 +161,7 @@ func effectiveProfile(explicit, cfgDir string) string {
 	return resolveProfileName("", sc)
 }
 
-func (c *PackInstallCmd) Run(g *Globals) error {
+func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -170,7 +171,7 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 	if c.Missing {
 		profileName := effectiveProfile(c.Profile, cfgDir)
 		fmt.Fprintf(g.Stdout, "Resolving profile %q...\n", profileName)
-		results, err := app.PackInstallMissing(app.PackInstallMissingRequest{
+		results, err := app.PackInstallMissing(ctx, app.PackInstallMissingRequest{
 			ConfigDir:   cfgDir,
 			ProfileName: profileName,
 		}, g.Stdout)
@@ -207,7 +208,7 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 		if err != nil {
 			// Auto-fetch registry and retry once.
 			fmt.Fprintln(g.Stderr, "Fetching registry...")
-			fetchErr := app.RegistryFetch(app.RegistryFetchRequest{
+			fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{
 				ConfigDir: cfgDir,
 			}, io.Discard)
 			if fetchErr == nil {
@@ -232,7 +233,7 @@ func (c *PackInstallCmd) Run(g *Globals) error {
 		req.Link = !c.Copy
 	}
 
-	if err := app.PackAdd(req, g.Stdout); err != nil {
+	if err := app.PackAdd(ctx, req, g.Stdout); err != nil {
 		return err
 	}
 	fmt.Fprintln(g.Stdout, "\nNext: run 'aipack sync' to sync pack content to your harness.")
@@ -260,7 +261,7 @@ Examples:
 See also: pack show, pack install`
 }
 
-func (c *PackListCmd) Run(g *Globals) error {
+func (c *PackListCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -341,7 +342,7 @@ Examples:
 See also: pack install, pack list`
 }
 
-func (c *PackDeleteCmd) Run(g *Globals) error {
+func (c *PackDeleteCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -370,7 +371,7 @@ Examples:
 See also: pack list, pack show`
 }
 
-func (c *PackRenameCmd) Run(g *Globals) error {
+func (c *PackRenameCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -400,7 +401,7 @@ Examples:
 See also: pack disable, pack install, pack list`
 }
 
-func (c *PackEnableCmd) Run(g *Globals) error {
+func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -441,7 +442,7 @@ Examples:
 See also: pack enable, pack delete, pack list`
 }
 
-func (c *PackDisableCmd) Run(g *Globals) error {
+func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
@@ -489,13 +490,13 @@ func (c *PackUpdateCmd) Validate() error {
 	return nil
 }
 
-func (c *PackUpdateCmd) Run(g *Globals) error {
+func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
 	}
 
-	results, err := app.PackUpdate(app.PackUpdateRequest{
+	results, err := app.PackUpdate(ctx, app.PackUpdateRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 		All:       c.All,
@@ -539,7 +540,7 @@ Examples:
 See also: pack list, pack validate`
 }
 
-func (c *PackShowCmd) Run(g *Globals) error {
+func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err

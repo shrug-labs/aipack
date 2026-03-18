@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestPlan_Project_SkillsAndWorkflows(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestPlan_Global_ContentPaths(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestCapture_Project_AgentToolsMapBecomesNeutralList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -227,7 +228,7 @@ func TestPlan_Settings_WithMCP(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestPlan_Settings_ResolvesEnvAndSkipsMissing(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -310,7 +311,7 @@ func TestPlan_SkipSettings_MergeModePlugin(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -342,7 +343,7 @@ func TestPlan_DropInConfig_DeployedAsIs(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -660,7 +661,7 @@ func TestCapture_Project(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -726,7 +727,7 @@ func TestCapture_Project_ParsesUnprefixedAllowedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
 	if err != nil {
 		t.Fatalf("Capture: %v", err)
 	}
@@ -761,7 +762,7 @@ func TestCapture_Project_PreservesTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
 	if err != nil {
 		t.Fatalf("Capture: %v", err)
 	}
@@ -802,7 +803,7 @@ func TestCapture_Project_MultiSegmentServerName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
 	if err != nil {
 		t.Fatalf("Capture: %v", err)
 	}

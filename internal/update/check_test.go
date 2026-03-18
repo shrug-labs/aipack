@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,14 +13,14 @@ import (
 )
 
 func TestCheck_DevVersion(t *testing.T) {
-	r := Check("dev", t.TempDir())
+	r := Check(context.Background(), "dev", t.TempDir())
 	if r != nil {
 		t.Fatal("expected nil for dev version")
 	}
 }
 
 func TestCheck_EmptyVersion(t *testing.T) {
-	r := Check("", t.TempDir())
+	r := Check(context.Background(), "", t.TempDir())
 	if r != nil {
 		t.Fatal("expected nil for empty version")
 	}
@@ -27,7 +28,7 @@ func TestCheck_EmptyVersion(t *testing.T) {
 
 func TestCheck_Disabled(t *testing.T) {
 	t.Setenv(envDisable, "1")
-	r := Check("0.1.0", t.TempDir())
+	r := Check(context.Background(), "0.1.0", t.TempDir())
 	if r != nil {
 		t.Fatal("expected nil when disabled via env")
 	}
@@ -39,7 +40,7 @@ func TestCheck_CachedFresh(t *testing.T) {
 	data, _ := json.Marshal(c)
 	os.WriteFile(filepath.Join(dir, cacheFile), data, 0644)
 
-	r := Check("0.8.0", dir)
+	r := Check(context.Background(), "0.8.0", dir)
 	if r == nil {
 		t.Fatal("expected non-nil result from fresh cache")
 	}
@@ -54,7 +55,7 @@ func TestCheck_CachedSameVersion(t *testing.T) {
 	data, _ := json.Marshal(c)
 	os.WriteFile(filepath.Join(dir, cacheFile), data, 0644)
 
-	r := Check("0.8.0", dir)
+	r := Check(context.Background(), "0.8.0", dir)
 	if r != nil {
 		t.Fatal("expected nil when cached version matches current")
 	}
@@ -78,7 +79,7 @@ func TestCheck_FetchesWhenCacheStale(t *testing.T) {
 	data, _ := json.Marshal(c)
 	os.WriteFile(filepath.Join(dir, cacheFile), data, 0644)
 
-	r := Check("0.8.0", dir)
+	r := Check(context.Background(), "0.8.0", dir)
 	if r == nil {
 		t.Fatal("expected non-nil result after stale cache refresh")
 	}
@@ -106,7 +107,7 @@ func TestCheck_NetworkFailureSilent(t *testing.T) {
 	releaseURL = srv.URL
 	t.Cleanup(func() { releaseURL = origURL })
 
-	r := Check("0.8.0", t.TempDir())
+	r := Check(context.Background(), "0.8.0", t.TempDir())
 	if r != nil {
 		t.Fatal("expected nil on network failure")
 	}
@@ -125,7 +126,7 @@ func TestCheck_InternalFetchesVersion(t *testing.T) {
 	internalVersionURL = srv.URL
 	t.Cleanup(func() { distribution = origDist; internalVersionURL = origURL })
 
-	r := Check("0.9.0", t.TempDir())
+	r := Check(context.Background(), "0.9.0", t.TempDir())
 	if r == nil {
 		t.Fatal("expected non-nil result for internal update")
 	}
@@ -141,7 +142,7 @@ func TestCheck_InternalNoURL(t *testing.T) {
 	internalVersionURL = ""
 	t.Cleanup(func() { distribution = origDist; internalVersionURL = origURL })
 
-	r := Check("0.9.0", t.TempDir())
+	r := Check(context.Background(), "0.9.0", t.TempDir())
 	if r != nil {
 		t.Fatal("expected nil when internal URL not configured")
 	}
@@ -159,7 +160,7 @@ func TestCheck_InternalSameVersion(t *testing.T) {
 	internalVersionURL = srv.URL
 	t.Cleanup(func() { distribution = origDist; internalVersionURL = origURL })
 
-	r := Check("0.9.0", t.TempDir())
+	r := Check(context.Background(), "0.9.0", t.TempDir())
 	if r != nil {
 		t.Fatal("expected nil when internal version matches current")
 	}

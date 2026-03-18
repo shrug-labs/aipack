@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ func testTree(manifest config.PackManifest, entry config.PackEntry) treeModel {
 func TestRootModel_VInSaveTabDoesNotOpenPlanView(t *testing.T) {
 	t.Parallel()
 
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabSave
 	m.width = 120
 	m.height = 40
@@ -59,7 +60,7 @@ func TestRootModel_VInSaveTabDoesNotOpenPlanView(t *testing.T) {
 func TestRootModel_ProfilesTabShowsLastProfileAtBottom(t *testing.T) {
 	t.Parallel()
 
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabProfiles
 	m.width = 100
 	m.height = 14
@@ -85,7 +86,7 @@ func TestRootModel_ProfilesTabShowsLastProfileAtBottom(t *testing.T) {
 
 func TestRootModel_TabSwitching(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	if m.activeTab != tabProfiles {
 		t.Fatalf("expected initial tab = profiles, got %d", m.activeTab)
@@ -138,7 +139,7 @@ func TestRootModel_QuitKeys(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			m := newRootModel(RunConfig{})
+			m := newRootModel(context.Background(), RunConfig{})
 			result, cmd := m.Update(tt.key)
 			rm := result.(rootModel)
 			if !rm.quitting {
@@ -157,7 +158,7 @@ func TestRootModel_EscWithDirtyAutoSaves(t *testing.T) {
 		config.PackManifest{Rules: []string{"rule-a"}},
 		config.PackEntry{Name: "test-pack"},
 	)
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.dirty = true
 	m.profiles.dirty = true
 	m.profiles.items = []profileItem{
@@ -187,7 +188,7 @@ func TestRootModel_EscWithDirtyAutoSaves(t *testing.T) {
 
 func TestRootModel_EscWithoutDirtyQuits(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.dirty = false
 	// No unsynced profiles → should quit directly.
 	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -203,7 +204,7 @@ func TestRootModel_EscWithoutDirtyQuits(t *testing.T) {
 
 func TestRootModel_HelpTextChangesWithContext(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	// Default: profile list (panelProfiles).
 	help := m.helpText()
@@ -253,7 +254,7 @@ func TestRootModel_HelpTextChangesWithContext(t *testing.T) {
 
 func TestRootModel_PacksLoadedWhileProfilesTabActive(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	if m.activeTab != tabProfiles {
 		t.Fatal("expected initial tab to be profiles")
 	}
@@ -274,7 +275,7 @@ func TestRootModel_PacksLoadedWhileProfilesTabActive(t *testing.T) {
 
 func TestRootModel_DialogResultNotSwallowed(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	d := newConfirmDialog(dialogSaveOnExit, "Save changes?")
 	m.dialog = &d
 
@@ -295,7 +296,7 @@ func TestRootModel_DialogResultNotSwallowed(t *testing.T) {
 
 func TestRootModel_ProfileSavedClearsDirty(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.dirty = true
 	m.profiles.dirty = true
 	m.profiles.items = []profileItem{
@@ -321,7 +322,7 @@ func TestRootModel_ProfileSavedClearsDirty(t *testing.T) {
 
 func TestRootModel_ProfileSavedClearsDirty_MultipleProfiles(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.dirty = true
 	m.profiles.dirty = true
 	m.profiles.items = []profileItem{
@@ -355,7 +356,7 @@ func TestRootModel_ProfileSavedClearsDirty_MultipleProfiles(t *testing.T) {
 
 func TestRootModel_ProfileSaveFailKeepsDirty(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.dirty = true
 	m.profiles.dirty = true
 
@@ -447,7 +448,7 @@ func TestDialogHelpText(t *testing.T) {
 
 func TestPromptSync_ShowsDialog(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "test", syncState: syncSynced},
 	}
@@ -464,7 +465,7 @@ func TestPromptSync_ShowsDialog(t *testing.T) {
 
 func TestPromptSync_UnsyncedProfileShowsPendingCount(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{
 			name:      "default",
@@ -506,7 +507,7 @@ func TestPromptSync_UnsyncedProfileShowsPendingCount(t *testing.T) {
 
 func TestSyncOnExitDialog_CancelReturnsToTUI(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.pendingExit = true
 	m.profiles.items = []profileItem{
 		{name: "test", syncState: syncUnsynced},
@@ -532,7 +533,7 @@ func TestSyncOnExitDialog_CancelReturnsToTUI(t *testing.T) {
 
 func TestSyncOnExitDialog_DefaultSyncFiresCmd(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{
 			name: "default",
@@ -562,7 +563,7 @@ func TestSyncOnExitDialog_DefaultSyncFiresCmd(t *testing.T) {
 
 func TestSyncOnExitDialog_CustomizeChainsScopeDialog(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, _ := m.handleDialogResult(dialogResultMsg{
 		id: dialogSyncOnExit, confirmed: true, value: "Customize...",
@@ -581,7 +582,7 @@ func TestSyncOnExitDialog_CustomizeChainsScopeDialog(t *testing.T) {
 
 func TestSyncScopeDialog_ChainsHarnessDialog(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, _ := m.handleDialogResult(dialogResultMsg{
 		id: dialogSyncScope, confirmed: true, value: "project",
@@ -600,7 +601,7 @@ func TestSyncScopeDialog_ChainsHarnessDialog(t *testing.T) {
 
 func TestSyncHarnessDialog_FiresSyncCmd(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.exitSyncScope = "global"
 	m.profiles.items = []profileItem{
 		{name: "custom", path: "/tmp/custom.yaml"},
@@ -623,7 +624,7 @@ func TestSyncHarnessDialog_FiresSyncCmd(t *testing.T) {
 
 func TestProfileSavedMsg_MarksUnsynced(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "test", path: "/tmp/test.yaml", syncState: syncSynced},
 	}
@@ -642,7 +643,7 @@ func TestPendingExitFlow_AutoSaveThenQuit(t *testing.T) {
 		config.PackEntry{Name: "test-pack"},
 	)
 
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.dirty = true
 	m.profiles.dirty = true
 	m.profiles.items = []profileItem{
@@ -684,7 +685,7 @@ func TestSyncFlow_SaveThenPrompt(t *testing.T) {
 		config.PackEntry{Name: "test-pack"},
 	)
 
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.dirty = true
 	m.profiles.dirty = true
 	m.profiles.items = []profileItem{
@@ -766,7 +767,7 @@ func TestEnrichedSyncStatus(t *testing.T) {
 func TestCountPendingSaves(t *testing.T) {
 	t.Parallel()
 
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "a", dirty: true},
 		{name: "b"},
@@ -792,7 +793,7 @@ func TestRunResult_DefaultValues(t *testing.T) {
 
 func TestActionMenu_ProfileActions(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "default", isActive: true},
 		{name: "staging", isActive: false},
@@ -818,7 +819,7 @@ func TestActionMenu_ProfileActions(t *testing.T) {
 
 func TestActionMenu_ProfileActionsInactive(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "default", isActive: true},
 		{name: "staging", isActive: false},
@@ -844,7 +845,7 @@ func TestActionMenu_ProfileActionsInactive(t *testing.T) {
 
 func TestActionMenu_NewProfileChain(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{{name: "default"}}
 
 	// Simulate selecting "New profile" from the action menu.
@@ -862,7 +863,7 @@ func TestActionMenu_NewProfileChain(t *testing.T) {
 
 func TestActionMenu_DeleteChain(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "staging", path: "/tmp/staging.yaml"},
 	}
@@ -901,7 +902,7 @@ func TestSyncErrorDisplay(t *testing.T) {
 
 func TestDeleteCancel_ClosesDialog(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "default", path: "/tmp/default.yaml"},
 	}
@@ -918,7 +919,7 @@ func TestDeleteCancel_ClosesDialog(t *testing.T) {
 
 func TestNewCancel_ClosesDialog(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	result, _ := m.handleDialogResult(dialogResultMsg{
 		id: dialogNewProfile, confirmed: false,
@@ -932,7 +933,7 @@ func TestNewCancel_ClosesDialog(t *testing.T) {
 
 func TestRootModel_PreviewRequestOpensOverlay(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 120
 	m.height = 40
 
@@ -953,7 +954,7 @@ func TestRootModel_PreviewRequestOpensOverlay(t *testing.T) {
 
 func TestRootModel_PreviewLoadedMsgUpdatesPacksInlinePreview(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabPacks
 	m.packs = newTestPacksModel([]packItemDetail{
 		{entry: app.PackShowEntry{
@@ -983,7 +984,7 @@ func TestRootModel_PreviewLoadedMsgUpdatesPacksInlinePreview(t *testing.T) {
 
 func TestRootModel_EscClosesPreview(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 120
 	m.height = 40
 	p := newPreviewModel(120, 40)
@@ -1007,7 +1008,7 @@ func TestRootModel_EscClosesPreview(t *testing.T) {
 
 func TestRootModel_QClosesPreview(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 120
 	m.height = 40
 	p := newPreviewModel(120, 40)
@@ -1029,7 +1030,7 @@ func TestRootModel_QClosesPreview(t *testing.T) {
 
 func TestRootModel_PreviewViewTakesOver(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 80
 	m.height = 40
 	p := newPreviewModel(80, 40)
@@ -1056,7 +1057,7 @@ func TestRootModel_PreviewViewTakesOver(t *testing.T) {
 
 func TestHelpText_VPlanOnProfilesAndSync(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	m.activeTab = tabProfiles
 	help := m.helpText()
@@ -1085,7 +1086,7 @@ func TestHelpText_VPlanOnProfilesAndSync(t *testing.T) {
 
 func TestNumberKeys_DirectTabSwitch(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	// Start on Profiles (tab 0), press "3" to jump to Save (tab 2).
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
@@ -1143,7 +1144,7 @@ func TestDestructiveConfirmDialog_DefaultsToNo(t *testing.T) {
 
 func TestStatusClearMsg_AutoClearsStatus(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.statusText = "some status"
 	m.statusID = 5
 
@@ -1166,7 +1167,7 @@ func TestStatusClearMsg_AutoClearsStatus(t *testing.T) {
 
 func TestStatusLine_ShowsActiveProfile(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 100
 	m.profiles.items = []profileItem{
 		{
@@ -1188,7 +1189,7 @@ func TestStatusLine_ShowsActiveProfile(t *testing.T) {
 
 func TestHelpText_ContainsNumberKeys(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	m.activeTab = tabProfiles
 	help := m.helpText()
@@ -1205,7 +1206,7 @@ func TestHelpText_ContainsNumberKeys(t *testing.T) {
 
 func TestHelpText_GroupSeparators(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 
 	m.activeTab = tabProfiles
 	help := m.helpText()
@@ -1216,7 +1217,7 @@ func TestHelpText_GroupSeparators(t *testing.T) {
 
 func TestUpdate_StatusChangeSchedulesClear(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
 		{name: "test", syncState: syncSynced},
 	}

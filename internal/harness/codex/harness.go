@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 }
 
 // Plan produces a Fragment from typed content.
-func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
+func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
 	switch ctx.Scope {
@@ -163,7 +164,7 @@ func buildAgentsOverride(rules []domain.Rule, existingAgents string) string {
 }
 
 // Render produces a Fragment for pack rendering.
-func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
+func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
 	out, _, err := RenderBytes(base, ctx.Profile.MCPServers)
 	if err != nil {
@@ -177,7 +178,7 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 }
 
 // Capture extracts Codex content for round-trip save.
-func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
+func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
 	if ctx.Scope == domain.ScopeProject {

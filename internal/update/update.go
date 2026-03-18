@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -27,12 +28,12 @@ const downloadTimeout = 60 * time.Second
 
 // Update downloads the latest release and replaces the current binary.
 // Progress is written to w. Returns nil on success or if already up to date.
-func Update(currentVersion string, w io.Writer) error {
+func Update(ctx context.Context, currentVersion string, w io.Writer) error {
 	if currentVersion == "dev" || currentVersion == "" {
 		return fmt.Errorf("cannot update a dev build; install a release version first")
 	}
 
-	latest, _, err := fetchLatest()
+	latest, _, err := fetchLatest(ctx)
 	if err != nil {
 		return fmt.Errorf("checking for updates: %w", err)
 	}
@@ -67,13 +68,19 @@ func Update(currentVersion string, w io.Writer) error {
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
-	client := &http.Client{Timeout: downloadTimeout}
+	dlCtx, dlCancel := context.WithTimeout(ctx, downloadTimeout)
+	defer dlCancel()
 
 	// Download the binary, computing SHA256 as we stream.
 	binaryURL := fmt.Sprintf("%s/%s/%s", ghDownloadBase, tag, asset)
 	fmt.Fprintf(w, "Downloading %s...\n", binaryURL)
 
-	resp, err := client.Get(binaryURL)
+	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, binaryURL, nil)
+	if err != nil {
+		tmp.Close()
+		return fmt.Errorf("downloading binary: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		tmp.Close()
 		return fmt.Errorf("downloading binary: %w", err)
@@ -100,7 +107,7 @@ func Update(currentVersion string, w io.Writer) error {
 
 	// Verify checksum against published SHA256SUMS.
 	sumsURL := fmt.Sprintf("%s/%s/SHA256SUMS", ghDownloadBase, tag)
-	wantHash, err := fetchChecksum(client, sumsURL, asset)
+	wantHash, err := fetchChecksum(dlCtx, sumsURL, asset)
 	if err != nil {
 		return fmt.Errorf("verifying checksum: %w", err)
 	}
@@ -120,7 +127,7 @@ func Update(currentVersion string, w io.Writer) error {
 	// Ad-hoc code sign on macOS to suppress Gatekeeper warnings.
 	if runtime.GOOS == "darwin" {
 		if cs, lookErr := exec.LookPath("codesign"); lookErr == nil {
-			_ = exec.Command(cs, "-s", "-", "-f", realPath).Run()
+			_ = exec.CommandContext(ctx, cs, "-s", "-", "-f", realPath).Run()
 		}
 	}
 
@@ -134,8 +141,12 @@ func AssetName() string {
 }
 
 // fetchChecksum downloads a SHA256SUMS file and extracts the hash for asset.
-func fetchChecksum(client *http.Client, url, asset string) (string, error) {
-	resp, err := client.Get(url)
+func fetchChecksum(ctx context.Context, url, asset string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}

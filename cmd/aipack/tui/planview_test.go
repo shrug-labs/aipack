@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestPlanView_VKeyOpensPlanView(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabProfiles
 	m.width = 120
 	m.height = 40
@@ -40,7 +41,7 @@ func TestPlanView_VKeyOpensPlanView(t *testing.T) {
 
 func TestPlanView_VKeyNoOps(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabProfiles
 	m.profiles.items = []profileItem{
 		{name: "test", syncTarget: syncTargetInfo{}},
@@ -58,7 +59,7 @@ func TestPlanView_VKeyNoOps(t *testing.T) {
 
 func TestPlanView_EscCloses(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 120
 	m.height = 40
 	ops := []app.PlanOp{{Kind: app.PlanOpRule, Dst: "/tmp/file.md", Size: 50}}
@@ -74,7 +75,7 @@ func TestPlanView_EscCloses(t *testing.T) {
 
 func TestPlanView_QCloses(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 120
 	m.height = 40
 	ops := []app.PlanOp{{Kind: app.PlanOpRule, Dst: "/tmp/file.md", Size: 50}}
@@ -90,7 +91,7 @@ func TestPlanView_QCloses(t *testing.T) {
 
 func TestPlanView_ViewTakesOver(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 120
 	m.height = 40
 	ops := []app.PlanOp{
@@ -152,7 +153,7 @@ func TestPlanView_ShortDst(t *testing.T) {
 
 func TestPlanView_SyncTabAlsoOpens(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabSync
 	m.width = 120
 	m.height = 40
@@ -313,7 +314,7 @@ func TestPlanView_DiffLoadedSetsContent(t *testing.T) {
 
 func TestPlanView_EscClosesDiffNotPlan(t *testing.T) {
 	t.Parallel()
-	m := newRootModel(RunConfig{})
+	m := newRootModel(context.Background(), RunConfig{})
 	m.width = 120
 	m.height = 40
 	ops := []app.PlanOp{{Kind: app.PlanOpRule, Dst: "/tmp/a.md", Size: 10, Content: []byte("a")}}

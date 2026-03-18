@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +23,7 @@ const (
 )
 
 type profilesModel struct {
+	ctx        context.Context
 	items      []profileItem
 	cursor     int
 	focus      panelFocus
@@ -48,8 +50,9 @@ func (m *profilesModel) clampProfileOffset() {
 	m.profileOffset = clampOffset(m.cursor, m.profileOffset, visH)
 }
 
-func newProfilesModel(configDir string) profilesModel {
+func newProfilesModel(ctx context.Context, configDir string) profilesModel {
 	return profilesModel{
+		ctx:       ctx,
 		configDir: configDir,
 	}
 }
@@ -338,7 +341,7 @@ func (m profilesModel) checkSyncCmd(syncCfg config.SyncConfig, reg *harness.Regi
 		return nil
 	}
 	item.syncState = syncLoading
-	return checkSyncStatus(m.configDir, item.name, item.path, item.cfg, syncCfg, reg)
+	return checkSyncStatus(m.ctx, m.configDir, item.name, item.path, item.cfg, syncCfg, reg)
 }
 
 func (m profilesModel) currentItem() *profileItem {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,7 +76,7 @@ func (ps PlanSummary) TotalChanges() int {
 // PlanWithDiffs plans a sync and classifies each action against on-disk state,
 // filtering out identical (already-synced) entries. This is the "dry-run with
 // details" entry point used by the TUI and potentially CLI --dry-run.
-func PlanWithDiffs(profile domain.Profile, req SyncRequest, reg *harness.Registry) (PlanSummary, error) {
+func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest, reg *harness.Registry) (PlanSummary, error) {
 	var summary PlanSummary
 
 	baseDir := req.ProjectDir
@@ -101,12 +102,12 @@ func PlanWithDiffs(profile domain.Profile, req SyncRequest, reg *harness.Registr
 			SkipSettings: req.SkipSettings,
 		}
 
-		plan, err := engine.PlanSync(profile, planReq, planners)
+		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
 			return PlanSummary{}, err
 		}
 
-		captured, err := h.Capture(harness.CaptureContext{
+		captured, err := h.Capture(ctx, harness.CaptureContext{
 			Scope:      req.Scope,
 			ProjectDir: req.ProjectDir,
 			Home:       req.Home,

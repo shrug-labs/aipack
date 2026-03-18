@@ -1,6 +1,7 @@
 package cline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -61,7 +62,7 @@ func mcpOwnedFile(path string) harness.OwnedFile {
 }
 
 // Plan produces a Fragment from typed content.
-func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
+func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
 	switch ctx.Scope {
@@ -147,7 +148,7 @@ func planGlobalMCP(f *domain.Fragment, ctx engine.SyncContext) error {
 }
 
 // Render produces a Fragment for pack rendering.
-func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
+func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
 	if len(ctx.Profile.MCPServers) == 0 {
 		return domain.Fragment{}, nil
 	}
@@ -163,7 +164,7 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 }
 
 // Capture extracts Cline content for round-trip save.
-func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
+func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
 	if ctx.Scope == domain.ScopeProject {

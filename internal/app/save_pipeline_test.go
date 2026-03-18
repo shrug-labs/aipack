@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -23,13 +24,13 @@ func (s pipelineStub) ID() domain.Harness { return s.id }
 func (s pipelineStub) Layout(domain.Scope, string, string) harness.Layout {
 	return harness.Layout{ValidationRoots: s.roots}
 }
-func (s pipelineStub) Plan(engine.SyncContext) (domain.Fragment, error) {
+func (s pipelineStub) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s pipelineStub) Render(harness.RenderContext) (domain.Fragment, error) {
+func (s pipelineStub) Render(_ context.Context, _ harness.RenderContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s pipelineStub) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
+func (s pipelineStub) Capture(_ context.Context, _ harness.CaptureContext) (harness.CaptureResult, error) {
 	return s.capture, nil
 }
 
@@ -84,7 +85,7 @@ func TestDiscoverContentVectors(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	vectors, err := DiscoverContentVectors("claudecode", domain.ScopeProject, tmp, tmp, reg)
+	vectors, err := DiscoverContentVectors(context.Background(), "claudecode", domain.ScopeProject, tmp, tmp, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,7 @@ func TestDiscoverContentVectors_IncludesPromotedContentCategories(t *testing.T) 
 	}
 	reg := harness.NewRegistry(stub)
 
-	vectors, err := DiscoverContentVectors("codex", domain.ScopeProject, tmp, tmp, reg)
+	vectors, err := DiscoverContentVectors(context.Background(), "codex", domain.ScopeProject, tmp, tmp, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestDiscoverSaveFiles_NoLedger(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
 		HarnessID:  "claudecode",
 		Categories: []domain.PackCategory{domain.CategoryRules},
 		Scope:      domain.ScopeProject,
@@ -229,7 +230,7 @@ func TestDiscoverSaveFiles_WithLedger(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
 		HarnessID:  "claudecode",
 		Categories: []domain.PackCategory{domain.CategoryRules},
 		Scope:      domain.ScopeProject,
@@ -303,7 +304,7 @@ func TestDiscoverSaveFiles_SelectsTrackedSettings(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
 		HarnessID:  "claudecode",
 		Categories: []domain.PackCategory{domain.CategorySettings},
 		Scope:      domain.ScopeProject,
@@ -363,7 +364,7 @@ func TestDiscoverSaveFiles_MCPCandidates(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
 		HarnessID:  "codex",
 		Categories: []domain.PackCategory{domain.CategoryMCP},
 		Scope:      domain.ScopeProject,

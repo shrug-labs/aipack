@@ -1,6 +1,7 @@
 package cline
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestPlan_Project_WorkflowsAndSkills(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -112,7 +113,7 @@ func TestPlan_Global_Content(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestPlan_Global_MCP(t *testing.T) {
 		},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -178,7 +179,7 @@ func TestPlan_Global_NoMCP(t *testing.T) {
 		Profile:   domain.Profile{},
 	}
 
-	f, err := Harness{}.Plan(ctx)
+	f, err := Harness{}.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -409,7 +410,7 @@ func TestCapture_Project(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 	})
@@ -482,7 +483,7 @@ func TestCapture_Project_MCP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: projectDir,
 		Home:       home,
@@ -523,7 +524,7 @@ func TestCapture_Global_Agents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
 		Scope: domain.ScopeGlobal,
 		Home:  home,
 	})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -29,13 +30,13 @@ Examples:
 See also: doctor, sync`
 }
 
-func (c *InitCmd) Run(g *Globals) error {
+func (c *InitCmd) Run(ctx context.Context, g *Globals) error {
 	configDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
 	if err != nil {
 		return err
 	}
 
-	return app.RunInit(app.InitRequest{
+	return app.RunInit(ctx, app.InitRequest{
 		ConfigDir: configDir,
 		Force:     c.Force,
 	}, g.Stdout)

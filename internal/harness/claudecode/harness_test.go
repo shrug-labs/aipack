@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func TestPlan_Project_Rules(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestPlan_Project_TransformsAgents(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestPlan_Project_Skills(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestPlan_Project_WorkflowsAsCommands(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestPlan_Project_EmptyContent(t *testing.T) {
 		Profile:   domain.Profile{},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestPlan_Global_WritesToGlobalDirs(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -275,7 +276,7 @@ func TestPlan_Project_MCP(t *testing.T) {
 		SkipSettings: true,
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -343,7 +344,7 @@ func TestPlan_Project_SettingsWhenNotSkipped(t *testing.T) {
 		SkipSettings: false,
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -384,7 +385,7 @@ func TestPlan_Project_BaseSettingsMergedWithMCP(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -438,7 +439,7 @@ func TestPlan_Project_BaseSettingsOnlyNoMCP(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -474,7 +475,7 @@ func TestPlan_Global_MCPMergeMode(t *testing.T) {
 		},
 	}
 
-	f, err := h.Plan(ctx)
+	f, err := h.Plan(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -516,7 +517,7 @@ func TestCapture_Project(t *testing.T) {
 	}
 
 	h := Harness{}
-	res, err := h.Capture(harness.CaptureContext{
+	res, err := h.Capture(context.Background(), harness.CaptureContext{
 		Scope:      domain.ScopeProject,
 		ProjectDir: dir,
 	})
@@ -592,7 +593,7 @@ func TestCapture_Global(t *testing.T) {
 	}
 
 	h := Harness{}
-	res, err := h.Capture(harness.CaptureContext{
+	res, err := h.Capture(context.Background(), harness.CaptureContext{
 		Scope: domain.ScopeGlobal,
 		Home:  home,
 	})
@@ -634,7 +635,7 @@ func TestCapture_Project_ParsesSettingsPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Harness{}.Capture(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: dir})
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: dir})
 	if err != nil {
 		t.Fatalf("Capture: %v", err)
 	}

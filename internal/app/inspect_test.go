@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,7 +52,7 @@ func TestInspectHarness_UsesPerServerMCPPath(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := InspectHarness(InspectRequest{
+	result, err := InspectHarness(context.Background(), InspectRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -140,7 +141,7 @@ func TestInspectHarness_MCPMetadataDoesNotCauseConflictAfterSync(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := InspectHarness(InspectRequest{
+	result, err := InspectHarness(context.Background(), InspectRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,

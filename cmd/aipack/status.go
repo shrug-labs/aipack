@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -34,7 +35,7 @@ Examples:
 See also: doctor, profile show`
 }
 
-func (c *StatusCmd) Run(g *Globals) error {
+func (c *StatusCmd) Run(ctx context.Context, g *Globals) error {
 	loaded, code := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
 	if code >= 0 {
 		return ExitError{Code: code}

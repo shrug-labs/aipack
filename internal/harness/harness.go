@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -27,13 +28,13 @@ type Harness interface {
 
 	// Plan produces a Fragment of writes/copies/settings from typed content.
 	// Satisfies engine.Planner.
-	Plan(ctx engine.SyncContext) (domain.Fragment, error)
+	Plan(ctx context.Context, sctx engine.SyncContext) (domain.Fragment, error)
 
 	// Render produces a Fragment for pack rendering (portable output).
-	Render(ctx RenderContext) (domain.Fragment, error)
+	Render(ctx context.Context, rctx RenderContext) (domain.Fragment, error)
 
 	// Capture extracts harness-native content for round-trip save.
-	Capture(ctx CaptureContext) (CaptureResult, error)
+	Capture(ctx context.Context, cctx CaptureContext) (CaptureResult, error)
 }
 
 // FileFormat identifies the serialization format of an OwnedFile.

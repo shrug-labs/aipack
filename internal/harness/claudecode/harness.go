@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -75,7 +76,7 @@ func stripManagedPermissions(root map[string]any) {
 }
 
 // Plan produces a Fragment from typed content. Handles both project and global scope.
-func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
+func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
 	if err := planContent(&f, ctx.TargetDir, ctx.Profile); err != nil {
@@ -173,7 +174,7 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 }
 
 // Render produces a Fragment for pack rendering.
-func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
+func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessClaudeCode, "settings.local.json")
 	out, err := RenderSettingsBytes(base, ctx.Profile.MCPServers)
 	if err != nil {
@@ -187,7 +188,7 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 }
 
 // Capture extracts Claude Code content for round-trip save.
-func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
+func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
 	paths := PathsForScope(ctx.Scope)

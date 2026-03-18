@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ const (
 const saveNewPackSentinel = "Create new pack..."
 
 type saveTabModel struct {
+	ctx       context.Context
 	configDir string
 	registry  *harness.Registry
 	stage     saveStage
@@ -74,8 +76,8 @@ type saveTabModel struct {
 	width, height int
 }
 
-func newSaveTabModel(configDir string, reg *harness.Registry) saveTabModel {
-	return saveTabModel{configDir: configDir, registry: reg}
+func newSaveTabModel(ctx context.Context, configDir string, reg *harness.Registry) saveTabModel {
+	return saveTabModel{ctx: ctx, configDir: configDir, registry: reg}
 }
 
 func (m saveTabModel) Update(msg tea.Msg) (saveTabModel, tea.Cmd) {
@@ -200,7 +202,7 @@ func (m saveTabModel) handleHarnessKey(msg tea.KeyMsg) (saveTabModel, tea.Cmd) {
 			m.selectedHarness = m.availableHarnesses[m.harnessCursor]
 			m.loading = true
 			m.stage = saveStageVectors
-			return m, discoverVectors(m.selectedHarness, m.configDir, m.registry)
+			return m, discoverVectors(m.ctx, m.selectedHarness, m.configDir, m.registry)
 		}
 	}
 	return m, nil
@@ -381,7 +383,7 @@ func (m saveTabModel) advanceToFiles() (saveTabModel, tea.Cmd) {
 	}
 	m.resolvedProfile = &res
 
-	return m, discoverSaveFiles(app.DiscoverSaveRequest{
+	return m, discoverSaveFiles(m.ctx, app.DiscoverSaveRequest{
 		HarnessID:  m.selectedHarness,
 		Categories: categories,
 		Scope:      res.TargetSpec.Scope,
@@ -1058,7 +1060,7 @@ func (m saveTabModel) rediscoverFiles() tea.Cmd {
 	if len(categories) == 0 || m.resolvedProfile == nil {
 		return nil
 	}
-	return discoverSaveFiles(app.DiscoverSaveRequest{
+	return discoverSaveFiles(m.ctx, app.DiscoverSaveRequest{
 		HarnessID:  m.selectedHarness,
 		Categories: categories,
 		Scope:      m.resolvedProfile.TargetSpec.Scope,

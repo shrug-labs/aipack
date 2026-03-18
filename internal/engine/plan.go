@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -19,7 +20,7 @@ type PlanRequest struct {
 // Each harness converts typed content into a Fragment of writes/copies/settings.
 type Planner interface {
 	ID() domain.Harness
-	Plan(ctx SyncContext) (domain.Fragment, error)
+	Plan(ctx context.Context, sctx SyncContext) (domain.Fragment, error)
 }
 
 // SyncContext provides typed content and config to harness planners.
@@ -35,7 +36,7 @@ type SyncContext struct {
 
 // PlanSync produces a sync Plan by asking each harness planner to contribute a Fragment.
 // The Profile must already be fully resolved (via engine.Resolve).
-func PlanSync(profile domain.Profile, req PlanRequest, harnesses []Planner) (domain.Plan, error) {
+func PlanSync(ctx context.Context, profile domain.Profile, req PlanRequest, harnesses []Planner) (domain.Plan, error) {
 	if req.Scope == domain.ScopeGlobal && req.Home == "" {
 		return domain.Plan{}, fmt.Errorf("HOME is not set (required for global scope)")
 	}
@@ -50,14 +51,14 @@ func PlanSync(profile domain.Profile, req PlanRequest, harnesses []Planner) (dom
 
 	// Each harness contributes a Fragment.
 	for _, h := range harnesses {
-		ctx := SyncContext{
+		sctx := SyncContext{
 			Scope:        req.Scope,
 			TargetDir:    targetDir,
 			Home:         req.Home,
 			Profile:      profile,
 			SkipSettings: req.SkipSettings,
 		}
-		frag, err := h.Plan(ctx)
+		frag, err := h.Plan(ctx, sctx)
 		if err != nil {
 			return domain.Plan{}, fmt.Errorf("harness %s: %w", h.ID(), err)
 		}

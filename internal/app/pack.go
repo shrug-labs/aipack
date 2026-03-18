@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -49,11 +50,11 @@ type PackAddRequest struct {
 	Ref string
 
 	// Test injection points:
-	RunGitFn  func(args ...string) error
-	ArchiveFn func(repoURL, ref string, paths []string) ([]byte, error) // nil = config.GitArchiveFiles
-	URLOKFn   func(raw string) (bool, error)
+	RunGitFn  func(ctx context.Context, args ...string) error
+	ArchiveFn func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) // nil = config.GitArchiveFiles
+	URLOKFn   func(ctx context.Context, raw string) (bool, error)
 	NowFn     func() time.Time
-	GitHashFn func(dir string) (string, error) // nil = config.GitHeadHash
+	GitHashFn func(ctx context.Context, dir string) (string, error) // nil = config.GitHeadHash
 }
 
 // PacksDir returns the canonical pack installation directory.
@@ -62,7 +63,7 @@ func PacksDir(configDir string) string {
 }
 
 // PackAdd installs a pack to the canonical location and optionally registers it in a profile.
-func PackAdd(req PackAddRequest, stdout io.Writer) error {
+func PackAdd(ctx context.Context, req PackAddRequest, stdout io.Writer) error {
 	if strings.TrimSpace(req.ConfigDir) == "" {
 		return fmt.Errorf("config dir is required")
 	}
@@ -83,7 +84,7 @@ func PackAdd(req PackAddRequest, stdout io.Writer) error {
 	}
 
 	if req.URL != "" {
-		return packAddFromURL(req, stdout)
+		return packAddFromURL(ctx, req, stdout)
 	}
 	return packAddFromPath(req, stdout)
 }
@@ -225,7 +226,7 @@ func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
 // packAddFromURL implements the URL-based install flow.
 // Tries git archive (selective fetch) first; falls back to git clone if the
 // remote does not support git archive --remote.
-func packAddFromURL(req PackAddRequest, stdout io.Writer) error {
+func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) error {
 	// Resolve URL info: for SSH/git URLs or when SubPath/Ref is pre-set,
 	// skip the HTTP probe (ProbePackURL) and go directly to git operations.
 	var info config.PackURLInfo
@@ -244,7 +245,7 @@ func packAddFromURL(req PackAddRequest, stdout io.Writer) error {
 			if req.URLOKFn != nil {
 				urlOKFn = req.URLOKFn
 			}
-			ok, err := urlOKFn(info.PackURL)
+			ok, err := urlOKFn(ctx, info.PackURL)
 			if err != nil {
 				return fmt.Errorf("pack.json check failed for %s: %w", info.PackURL, err)
 			}
@@ -265,7 +266,7 @@ func packAddFromURL(req PackAddRequest, stdout io.Writer) error {
 	}
 
 	// Try archive-based install first; fall back to clone.
-	result, err := packTryArchive(req, info, packsDir, stdout)
+	result, err := packTryArchive(ctx, req, info, packsDir, stdout)
 	if err != nil {
 		return err
 	}
@@ -318,7 +319,7 @@ type packInstallResult struct {
 // packTryArchive attempts a two-phase archive fetch. On success returns the
 // installed pack directory, install method, and parsed manifest. Falls back
 // to git clone if the remote doesn't support git archive --remote.
-func packTryArchive(req PackAddRequest, info config.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
+func packTryArchive(ctx context.Context, req PackAddRequest, info config.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
 	subPath := info.SubPath
 	archiveFn := req.ArchiveFn
 	if archiveFn == nil {
@@ -326,7 +327,7 @@ func packTryArchive(req PackAddRequest, info config.PackURLInfo, packsDir string
 			// Custom git runner without an archive function — caller wants
 			// clone-only behavior (common in tests). Skip archive to avoid
 			// calling the real git binary.
-			return packFallbackClone(req, info, packsDir, stdout)
+			return packFallbackClone(ctx, req, info, packsDir, stdout)
 		}
 		archiveFn = config.GitArchiveFiles
 	}
@@ -337,11 +338,11 @@ func packTryArchive(req PackAddRequest, info config.PackURLInfo, packsDir string
 		manifestRelPath = subPath + "/pack.json"
 	}
 
-	tarData, err := archiveFn(info.RepoURL, info.Ref, []string{manifestRelPath})
+	tarData, err := archiveFn(ctx, info.RepoURL, info.Ref, []string{manifestRelPath})
 	if err != nil {
 		if errors.Is(err, config.ErrArchiveNotSupported) {
 			fmt.Fprintf(stdout, "Remote does not support git archive; falling back to clone\n")
-			return packFallbackClone(req, info, packsDir, stdout)
+			return packFallbackClone(ctx, req, info, packsDir, stdout)
 		}
 		return packInstallResult{}, fmt.Errorf("fetching manifest from %s: %w", info.RepoURL, err)
 	}
@@ -366,11 +367,11 @@ func packTryArchive(req PackAddRequest, info config.PackURLInfo, packsDir string
 		}
 	}
 
-	tarData, err = archiveFn(info.RepoURL, info.Ref, contentPaths)
+	tarData, err = archiveFn(ctx, info.RepoURL, info.Ref, contentPaths)
 	if err != nil {
 		if errors.Is(err, config.ErrArchiveNotSupported) {
 			fmt.Fprintf(stdout, "Remote does not support git archive for content; falling back to clone\n")
-			return packFallbackClone(req, info, packsDir, stdout)
+			return packFallbackClone(ctx, req, info, packsDir, stdout)
 		}
 		if errors.Is(err, config.ErrArchivePathNotFound) {
 			return packInstallResult{}, fmt.Errorf("pack.json declares content not found in the repository — check that all listed rules/skills/workflows are committed: %w", err)
@@ -426,7 +427,7 @@ func packTryArchive(req PackAddRequest, info config.PackURLInfo, packsDir string
 
 // packFallbackClone implements the legacy git-clone install path, used when
 // git archive --remote is not supported by the remote.
-func packFallbackClone(req PackAddRequest, info config.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
+func packFallbackClone(ctx context.Context, req PackAddRequest, info config.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
 	subPath := info.SubPath
 	tmpDir, err := os.MkdirTemp(packsDir, ".clone-*")
 	if err != nil {
@@ -440,17 +441,17 @@ func packFallbackClone(req PackAddRequest, info config.PackURLInfo, packsDir str
 	}()
 
 	if req.RunGitFn != nil {
-		if err := config.EnsureCloneWith(info.RepoURL, tmpDir, info.Ref, req.RunGitFn); err != nil {
+		if err := config.EnsureCloneWith(ctx, info.RepoURL, tmpDir, info.Ref, req.RunGitFn); err != nil {
 			return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
 		}
 	} else {
-		if err := config.EnsureClone(info.RepoURL, tmpDir, info.Ref); err != nil {
+		if err := config.EnsureClone(ctx, info.RepoURL, tmpDir, info.Ref); err != nil {
 			return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
 		}
 	}
 
 	// Capture commit hash before any subtree extraction destroys .git.
-	commitHash := resolveGitHash(tmpDir, req.GitHashFn)
+	commitHash := resolveGitHash(ctx, tmpDir, req.GitHashFn)
 
 	packRoot := tmpDir
 	if subPath != "" {
@@ -963,10 +964,10 @@ type PackUpdateRequest struct {
 	ConfigDir string
 	Name      string // empty when All=true
 	All       bool
-	RunGitFn  func(args ...string) error                                // test injection; nil = real git
-	NowFn     func() time.Time                                          // test injection; nil = time.Now
-	GitHashFn func(dir string) (string, error)                          // test injection; nil = config.GitHeadHash
-	ArchiveFn func(repoURL, ref string, paths []string) ([]byte, error) // test injection; nil = config.GitArchiveFiles
+	RunGitFn  func(ctx context.Context, args ...string) error                                // test injection; nil = real git
+	NowFn     func() time.Time                                                               // test injection; nil = time.Now
+	GitHashFn func(ctx context.Context, dir string) (string, error)                          // test injection; nil = config.GitHeadHash
+	ArchiveFn func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) // test injection; nil = config.GitArchiveFiles
 }
 
 // PackUpdateResult describes the outcome of updating a single pack.
@@ -1020,10 +1021,10 @@ type packUpdateContext struct {
 	configDir string
 	sc        config.SyncConfig
 	registry  config.Registry // loaded once, reused across all packs
-	runGitFn  func(args ...string) error
+	runGitFn  func(ctx context.Context, args ...string) error
 	nowFn     func() time.Time
-	gitHashFn func(string) (string, error)
-	archiveFn func(repoURL, ref string, paths []string) ([]byte, error)
+	gitHashFn func(ctx context.Context, dir string) (string, error)
+	archiveFn func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error)
 	stdout    io.Writer
 }
 
@@ -1034,6 +1035,7 @@ func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io
 	if runGitFn == nil {
 		runGitFn = config.RunGit
 	}
+
 	nowFn := req.NowFn
 	if nowFn == nil {
 		nowFn = time.Now
@@ -1054,18 +1056,18 @@ func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io
 }
 
 // PackUpdate refreshes one or all installed packs.
-func PackUpdate(req PackUpdateRequest, stdout io.Writer) ([]PackUpdateResult, error) {
+func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer) ([]PackUpdateResult, error) {
 	if strings.TrimSpace(req.ConfigDir) == "" {
 		return nil, fmt.Errorf("config dir is required")
 	}
 
 	scPath := config.SyncConfigPath(req.ConfigDir)
 	sc, _ := config.LoadSyncConfig(scPath)
-	ctx := newPackUpdateContext(req, sc, stdout)
+	uctx := newPackUpdateContext(req, sc, stdout)
 
 	var names []string
 	if req.All {
-		entries, err := os.ReadDir(ctx.packsDir)
+		entries, err := os.ReadDir(uctx.packsDir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil, nil
@@ -1086,15 +1088,15 @@ func PackUpdate(req PackUpdateRequest, stdout io.Writer) ([]PackUpdateResult, er
 
 	var results []PackUpdateResult
 	for _, name := range names {
-		r := packUpdateOne(name, ctx)
+		r := packUpdateOne(ctx, name, uctx)
 		results = append(results, r)
 	}
 	return results, nil
 }
 
-func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
-	packDir := filepath.Join(ctx.packsDir, name)
-	meta, hasMeta := ctx.sc.InstalledPacks[name]
+func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) PackUpdateResult {
+	packDir := filepath.Join(uctx.packsDir, name)
+	meta, hasMeta := uctx.sc.InstalledPacks[name]
 
 	info, err := os.Lstat(packDir)
 	if err != nil {
@@ -1114,16 +1116,16 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		hashDir := packDir
 		if meta.SubPath != "" {
 			// Subdirectory pack: re-clone full repo, extract subtree.
-			tmpDir, err := os.MkdirTemp(ctx.packsDir, ".clone-*")
+			tmpDir, err := os.MkdirTemp(uctx.packsDir, ".clone-*")
 			if err != nil {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
 			defer os.RemoveAll(tmpDir)
-			if err := config.EnsureCloneWith(meta.Origin, tmpDir, ref, ctx.runGitFn); err != nil {
+			if err := config.EnsureCloneWith(ctx, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
 			hashDir = tmpDir // capture hash from full clone before subtree extraction
-			subTmp, err := extractSubtree(ctx.packsDir, tmpDir, meta.SubPath)
+			subTmp, err := extractSubtree(uctx.packsDir, tmpDir, meta.SubPath)
 			if err != nil {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
@@ -1135,27 +1137,27 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
 		} else if ref != "" {
-			if err := ctx.runGitFn("-C", packDir, "fetch", "--depth", "1", "origin", ref); err != nil {
+			if err := uctx.runGitFn(ctx, "-C", packDir, "fetch", "--depth", "1", "origin", ref); err != nil {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
-			if err := ctx.runGitFn("-C", packDir, "checkout", ref); err != nil {
+			if err := uctx.runGitFn(ctx, "-C", packDir, "checkout", ref); err != nil {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
 		} else {
-			if err := ctx.runGitFn("-C", packDir, "pull", "--ff-only"); err != nil {
+			if err := uctx.runGitFn(ctx, "-C", packDir, "pull", "--ff-only"); err != nil {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
 		}
-		newHash := resolveGitHash(hashDir, ctx.gitHashFn)
+		newHash := resolveGitHash(ctx, hashDir, uctx.gitHashFn)
 		if newHash != "" && newHash == meta.CommitHash {
-			fmt.Fprintf(ctx.stdout, "Up-to-date (clone): %s @ %s\n", name, shortHash(newHash))
+			fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, shortHash(newHash))
 			return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "already at " + shortHash(newHash), CommitHash: newHash}
 		}
-		_ = packRecordOrigin(ctx.configDir, name, config.InstalledPackMeta{
-			Origin: meta.Origin, Method: method, InstalledAt: ctx.nowFn().UTC().Format(time.RFC3339),
+		_ = packRecordOrigin(uctx.configDir, name, config.InstalledPackMeta{
+			Origin: meta.Origin, Method: method, InstalledAt: uctx.nowFn().UTC().Format(time.RFC3339),
 			Ref: ref, SubPath: meta.SubPath, CommitHash: newHash,
 		})
-		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, ctx.stdout)
+		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
 		msg := "pulled latest"
 		if newHash != "" {
 			msg = shortHash(newHash)
@@ -1163,7 +1165,7 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 				msg = shortHash(meta.CommitHash) + " -> " + shortHash(newHash)
 			}
 		}
-		fmt.Fprintf(ctx.stdout, "Updated (clone): %s %s\n", name, msg)
+		fmt.Fprintf(uctx.stdout, "Updated (clone): %s %s\n", name, msg)
 		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: msg, CommitHash: newHash}
 
 	case config.MethodCopy:
@@ -1181,11 +1183,11 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		if err := util.CopyDir(origin, packDir); err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 		}
-		_ = packRecordOrigin(ctx.configDir, name, config.InstalledPackMeta{
-			Origin: origin, Method: method, InstalledAt: ctx.nowFn().UTC().Format(time.RFC3339),
+		_ = packRecordOrigin(uctx.configDir, name, config.InstalledPackMeta{
+			Origin: origin, Method: method, InstalledAt: uctx.nowFn().UTC().Format(time.RFC3339),
 		})
-		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, ctx.stdout)
-		fmt.Fprintf(ctx.stdout, "Updated (copy): %s from %s\n", name, origin)
+		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
+		fmt.Fprintf(uctx.stdout, "Updated (copy): %s from %s\n", name, origin)
 		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: "re-copied from " + origin}
 
 	case config.MethodArchive:
@@ -1198,7 +1200,7 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		// that happened after the pack was initially installed.
 		ref := meta.Ref
 		subPath := meta.SubPath
-		if entry, ok := ctx.registry.Packs[name]; ok {
+		if entry, ok := uctx.registry.Packs[name]; ok {
 			if entry.Repo != "" {
 				origin = entry.Repo
 			}
@@ -1216,29 +1218,29 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		// Re-run the two-phase archive fetch (discard install chatter).
 		archiveReq := PackAddRequest{
 			URL:       origin,
-			ConfigDir: ctx.configDir,
+			ConfigDir: uctx.configDir,
 			Ref:       ref,
 			SubPath:   subPath,
 			Name:      name,
-			ArchiveFn: ctx.archiveFn,
+			ArchiveFn: uctx.archiveFn,
 		}
 		archiveInfo := config.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
-		result, err := packTryArchive(archiveReq, archiveInfo, ctx.packsDir, io.Discard)
+		result, err := packTryArchive(ctx, archiveReq, archiveInfo, uctx.packsDir, io.Discard)
 		if err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 		}
 
-		_, changed, _ := saveAndDiffIntegrity(result.destDir, oldIntegrity, ctx.stdout)
+		_, changed, _ := saveAndDiffIntegrity(result.destDir, oldIntegrity, uctx.stdout)
 		if !changed && len(oldIntegrity.Files) > 0 {
-			fmt.Fprintf(ctx.stdout, "Up-to-date (archive): %s\n", name)
+			fmt.Fprintf(uctx.stdout, "Up-to-date (archive): %s\n", name)
 			return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "content unchanged"}
 		}
 
-		_ = packRecordOrigin(ctx.configDir, name, config.InstalledPackMeta{
-			Origin: origin, Method: method, InstalledAt: ctx.nowFn().UTC().Format(time.RFC3339),
+		_ = packRecordOrigin(uctx.configDir, name, config.InstalledPackMeta{
+			Origin: origin, Method: method, InstalledAt: uctx.nowFn().UTC().Format(time.RFC3339),
 			Ref: ref, SubPath: subPath, CommitHash: result.commitHash,
 		})
-		fmt.Fprintf(ctx.stdout, "Updated (archive): %s from %s\n", name, origin)
+		fmt.Fprintf(uctx.stdout, "Updated (archive): %s from %s\n", name, origin)
 		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: "re-fetched from " + origin}
 
 	case config.MethodLink:
@@ -1249,11 +1251,11 @@ func packUpdateOne(name string, ctx packUpdateContext) PackUpdateResult {
 		if _, err := os.Stat(target); err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: fmt.Sprintf("symlink target missing: %s", target)}
 		}
-		fmt.Fprintf(ctx.stdout, "OK (link): %s -> %s\n", name, target)
+		fmt.Fprintf(uctx.stdout, "OK (link): %s -> %s\n", name, target)
 		return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "symlink target exists"}
 
 	case config.MethodLocal:
-		fmt.Fprintf(ctx.stdout, "OK (local): %s\n", name)
+		fmt.Fprintf(uctx.stdout, "OK (local): %s\n", name)
 		return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "installed in-place"}
 
 	default:
@@ -1390,12 +1392,12 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 
 // resolveGitHash returns the HEAD commit hash for dir, or "" if unavailable.
 // Uses gitHashFn if non-nil, otherwise falls back to config.GitHeadHash.
-func resolveGitHash(dir string, gitHashFn func(string) (string, error)) string {
+func resolveGitHash(ctx context.Context, dir string, gitHashFn func(context.Context, string) (string, error)) string {
 	fn := gitHashFn
 	if fn == nil {
 		fn = config.GitHeadHash
 	}
-	h, err := fn(dir)
+	h, err := fn(ctx, dir)
 	if err != nil {
 		return ""
 	}
@@ -1418,7 +1420,7 @@ type PackInstallMissingRequest struct {
 	ProfileName string
 
 	// PackAddFn overrides PackAdd for testing. nil = use PackAdd.
-	PackAddFn func(PackAddRequest, io.Writer) error
+	PackAddFn func(context.Context, PackAddRequest, io.Writer) error
 }
 
 // PackInstallMissingResult describes the outcome for a single pack in the profile.
@@ -1460,7 +1462,7 @@ func ProfileMissingPacks(configDir, profileName string) ([]string, error) {
 // present on disk. Each missing pack is looked up in the merged registry and
 // installed via PackAdd. Packs not found in the registry are reported but do
 // not cause a failure.
-func PackInstallMissing(req PackInstallMissingRequest, stdout io.Writer) ([]PackInstallMissingResult, error) {
+func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdout io.Writer) ([]PackInstallMissingResult, error) {
 	profilePath := filepath.Join(req.ConfigDir, "profiles", req.ProfileName+".yaml")
 	cfg, err := config.LoadProfile(profilePath)
 	if err != nil {
@@ -1511,7 +1513,7 @@ func PackInstallMissing(req PackInstallMissingRequest, stdout io.Writer) ([]Pack
 			Name:      name,
 			Register:  false, // already in the profile
 		}
-		if installErr := addFn(addReq, stdout); installErr != nil {
+		if installErr := addFn(ctx, addReq, stdout); installErr != nil {
 			fmt.Fprintf(stdout, "  %s: install failed: %v\n", name, installErr)
 			results = append(results, PackInstallMissingResult{
 				Pack: name, Status: "error", Detail: installErr.Error(),

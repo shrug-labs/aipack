@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,13 +24,13 @@ func (s syncStubHarness) ID() domain.Harness { return s.id }
 func (s syncStubHarness) Layout(domain.Scope, string, string) harness.Layout {
 	return harness.Layout{ValidationRoots: s.roots}
 }
-func (s syncStubHarness) Plan(engine.SyncContext) (domain.Fragment, error) {
+func (s syncStubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return s.fragment, nil
 }
-func (s syncStubHarness) Render(harness.RenderContext) (domain.Fragment, error) {
+func (s syncStubHarness) Render(_ context.Context, _ harness.RenderContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s syncStubHarness) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
+func (s syncStubHarness) Capture(_ context.Context, _ harness.CaptureContext) (harness.CaptureResult, error) {
 	return harness.CaptureResult{}, nil
 }
 
@@ -67,7 +68,7 @@ func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
 	reg := harness.NewRegistry(claudeHarness, codexHarness)
 
 	var stdout, stderr bytes.Buffer
-	result, _, err := RunSync(domain.Profile{}, SyncRequest{
+	result, _, err := RunSync(context.Background(), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -111,7 +112,7 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	_, _, err := RunSync(domain.Profile{}, SyncRequest{
+	_, _, err := RunSync(context.Background(), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -194,7 +195,7 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 	)
 
 	var stdout, stderr bytes.Buffer
-	_, _, err := RunSync(domain.Profile{}, SyncRequest{
+	_, _, err := RunSync(context.Background(), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
