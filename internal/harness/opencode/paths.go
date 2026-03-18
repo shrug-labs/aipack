@@ -26,4 +26,3 @@ func configBaseProject(projectDir string) string {
 func configBaseGlobal(home string) string {
 	return filepath.Join(home, ".config", "opencode")
 }
-

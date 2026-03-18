@@ -165,4 +165,3 @@ func RenderSettingsBytes(base []byte, servers []domain.MCPServer) ([]byte, error
 	}
 	return append(out, '\n'), nil
 }
-

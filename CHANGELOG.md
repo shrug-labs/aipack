@@ -4,18 +4,23 @@ All notable user-facing changes to `aipack` will be documented in this file.
 
 The format is based on Keep a Changelog, and releases use semantic versioning tags.
 
-## [Unreleased]
+## Unreleased
+
+## [0.10.0]
 
 ### Added
 
+- `aipack update` command downloads the latest release binary from GitHub, verifies its SHA256 checksum, and atomically replaces the current executable. Includes ad-hoc codesign on macOS.
+- Stale managed files are now removed automatically during sync. Files no longer in the profile are cleaned up without requiring `--prune`. User-modified stale files prompt for confirmation (or `--yes` to skip).
 - macOS ad-hoc codesign for built binaries in `make install` and `make dist`, preventing quarantine issues.
 - `make lint` target runs `go vet` and `staticcheck`.
 
 ### Changed
 
-- Cline global rules and workflows write to `~/Documents/Cline/Rules/` and `~/Documents/Cline/Workflows/` directly instead of an `aipack/` subdirectory. Re-sync to pick up the new paths; the old subdirectories can be removed manually or via `aipack clean`.
+- Removed `--prune` flag from `aipack sync`. Stale file cleanup is now always-on — sync converges to the profile's desired state by default.
+- Cline global rules and workflows write to `~/Documents/Cline/Rules/` and `~/Documents/Cline/Workflows/` directly instead of an `aipack/` subdirectory. Re-sync to pick up the new paths; the old subdirectories are cleaned automatically.
 - `RunSync` and `ApplyPlan` return structured `[]domain.Warning` instead of printing to stderr. Warnings are included in `--json` output as a `"warnings"` array and no longer shadow each other in the TUI.
-- Harness interface consolidated from six path/settings/clean methods into a single `Layout()` returning a `Layout` struct with `ValidationRoots`, `RemovePaths`, and `OwnedFiles`. Clean, prune, trace, and save all derive behavior from Layout.
+- Harness interface consolidated from six path/settings/clean methods into a single `Layout()` returning a `Layout` struct with `ValidationRoots`, `RemovePaths`, and `OwnedFiles`. Clean, save, and trace all derive behavior from Layout.
 - Go version bumped from 1.24 to 1.26.
 
 ### Fixed

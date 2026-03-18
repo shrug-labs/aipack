@@ -80,4 +80,3 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 	}
 	return append(out, '\n'), warnings, nil
 }
-

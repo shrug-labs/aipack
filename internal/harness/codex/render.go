@@ -80,4 +80,3 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 func RenderMCPOnly(servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
 	return RenderBytes(nil, servers)
 }
-

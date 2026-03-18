@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"sync"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"

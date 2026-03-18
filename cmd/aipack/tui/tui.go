@@ -110,8 +110,8 @@ type rootModel struct {
 	height     int
 
 	// Exit-flow state.
-	pendingExit     bool
-	pendingSaves    int
+	pendingExit   bool
+	pendingSaves  int
 	exitSyncScope string
 	runResult     RunResult
 

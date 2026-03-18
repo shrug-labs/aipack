@@ -1,6 +1,6 @@
 # aipack
 
-Go 1.24 module. Pack sync engine — author agent configuration once, render to any supported harness (Claude Code, OpenCode, Codex, Cline).
+Go 1.26 module. Pack sync engine — author agent configuration once, render to any supported harness (Claude Code, OpenCode, Codex, Cline).
 
 ## Architecture
 

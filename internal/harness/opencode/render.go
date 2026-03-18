@@ -108,4 +108,3 @@ func RenderManagedKeysOnly(servers []domain.MCPServer, instr InstructionsSpec, s
 	}
 	return append(out, '\n'), warnings, nil
 }
-

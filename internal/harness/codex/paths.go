@@ -16,4 +16,3 @@ func settingsGlobalPath(home string) string {
 	}
 	return filepath.Join(home, ".codex", "config.toml")
 }
-

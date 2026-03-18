@@ -420,4 +420,3 @@ func (idx RootsIndex) Identify(path string) domain.Harness {
 	}
 	return ""
 }
-

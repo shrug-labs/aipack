@@ -23,4 +23,3 @@ func mcpGlobalPath(home string) string {
 func settingsGlobalPath(home string) string {
 	return filepath.Join(home, ".claude", "settings.local.json")
 }
-

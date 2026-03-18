@@ -3,6 +3,7 @@ package update
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -205,9 +206,11 @@ func fetchLatestInternal() (version, url string, err error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("version check returned %d", resp.StatusCode)
 	}
-	body := make([]byte, 64)
-	n, _ := resp.Body.Read(body)
-	tag := strings.TrimSpace(strings.TrimPrefix(string(body[:n]), "v"))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 128))
+	if err != nil {
+		return "", "", err
+	}
+	tag := strings.TrimSpace(strings.TrimPrefix(string(body), "v"))
 	if tag == "" {
 		return "", "", fmt.Errorf("empty version response")
 	}

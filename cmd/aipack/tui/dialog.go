@@ -23,7 +23,7 @@ type listAction struct {
 }
 
 type dialogModel struct {
-	kind    dialogKind
+	kind  dialogKind
 	id    string
 	title string
 
