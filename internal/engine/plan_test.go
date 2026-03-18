@@ -16,7 +16,7 @@ type mockPlanner struct {
 	err  error
 }
 
-func (m *mockPlanner) ID() domain.Harness                          { return m.id }
+func (m *mockPlanner) ID() domain.Harness { return m.id }
 func (m *mockPlanner) Plan(_ context.Context, _ SyncContext) (domain.Fragment, error) {
 	return m.frag, m.err
 }
@@ -43,7 +43,7 @@ func TestPlanSync_SingleHarness(t *testing.T) {
 		},
 	}
 
-	plan, err := PlanSync(context.Background(), profile, req,[]Planner{planner})
+	plan, err := PlanSync(context.Background(), profile, req, []Planner{planner})
 	if err != nil {
 		t.Fatalf("PlanSync: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestPlanSync_MultipleHarnesses(t *testing.T) {
 		},
 	}
 
-	plan, err := PlanSync(context.Background(), profile, req,[]Planner{p1, p2})
+	plan, err := PlanSync(context.Background(), profile, req, []Planner{p1, p2})
 	if err != nil {
 		t.Fatalf("PlanSync: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestPlanSync_HarnessError(t *testing.T) {
 		err: errBoom{},
 	}
 
-	_, err := PlanSync(context.Background(), profile, req,[]Planner{planner})
+	_, err := PlanSync(context.Background(), profile, req, []Planner{planner})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -142,7 +142,7 @@ func TestPlanSync_GlobalRequiresHome(t *testing.T) {
 		Home:       "", // intentionally empty
 	}
 
-	_, err := PlanSync(context.Background(), profile, req,nil)
+	_, err := PlanSync(context.Background(), profile, req, nil)
 	if err == nil {
 		t.Fatal("expected error for empty HOME, got nil")
 	}
@@ -162,7 +162,7 @@ func TestPlanSync_LedgerPath_Project(t *testing.T) {
 		ProjectDir: dir,
 	}
 
-	plan, err := PlanSync(context.Background(), profile, req,nil)
+	plan, err := PlanSync(context.Background(), profile, req, nil)
 	if err != nil {
 		t.Fatalf("PlanSync: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestPlanSync_LedgerPath_Global(t *testing.T) {
 
 	p1 := &mockPlanner{id: domain.HarnessClaudeCode}
 
-	plan, err := PlanSync(context.Background(), profile, req,[]Planner{p1})
+	plan, err := PlanSync(context.Background(), profile, req, []Planner{p1})
 	if err != nil {
 		t.Fatalf("PlanSync: %v", err)
 	}

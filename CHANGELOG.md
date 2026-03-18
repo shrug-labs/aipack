@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.10.1]
+
+### Changed
+
+- Centralized harness path construction into per-scope `Paths` structs; `LedgerPathForScope` now takes typed `domain.Harness` instead of `string`.
+- Threaded `context.Context` from CLI root through engine, config, and update layers to all network and exec call sites. Signal cancellation now propagates to HTTP requests, git operations, and update downloads.
+
 ## [0.10.0]
 
 ### Added

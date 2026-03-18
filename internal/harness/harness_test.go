@@ -13,8 +13,8 @@ type stubHarness struct {
 	id domain.Harness
 }
 
-func (s stubHarness) ID() domain.Harness                               { return s.id }
-func (s stubHarness) Layout(domain.Scope, string, string) Layout       { return Layout{} }
+func (s stubHarness) ID() domain.Harness                         { return s.id }
+func (s stubHarness) Layout(domain.Scope, string, string) Layout { return Layout{} }
 func (s stubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }

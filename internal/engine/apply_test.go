@@ -38,7 +38,7 @@ func TestApplyPlan_CreateFiles(t *testing.T) {
 	})
 
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestApplyPlan_IdenticalSkipsWrite(t *testing.T) {
 		{Dst: file, Content: content, SourcePack: "pack1"},
 	})
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -95,7 +95,7 @@ func TestApplyPlan_IdenticalSkipsWrite(t *testing.T) {
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: content, SourcePack: "pack1"},
 	})
-	if _, err := ApplyPlan(context.Background(), plan2, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan2, ar, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestApplyPlan_IdenticalNoLedger(t *testing.T) {
 		{Dst: file, Content: content, SourcePack: "pack1"},
 	})
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -198,7 +198,7 @@ func TestApplyPlan_RecordsPerServerMCPLedgerEntries(t *testing.T) {
 	}
 
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -234,7 +234,7 @@ func TestApplyPlan_ManagedUpdates(t *testing.T) {
 		{Dst: file, Content: oldContent, SourcePack: "pack1"},
 	})
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan1, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestApplyPlan_ManagedUpdates(t *testing.T) {
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: newContent, SourcePack: "pack1"},
 	})
-	if _, err := ApplyPlan(context.Background(), plan2, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan2, ar, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestApplyPlan_ConflictSkipsWithoutForce(t *testing.T) {
 		{Dst: file, Content: originalContent, SourcePack: "pack1"},
 	})
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan1, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestApplyPlan_ConflictSkipsWithoutForce(t *testing.T) {
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: desiredContent, SourcePack: "pack1"},
 	})
-	if _, err := ApplyPlan(context.Background(), plan2, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan2, ar, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -320,7 +320,7 @@ func TestApplyPlan_ConflictAppliesWithForce(t *testing.T) {
 		{Dst: file, Content: originalContent, SourcePack: "pack1"},
 	})
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan1, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestApplyPlan_ConflictAppliesWithForce(t *testing.T) {
 		{Dst: file, Content: desiredContent, SourcePack: "pack1"},
 	})
 	ar2 := ApplyRequest{Force: true, Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan2, ar2,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan2, ar2, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -357,7 +357,7 @@ func TestApplyPlan_DryRun(t *testing.T) {
 	})
 
 	ar := ApplyRequest{DryRun: true, Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -398,7 +398,7 @@ func TestApplyPlan_CopyFile(t *testing.T) {
 	}
 
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -439,7 +439,7 @@ func TestApplyPlan_CopyDir(t *testing.T) {
 	}
 
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -503,7 +503,7 @@ func TestApplyPlan_CopyDirIdenticalNoLedger(t *testing.T) {
 	}
 
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -534,7 +534,7 @@ func TestApplyPlan_StaleDeletesOrphaned(t *testing.T) {
 		{Dst: fileB, Content: []byte("beta"), SourcePack: "pack1"},
 	})
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan1, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -551,7 +551,7 @@ func TestApplyPlan_StaleDeletesOrphaned(t *testing.T) {
 		{Dst: fileA, Content: []byte("alpha"), SourcePack: "pack1"},
 	})
 	ar2 := ApplyRequest{Yes: true, Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan2, ar2,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan2, ar2, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -589,7 +589,7 @@ func TestApplyPlan_DestinationValidation(t *testing.T) {
 	})
 
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	_, err := ApplyPlan(context.Background(), plan, ar,[]string{dir})
+	_, err := ApplyPlan(context.Background(), plan, ar, []string{dir})
 	if err == nil {
 		t.Fatal("expected error for write outside managed roots")
 	}
@@ -613,7 +613,7 @@ func TestStaleCandidates(t *testing.T) {
 		{Dst: fileC, Content: []byte("c"), SourcePack: "pack1"},
 	})
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan1, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -670,7 +670,7 @@ func TestApplyPlan_SettingsSnapshot(t *testing.T) {
 	}
 
 	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
-	if _, err := ApplyPlan(context.Background(), plan, ar,[]string{dir}); err != nil {
+	if _, err := ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
