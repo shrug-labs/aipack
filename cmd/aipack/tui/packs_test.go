@@ -186,7 +186,7 @@ func TestPacksModel_ContentEnterEmitsPreview(t *testing.T) {
 	// Enter content panel.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	// Enter on the content item should emit previewRequestMsg.
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected cmd for preview request")
 	}

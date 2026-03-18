@@ -231,7 +231,7 @@ func TestRenderSettingsBytes_NoDenyOmitsDenyKey(t *testing.T) {
 	}
 }
 
-func TestStripManagedPermissions_AllowOnly(t *testing.T) {
+func TestLayout_StripManaged_AllowOnly(t *testing.T) {
 	t.Parallel()
 	input := []byte(`{
   "permissions": {
@@ -244,28 +244,29 @@ func TestStripManagedPermissions_AllowOnly(t *testing.T) {
   }
 }`)
 
-	out, err := StripManagedPermissions(input)
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
+	settingsPath := settingsProjectPath("/proj")
+	out, err := layout.StripManaged(input, settingsPath)
 	if err != nil {
-		t.Fatalf("StripManagedPermissions: %v", err)
+		t.Fatalf("StripManaged: %v", err)
 	}
 
-	var got settingsRoot
+	var got map[string]any
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-
-	want := []string{"Bash(go test:*)", "WebSearch"}
-	if len(got.Permissions.Allow) != len(want) {
-		t.Fatalf("allow: got %v want %v", got.Permissions.Allow, want)
+	perms := got["permissions"].(map[string]any)
+	allow := perms["allow"].([]any)
+	if len(allow) != 2 {
+		t.Fatalf("allow: got %v want 2 entries", allow)
 	}
-	for i, p := range got.Permissions.Allow {
-		if p != want[i] {
-			t.Errorf("allow[%d]: got %q want %q", i, p, want[i])
-		}
+	if allow[0] != "Bash(go test:*)" || allow[1] != "WebSearch" {
+		t.Errorf("allow: got %v", allow)
 	}
 }
 
-func TestStripManagedPermissions_StripsDenyEntries(t *testing.T) {
+func TestLayout_StripManaged_StripsDenyEntries(t *testing.T) {
 	t.Parallel()
 	input := []byte(`{
   "permissions": {
@@ -281,21 +282,26 @@ func TestStripManagedPermissions_StripsDenyEntries(t *testing.T) {
   }
 }`)
 
-	out, err := StripManagedPermissions(input)
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
+	settingsPath := settingsProjectPath("/proj")
+	out, err := layout.StripManaged(input, settingsPath)
 	if err != nil {
-		t.Fatalf("StripManagedPermissions: %v", err)
+		t.Fatalf("StripManaged: %v", err)
 	}
 
-	var got settingsRoot
+	var got map[string]any
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-
-	if len(got.Permissions.Allow) != 1 || got.Permissions.Allow[0] != "Bash(go test:*)" {
-		t.Fatalf("allow: got %v want [Bash(go test:*)]", got.Permissions.Allow)
+	perms := got["permissions"].(map[string]any)
+	allow := perms["allow"].([]any)
+	if len(allow) != 1 || allow[0] != "Bash(go test:*)" {
+		t.Fatalf("allow: got %v want [Bash(go test:*)]", allow)
 	}
-	if len(got.Permissions.Deny) != 1 || got.Permissions.Deny[0] != "Bash(rm -rf:*)" {
-		t.Fatalf("deny: got %v want [Bash(rm -rf:*)]", got.Permissions.Deny)
+	deny := perms["deny"].([]any)
+	if len(deny) != 1 || deny[0] != "Bash(rm -rf:*)" {
+		t.Fatalf("deny: got %v want [Bash(rm -rf:*)]", deny)
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// cacheTTL controls how often we hit the GitHub API.
+	// cacheTTL controls how often we check for updates.
 	cacheTTL = 6 * time.Hour
 
 	// cacheFile is stored under the aipack config dir.
@@ -28,9 +28,18 @@ const (
 	requestTimeout = 5 * time.Second
 )
 
+// distribution controls where update checks look. Override at build time:
+//
+//	-X github.com/shrug-labs/aipack/internal/update.distribution=internal
+var distribution = "github"
+
 // releaseURL is the GitHub API endpoint for the latest release.
 // Var (not const) so tests can override it.
 var releaseURL = "https://api.github.com/repos/shrug-labs/aipack/releases/latest"
+
+// internalVersionURL points to a plain text file containing the latest version.
+// Set at build time or overridden in tests.
+var internalVersionURL = ""
 
 // Result describes the outcome of an update check.
 type Result struct {
@@ -90,10 +99,13 @@ func (r *Result) Notice() string {
 		return ""
 	}
 	s := fmt.Sprintf("\nA new version of aipack is available: %s (current: %s)\n", r.Latest, r.Current)
-	if r.UpdateURL != "" {
-		s += fmt.Sprintf("Update: brew upgrade aipack  or  %s\n", r.UpdateURL)
-	}
+	s += "Update: aipack update\n"
 	return s
+}
+
+// Distribution returns the current distribution channel.
+func Distribution() string {
+	return distribution
 }
 
 // cache is the on-disk shape of the cached check result.
@@ -154,6 +166,13 @@ type ghRelease struct {
 }
 
 func fetchLatest() (version, url string, err error) {
+	if distribution == "internal" {
+		return fetchLatestInternal()
+	}
+	return fetchLatestGitHub()
+}
+
+func fetchLatestGitHub() (version, url string, err error) {
 	client := &http.Client{Timeout: requestTimeout}
 	resp, err := client.Get(releaseURL)
 	if err != nil {
@@ -169,6 +188,30 @@ func fetchLatest() (version, url string, err error) {
 	}
 	tag := strings.TrimPrefix(rel.TagName, "v")
 	return tag, rel.HTMLURL, nil
+}
+
+// fetchLatestInternal fetches the latest version from a plain text file
+// at internalVersionURL. The file should contain just the version string.
+func fetchLatestInternal() (version, url string, err error) {
+	if internalVersionURL == "" {
+		return "", "", fmt.Errorf("internal version URL not configured")
+	}
+	client := &http.Client{Timeout: requestTimeout}
+	resp, err := client.Get(internalVersionURL)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("version check returned %d", resp.StatusCode)
+	}
+	body := make([]byte, 64)
+	n, _ := resp.Body.Read(body)
+	tag := strings.TrimSpace(strings.TrimPrefix(string(body[:n]), "v"))
+	if tag == "" {
+		return "", "", fmt.Errorf("empty version response")
+	}
+	return tag, "", nil
 }
 
 func loadCache(path string) (cache, error) {

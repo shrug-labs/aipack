@@ -18,23 +18,18 @@ type planHarnessStub struct {
 }
 
 func (s planHarnessStub) ID() domain.Harness { return s.id }
+func (s planHarnessStub) Layout(domain.Scope, string, string) harness.Layout {
+	return harness.Layout{ValidationRoots: s.roots}
+}
 func (s planHarnessStub) Plan(engine.SyncContext) (domain.Fragment, error) {
 	return s.fragment, nil
 }
 func (s planHarnessStub) Render(harness.RenderContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s planHarnessStub) ManagedRoots(domain.Scope, string, string) []string    { return s.roots }
-func (s planHarnessStub) SettingsPaths(domain.Scope, string, string) []string   { return nil }
-func (s planHarnessStub) StrictExtraDirs(domain.Scope, string, string) []string { return nil }
-func (s planHarnessStub) PackRelativePaths() []string                           { return nil }
-func (s planHarnessStub) StripManagedSettings(b []byte, _ string) ([]byte, error) {
-	return b, nil
-}
 func (s planHarnessStub) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
 	return s.capture, nil
 }
-func (s planHarnessStub) CleanActions(domain.Scope, string, string) []harness.CleanAction { return nil }
 
 func TestCountProfileContent_StableAcrossHarnesses(t *testing.T) {
 	t.Parallel()

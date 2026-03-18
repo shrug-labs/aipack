@@ -24,8 +24,3 @@ func IsUnderAny(path string, prefixes []string) bool {
 	}
 	return false
 }
-
-// IsUnder reports whether path is under parent.
-func IsUnder(path string, parent string) bool {
-	return IsUnderAny(path, []string{parent})
-}

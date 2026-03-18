@@ -2,7 +2,8 @@
 
 VERSION := $(shell cat VERSION)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT)
+DISTRIBUTION ?= github
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X github.com/shrug-labs/aipack/internal/update.distribution=$(DISTRIBUTION)
 BINARY  := aipack
 DIST    := dist
 
@@ -11,7 +12,7 @@ ifneq ($(TAGS),)
   GO_TAGS := -tags $(TAGS)
 endif
 
-.PHONY: build install fmt fmt-check release-tag-check test validate dist clean help
+.PHONY: build install fmt fmt-check lint release-tag-check test validate dist clean help
 
 build: ## Build for current platform into dist/
 	@mkdir -p $(DIST)
@@ -20,6 +21,9 @@ build: ## Build for current platform into dist/
 install: build ## Build and install to ~/.local/bin
 	@mkdir -p $(HOME)/.local/bin
 	cp $(DIST)/$(BINARY) $(HOME)/.local/bin/$(BINARY)
+	@if [ "$$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then \
+		codesign -s - -f $(HOME)/.local/bin/$(BINARY) 2>/dev/null; \
+	fi
 	@printf "Installed: %s (%s)\n" "$(HOME)/.local/bin/$(BINARY)" "$(VERSION)"
 
 fmt: ## Format Go source
@@ -27,6 +31,10 @@ fmt: ## Format Go source
 
 fmt-check: ## Fail if Go source is not formatted
 	@test -z "$$(gofmt -l . | grep -v '^dist/' )" || { gofmt -l . | grep -v '^dist/'; echo "Go files need formatting. Run: make fmt"; exit 1; }
+
+lint: ## Run static analysis (go vet + staticcheck if available)
+	go vet $(GO_TAGS) ./...
+	@if command -v staticcheck >/dev/null 2>&1; then staticcheck $(GO_TAGS) ./...; fi
 
 release-tag-check: ## Validate TAG against VERSION (supports prereleases)
 	@test -n "$(TAG)" || { echo "usage: make release-tag-check TAG=vX.Y.Z[-suffix]"; exit 1; }
@@ -50,6 +58,10 @@ dist: ## Cross-compile for all platforms
 		GOOS=$${platform%/*} GOARCH=$${platform#*/} \
 		go build $(GO_TAGS) -ldflags "$(LDFLAGS)" \
 			-o $(DIST)/$(BINARY)-$${platform%/*}-$${platform#*/} ./cmd/aipack || exit 1; \
+		case "$${platform%/*}" in darwin) \
+			if [ "$$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then \
+				codesign -s - -f $(DIST)/$(BINARY)-$${platform%/*}-$${platform#*/} 2>/dev/null; \
+			fi ;; esac; \
 		echo "  $(DIST)/$(BINARY)-$${platform%/*}-$${platform#*/}"; \
 	done
 

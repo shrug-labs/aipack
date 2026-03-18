@@ -112,9 +112,8 @@ type rootModel struct {
 	// Exit-flow state.
 	pendingExit     bool
 	pendingSaves    int
-	exitSyncScope   string
-	exitSyncHarness string
-	runResult       RunResult
+	exitSyncScope string
+	runResult     RunResult
 
 	// Dialog chain state.
 	pendingSync       bool   // true when save-before-sync is in progress
@@ -582,7 +581,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Route async data messages to the correct sub-model regardless of active tab.
 	// Without this, messages arriving while the other tab is active get dropped.
-	switch msg.(type) {
+	switch msg := msg.(type) {
 	case profilesLoadedMsg, syncStatusMsg, fileSizeMsg:
 		var cmd tea.Cmd
 		m.profiles, cmd = m.profiles.Update(msg)
@@ -627,12 +626,11 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case saveFileDeletedMsg:
-		dm := msg.(saveFileDeletedMsg)
-		if dm.err != nil {
-			m.statusText = errorStyle.Render(fmt.Sprintf("delete: %v", dm.err))
+		if msg.err != nil {
+			m.statusText = errorStyle.Render(fmt.Sprintf("delete: %v", msg.err))
 			return m, nil
 		}
-		m.statusText = dimStyle.Render(fmt.Sprintf("deleted %s", filepath.Base(dm.path)))
+		m.statusText = dimStyle.Render(fmt.Sprintf("deleted %s", filepath.Base(msg.path)))
 		m.saveTab.loading = true
 		return m, m.saveTab.rediscoverFiles()
 	case harnessDetectedMsg, vectorsDiscoveredMsg, saveFilesDiscoveredMsg, savePipelineDoneMsg:
@@ -654,7 +652,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dirty = m.dirty || m.profiles.dirty
 		// Auto-save dirty profiles so on-disk config stays current.
 		// The profileSavedMsg handler triggers checkSyncCmd after save,
-		// which uses the in-memory config for an accurate prune-aware check.
+		// which uses the in-memory config for an accurate sync preview.
 		if m.profiles.dirty {
 			if saveCmd := m.profiles.saveAll(); saveCmd != nil {
 				cmd = tea.Batch(cmd, saveCmd)
@@ -1216,7 +1214,7 @@ func (m rootModel) doSync(scope, harness string) (tea.Model, tea.Cmd) {
 	m.statusText = dimStyle.Render("syncing...")
 	m.pendingExit = false
 
-	return m, runSync(m.cfg.ConfigDir, item.name, item.path, scope, harness, m.syncTab.prune, m.cfg.SyncCfg, m.cfg.Registry)
+	return m, runSync(m.cfg.ConfigDir, item.name, item.path, scope, harness, m.cfg.SyncCfg, m.cfg.Registry)
 }
 
 // promptSync shows the sync options dialog for the target profile.

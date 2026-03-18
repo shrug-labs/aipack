@@ -15,7 +15,7 @@ type DoctorCmd struct {
 	ProfilePath string `help:"Direct path to a profile YAML file" name:"profile-path" type:"path"`
 	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
 	JSON        bool   `help:"Emit machine-readable JSON report instead of human-readable text" name:"json"`
-	Fix         bool   `help:"Auto-fix safe issues (prune orphaned ledger entries, fill missing SourcePack)" name:"fix"`
+	Fix         bool   `help:"Auto-fix safe issues (remove orphaned ledger entries, fill missing SourcePack)" name:"fix"`
 }
 
 func (c *DoctorCmd) Help() string {
@@ -24,7 +24,7 @@ profile loads, pack manifests are valid, MCP server binary paths exist,
 required environment variables are set, and ledger health.
 
 Without --fix, the command is read-only. With --fix, it auto-repairs safe
-issues: prunes orphaned ledger entries, fills missing SourcePack fields.
+issues: removes orphaned ledger entries, fills missing SourcePack fields.
 
 Exit code 0 if all checks pass, 1 if any check fails.
 

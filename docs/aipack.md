@@ -297,13 +297,12 @@ Resolution order:
 Key flags:
 
 - `--force` overrides file conflicts
-- `--prune` deletes stale managed files not in the current plan
 - `--skip-settings` skips harness settings files but still syncs MCP configs
 - `--dry-run` previews planned changes without writing
 - `--verbose` (`-v`) shows content diffs for changed files
 - `--watch` re-syncs automatically when pack sources or config files change
 - `--json` emits machine-readable output
-- `--yes` auto-confirms prune deletions
+- `--yes` auto-confirms deletions and overwrites without prompting
 
 ```bash
 # Sync the active/default profile to the current project directory
@@ -317,9 +316,6 @@ aipack sync --dry-run --verbose
 
 # Force-sync globally, overriding conflicts
 aipack sync --profile prod --scope global --force
-
-# Prune stale managed files
-aipack sync --prune --yes
 
 # Sync only one harness
 aipack sync --harness opencode
@@ -339,11 +335,11 @@ All managed files — content (rules, agents, workflows, skills) and config (har
 - **Managed**: on-disk matches ledger digest (unmodified since last sync) → updated silently
 - **Conflict**: on-disk modified by user since last sync → unified diff shown, skipped without `--force`
 
-`--force` controls conflict resolution; `--prune` controls stale file cleanup.
+`--force` controls conflict resolution. Stale managed files are always removed — sync converges to the profile's desired state. User-modified stale files prompt for confirmation (or require `--yes`).
 
 **Config sync** — config files are computed from pack base config via `RenderBytes()`. `--skip-settings` skips harness settings files. Plugins (e.g. oh-my-opencode.json) and generated MCP configs (e.g. Cline) still sync.
 
-**Content sync** — content files are copied from pack directories to harness-specific locations. Prune of orphaned managed files only happens with `--prune`.
+**Content sync** — content files are copied from pack directories to harness-specific locations. Files no longer in the profile are removed automatically.
 
 **Provenance tracking** — the ledger records which pack contributed each managed file (`source_pack` field). This enables `save --to-pack` round-trips.
 
@@ -637,9 +633,9 @@ Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identical
 
 | What | Project path | Global path |
 |------|-------------|------------|
-| Rules | `.clinerules/<file>.md` | `~/Documents/Cline/Rules/aipack/<file>.md` |
+| Rules | `.clinerules/<file>.md` | `~/Documents/Cline/Rules/<file>.md` |
 | Agents | `.clinerules/skills/<name>/SKILL.md` (promoted) | `~/.cline/skills/<name>/SKILL.md` (promoted) |
-| Workflows | `.clinerules/workflows/<file>.md` | `~/Documents/Cline/Workflows/aipack/<file>.md` |
+| Workflows | `.clinerules/workflows/<file>.md` | `~/Documents/Cline/Workflows/<file>.md` |
 | Skills | `.clinerules/skills/<dirname>/` | `~/.cline/skills/<dirname>/` |
 | MCP | N/A | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS) |
 
@@ -660,7 +656,7 @@ Keys stripped on save round-trip:
 - Rules: copied as individual files to `.claude/rules/`. `paths:` frontmatter scoping works natively in Claude Code; unknown frontmatter fields (`title`, `audience`, `last_updated`) are ignored.
 - Agents: frontmatter transformed to Claude Code native subagent format — `name` from pack frontmatter (or derived from filename), `description`/`skills`/`mcpServers` passed through. `tools` and `disallowed_tools` are mapped to PascalCase (`read` → `Read`, `bash` → `Bash`) and converted from YAML lists to comma-separated strings. When `mcpServers` is present, MCP-prefixed tools are filtered out of `tools:` (Claude Code's tools field creates a hard allowlist that would block MCP server access). Pack `disallowed_tools` → `disallowedTools`, pack `mcp_servers` → `mcpServers`. Non-portable fields (`mode`, `temperature`) are dropped.
 - Workflows: individual command files in `.claude/commands/` only (no dual materialization).
-- `CLAUDE.managed.md` is no longer written. On first sync after upgrade, it becomes a prune candidate (pruned with `--prune`). `CLAUDE.md` is no longer touched.
+- `CLAUDE.managed.md` is no longer written. On first sync after upgrade, it is automatically removed as a stale managed file. `CLAUDE.md` is no longer touched.
 - Global scope syncs to `~/.claude/{rules,agents,skills,commands}/`.
 - `settings.local.json` always uses three-way merge, even without `--skip-settings`. User-controlled permissions (non-`mcp__` prefix) are always preserved in both `allow` and `deny` arrays.
 - `permissions.deny` blocks tools entirely (deny > ask > allow precedence). Unlike OpenCode's `server_*: false` wildcard, Claude Code cannot use wildcard deny patterns because deny always takes precedence over allow regardless of specificity. Only explicit per-tool deny entries are rendered from `disabled_tools` in the profile config.

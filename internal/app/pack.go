@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
@@ -61,10 +60,6 @@ type PackAddRequest struct {
 func PacksDir(configDir string) string {
 	return filepath.Join(configDir, "packs")
 }
-
-// IsRegistryName returns true if arg looks like a registry pack name
-// rather than a local path (no path separators, not an existing path).
-var IsRegistryName = cmdutil.IsRegistryName
 
 // PackAdd installs a pack to the canonical location and optionally registers it in a profile.
 func PackAdd(req PackAddRequest, stdout io.Writer) error {
@@ -1078,6 +1073,9 @@ func PackUpdate(req PackUpdateRequest, stdout io.Writer) ([]PackUpdateResult, er
 			return nil, err
 		}
 		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
 			if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
 				names = append(names, e.Name())
 			}
@@ -1297,6 +1295,9 @@ func PackListDetailed(configDir string) ([]PackShowEntry, error) {
 	var result []PackShowEntry
 	for _, e := range entries {
 		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
 		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue
 		}

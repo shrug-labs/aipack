@@ -9,7 +9,7 @@ type WriteAction struct {
 
 	// IsContent marks this write as pack content (agents, workflows) rather
 	// than a settings file. Content writes are saved directly without
-	// StripManagedSettings processing.
+	// managed-key stripping.
 	IsContent bool
 
 	// SourceDigest is the digest of the on-disk source file before any format

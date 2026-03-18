@@ -40,6 +40,7 @@ type cliCore struct {
 
 	Prompt PromptCmd `cmd:"" group:"Prompts:" help:"Browse and copy prompts from installed packs"`
 
+	Update  UpdateCmd  `cmd:"" group:"Other:" help:"Update aipack to the latest version"`
 	Version VersionCmd `cmd:"" group:"Other:" help:"Print the aipack version"`
 }
 

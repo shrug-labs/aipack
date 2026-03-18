@@ -215,11 +215,12 @@ func TestMatchesWrite(t *testing.T) {
 	})
 }
 
-func TestIdentifyHarness(t *testing.T) {
+func TestRootsIndex_Identify(t *testing.T) {
 	t.Parallel()
 	reg := testRegistry()
 	home := "/home/user"
 	projectDir := "/home/user/project"
+	idx := harness.BuildRootsIndex(reg, domain.ScopeProject, projectDir, home)
 	tests := []struct {
 		path string
 		want domain.Harness
@@ -232,9 +233,9 @@ func TestIdentifyHarness(t *testing.T) {
 		{"/some/unknown/path.md", ""},
 	}
 	for _, tc := range tests {
-		got := harness.IdentifyHarness(reg, domain.ScopeProject, projectDir, home, tc.path)
+		got := idx.Identify(tc.path)
 		if got != tc.want {
-			t.Errorf("IdentifyHarness(%q) = %q, want %q", tc.path, got, tc.want)
+			t.Errorf("Identify(%q) = %q, want %q", tc.path, got, tc.want)
 		}
 	}
 }

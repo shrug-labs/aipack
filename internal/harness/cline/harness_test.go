@@ -117,16 +117,14 @@ func TestPlan_Global_Content(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// Rule → RulesGlobalDir/global-rule.md
-	wantRule := filepath.Join(RulesGlobalDir(home), "global-rule.md")
+	wantRule := filepath.Join(home, "Documents", "Cline", "Rules", "global-rule.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
 	// Agent promoted to skill → ~/.cline/skills/planner/SKILL.md
 	wantAgent := filepath.Join(home, ".cline", "skills", "planner", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 
-	// Workflow → WorkflowsGlobalDir/deploy.md
-	wantWf := filepath.Join(WorkflowsGlobalDir(home), "deploy.md")
+	wantWf := filepath.Join(home, "Documents", "Cline", "Workflows", "deploy.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
 	// Skill → ~/.cline/skills/diagnose
@@ -144,7 +142,7 @@ func TestPlan_Global_Content(t *testing.T) {
 
 func TestPlan_Global_MCP(t *testing.T) {
 	home := t.TempDir()
-	// Need HOME set for SettingsGlobalPath.
+	// Need HOME set for settingsGlobalPath.
 	t.Setenv("HOME", home)
 
 	ctx := engine.SyncContext{
@@ -350,14 +348,20 @@ func TestRenderBytes_PopulatesTimeout(t *testing.T) {
 	}
 }
 
-// --- StripManagedKeys tests ---
+// --- Strip via Layout tests ---
 
-func TestStripManagedKeys_RemovesMCPServers(t *testing.T) {
+func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
 	t.Parallel()
+	home := t.TempDir()
+	h := Harness{}
+	layout := h.Layout(domain.ScopeGlobal, home, home)
+	if len(layout.OwnedFiles) == 0 {
+		t.Skip("no owned files on this platform")
+	}
 	input := []byte(`{"mcpServers": {"foo": {}}, "otherSetting": "keep"}`)
-	out, err := StripManagedKeys(input)
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
 	if err != nil {
-		t.Fatalf("StripManagedKeys: %v", err)
+		t.Fatalf("StripManaged: %v", err)
 	}
 
 	var got map[string]any
@@ -469,7 +473,7 @@ func TestCapture_Project_MCP(t *testing.T) {
 	home := t.TempDir()
 
 	// Create MCP settings at the global path.
-	settingsPath := SettingsGlobalPath(home)
+	settingsPath := settingsGlobalPath(home)
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -541,62 +545,99 @@ func TestCapture_Global_Agents(t *testing.T) {
 	}
 }
 
-// --- Managed roots tests ---
+// --- Layout tests ---
 
-func TestManagedRootsProject(t *testing.T) {
+func TestLayout_Project(t *testing.T) {
 	t.Parallel()
-	projectDir := t.TempDir()
-	roots := ManagedRootsProject(projectDir)
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
-	wantClinerules := filepath.Join(projectDir, ".clinerules")
-	wantWorkflows := filepath.Join(projectDir, ".clinerules", "workflows")
-	wantSkills := filepath.Join(projectDir, ".clinerules", "skills")
-	found := false
-	foundWorkflows := false
-	foundSkills := false
-	for _, r := range roots {
-		switch r {
-		case wantClinerules:
-			found = true
-		case wantWorkflows:
-			foundWorkflows = true
-		case wantSkills:
-			foundSkills = true
+	want := map[string]bool{
+		"/proj/.clinerules":           false,
+		"/proj/.clinerules/workflows": false,
+		"/proj/.clinerules/skills":    false,
+	}
+	// MCP settings path is also a managed root (always global for Cline).
+	mcpPath := settingsGlobalPath("/home")
+	if mcpPath != "" {
+		want[mcpPath] = false
+	}
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
 		}
 	}
-	if !found {
-		t.Fatalf("missing .clinerules in managed roots; got %v", roots)
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
 	}
-	if !foundWorkflows {
-		t.Fatalf("missing .clinerules/workflows in managed roots; got %v", roots)
+	wantRemove := map[string]bool{
+		"/proj/.clinerules/workflows": false,
+		"/proj/.clinerules/skills":    false,
 	}
-	if !foundSkills {
-		t.Fatalf("missing .clinerules/skills in managed roots; got %v", roots)
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected RemovePath: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing RemovePath: %s", path)
+		}
+	}
+
+	if mcpPath != "" && len(layout.OwnedFiles) != 1 {
+		t.Fatalf("expected 1 OwnedFile for MCP settings, got %d", len(layout.OwnedFiles))
 	}
 }
 
-func TestManagedRootsGlobal(t *testing.T) {
+func TestLayout_Global(t *testing.T) {
 	t.Parallel()
-	home := t.TempDir()
-	roots := ManagedRootsGlobal(home)
+	h := Harness{}
+	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
 
-	wantRules := RulesGlobalDir(home)
-	wantWf := WorkflowsGlobalDir(home)
-
-	foundRules, foundWf := false, false
-	for _, r := range roots {
-		if r == wantRules {
-			foundRules = true
-		}
-		if r == wantWf {
-			foundWf = true
+	want := map[string]bool{
+		"/home/.cline/skills": false,
+		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
+		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
+	}
+	mcpPath := settingsGlobalPath("/home")
+	if mcpPath != "" {
+		want[mcpPath] = false
+	}
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
 		}
 	}
-	if !foundRules {
-		t.Fatalf("missing rules dir in global managed roots; got %v", roots)
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
 	}
-	if !foundWf {
-		t.Fatalf("missing workflows dir in global managed roots; got %v", roots)
+	wantRemove := map[string]bool{
+		"/home/.cline/skills": false,
+		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
+		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
+	}
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected remove path: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing remove path: %s", path)
+		}
 	}
 }
 

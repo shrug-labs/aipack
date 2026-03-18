@@ -176,6 +176,44 @@ func TestMergeSettingsKeys_NoOpsWhenIdentical(t *testing.T) {
 	}
 }
 
+func TestMergeSettingsKeys_JSON_CorruptedOnDisk(t *testing.T) {
+	t.Parallel()
+	garbage := []byte("CORRUPTED BY TEST")
+	prev := []byte(`{}`)
+	next := []byte(`{"managed_key": "managed_val"}`)
+
+	result, ops, err := mergeSettingsKeys(garbage, prev, next, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatalf("corrupted on-disk JSON should not fail: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(result, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["managed_key"] != "managed_val" {
+		t.Errorf("managed state should win when on-disk is corrupted: %v", m)
+	}
+	assertOp(t, ops, "(root)", MergeReset)
+	assertOp(t, ops, "managed_key", MergeAdd)
+}
+
+func TestMergeSettingsKeys_TOML_CorruptedOnDisk(t *testing.T) {
+	t.Parallel()
+	garbage := []byte("CORRUPTED BY TEST")
+	prev := []byte(``)
+	next := []byte("[mcp_servers]\n[mcp_servers.test]\ncmd = \"echo\"\n")
+
+	result, ops, err := mergeSettingsKeys(garbage, prev, next, domain.HarnessCodex)
+	if err != nil {
+		t.Fatalf("corrupted on-disk TOML should not fail: %v", err)
+	}
+	if len(result) == 0 {
+		t.Fatal("expected non-empty result when managed state overwrites corrupted disk")
+	}
+	assertOp(t, ops, "(root)", MergeReset)
+}
+
 // assertOp checks that ops contains a MergeOp with the given key and action.
 func assertOp(t *testing.T, ops []MergeOp, key string, action MergeAction) {
 	t.Helper()

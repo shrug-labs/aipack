@@ -17,6 +17,7 @@ const (
 	MergeAdd    MergeAction = "add"
 	MergeUpdate MergeAction = "update"
 	MergeRemove MergeAction = "remove"
+	MergeReset  MergeAction = "reset" // on-disk file was corrupted; replaced with managed state
 )
 
 // MergeOp records a single merge decision at a specific key path.
@@ -54,9 +55,12 @@ func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.
 }
 
 func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeOp, error) {
+	var ops []MergeOp
 	disk, err := parseJSONMap(onDisk)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse on-disk JSON: %w", err)
+		// Corrupted on-disk file — treat as empty so managed state wins.
+		disk = map[string]any{}
+		ops = append(ops, MergeOp{Key: "(root)", Action: MergeReset})
 	}
 	prev, err := parseJSONMap(prevManaged)
 	if err != nil {
@@ -67,7 +71,6 @@ func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 		return nil, nil, fmt.Errorf("parse new-managed JSON: %w", err)
 	}
 
-	var ops []MergeOp
 	threeWayMergeMap(disk, prev, next, "", &ops)
 
 	out, err := json.MarshalIndent(disk, "", "  ")
@@ -78,9 +81,12 @@ func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 }
 
 func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeOp, error) {
+	var ops []MergeOp
 	disk, err := parseTOMLMap(onDisk)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse on-disk TOML: %w", err)
+		// Corrupted on-disk file — treat as empty so managed state wins.
+		disk = map[string]any{}
+		ops = append(ops, MergeOp{Key: "(root)", Action: MergeReset})
 	}
 	prev, err := parseTOMLMap(prevManaged)
 	if err != nil {
@@ -91,7 +97,6 @@ func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 		return nil, nil, fmt.Errorf("parse new-managed TOML: %w", err)
 	}
 
-	var ops []MergeOp
 	threeWayMergeMap(disk, prev, next, "", &ops)
 
 	out, err := toml.Marshal(disk)
@@ -118,7 +123,7 @@ func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ops *[]Mer
 	// Keys in new managed: add or update in disk.
 	for k, nextVal := range next {
 		diskVal, inDisk := disk[k]
-		prevVal, _ := prev[k]
+		prevVal := prev[k]
 
 		if !inDisk {
 			disk[k] = nextVal

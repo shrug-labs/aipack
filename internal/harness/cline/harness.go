@@ -16,37 +16,52 @@ type Harness struct{}
 
 func (Harness) ID() domain.Harness { return domain.HarnessCline }
 
-func (Harness) PackRelativePaths() []string { return []string{"cline/cline_mcp_settings.json"} }
-
-func (Harness) SettingsPaths(scope domain.Scope, baseDir, home string) []string {
-	// Cline MCP settings are always global regardless of scope.
-	h := baseDir
+// Layout describes Cline's filesystem footprint for a given scope.
+func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
+	var l harness.Layout
 	if scope == domain.ScopeProject {
-		h = home
-	}
-	if p := SettingsGlobalPath(h); p != "" {
-		return []string{p}
-	}
-	return nil
-}
-
-func (Harness) ManagedRoots(scope domain.Scope, baseDir, home string) []string {
-	if scope == domain.ScopeProject {
-		roots := ManagedRootsProject(baseDir)
-		// Cline MCP settings are always global — include in managed roots.
-		if p := SettingsGlobalPath(home); p != "" {
-			roots = append(roots, p)
+		rulesDir := filepath.Join(baseDir, ".clinerules")
+		l.ValidationRoots = []string{
+			rulesDir,
+			filepath.Join(rulesDir, "workflows"),
+			filepath.Join(rulesDir, "skills"),
 		}
-		return roots
+		l.RemovePaths = []string{
+			filepath.Join(rulesDir, "workflows"),
+			filepath.Join(rulesDir, "skills"),
+		}
+		// Cline MCP settings are always global — include in project scope.
+		if p := settingsGlobalPath(home); p != "" && filepath.Clean(p) != "." {
+			l.ValidationRoots = append(l.ValidationRoots, p)
+			l.OwnedFiles = append(l.OwnedFiles, mcpOwnedFile(p))
+		}
+	} else {
+		mcpPath := settingsGlobalPath(baseDir)
+		l.ValidationRoots = []string{
+			filepath.Join(baseDir, ".cline", "skills"),
+			filepath.Join(baseDir, "Documents", "Cline", "Rules"),
+			filepath.Join(baseDir, "Documents", "Cline", "Workflows"),
+		}
+		l.RemovePaths = []string{
+			filepath.Join(baseDir, ".cline", "skills"),
+			filepath.Join(baseDir, "Documents", "Cline", "Rules"),
+			filepath.Join(baseDir, "Documents", "Cline", "Workflows"),
+		}
+		if mcpPath != "" && filepath.Clean(mcpPath) != "." {
+			l.ValidationRoots = append(l.ValidationRoots, mcpPath)
+			l.OwnedFiles = append(l.OwnedFiles, mcpOwnedFile(mcpPath))
+		}
 	}
-	return ManagedRootsGlobal(baseDir)
+	return l
 }
 
-func (Harness) StrictExtraDirs(scope domain.Scope, baseDir, _ string) []string {
-	if scope == domain.ScopeProject {
-		return StrictExtraDirsProject(baseDir)
+func mcpOwnedFile(path string) harness.OwnedFile {
+	strip := func(root map[string]any) { delete(root, "mcpServers") }
+	return harness.OwnedFile{
+		Path: path, Format: harness.FormatJSON,
+		Strip: strip,
+		Reset: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
 	}
-	return nil
 }
 
 // Plan produces a Fragment from typed content.
@@ -85,8 +100,8 @@ func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 	home := ctx.TargetDir
 	skillsDir := filepath.Join(home, ".cline", "skills")
 
-	f.AddRuleWrites(RulesGlobalDir(home), "", ctx.Profile.AllRules())
-	f.AddWorkflowWrites(WorkflowsGlobalDir(home), "", ctx.Profile.AllWorkflows())
+	f.AddRuleWrites(filepath.Join(home, "Documents", "Cline", "Rules"), "", ctx.Profile.AllRules())
+	f.AddWorkflowWrites(filepath.Join(home, "Documents", "Cline", "Workflows"), "", ctx.Profile.AllWorkflows())
 	f.AddSkillCopies(skillsDir, "", ctx.Profile.AllSkills())
 	addPromotedAgents(f, skillsDir, ctx.Profile.AllAgents())
 
@@ -104,7 +119,7 @@ func planGlobalMCP(f *domain.Fragment, ctx engine.SyncContext) error {
 			return fmt.Errorf("resolving home for Cline MCP settings: HOME is not set")
 		}
 	}
-	dst := SettingsGlobalPath(home)
+	dst := settingsGlobalPath(home)
 	if dst == "" || len(ctx.Profile.MCPServers) == 0 {
 		return nil
 	}
@@ -149,43 +164,6 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 	}, nil
 }
 
-// StripManagedSettings removes sync-managed keys from rendered settings.
-func (Harness) StripManagedSettings(rendered []byte, _ string) ([]byte, error) {
-	return StripManagedKeys(rendered)
-}
-
-// CleanActions returns operations to reset Cline managed state.
-func (Harness) CleanActions(scope domain.Scope, baseDir, home string) []harness.CleanAction {
-	if scope == domain.ScopeProject {
-		actions := []harness.CleanAction{
-			{Path: filepath.Join(baseDir, ".clinerules")},
-		}
-		// Cline MCP settings are always global — clean them in project scope
-		// too, matching the Plan/ManagedRoots symmetry.
-		if p := SettingsGlobalPath(home); p != "" && filepath.Clean(p) != "." {
-			actions = append(actions, harness.CleanAction{
-				Path:   p,
-				Format: harness.CleanJSON,
-				Edit:   func(root map[string]any) { root["mcpServers"] = map[string]any{} },
-			})
-		}
-		return actions
-	}
-	actions := []harness.CleanAction{
-		{Path: filepath.Join(baseDir, ".cline", "skills")},
-		{Path: RulesGlobalDir(baseDir)},
-		{Path: WorkflowsGlobalDir(baseDir)},
-	}
-	if p := SettingsGlobalPath(baseDir); p != "" && filepath.Clean(p) != "." {
-		actions = append(actions, harness.CleanAction{
-			Path:   p,
-			Format: harness.CleanJSON,
-			Edit:   func(root map[string]any) { root["mcpServers"] = map[string]any{} },
-		})
-	}
-	return actions
-}
-
 // Capture extracts Cline content for round-trip save.
 func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
@@ -214,7 +192,7 @@ func captureProject(projectDir string, home string, res harness.CaptureResult) (
 		})
 		return res, nil
 	}
-	settingsPath := SettingsGlobalPath(home)
+	settingsPath := settingsGlobalPath(home)
 	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
 		return res, fmt.Errorf("capture cline settings: %w", err)
 	} else if ok {
@@ -233,12 +211,12 @@ func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResul
 		return res, fmt.Errorf("HOME not set (required for global-scope capture)")
 	}
 	captureRulesAndWorkflows(&res, harness.ContentDirs{
-		Rules:     RulesGlobalDir(home),
-		Workflows: WorkflowsGlobalDir(home),
+		Rules:     filepath.Join(home, "Documents", "Cline", "Rules"),
+		Workflows: filepath.Join(home, "Documents", "Cline", "Workflows"),
 	})
 	harness.CapturePromotedContent(filepath.Join(home, ".cline", "skills"), &res)
 
-	settingsPath := SettingsGlobalPath(home)
+	settingsPath := settingsGlobalPath(home)
 	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
 		return res, fmt.Errorf("capture cline settings: %w", err)
 	} else if ok {

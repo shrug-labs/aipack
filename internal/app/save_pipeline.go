@@ -53,12 +53,12 @@ type SavePipelineResult struct {
 }
 
 // DetectHarnessesWithContent returns harnesses that have content on disk
-// for the given scope. Checks ManagedRoots for each harness and returns
+// for the given scope. Checks ValidationRoots for each harness and returns
 // only those where at least one managed path exists.
 func DetectHarnessesWithContent(scope domain.Scope, projectDir, home string, reg *harness.Registry) []domain.Harness {
 	var result []domain.Harness
 	for _, h := range reg.All() {
-		roots := h.ManagedRoots(scope, projectDir, home)
+		roots := h.Layout(scope, projectDir, home).ValidationRoots
 		for _, r := range roots {
 			if _, err := os.Stat(r); err == nil {
 				result = append(result, h.ID())

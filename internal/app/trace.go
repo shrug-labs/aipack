@@ -64,8 +64,9 @@ func RunTrace(profile domain.Profile, req TraceRequest, reg *harness.Registry) (
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
 	}
+	rootsIdx := harness.BuildRootsIndex(reg, req.Scope, baseDir, req.Home)
 	identifyHarness := func(path string) string {
-		return string(harness.IdentifyHarness(reg, req.Scope, baseDir, req.Home, path))
+		return string(rootsIdx.Identify(path))
 	}
 
 	// Build per-harness plans and aggregate destinations.

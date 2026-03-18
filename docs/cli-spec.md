@@ -70,7 +70,8 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
   "agents":    3,
   "skills":    6,
   "settings":  2,
-  "mcp":       5
+  "mcp":       5,
+  "warnings":  [{"message": "stale ledger migrated", "field": "ledger"}]
 }
 ```
 
@@ -83,6 +84,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 | `skills` | int | Number of skill directories in the plan |
 | `settings` | int | Number of settings file actions in the plan |
 | `mcp` | int | Number of MCP server actions in the plan |
+| `warnings` | array | Non-fatal issues encountered during sync. Each entry has `message` (string, always present), `path` (string, optional), and `field` (string, optional). Empty array when no warnings. |
 
 ### `aipack restore`
 
@@ -238,9 +240,9 @@ Overall `ok` is false only when a critical-severity check fails. Warning-level c
       "ok": true,
       "status": "fixed",
       "severity": "warning",
-      "message": "pruned 2 orphaned ledger entries",
+      "message": "removed 2 orphaned ledger entries",
       "fixed": true,
-      "fix_action": "pruned orphaned entries"
+      "fix_action": "removed orphaned entries"
     }
   ],
   "ecosystem": {

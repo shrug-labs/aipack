@@ -20,22 +20,17 @@ type syncStubHarness struct {
 }
 
 func (s syncStubHarness) ID() domain.Harness { return s.id }
+func (s syncStubHarness) Layout(domain.Scope, string, string) harness.Layout {
+	return harness.Layout{ValidationRoots: s.roots}
+}
 func (s syncStubHarness) Plan(engine.SyncContext) (domain.Fragment, error) {
 	return s.fragment, nil
 }
 func (s syncStubHarness) Render(harness.RenderContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s syncStubHarness) ManagedRoots(domain.Scope, string, string) []string      { return s.roots }
-func (s syncStubHarness) SettingsPaths(domain.Scope, string, string) []string     { return nil }
-func (s syncStubHarness) StrictExtraDirs(domain.Scope, string, string) []string   { return nil }
-func (s syncStubHarness) PackRelativePaths() []string                             { return nil }
-func (s syncStubHarness) StripManagedSettings(b []byte, _ string) ([]byte, error) { return b, nil }
 func (s syncStubHarness) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
 	return harness.CaptureResult{}, nil
-}
-func (s syncStubHarness) CleanActions(domain.Scope, string, string) []harness.CleanAction {
-	return nil
 }
 
 func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
@@ -72,7 +67,7 @@ func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
 	reg := harness.NewRegistry(claudeHarness, codexHarness)
 
 	var stdout, stderr bytes.Buffer
-	result, err := RunSync(domain.Profile{}, SyncRequest{
+	result, _, err := RunSync(domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -116,7 +111,7 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	_, err := RunSync(domain.Profile{}, SyncRequest{
+	_, _, err := RunSync(domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -199,7 +194,7 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 	)
 
 	var stdout, stderr bytes.Buffer
-	_, err := RunSync(domain.Profile{}, SyncRequest{
+	_, _, err := RunSync(domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -242,15 +237,15 @@ func TestProcessEmbeddedRegistries_MergesIntoRegistryCache(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	err := processEmbeddedRegistries(domain.Profile{
+	warnings := processEmbeddedRegistries(domain.Profile{
 		Packs: []domain.Pack{{
 			Name:       "demo",
 			Root:       packRoot,
 			Registries: []string{"registry.yaml"},
 		}},
 	}, home, &stderr)
-	if err != nil {
-		t.Fatalf("processEmbeddedRegistries: %v", err)
+	if len(warnings) > 0 {
+		t.Fatalf("processEmbeddedRegistries warnings: %v", warnings)
 	}
 
 	merged, err := config.LoadMergedRegistry(configDir)

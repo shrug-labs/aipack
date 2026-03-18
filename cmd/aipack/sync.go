@@ -24,9 +24,8 @@ type SyncCmd struct {
 	ProjectDir   *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
 	Harness      string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness"`
 	Force        bool    `help:"Override file conflicts"`
-	Prune        bool    `help:"Delete stale managed files not in the current plan"`
 	SkipSettings bool    `help:"Skip harness settings file sync (MCP configs still sync)" name:"skip-settings"`
-	Yes          bool    `help:"Auto-confirm prune deletions without prompting"`
+	Yes          bool    `help:"Auto-confirm deletions and overwrites without prompting"`
 	DryRun       bool    `help:"Preview planned changes without writing any files" name:"dry-run"`
 	Verbose      bool    `help:"Show content diffs for changed files" short:"v"`
 	Watch        bool    `help:"Watch pack source directories and re-sync on changes"`
@@ -35,10 +34,9 @@ type SyncCmd struct {
 
 func (c *SyncCmd) Help() string {
 	return `Resolves the named profile, plans file writes, directory copies, and settings
-merges for the target harness(es), then applies them. A ledger
-(.aipack/ledger.json) tracks which files are managed. On subsequent runs, only
-changed files are updated. Use --force to override conflicts and --prune to
-delete stale managed files.
+merges for the target harness(es), then applies them. A ledger tracks which
+files are managed. On subsequent runs, only changed files are updated and files
+no longer in the profile are removed. Use --force to override conflicts.
 
 Profile resolution: --profile-path > --profile > sync-config defaults.profile > "default"
 Scope resolution:   --scope > sync-config defaults.scope > "project"
@@ -56,9 +54,6 @@ Examples:
 
   # Force-sync globally, overriding conflicts
   aipack sync --profile prod --scope global --force
-
-  # Prune stale managed files (with confirmation skip)
-  aipack sync --prune --yes
 
   # Sync only to the opencode harness
   aipack sync --profile default --harness opencode
@@ -137,7 +132,7 @@ func (c *SyncCmd) Run(g *Globals) error {
 			syncStdout = io.Discard
 		}
 
-		res, err := app.RunSync(loaded.profile, app.SyncRequest{
+		res, syncWarnings, err := app.RunSync(loaded.profile, app.SyncRequest{
 			TargetSpec: app.TargetSpec{
 				Scope:      scope,
 				ProjectDir: projectDirValue,
@@ -145,12 +140,13 @@ func (c *SyncCmd) Run(g *Globals) error {
 				Home:       os.Getenv("HOME"),
 			},
 			Force:        c.Force,
-			Prune:        c.Prune,
 			SkipSettings: c.SkipSettings,
 			Yes:          c.Yes,
 			DryRun:       c.DryRun,
 			Verbose:      c.Verbose,
 		}, g.Registry, syncStdout, g.Stderr)
+		cmdutil.PrintWarnings(g.Stderr, syncWarnings)
+		allWarnings := append(loaded.warnings, syncWarnings...)
 		if err != nil {
 			return watchDirs, err
 		}
@@ -158,6 +154,17 @@ func (c *SyncCmd) Run(g *Globals) error {
 		counts := app.CountProfileContent(loaded.profile)
 		mcpCount := len(loaded.profile.MCPServers)
 		if c.JSON {
+			jsonWarnings := make([]map[string]string, 0, len(allWarnings))
+			for _, w := range allWarnings {
+				entry := map[string]string{"message": w.Message}
+				if w.Path != "" {
+					entry["path"] = w.Path
+				}
+				if w.Field != "" {
+					entry["field"] = w.Field
+				}
+				jsonWarnings = append(jsonWarnings, entry)
+			}
 			return watchDirs, cmdutil.WriteJSON(g.Stdout, map[string]any{
 				"dry_run":   c.DryRun,
 				"rules":     counts.Rules,
@@ -166,6 +173,7 @@ func (c *SyncCmd) Run(g *Globals) error {
 				"skills":    counts.Skills,
 				"settings":  len(p.Settings),
 				"mcp":       mcpCount,
+				"warnings":  jsonWarnings,
 			})
 		}
 		verb := "sync OK"

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/shrug-labs/aipack/internal/app"
+	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -113,11 +114,17 @@ func loadPacks(configDir string) tea.Cmd {
 // immediately. It delegates to app.PlanWithDiffs for all classify+filter logic.
 func checkSyncStatus(configDir, profileName, profilePath string, profileCfg config.ProfileConfig, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return syncStatusMsg{profileName: profileName, err: fmt.Errorf("resolving working directory: %w", err)}
+		}
 		ctx, warnings, err := app.ResolveProfile(app.ResolveRequest{
 			ConfigDir:   configDir,
 			ProfilePath: profilePath,
 			ProfileCfg:  profileCfg,
 			SyncCfg:     syncCfg,
+			ProjectDir:  cwd,
+			Home:        os.Getenv("HOME"),
 		})
 		if err != nil {
 			return syncStatusMsg{profileName: profileName, warnings: warnings, err: err}
@@ -154,18 +161,24 @@ func planSummaryToTarget(ctx app.ResolveResult, ps app.PlanSummary) syncTargetIn
 
 // runSync executes a full sync (plan + apply) for a profile.
 // It delegates to app.RunSync — the single source of truth for sync orchestration.
-func runSync(configDir, profileName, profilePath, scope, harnessFlag string, prune bool, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
+func runSync(configDir, profileName, profilePath, scope, harnessFlag string, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
 		profileCfg, err := config.LoadProfile(profilePath)
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, err: err}
 		}
 
+		cwd, err := os.Getwd()
+		if err != nil {
+			return syncDoneMsg{profileName: profileName, err: fmt.Errorf("resolving working directory: %w", err)}
+		}
 		ctx, warnings, err := app.ResolveProfile(app.ResolveRequest{
 			ConfigDir:   configDir,
 			ProfilePath: profilePath,
 			ProfileCfg:  profileCfg,
 			SyncCfg:     syncCfg,
+			ProjectDir:  cwd,
+			Home:        os.Getenv("HOME"),
 		})
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, warnings: warnings, err: err}
@@ -191,15 +204,15 @@ func runSync(configDir, profileName, profilePath, scope, harnessFlag string, pru
 		ts := ctx.TargetSpec
 		ts.ProjectDir = projectDir
 
-		result, err := app.RunSync(ctx.Profile, app.SyncRequest{
+		result, syncWarnings, err := app.RunSync(ctx.Profile, app.SyncRequest{
 			TargetSpec: ts,
 			Force:      true,
-			Prune:      prune,
 			Yes:        true,
 			Quiet:      true,
 		}, reg, io.Discard, io.Discard)
+		warnings = append(warnings, syncWarnings...)
 		if err != nil {
-			return syncDoneMsg{profileName: profileName, err: err}
+			return syncDoneMsg{profileName: profileName, warnings: warnings, err: err}
 		}
 
 		total := len(result.Plan.Writes) + len(result.Plan.Copies) + len(result.Plan.Settings)
@@ -253,7 +266,7 @@ func addPack(configDir, input string) tea.Cmd {
 }
 
 // isRegistryName checks if a string looks like a registry pack name.
-var isRegistryName = app.IsRegistryName
+var isRegistryName = cmdutil.IsRegistryName
 
 // createPack scaffolds a new pack inside the packs directory and registers it.
 func createPack(configDir, name string) tea.Cmd {

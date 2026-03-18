@@ -52,6 +52,35 @@ func TestRemovePathOp_ExistingFile(t *testing.T) {
 	}
 }
 
+func TestEditFileOp_EmptyTOMLFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	op := editFileOp{
+		FilePath: path,
+		Format:   harness.FormatTOML,
+		Edit: func(root map[string]any) {
+			delete(root, "mcp_servers")
+		},
+	}
+
+	if err := op.run(cleanRunContext{Yes: true}); err != nil {
+		t.Fatalf("expected no error cleaning empty TOML file, got: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "\n" {
+		t.Fatalf("cleaned empty TOML = %q, want newline", string(got))
+	}
+}
+
 func TestBuildCleanOps_ProjectScope(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -99,11 +128,11 @@ func TestCleanCline_ProjectScope_DoesNotRemoveUnmanagedDotClineSkills(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	actions := h.CleanActions(domain.ScopeProject, projectDir, t.TempDir())
+	layout := h.Layout(domain.ScopeProject, projectDir, t.TempDir())
 
-	for _, a := range actions {
-		if a.Path == filepath.Join(projectDir, ".cline", "skills") {
-			t.Fatalf("unexpected clean action for unmanaged path %q", a.Path)
+	for _, root := range layout.ValidationRoots {
+		if root == filepath.Join(projectDir, ".cline", "skills") {
+			t.Fatalf("unexpected validation root for unmanaged path %q", root)
 		}
 	}
 }
@@ -116,23 +145,23 @@ func TestCleanCline_GlobalScope_RemovesManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	actions := h.CleanActions(domain.ScopeGlobal, home, home)
+	layout := h.Layout(domain.ScopeGlobal, home, home)
 
 	want := map[string]bool{
-		filepath.Join(home, ".cline", "skills"):                          false,
-		filepath.Join(home, "Documents", "Cline", "Rules", "aipack"):     false,
-		filepath.Join(home, "Documents", "Cline", "Workflows", "aipack"): false,
+		filepath.Join(home, ".cline", "skills"):                false,
+		filepath.Join(home, "Documents", "Cline", "Rules"):     false,
+		filepath.Join(home, "Documents", "Cline", "Workflows"): false,
 	}
 
-	for _, a := range actions {
-		if _, ok := want[a.Path]; ok {
-			want[a.Path] = true
+	for _, root := range layout.RemovePaths {
+		if _, ok := want[root]; ok {
+			want[root] = true
 		}
 	}
 
 	for path, found := range want {
 		if !found {
-			t.Fatalf("expected clean action for managed global path %q", path)
+			t.Fatalf("expected remove path for global path %q", path)
 		}
 	}
 }
@@ -153,6 +182,65 @@ func TestRunClean_InvalidHarness(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "unknown harness") {
 		t.Fatalf("expected unknown harness error, got %q", got)
+	}
+}
+
+func TestBuildCleanOps_OpenCodeDoesNotRemoveConfigParentDir(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	ops := buildCleanOps(domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
+
+	configBase := filepath.Join(projectDir, ".opencode")
+	for _, op := range ops {
+		if op.path() == configBase {
+			t.Fatalf(".opencode parent dir should not be a remove target (it contains a partially-owned settings file)")
+		}
+	}
+
+	// Subdirectories should still be removed.
+	wantRemoved := map[string]bool{
+		filepath.Join(configBase, "agents"):   false,
+		filepath.Join(configBase, "commands"): false,
+		filepath.Join(configBase, "rules"):    false,
+		filepath.Join(configBase, "skills"):   false,
+	}
+	for _, op := range ops {
+		if _, ok := wantRemoved[op.path()]; ok {
+			wantRemoved[op.path()] = true
+		}
+	}
+	for p, found := range wantRemoved {
+		if !found {
+			t.Errorf("expected remove op for %q", p)
+		}
+	}
+}
+
+func TestBuildCleanOps_OpenCodeRemovesLedgerTrackedDropInFile(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	dropIn := filepath.Join(projectDir, ".opencode", "oh-my-opencode.json")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, strings.ToLower(string(domain.HarnessOpenCode)))
+	ledger := domain.NewLedger()
+	ledger.Managed[dropIn] = domain.Entry{Digest: "abc123", SourcePack: "test-pack"}
+	if err := engine.SaveLedger(ledgerPath, ledger, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+
+	ops := buildCleanOps(domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
+	found := false
+	for _, op := range ops {
+		if op.path() == dropIn {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected remove op for ledger-tracked drop-in %q", dropIn)
 	}
 }
 

@@ -27,9 +27,9 @@ type FileDiff struct {
 	MergeOps       []MergeOp       // merge operations performed (nil for non-merge files)
 }
 
-// ClassifyFileKind classifies a file without computing a diff string.
+// classifyFileKind classifies a file without computing a diff string.
 // Use when only the DiffKind is needed (e.g., non-verbose dry-run).
-func ClassifyFileKind(dst string, desired []byte, lg domain.Ledger) (domain.DiffKind, error) {
+func classifyFileKind(dst string, desired []byte, lg domain.Ledger) (domain.DiffKind, error) {
 	dst = filepath.Clean(dst)
 	onDisk, err := os.ReadFile(dst)
 	if err != nil {
@@ -273,7 +273,7 @@ func UnifiedDiff(a, b []byte, labelA, labelB string) string {
 	}
 
 	const contextLines = 3
-	hunks := groupHunks(edits, len(linesA), len(linesB), contextLines)
+	hunks := groupHunks(edits, contextLines)
 	if len(hunks) == 0 {
 		return ""
 	}
@@ -389,7 +389,7 @@ type hunk struct {
 	lines  []string
 }
 
-func groupHunks(edits []edit, lenA, lenB, ctx int) []hunk {
+func groupHunks(edits []edit, ctx int) []hunk {
 	type span struct{ start, end int }
 	var spans []span
 	i := 0
@@ -411,14 +411,8 @@ func groupHunks(edits []edit, lenA, lenB, ctx int) []hunk {
 	type expandedSpan struct{ start, end int }
 	var expanded []expandedSpan
 	for _, sp := range spans {
-		s := sp.start - ctx
-		if s < 0 {
-			s = 0
-		}
-		e := sp.end + ctx
-		if e > len(edits) {
-			e = len(edits)
-		}
+		s := max(sp.start-ctx, 0)
+		e := min(sp.end+ctx, len(edits))
 		if len(expanded) > 0 && s <= expanded[len(expanded)-1].end {
 			expanded[len(expanded)-1].end = e
 		} else {

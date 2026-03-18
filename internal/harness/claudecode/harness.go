@@ -18,25 +18,61 @@ type Harness struct{}
 
 func (Harness) ID() domain.Harness { return domain.HarnessClaudeCode }
 
-func (Harness) PackRelativePaths() []string {
-	return []string{"claudecode/settings.local.json"}
-}
-
-func (Harness) SettingsPaths(scope domain.Scope, baseDir, _ string) []string {
-	if scope == domain.ScopeProject {
-		return []string{SettingsProjectPath(baseDir)}
+// Layout describes Claude Code's filesystem footprint for a given scope.
+func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
+	base := filepath.Join(baseDir, ".claude")
+	l := harness.Layout{
+		ValidationRoots: []string{
+			filepath.Join(base, "rules"),
+			filepath.Join(base, "agents"),
+			filepath.Join(base, "commands"),
+			filepath.Join(base, "skills"),
+		},
+		RemovePaths: []string{
+			filepath.Join(base, "rules"),
+			filepath.Join(base, "agents"),
+			filepath.Join(base, "commands"),
+			filepath.Join(base, "skills"),
+		},
 	}
-	return []string{SettingsGlobalPath(baseDir)}
-}
-
-func (Harness) ManagedRoots(scope domain.Scope, baseDir, _ string) []string {
+	var mcpPath, settingsPath string
 	if scope == domain.ScopeProject {
-		return ManagedRootsProject(baseDir)
+		mcpPath = mcpProjectPath(baseDir)
+		settingsPath = settingsProjectPath(baseDir)
+	} else {
+		mcpPath = mcpGlobalPath(home)
+		settingsPath = settingsGlobalPath(home)
 	}
-	return ManagedRootsGlobal(baseDir)
+	l.ValidationRoots = append(l.ValidationRoots, mcpPath, settingsPath)
+	l.OwnedFiles = []harness.OwnedFile{
+		{
+			Path: mcpPath, Format: harness.FormatJSON,
+			Strip: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+			Reset: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+		},
+		{
+			Path: settingsPath, Format: harness.FormatJSON,
+			Strip: stripManagedPermissions,
+			Reset: func(root map[string]any) { delete(root, "permissions") },
+		},
+	}
+	return l
 }
 
-func (Harness) StrictExtraDirs(_ domain.Scope, _, _ string) []string { return nil }
+// stripManagedPermissions removes mcp__* entries from permissions.allow and
+// permissions.deny, preserving non-MCP permission entries.
+func stripManagedPermissions(root map[string]any) {
+	perms, ok := root["permissions"].(map[string]any)
+	if !ok {
+		return
+	}
+	perms["allow"] = filterOutMCPPerms(perms["allow"])
+	if kept := filterOutMCPPerms(perms["deny"]); len(kept) > 0 {
+		perms["deny"] = kept
+	} else {
+		delete(perms, "deny")
+	}
+}
 
 // Plan produces a Fragment from typed content. Handles both project and global scope.
 func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
@@ -73,11 +109,11 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	sp := ctx.Profile.SettingsPackName(domain.HarnessClaudeCode)
 
 	// Resolve paths based on scope.
-	mcpPath := MCPProjectPath(ctx.TargetDir)
-	settingsPath := SettingsProjectPath(ctx.TargetDir)
+	mcpPath := mcpProjectPath(ctx.TargetDir)
+	settingsPath := settingsProjectPath(ctx.TargetDir)
 	if ctx.Scope == domain.ScopeGlobal {
-		mcpPath = MCPGlobalPath(ctx.TargetDir)
-		settingsPath = SettingsGlobalPath(ctx.TargetDir)
+		mcpPath = mcpGlobalPath(ctx.TargetDir)
+		settingsPath = settingsGlobalPath(ctx.TargetDir)
 	}
 
 	if len(ctx.Profile.MCPServers) > 0 {
@@ -154,11 +190,6 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 	}, nil
 }
 
-// StripManagedSettings removes mcp__* entries from permissions.
-func (Harness) StripManagedSettings(rendered []byte, _ string) ([]byte, error) {
-	return StripManagedPermissions(rendered)
-}
-
 // Capture extracts Claude Code content for round-trip save.
 func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
@@ -166,12 +197,12 @@ func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error
 	var baseDir, mcpPath, settingsPath string
 	if ctx.Scope == domain.ScopeProject {
 		baseDir = ctx.ProjectDir
-		mcpPath = MCPProjectPath(baseDir)
-		settingsPath = SettingsProjectPath(baseDir)
+		mcpPath = mcpProjectPath(baseDir)
+		settingsPath = settingsProjectPath(baseDir)
 	} else {
 		baseDir = ctx.Home
-		mcpPath = MCPGlobalPath(ctx.Home)
-		settingsPath = SettingsGlobalPath(ctx.Home)
+		mcpPath = mcpGlobalPath(ctx.Home)
+		settingsPath = settingsGlobalPath(ctx.Home)
 	}
 
 	captureContent(&res, baseDir)
@@ -181,45 +212,6 @@ func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error
 	}
 
 	return res, nil
-}
-
-// CleanActions returns operations to reset Claude Code managed state.
-func (Harness) CleanActions(scope domain.Scope, baseDir, home string) []harness.CleanAction {
-	base := filepath.Join(baseDir, ".claude")
-	actions := []harness.CleanAction{
-		{Path: filepath.Join(base, "rules")},
-		{Path: filepath.Join(base, "agents")},
-		{Path: filepath.Join(base, "commands")},
-		{Path: filepath.Join(base, "skills")},
-	}
-	if scope == domain.ScopeProject {
-		actions = append(actions,
-			harness.CleanAction{
-				Path:   MCPProjectPath(baseDir),
-				Format: harness.CleanJSON,
-				Edit:   func(root map[string]any) { root["mcpServers"] = map[string]any{} },
-			},
-			harness.CleanAction{
-				Path:   SettingsProjectPath(baseDir),
-				Format: harness.CleanJSON,
-				Edit:   func(root map[string]any) { delete(root, "permissions") },
-			},
-		)
-	} else if home != "" {
-		actions = append(actions,
-			harness.CleanAction{
-				Path:   MCPGlobalPath(home),
-				Format: harness.CleanJSON,
-				Edit:   func(root map[string]any) { root["mcpServers"] = map[string]any{} },
-			},
-			harness.CleanAction{
-				Path:   SettingsGlobalPath(home),
-				Format: harness.CleanJSON,
-				Edit:   func(root map[string]any) { delete(root, "permissions") },
-			},
-		)
-	}
-	return actions
 }
 
 // captureContent captures rules, agents, commands, and skills from baseDir/.claude/.

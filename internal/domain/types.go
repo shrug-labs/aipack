@@ -32,11 +32,6 @@ func HarnessNames() []string {
 	return out
 }
 
-// HarnessNamesJoined returns harness names joined by sep.
-func HarnessNamesJoined(sep string) string {
-	return strings.Join(HarnessNames(), sep)
-}
-
 // ParseHarness parses a raw string into a Harness, returning false if unknown.
 func ParseHarness(raw string) (Harness, bool) {
 	want := strings.ToLower(strings.TrimSpace(raw))

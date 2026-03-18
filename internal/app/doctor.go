@@ -293,7 +293,7 @@ func doctorCheckUpdate(currentVersion, configDir string) CheckResult {
 	check.Status = "warn"
 	check.OK = false
 	check.Message = fmt.Sprintf("newer version available: %s (current: %s)", r.Latest, r.Current)
-	check.Remediation = "Run: brew upgrade aipack"
+	check.Remediation = "Run: aipack update"
 	if r.UpdateURL != "" {
 		check.Details = map[string]any{"update_url": r.UpdateURL}
 	}
@@ -451,8 +451,7 @@ func doctorRequiredMCPRefs(params map[string]string, inv map[string]domain.MCPSe
 		if strings.HasPrefix(k, "param:") {
 			// Already confirmed missing during scan (only added when not in params map).
 			missing = append(missing, k)
-		} else if strings.HasPrefix(k, "env:") {
-			envName := strings.TrimPrefix(k, "env:")
+		} else if envName, ok := strings.CutPrefix(k, "env:"); ok {
 			if strings.TrimSpace(os.Getenv(envName)) == "" {
 				missing = append(missing, k)
 			}
@@ -468,7 +467,7 @@ func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[strin
 		if !ok {
 			continue
 		}
-		prov, _ := providers[server]
+		prov := providers[server]
 		if len(entry.Command) == 0 {
 			failures = append(failures, map[string]any{"server": server, "error": "missing command", "inventory_path": prov.InventoryPath})
 			continue
@@ -678,7 +677,7 @@ func gitHeadHash(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ref %s not found in loose refs or packed-refs", ref)
 	}
-	for _, line := range strings.Split(string(packed), "\n") {
+	for line := range strings.SplitSeq(string(packed), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' || line[0] == '^' {
 			continue
@@ -748,7 +747,7 @@ func ledgerFilesUnder(configDir string) ([]string, error) {
 
 // doctorCheckLedgerHealth scans all ledger files for orphaned entries (paths
 // that no longer exist on disk) and entries with missing SourcePack. With fix=true,
-// prunes orphans and fills SourcePack when a single pack is resolved.
+// removes orphans and fills SourcePack when a single pack is resolved.
 func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix bool) CheckResult {
 	check := CheckResult{Name: "ledger_health", Severity: "warning", Status: "pass", OK: true}
 

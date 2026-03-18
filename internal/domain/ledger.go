@@ -77,7 +77,7 @@ func (l *Ledger) UpdateMetadata(dst, sourcePack string, managedOverlay []byte, n
 	l.Managed[key] = e
 }
 
-// Delete removes a ledger entry (used by prune).
+// Delete removes a ledger entry (used by stale-file cleanup).
 func (l *Ledger) Delete(dst string) {
 	delete(l.Managed, filepath.Clean(dst))
 }

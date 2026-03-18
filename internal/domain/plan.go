@@ -16,7 +16,7 @@ type Plan struct {
 	Ledger     string // path to ledger file
 }
 
-// AddDesired marks a path as expected in the plan (for prune tracking).
+// AddDesired marks a path as expected in the plan (for stale-file detection).
 func (p *Plan) AddDesired(path string) {
 	if p.Desired == nil {
 		p.Desired = map[string]struct{}{}
@@ -90,7 +90,7 @@ func (f *Fragment) AddAgentWrites(baseDir, subDir string, agents []Agent) {
 
 // AddSkillCopies appends CopyActions for each skill directory.
 // It also walks each source directory to expand individual file paths
-// into Desired, so that desiredForPrune does not need to re-walk.
+// into Desired, so that stale-file detection does not need to re-walk.
 func (f *Fragment) AddSkillCopies(baseDir, subDir string, skills []Skill) {
 	for _, s := range skills {
 		dst := filepath.Join(baseDir, subDir, s.Name)
@@ -101,7 +101,7 @@ func (f *Fragment) AddSkillCopies(baseDir, subDir string, skills []Skill) {
 			SourcePack: s.SourcePack,
 		})
 		f.Desired = append(f.Desired, dst)
-		// Expand individual file paths for prune tracking.
+		// Expand individual file paths for stale-file detection.
 		// Best-effort: if the source directory is missing, ClassifyCopy
 		// will catch it during apply.
 		_ = filepath.WalkDir(s.DirPath, func(p string, d os.DirEntry, err error) error {

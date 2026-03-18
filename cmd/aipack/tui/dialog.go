@@ -24,9 +24,8 @@ type listAction struct {
 
 type dialogModel struct {
 	kind    dialogKind
-	id      string
-	title   string
-	message string
+	id    string
+	title string
 
 	// For confirm dialogs.
 	focused int // 0 = yes, 1 = no
@@ -195,10 +194,7 @@ func (d dialogModel) View() string {
 		}
 	}
 
-	width := lipgloss.Width(content) + 6
-	if width < 30 {
-		width = 30
-	}
+	width := max(lipgloss.Width(content)+6, 30)
 
 	return dialogBorderStyle.Width(width).Render(content)
 }

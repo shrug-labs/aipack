@@ -51,10 +51,6 @@ func NormalizeHarness(raw string) (domain.Harness, error) {
 	return "", fmt.Errorf("unknown harness: %s", raw)
 }
 
-func HarnessChoices() string {
-	return domain.HarnessNamesJoined("|")
-}
-
 func ParseHarnessEnv(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -123,15 +119,10 @@ func ResolveHarnessesOptional(flagValue string, syncCfgHarnesses []string) ([]do
 }
 
 func NormalizeScope(scope string) (domain.Scope, error) {
-	s := strings.ToLower(strings.TrimSpace(scope))
-	switch s {
-	case string(domain.ScopeProject):
-		return domain.ScopeProject, nil
-	case string(domain.ScopeGlobal):
-		return domain.ScopeGlobal, nil
-	default:
-		return "", fmt.Errorf("unknown scope %q (expected %q or %q)", scope, domain.ScopeProject, domain.ScopeGlobal)
+	if s, ok := domain.ParseScope(scope); ok {
+		return s, nil
 	}
+	return "", fmt.Errorf("unknown scope %q (expected %q or %q)", scope, domain.ScopeProject, domain.ScopeGlobal)
 }
 
 // ResolveConfigDir returns the config dir, using the default if empty.

@@ -17,40 +17,33 @@ import (
 // ApplyRequest controls how the plan is applied.
 type ApplyRequest struct {
 	Force  bool // override conflicts for ALL file types
-	Prune  bool
-	Yes    bool // auto-confirm prune deletions
+	Yes    bool // auto-confirm stale file deletions
 	DryRun bool
-	Quiet  bool      // suppress stderr diagnostic output (for TUI)
-	Stderr io.Writer // warning/diagnostic output (defaults to os.Stderr)
+	Quiet  bool      // suppress diagnostic output (for TUI and --json)
+	Stderr io.Writer // progress diagnostics (create/update/conflict messages); callers must set this
 	Req    PlanRequest
 }
 
 // ApplyPlan applies a sync plan to disk.
-// Key improvements over v1:
-//   - No backfill loop: UpdateMetadata handles DiffIdentical files explicitly
-//   - Record() takes in-memory content (no disk re-read for digest)
-//   - Managed roots computed once for prune (not per-file)
-func (ar ApplyRequest) stderr() io.Writer {
-	if ar.Stderr != nil {
-		return ar.Stderr
-	}
-	return os.Stderr
-}
-
-func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
+//
+// Error policy: loading/reading failures that degrade gracefully are returned
+// as warnings (e.g. stale ledger, failed stale-file removal). Writing
+// failures that leave inconsistent state are fatal errors.
+func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) ([]domain.Warning, error) {
+	var warnings []domain.Warning
 	allowed := make([]string, len(managedRoots)+1)
 	copy(allowed, managedRoots)
 	allowed[len(managedRoots)] = filepath.Dir(plan.Ledger)
 	if err := validatePlanDestinations(plan, allowed); err != nil {
-		return err
+		return nil, err
 	}
 
 	lg, ledgerWarn, err := LoadLedger(plan.Ledger)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if ledgerWarn != "" && !ar.Quiet {
-		fmt.Fprintln(ar.stderr(), "WARNING: "+ledgerWarn)
+	if ledgerWarn != "" {
+		warnings = append(warnings, domain.Warning{Field: "ledger", Message: ledgerWarn})
 	}
 
 	// Snapshot settings files before computing diffs (for restore).
@@ -63,10 +56,10 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 	allSettings = append(allSettings, plan.MCP...)
 	cacheWarn, err := SnapshotSettingsFiles(allSettings, plan.Ledger, ar.DryRun)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if cacheWarn != "" && !ar.Quiet {
-		fmt.Fprintln(ar.stderr(), "WARNING: "+cacheWarn)
+	if cacheWarn != "" {
+		warnings = append(warnings, domain.Warning{Field: "settings-cache", Message: cacheWarn})
 	}
 
 	// Classify ALL files into a unified []FileDiff.
@@ -75,7 +68,7 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 	for _, w := range plan.Writes {
 		fd, err := ClassifyFile(w.Dst, w.Content, filepath.Base(w.Dst), w.SourcePack, lg)
 		if err != nil {
-			return err
+			return warnings, err
 		}
 		diffs = append(diffs, fd)
 	}
@@ -85,28 +78,28 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 		case domain.CopyKindDir:
 			fds, err := ClassifyCopy(c.Src, c.Dst, c.SourcePack, lg)
 			if err != nil {
-				return err
+				return warnings, err
 			}
 			diffs = append(diffs, fds...)
 		case domain.CopyKindFile:
 			content, err := os.ReadFile(c.Src)
 			if err != nil {
-				return err
+				return warnings, err
 			}
 			fd, err := ClassifyFile(c.Dst, content, filepath.Base(c.Dst), c.SourcePack, lg)
 			if err != nil {
-				return err
+				return warnings, err
 			}
 			diffs = append(diffs, fd)
 		default:
-			return fmt.Errorf("unknown copy kind: %s", c.Kind)
+			return warnings, fmt.Errorf("unknown copy kind: %s", c.Kind)
 		}
 	}
 
 	if !ar.Req.SkipSettings {
 		settingsDiffs, err := ComputeSettingsDiffs(plan.Settings, lg)
 		if err != nil {
-			return err
+			return warnings, err
 		}
 		diffs = append(diffs, settingsDiffs...)
 	}
@@ -114,7 +107,7 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 	// MCP configs are NEVER gated by SkipSettings.
 	mcpDiffs, err := ComputeSettingsDiffs(plan.MCP, lg)
 	if err != nil {
-		return err
+		return warnings, err
 	}
 	diffs = append(diffs, mcpDiffs...)
 
@@ -122,14 +115,14 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 	// DiffIdentical files are also recorded so that files present on disk but
 	// missing from the ledger (e.g., after adding a harness) get their digest
 	// stored. For already-tracked files the digest is unchanged.
-	// Track which paths were recorded this cycle so we don't prune them below
+	// Track which paths were recorded this cycle so we don't remove them below
 	// (Desired may be incomplete for copy-dir expansions).
 	now := time.Now()
 	recorded := map[string]struct{}{}
 	for _, d := range diffs {
 		applied, err := applyFileDiff(d, ar)
 		if err != nil {
-			return err
+			return warnings, err
 		}
 		if !ar.DryRun && (applied || d.Kind == domain.DiffIdentical) {
 			p := filepath.Clean(d.Dst)
@@ -147,26 +140,24 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 	}
 
 	// Reconcile stale ledger entries: entries under managed roots that are
-	// no longer in the plan's desired set. This happens when a harness
-	// changes where it writes files (e.g., agents promoted to skills).
+	// no longer in the plan's desired set. This happens when a pack is
+	// removed, a rule is deleted, or a harness changes where it writes
+	// files (e.g., agents promoted to skills).
 	//
-	// Always remove stale entries from the ledger so that the dirty-status
-	// check (PruneCandidatesWithLedger) doesn't permanently flag them.
-	// Only delete actual files when Prune is explicitly requested.
+	// Stale files are deleted from disk and their ledger entries removed.
+	// User-modified files (digest mismatch) require --yes or interactive
+	// confirmation before deletion.
 	{
 		desired := plan.Desired
-		pruneRoots := make([]string, len(managedRoots)+1)
-		copy(pruneRoots, managedRoots)
-		pruneRoots[len(managedRoots)] = filepath.Dir(plan.Ledger)
+		staleRoots := make([]string, len(managedRoots)+1)
+		copy(staleRoots, managedRoots)
+		staleRoots[len(managedRoots)] = filepath.Dir(plan.Ledger)
 		keys := make([]string, 0, len(lg.Managed))
 		for k := range lg.Managed {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		var cleanup *emptyDirCleanup
-		if ar.Prune {
-			cleanup = newEmptyDirCleanup(pruneRoots)
-		}
+		cleanup := newEmptyDirCleanup(staleRoots)
 		for _, k := range keys {
 			if domain.IsMCPLedgerKey(k) {
 				if _, ok := recorded[filepath.Clean(k)]; !ok && !ar.DryRun {
@@ -174,7 +165,7 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 				}
 				continue
 			}
-			if !isUnder(k, pruneRoots) {
+			if !domain.IsUnderAny(k, staleRoots) {
 				continue
 			}
 			if _, ok := desired[filepath.Clean(k)]; ok {
@@ -186,7 +177,7 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 				continue
 			}
 
-			// If the path is already gone, prune the ledger entry without prompting.
+			// If the path is already gone, remove the ledger entry without prompting.
 			if _, err := os.Stat(k); err != nil {
 				if os.IsNotExist(err) {
 					if !ar.DryRun {
@@ -194,22 +185,12 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 					}
 					continue
 				}
-				return err
-			}
-
-			if !ar.Prune {
-				// File exists but is no longer desired — remove from ledger
-				// so it stops showing as a prune candidate, but leave the
-				// file on disk.
-				if !ar.DryRun {
-					lg.Delete(k)
-				}
-				continue
+				return warnings, err
 			}
 
 			ok, err := shouldDelete(k, ar.Yes, lg.PrevDigest(k), ar.DryRun)
 			if err != nil {
-				return err
+				return warnings, err
 			}
 			if !ok {
 				continue
@@ -219,56 +200,58 @@ func ApplyPlan(plan domain.Plan, ar ApplyRequest, managedRoots []string) error {
 			}
 
 			if err := os.Remove(k); err != nil && !os.IsNotExist(err) {
-				fmt.Fprintf(ar.stderr(), "warning: could not remove %s: %v\n", k, err)
+				warnings = append(warnings, domain.Warning{
+					Path:    k,
+					Field:   "stale",
+					Message: fmt.Sprintf("could not remove: %v", err),
+				})
 				continue // do NOT delete from ledger
 			}
 			lg.Delete(k)
 			cleanup.MaybeCleanupParents(filepath.Dir(k))
 		}
-		if cleanup != nil {
-			cleanup.Flush()
-		}
+		cleanup.Flush()
 	}
 
-	return SaveLedger(plan.Ledger, lg, ar.DryRun)
+	return warnings, SaveLedger(plan.Ledger, lg, ar.DryRun)
 }
 
-// PruneCandidates returns ledger-tracked file paths that are not in the
-// current plan's desired set and would be deleted by a prune operation.
-func PruneCandidates(plan domain.Plan, managedRoots []string) ([]string, error) {
+// staleCandidates returns ledger-tracked file paths that are not in the
+// current plan's desired set and will be deleted during sync.
+func staleCandidates(plan domain.Plan, managedRoots []string) ([]string, error) {
 	if plan.Ledger == "" {
 		return nil, nil
 	}
 	lg, _, err := LoadLedger(plan.Ledger)
 	if err != nil {
-		return nil, fmt.Errorf("loading ledger for prune: %w", err)
+		return nil, fmt.Errorf("loading ledger for stale check: %w", err)
 	}
-	return PruneCandidatesWithLedger(plan, managedRoots, lg)
+	return StaleCandidatesWithLedger(plan, managedRoots, lg)
 }
 
-// PruneCandidatesWithLedger is like PruneCandidates but accepts a pre-loaded
+// StaleCandidatesWithLedger is like staleCandidates but accepts a pre-loaded
 // ledger, avoiding a redundant disk read when the caller already has one.
-func PruneCandidatesWithLedger(plan domain.Plan, managedRoots []string, lg domain.Ledger) ([]string, error) {
+func StaleCandidatesWithLedger(plan domain.Plan, managedRoots []string, lg domain.Ledger) ([]string, error) {
 	if plan.Ledger == "" {
 		return nil, nil
 	}
 	desired := plan.Desired
-	pruneRoots := make([]string, len(managedRoots)+1)
-	copy(pruneRoots, managedRoots)
-	pruneRoots[len(managedRoots)] = filepath.Dir(plan.Ledger)
+	staleRoots := make([]string, len(managedRoots)+1)
+	copy(staleRoots, managedRoots)
+	staleRoots[len(managedRoots)] = filepath.Dir(plan.Ledger)
 	var candidates []string
 	for k := range lg.Managed {
 		if domain.IsMCPLedgerKey(k) {
 			continue
 		}
-		if !isUnder(k, pruneRoots) {
+		if !domain.IsUnderAny(k, staleRoots) {
 			continue
 		}
 		if _, ok := desired[filepath.Clean(k)]; ok {
 			continue
 		}
 		if _, err := os.Stat(k); err != nil {
-			continue // gone or inaccessible — not a prune candidate
+			continue // gone or inaccessible — not a stale candidate
 		}
 		candidates = append(candidates, k)
 	}
@@ -278,7 +261,7 @@ func PruneCandidatesWithLedger(plan domain.Plan, managedRoots []string, lg domai
 
 // applyFileDiff applies a single file diff according to policy.
 func applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
-	w := ar.stderr()
+	w := ar.Stderr
 	switch d.Kind {
 	case domain.DiffIdentical:
 		return false, nil
@@ -381,18 +364,13 @@ func prompt(msg string) (string, error) {
 	return strings.ToLower(strings.TrimSpace(line)), nil
 }
 
-// isUnder delegates to domain.IsUnderAny.
-func isUnder(path string, prefixes []string) bool {
-	return domain.IsUnderAny(path, prefixes)
-}
-
 func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 	for _, w := range plan.Writes {
 		dst := filepath.Clean(w.Dst)
 		if dst == "" || dst == "." {
 			return fmt.Errorf("invalid write destination: %q", w.Dst)
 		}
-		if !isUnder(dst, allowed) {
+		if !domain.IsUnderAny(dst, allowed) {
 			return fmt.Errorf("refusing to write outside managed roots: %s", dst)
 		}
 	}
@@ -401,7 +379,7 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 		if dst == "" || dst == "." {
 			return fmt.Errorf("invalid copy destination: %q", c.Dst)
 		}
-		if !isUnder(dst, allowed) {
+		if !domain.IsUnderAny(dst, allowed) {
 			return fmt.Errorf("refusing to copy outside managed roots: %s", dst)
 		}
 	}
@@ -410,7 +388,7 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 		if dst == "" || dst == "." {
 			return fmt.Errorf("invalid settings destination: %q", s.Dst)
 		}
-		if !isUnder(dst, allowed) {
+		if !domain.IsUnderAny(dst, allowed) {
 			return fmt.Errorf("refusing to write settings outside managed roots: %s", dst)
 		}
 	}
@@ -419,7 +397,7 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 		if dst == "" || dst == "." {
 			return fmt.Errorf("invalid MCP destination: %q", m.Dst)
 		}
-		if !isUnder(dst, allowed) {
+		if !domain.IsUnderAny(dst, allowed) {
 			return fmt.Errorf("refusing to write MCP config outside managed roots: %s", dst)
 		}
 	}
@@ -428,7 +406,7 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 		if dst == "" || dst == "." {
 			return fmt.Errorf("invalid MCP config path: %q", m.ConfigPath)
 		}
-		if !isUnder(dst, allowed) {
+		if !domain.IsUnderAny(dst, allowed) {
 			return fmt.Errorf("refusing to track MCP outside managed roots: %s", dst)
 		}
 	}
@@ -437,7 +415,7 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 		if lp == "" || lp == "." {
 			return fmt.Errorf("invalid ledger destination: %q", plan.Ledger)
 		}
-		if !isUnder(lp, allowed) {
+		if !domain.IsUnderAny(lp, allowed) {
 			return fmt.Errorf("refusing to write ledger outside managed roots: %s", lp)
 		}
 	}
@@ -457,7 +435,7 @@ func (c *emptyDirCleanup) MaybeCleanupParents(dir string) {
 	if dir == "" || dir == "." {
 		return
 	}
-	if !isUnder(dir, c.prefixes) {
+	if !domain.IsUnderAny(dir, c.prefixes) {
 		return
 	}
 	c.queue = append(c.queue, dir)
@@ -483,7 +461,7 @@ func (c *emptyDirCleanup) Flush() {
 func (c *emptyDirCleanup) cleanupUp(dir string) {
 	cur := filepath.Clean(dir)
 	for cur != "." && cur != string(filepath.Separator) {
-		if !isUnder(cur, c.prefixes) {
+		if !domain.IsUnderAny(cur, c.prefixes) {
 			return
 		}
 		if err := os.Remove(cur); err != nil {
@@ -498,7 +476,7 @@ func printMergeOpsSummary(w io.Writer, ops []MergeOp) {
 	if len(ops) == 0 {
 		return
 	}
-	var adds, updates, removes int
+	var adds, updates, removes, resets int
 	for _, op := range ops {
 		switch op.Action {
 		case MergeAdd:
@@ -507,9 +485,14 @@ func printMergeOpsSummary(w io.Writer, ops []MergeOp) {
 			updates++
 		case MergeRemove:
 			removes++
+		case MergeReset:
+			resets++
 		}
 	}
 	var parts []string
+	if resets > 0 {
+		parts = append(parts, "on-disk file was corrupted, replaced with managed state")
+	}
 	if adds > 0 {
 		parts = append(parts, fmt.Sprintf("%d added", adds))
 	}

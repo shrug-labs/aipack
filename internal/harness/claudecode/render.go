@@ -26,6 +26,24 @@ type mcpRoot struct {
 
 const mcpPermPrefix = "mcp__"
 
+// filterOutMCPPerms removes mcp__* entries from a JSON-unmarshalled
+// permissions slice, preserving non-MCP entries. Accepts any; returns
+// nil if the input is not []any.
+func filterOutMCPPerms(v any) []any {
+	perms, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var kept []any
+	for _, v := range perms {
+		if s, ok := v.(string); ok && strings.HasPrefix(s, mcpPermPrefix) {
+			continue
+		}
+		kept = append(kept, v)
+	}
+	return kept
+}
+
 // RenderMCPBytesFromTyped produces .mcp.json content from typed MCPServer structs.
 // Globals are already expanded at profile resolution time.
 func RenderMCPBytesFromTyped(servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
@@ -61,27 +79,21 @@ func RenderMCPBytesFromTyped(servers []domain.MCPServer) ([]byte, []domain.Warni
 // RenderPermissions generates Claude Code permission.allow patterns.
 // Format: mcp__<servername>__<toolname>.
 func RenderPermissions(servers []domain.MCPServer) []string {
-	var perms []string
-	for _, s := range servers {
-		name := engine.NormalizeServerName(s.Name)
-		for _, tool := range s.AllowedTools {
-			tool = strings.TrimSpace(tool)
-			if tool == "" {
-				continue
-			}
-			perms = append(perms, mcpPermPrefix+name+"__"+tool)
-		}
-	}
-	sort.Strings(perms)
-	return perms
+	return renderPermPatterns(servers, func(s domain.MCPServer) []string { return s.AllowedTools })
 }
 
 // RenderDenyPermissions generates Claude Code permissions.deny patterns.
 func RenderDenyPermissions(servers []domain.MCPServer) []string {
+	return renderPermPatterns(servers, func(s domain.MCPServer) []string { return s.DisabledTools })
+}
+
+// renderPermPatterns builds sorted mcp__<server>__<tool> patterns from the
+// tools returned by the selector function for each server.
+func renderPermPatterns(servers []domain.MCPServer, tools func(domain.MCPServer) []string) []string {
 	var perms []string
 	for _, s := range servers {
 		name := engine.NormalizeServerName(s.Name)
-		for _, tool := range s.DisabledTools {
+		for _, tool := range tools(s) {
 			tool = strings.TrimSpace(tool)
 			if tool == "" {
 				continue
@@ -125,14 +137,7 @@ func RenderSettingsBytes(base []byte, servers []domain.MCPServer) ([]byte, error
 	}
 
 	// Build allow: base non-MCP entries + fresh MCP entries.
-	var allow []any
-	if baseAllow, ok := perms["allow"].([]any); ok {
-		for _, v := range baseAllow {
-			if s, ok := v.(string); !ok || !strings.HasPrefix(s, mcpPermPrefix) {
-				allow = append(allow, v)
-			}
-		}
-	}
+	allow := filterOutMCPPerms(perms["allow"])
 	for _, p := range mcpAllow {
 		allow = append(allow, p)
 	}
@@ -142,14 +147,7 @@ func RenderSettingsBytes(base []byte, servers []domain.MCPServer) ([]byte, error
 	perms["allow"] = allow
 
 	// Build deny: base non-MCP entries + fresh MCP entries.
-	var deny []any
-	if baseDeny, ok := perms["deny"].([]any); ok {
-		for _, v := range baseDeny {
-			if s, ok := v.(string); !ok || !strings.HasPrefix(s, mcpPermPrefix) {
-				deny = append(deny, v)
-			}
-		}
-	}
+	deny := filterOutMCPPerms(perms["deny"])
 	for _, p := range mcpDeny {
 		deny = append(deny, p)
 	}
@@ -168,39 +166,3 @@ func RenderSettingsBytes(base []byte, servers []domain.MCPServer) ([]byte, error
 	return append(out, '\n'), nil
 }
 
-// StripManagedPermissions removes mcp__* entries from permissions.allow and
-// permissions.deny.
-func StripManagedPermissions(rendered []byte) ([]byte, error) {
-	var root settingsRoot
-	if err := json.Unmarshal(rendered, &root); err != nil {
-		return nil, err
-	}
-
-	if root.Permissions != nil {
-		var keptAllow []string
-		for _, p := range root.Permissions.Allow {
-			if !strings.HasPrefix(p, mcpPermPrefix) {
-				keptAllow = append(keptAllow, p)
-			}
-		}
-		root.Permissions.Allow = keptAllow
-
-		var keptDeny []string
-		for _, p := range root.Permissions.Deny {
-			if !strings.HasPrefix(p, mcpPermPrefix) {
-				keptDeny = append(keptDeny, p)
-			}
-		}
-		if len(keptDeny) > 0 {
-			root.Permissions.Deny = keptDeny
-		} else {
-			root.Permissions.Deny = nil
-		}
-	}
-
-	out, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
-}

@@ -102,7 +102,7 @@ var (
 	opSkillStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("79"))  // teal
 	opSettingsStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // yellow
 	opMCPStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))  // cyan
-	opPruneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
+	opStaleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
 
 	// Diff output styles for the plan diff viewer.
 	diffAddStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // green

@@ -26,6 +26,8 @@ type ResolveRequest struct {
 	ProfilePath string
 	ProfileCfg  config.ProfileConfig
 	SyncCfg     config.SyncConfig
+	ProjectDir  string // working directory — caller must provide
+	Home        string // $HOME — caller must provide
 }
 
 // ResolveResult holds the resolved profile and targeting information.
@@ -49,8 +51,6 @@ func ResolveProfile(req ResolveRequest) (ResolveResult, []domain.Warning, error)
 		}
 	}
 
-	cwd, _ := os.Getwd()
-
 	hs, err := cmdutil.ResolveHarnesses(req.SyncCfg.Defaults.Harnesses)
 	if err != nil {
 		return ResolveResult{}, warnings, err
@@ -60,18 +60,23 @@ func ResolveProfile(req ResolveRequest) (ResolveResult, []domain.Warning, error)
 		Profile: profile,
 		TargetSpec: TargetSpec{
 			Scope:      scope,
-			ProjectDir: cwd,
+			ProjectDir: req.ProjectDir,
 			Harnesses:  hs,
-			Home:       os.Getenv("HOME"),
+			Home:       req.Home,
 		},
 	}, warnings, nil
 }
 
 // ResolveActiveProfile loads the active profile from sync-config defaults
 // and resolves it into a fully-typed profile with targeting information.
-// This is the primary entry point for callers that don't need custom
-// profile resolution (e.g., in-memory edits).
+// This is the I/O boundary: it resolves ProjectDir and Home from the
+// environment so that ResolveProfile (and everything below it) stays I/O-free.
 func ResolveActiveProfile(configDir string) (ResolveResult, []domain.Warning, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ResolveResult{}, nil, fmt.Errorf("resolving working directory: %w", err)
+	}
+	home := os.Getenv("HOME")
 	syncCfgPath := config.SyncConfigPath(configDir)
 	syncCfg, err := config.LoadSyncConfig(syncCfgPath)
 	if err != nil {
@@ -91,6 +96,8 @@ func ResolveActiveProfile(configDir string) (ResolveResult, []domain.Warning, er
 		ProfilePath: profilePath,
 		ProfileCfg:  profileCfg,
 		SyncCfg:     syncCfg,
+		ProjectDir:  cwd,
+		Home:        home,
 	})
 }
 
@@ -115,7 +122,6 @@ type TargetSpec struct {
 type SyncRequest struct {
 	TargetSpec
 	Force        bool
-	Prune        bool
 	SkipSettings bool
 	Yes          bool
 	DryRun       bool
@@ -129,7 +135,11 @@ type SyncResult struct {
 }
 
 // RunSync plans and applies a sync. It is the primary v2 entry point for the sync command.
-func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, error) {
+//
+// Error policy: loading/reading failures that degrade gracefully are returned
+// as warnings. Writing failures that leave inconsistent state are fatal errors.
+func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
+	var warnings []domain.Warning
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
@@ -142,11 +152,11 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 		for i, hid := range req.Harnesses {
 			harnessNames[i] = strings.ToLower(string(hid))
 			if h, lerr := reg.Lookup(hid); lerr == nil {
-				managedRootsMap[harnessNames[i]] = h.ManagedRoots(req.Scope, baseDir, req.Home)
+				managedRootsMap[harnessNames[i]] = h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
 			}
 		}
 		if n, merr := engine.MigrateOldLedgers(req.Scope, req.ProjectDir, req.Home, harnessNames, managedRootsMap); merr != nil {
-			fmt.Fprintf(stderr, "warning: ledger migration: %v\n", merr)
+			warnings = append(warnings, domain.Warning{Field: "ledger-migration", Message: merr.Error()})
 		} else if n > 0 {
 			fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
 		}
@@ -157,7 +167,7 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 	for _, hid := range req.Harnesses {
 		planners, err := reg.AsPlanners([]domain.Harness{hid})
 		if err != nil {
-			return SyncResult{}, err
+			return SyncResult{}, warnings, err
 		}
 
 		planReq := engine.PlanRequest{
@@ -170,7 +180,7 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 
 		plan, err := engine.PlanSync(profile, planReq, planners)
 		if err != nil {
-			return SyncResult{}, err
+			return SyncResult{}, warnings, err
 		}
 
 		if req.DryRun {
@@ -179,19 +189,21 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 		}
 
 		h, _ := reg.Lookup(hid)
-		managedRoots := h.ManagedRoots(req.Scope, baseDir, req.Home)
+		managedRoots := h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
 
 		applyReq := engine.ApplyRequest{
 			Force:  req.Force,
-			Prune:  req.Prune,
 			Yes:    req.Yes,
 			DryRun: req.DryRun,
 			Quiet:  req.Quiet,
+			Stderr: stderr,
 			Req:    planReq,
 		}
 
-		if err := engine.ApplyPlan(plan, applyReq, managedRoots); err != nil {
-			return SyncResult{}, err
+		applyWarnings, err := engine.ApplyPlan(plan, applyReq, managedRoots)
+		warnings = append(warnings, applyWarnings...)
+		if err != nil {
+			return SyncResult{}, warnings, err
 		}
 		mergePlans(&aggregatePlan, plan)
 	}
@@ -200,24 +212,23 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 		if req.Verbose {
 			summary, err := PlanWithDiffs(profile, req, reg)
 			if err != nil {
-				return SyncResult{}, err
+				return SyncResult{}, warnings, err
 			}
 			printDryRunVerbose(summary, stdout)
 		} else {
 			printDryRun(aggregatePlan, req, reg, stdout)
 		}
-		return SyncResult{Plan: aggregatePlan}, nil
+		return SyncResult{Plan: aggregatePlan}, warnings, nil
 	}
 
 	// Post-sync tasks — run once.
 	if idxErr := updateIndex(profile, req.Home); idxErr != nil {
-		fmt.Fprintf(stderr, "warning: index update failed: %v\n", idxErr)
+		warnings = append(warnings, domain.Warning{Field: "index", Message: fmt.Sprintf("index update failed: %v", idxErr)})
 	}
-	if regErr := processEmbeddedRegistries(profile, req.Home, stderr); regErr != nil {
-		fmt.Fprintf(stderr, "warning: embedded registry processing failed: %v\n", regErr)
-	}
+	regWarnings := processEmbeddedRegistries(profile, req.Home, stderr)
+	warnings = append(warnings, regWarnings...)
 
-	return SyncResult{Plan: aggregatePlan}, nil
+	return SyncResult{Plan: aggregatePlan}, warnings, nil
 }
 
 func mergePlans(dst *domain.Plan, src domain.Plan) {
@@ -251,8 +262,9 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.
 		}
 	}
 
+	rootsIdx := harness.BuildRootsIndex(reg, req.Scope, baseDir, req.Home)
 	ledgerForPath := func(path string) domain.Ledger {
-		hid := harness.IdentifyHarness(reg, req.Scope, baseDir, req.Home, path)
+		hid := rootsIdx.Identify(path)
 		if lg, ok := ledgers[hid]; ok {
 			return lg
 		}
@@ -326,26 +338,35 @@ func updateIndex(profile domain.Profile, home string) error {
 
 // processEmbeddedRegistries loads registry YAML files declared in pack
 // manifests and indexes their entries into the search index.
-func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Writer) error {
+//
+// Error policy: registry load failures are warnings (degraded but functional).
+// Registry save/index failures are also warnings — a failed cache shouldn't
+// abort a successful sync.
+func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Writer) []domain.Warning {
+	var warnings []domain.Warning
 	var allEntries []config.Registry
 	for _, pack := range profile.Packs {
 		for _, regPath := range pack.Registries {
 			absPath := filepath.Join(pack.Root, regPath)
 			reg, err := config.LoadRegistry(absPath)
 			if err != nil {
-				fmt.Fprintf(stderr, "warning: loading embedded registry %s from pack %s: %v\n", regPath, pack.Name, err)
+				warnings = append(warnings, domain.Warning{
+					Path:    absPath,
+					Field:   "registry",
+					Message: fmt.Sprintf("loading embedded registry %s from pack %s: %v", regPath, pack.Name, err),
+				})
 				continue
 			}
 			allEntries = append(allEntries, reg)
 		}
 	}
 	if len(allEntries) == 0 {
-		return nil
+		return warnings
 	}
 
 	cfgDir, err := config.DefaultConfigDir(home)
 	if err != nil {
-		return fmt.Errorf("resolving config dir: %w", err)
+		return append(warnings, domain.Warning{Field: "registry", Message: fmt.Sprintf("resolving config dir: %v", err)})
 	}
 
 	merged := config.Registry{
@@ -360,18 +381,18 @@ func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Wr
 		}
 	}
 	if len(merged.Packs) == 0 {
-		return nil
+		return warnings
 	}
 
 	if err := saveEmbeddedRegistry(cfgDir, merged); err != nil {
-		return fmt.Errorf("saving embedded registry cache: %w", err)
+		return append(warnings, domain.Warning{Field: "registry", Message: fmt.Sprintf("saving embedded registry cache: %v", err)})
 	}
 	if err := indexRegistryEntries(merged, cfgDir); err != nil {
-		return fmt.Errorf("indexing embedded registry entries: %w", err)
+		return append(warnings, domain.Warning{Field: "registry", Message: fmt.Sprintf("indexing embedded registry entries: %v", err)})
 	}
 
 	fmt.Fprintf(stderr, "Merged and indexed %d pack(s) from embedded registries\n", len(merged.Packs))
-	return nil
+	return warnings
 }
 
 func saveEmbeddedRegistry(configDir string, reg config.Registry) error {
@@ -409,9 +430,9 @@ func printDryRunVerbose(summary PlanSummary, w io.Writer) {
 		fmt.Fprintln(w, "plan: no changes")
 		return
 	}
-	fmt.Fprintf(w, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d settings, %d mcp, %d prunes)\n",
+	fmt.Fprintf(w, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d settings, %d mcp, %d stale)\n",
 		total, summary.NumRules, summary.NumWorkflows, summary.NumAgents, summary.NumSkills,
-		summary.NumSettings, summary.NumMCP, summary.NumPrunes)
+		summary.NumSettings, summary.NumMCP, summary.NumStale)
 
 	for _, op := range summary.Ops {
 		label := string(op.Kind)

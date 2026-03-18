@@ -7,19 +7,34 @@ Each harness renders pack content into a coding assistant's native format. Four 
 ```go
 type Harness interface {
     ID() domain.Harness
-    Plan(ctx engine.SyncContext) (domain.Fragment, error)     // content → harness files
-    Render(ctx RenderContext) (domain.Fragment, error)        // portable rendering
-    Capture(ctx CaptureContext) (CaptureResult, error)        // harness files → content
-    ManagedRoots(scope, baseDir, home string) []string
-    SettingsPaths(scope, baseDir, home string) []string
-    StrictExtraDirs(scope, baseDir, home string) []string
-    PackRelativePaths() []string
-    StripManagedSettings(rendered []byte, filename string) ([]byte, error)
-    CleanActions(scope, baseDir, home string) []CleanAction
+    Layout(scope, baseDir, home string) Layout    // filesystem footprint
+    Plan(ctx engine.SyncContext) (domain.Fragment, error)  // content → harness files
+    Render(ctx RenderContext) (domain.Fragment, error)      // portable rendering
+    Capture(ctx CaptureContext) (CaptureResult, error)      // harness files → content
 }
 ```
 
-The three core methods: `Plan` (forward sync), `Capture` (reverse save), `Render` (portable output). The rest handle path ownership, settings stripping, and cleanup.
+`Layout` describes what the harness owns: path roots, partially-owned files, and how to strip or reset managed content. `Plan`, `Capture`, and `Render` are the content operations.
+
+## Layout
+
+```go
+type Layout struct {
+    ValidationRoots []string    // destinations this harness may write under
+    RemovePaths     []string    // fully-owned paths safe to delete wholesale
+    OwnedFiles      []OwnedFile // files with partial key ownership
+}
+```
+
+`OwnedFile` carries two closures: `Strip` (selectively remove managed content for capture/save) and `Reset` (aggressively clear managed sections for clean). Both operate on `map[string]any`. The `Format` field (JSON or TOML) drives parse/serialize in the `StripManaged` helper.
+
+`ValidationRoots`, `RemovePaths`, and `OwnedFiles` are intentionally different:
+
+- `ValidationRoots`: path allowlist for sync destinations, stale-file scoping, and ledger routing.
+- `RemovePaths`: whole directories/files aipack owns and may remove outright during `clean`.
+- `OwnedFiles`: partially-managed files that must be edited surgically, never deleted wholesale.
+
+Clean is derived from Layout: `RemovePaths` are deleted wholesale, `OwnedFiles` are reset via `OwnedFile.Reset`, and ledger-tracked leaf files inside `ValidationRoots` are removed when they are not an `OwnedFile` and not already covered by `RemovePaths`. This is how mixed containers such as `.opencode/` can keep a partially-owned `opencode.json` while still cleaning fully-owned drop-ins like `oh-my-opencode.json`.
 
 ## Fragment pattern
 
@@ -38,19 +53,15 @@ Use `f.MCP` for MCP configs, `f.Settings` for harness settings. `--skip-settings
 
 ## Scope branching
 
-Each harness handles scope internally. Pattern from Claude Code:
+Each harness handles scope internally via `Layout()`. Pattern from Claude Code:
 
 ```go
-func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
-    // ctx.TargetDir is already resolved: project dir or $HOME
-    // ctx.Home is always set (needed for global MCP paths even in project scope)
-    planContent(&f, ctx.TargetDir, ctx.Profile)
-    planMCPAndSettings(&f, ctx)
-    return f, nil
+func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
+    // Single scope switch, returns ValidationRoots + RemovePaths + OwnedFiles
 }
 ```
 
-Non-obvious: Cline MCP is always global. Even during project-scope sync, the Cline adapter writes MCP to the VS Code global storage path using `ctx.Home`.
+Non-obvious: Cline MCP is always global. Even during project-scope sync, the Cline adapter writes MCP to the VS Code global storage path using `home`.
 
 ## Content helpers
 
@@ -83,9 +94,11 @@ No concurrent/parallel harness planning or capture. Most users have 1-2 harnesse
 
 **Plan ↔ Capture symmetry.** If Plan writes content in a particular format or layout, Capture must reverse it exactly. Changing one without the other silently breaks save round-trips — the save produces incorrect pack content with no error. When modifying Plan rendering, always update the corresponding Capture logic and verify with a round-trip test.
 
-**ManagedRoots completeness.** Every path a harness writes to in Plan must appear in `ManagedRoots()`. Missing paths mean `clean` won't remove them and `--prune` won't detect stale files there.
+**ValidationRoots completeness.** Every path a harness writes to in Plan must appear under `Layout().ValidationRoots`. Missing paths mean destination validation, `clean`, ledger routing, and stale file pruning can all misclassify ownership.
 
-**CleanActions completeness.** Every managed config key (MCP sections, tool permissions, content references) must have a corresponding removal in `CleanActions()`. The harness owns the knowledge of what to clean — `app/clean.go` only handles I/O.
+**RemovePaths precision.** Put only fully-owned paths in `Layout().RemovePaths`. Do not include mixed containers that also hold partially-owned files. Example: OpenCode uses `.opencode/` as a validation root, but only `agents/`, `commands/`, `rules/`, and `skills/` are wholesale remove paths because `opencode.json` is partially owned.
+
+**OwnedFiles completeness.** Every managed config key (MCP sections, tool permissions, content references) must have a corresponding entry in `Layout().OwnedFiles` with both `Strip` and `Reset` closures. Clean and capture both derive behavior from these entries.
 
 **Docs.** Rendering or path changes require updating `docs/aipack.md` per-harness reference in the same change.
 
@@ -103,7 +116,7 @@ Full per-harness details including merge behavior and tool permissions: `docs/ai
 
 ## Adding a new harness
 
-1. Create `internal/harness/<name>/harness.go` — implement full `Harness` interface
+1. Create `internal/harness/<name>/harness.go` — implement full `Harness` interface (5 methods)
 2. Add harness ID constant to `internal/domain/types.go`
 3. Add to `AllHarnesses()` in `internal/domain/types.go`
 4. Add normalization in `internal/cmdutil/inputs.go`
@@ -120,6 +133,9 @@ Unit tests: use stub harnesses (pattern in `internal/app/sync_test.go`):
 type stubHarness struct {
     id       domain.Harness
     fragment domain.Fragment
+}
+func (s stubHarness) Layout(domain.Scope, string, string) harness.Layout {
+    return harness.Layout{}
 }
 func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error) {
     return s.fragment, nil

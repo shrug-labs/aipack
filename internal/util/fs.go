@@ -18,14 +18,19 @@ func WriteFileAtomicWithPerms(path string, content []byte, dirPerm os.FileMode, 
 		return err
 	}
 
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, filePerm)
+	f, err := os.CreateTemp(dir, ".aipack-*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	_, werr := f.Write(content)
 	cerr := f.Close()
 	if err := errors.Join(werr, cerr); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Chmod(tmp, filePerm); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

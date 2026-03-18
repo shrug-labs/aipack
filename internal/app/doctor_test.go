@@ -332,7 +332,7 @@ func TestDoctorCheckLedgerHealth_OrphanedEntries(t *testing.T) {
 		t.Errorf("orphaned = %v, want 1", cr.Details["orphaned"])
 	}
 
-	// With fix: prunes orphan.
+	// With fix: removes orphan.
 	cr = doctorCheckLedgerHealth(dir, nil, true)
 	if !cr.OK {
 		t.Errorf("OK = false, want true after fix")

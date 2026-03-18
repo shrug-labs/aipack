@@ -190,41 +190,16 @@ func TestParseSkills_Basic(t *testing.T) {
 
 func TestFlattenRules(t *testing.T) {
 	t.Parallel()
-	rules := []struct {
-		name string
-		raw  string
-	}{
-		{"alpha", "alpha content"},
-		{"beta", "beta content"},
-	}
-
-	var input []struct {
-		Name string
-		Raw  []byte
-	}
-	for _, r := range rules {
-		input = append(input, struct {
-			Name string
-			Raw  []byte
-		}{r.name, []byte(r.raw)})
-	}
-
-	// Use typed domain.Rule for flattenRules
-	typed := make([]struct{ Name, Raw string }, 0)
-	for _, r := range rules {
-		typed = append(typed, struct{ Name, Raw string }{r.name, r.raw})
-	}
-
 	// Nil input returns empty.
 	result := FlattenRules(nil)
 	if result != "" {
 		t.Errorf("FlattenRules(nil) = %q, want empty", result)
 	}
 
-	// Two rules should produce source comments + separators.
+	// Pass rules in reverse order — output should be sorted by name.
 	domainRules := []domain.Rule{
-		{Name: "alpha", Raw: []byte("alpha content")},
 		{Name: "beta", Raw: []byte("beta content")},
+		{Name: "alpha", Raw: []byte("alpha content")},
 	}
 	result = FlattenRules(domainRules)
 	if result == "" {
@@ -236,14 +211,21 @@ func TestFlattenRules(t *testing.T) {
 	if !strings.Contains(result, "<!-- source: beta.md -->") {
 		t.Error("expected source comment for beta")
 	}
-	if !strings.Contains(result, "alpha content") {
-		t.Error("expected alpha content")
-	}
-	if !strings.Contains(result, "beta content") {
-		t.Error("expected beta content")
+
+	// Alpha should appear before beta regardless of input order.
+	alphaIdx := strings.Index(result, "<!-- source: alpha.md -->")
+	betaIdx := strings.Index(result, "<!-- source: beta.md -->")
+	if alphaIdx >= betaIdx {
+		t.Errorf("expected alpha before beta in sorted output, got alpha@%d beta@%d", alphaIdx, betaIdx)
 	}
 	if !strings.Contains(result, "---") {
 		t.Error("expected separator")
+	}
+
+	// Input slice must not be mutated (order preserved).
+	if domainRules[0].Name != "beta" || domainRules[1].Name != "alpha" {
+		t.Errorf("FlattenRules mutated input slice: got [%s, %s], want [beta, alpha]",
+			domainRules[0].Name, domainRules[1].Name)
 	}
 }
 

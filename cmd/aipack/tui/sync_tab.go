@@ -16,8 +16,7 @@ import (
 type syncTabModel struct {
 	syncCfg   config.SyncConfig // read-only snapshot, set by rootModel before Update/View
 	configDir string
-	cursor    int  // index into flat field list
-	prune     bool // session-only toggle: delete stale managed files on sync
+	cursor    int // index into flat field list
 
 	// Active profile state — populated by rootModel before View/Update.
 	activeSync syncTabSnapshot
@@ -41,9 +40,9 @@ func (m syncTabModel) Init() tea.Cmd {
 }
 
 // fieldCount returns the total number of navigable fields:
-// 1 (profile) + len(allHarnesses) + 1 (scope) + 1 (prune).
+// 1 (profile) + len(allHarnesses) + 1 (scope).
 func (m syncTabModel) fieldCount() int {
-	return 1 + len(m.allHarnesses) + 2
+	return 1 + len(m.allHarnesses) + 1
 }
 
 func (m syncTabModel) Update(msg tea.Msg) (syncTabModel, tea.Cmd) {
@@ -103,11 +102,6 @@ func (m syncTabModel) editField() (syncTabModel, tea.Cmd) {
 
 	if m.cursor == harnessEnd {
 		return m, func() tea.Msg { return syncCycleScopeMsg{} }
-	}
-
-	if m.cursor == harnessEnd+1 {
-		m.prune = !m.prune
-		return m, nil
 	}
 
 	return m, nil
@@ -193,18 +187,6 @@ func (m syncTabModel) viewConfigPanel(width int) string {
 	}
 	sb.WriteString(fmt.Sprintf("%sScope:     %s\n", indicator, scope))
 
-	// Prune indicator (session toggle, not a navigable field).
-	pruneLabel := "off"
-	if m.prune {
-		pruneLabel = "on"
-	}
-	cursor++
-	indicator = "  "
-	if m.cursor == cursor {
-		indicator = selectedStyle.Render("> ")
-	}
-	sb.WriteString(fmt.Sprintf("%sPrune:     %s\n", indicator, pruneLabel))
-
 	sb.WriteString(fmt.Sprintf("  Config:    %s\n", dimStyle.Render(shortPath(m.configDir))))
 
 	return style.Render(sb.String())
@@ -250,7 +232,7 @@ func (m syncTabModel) viewStatusPanel(width int) string {
 		sb.WriteString(fmt.Sprintf("  Skills:    %d\n", snap.syncTarget.NumSkills))
 		sb.WriteString(fmt.Sprintf("  Settings:  %d\n", snap.syncTarget.NumSettings))
 		sb.WriteString(fmt.Sprintf("  MCP:       %d\n", snap.syncTarget.NumMCP))
-		sb.WriteString(fmt.Sprintf("  Prunes:    %d\n", snap.syncTarget.NumPrunes))
+		sb.WriteString(fmt.Sprintf("  Stale:     %d\n", snap.syncTarget.NumStale))
 		sb.WriteString(fmt.Sprintf("  Total:     %d\n", snap.syncTarget.TotalChanges()))
 	}
 

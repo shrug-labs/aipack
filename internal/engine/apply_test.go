@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,8 +36,8 @@ func TestApplyPlan_CreateFiles(t *testing.T) {
 		{Dst: fileB, Content: []byte("beta content"), SourcePack: "pack1"},
 	})
 
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -84,8 +85,8 @@ func TestApplyPlan_IdenticalSkipsWrite(t *testing.T) {
 	plan := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: content, SourcePack: "pack1"},
 	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -93,7 +94,7 @@ func TestApplyPlan_IdenticalSkipsWrite(t *testing.T) {
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: content, SourcePack: "pack1"},
 	})
-	if err := ApplyPlan(plan2, ar, []string{dir}); err != nil {
+	if _, err := ApplyPlan(plan2, ar, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -138,8 +139,8 @@ func TestApplyPlan_IdenticalNoLedger(t *testing.T) {
 	plan := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: content, SourcePack: "pack1"},
 	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -195,8 +196,8 @@ func TestApplyPlan_RecordsPerServerMCPLedgerEntries(t *testing.T) {
 		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
 	}
 
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -231,8 +232,8 @@ func TestApplyPlan_ManagedUpdates(t *testing.T) {
 	plan1 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: oldContent, SourcePack: "pack1"},
 	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -250,7 +251,7 @@ func TestApplyPlan_ManagedUpdates(t *testing.T) {
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: newContent, SourcePack: "pack1"},
 	})
-	if err := ApplyPlan(plan2, ar, []string{dir}); err != nil {
+	if _, err := ApplyPlan(plan2, ar, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -276,8 +277,8 @@ func TestApplyPlan_ConflictSkipsWithoutForce(t *testing.T) {
 	plan1 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: originalContent, SourcePack: "pack1"},
 	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -290,7 +291,7 @@ func TestApplyPlan_ConflictSkipsWithoutForce(t *testing.T) {
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: desiredContent, SourcePack: "pack1"},
 	})
-	if err := ApplyPlan(plan2, ar, []string{dir}); err != nil {
+	if _, err := ApplyPlan(plan2, ar, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -317,8 +318,8 @@ func TestApplyPlan_ConflictAppliesWithForce(t *testing.T) {
 	plan1 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: originalContent, SourcePack: "pack1"},
 	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -331,8 +332,8 @@ func TestApplyPlan_ConflictAppliesWithForce(t *testing.T) {
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: file, Content: desiredContent, SourcePack: "pack1"},
 	})
-	ar2 := ApplyRequest{Force: true, Quiet: true}
-	if err := ApplyPlan(plan2, ar2, []string{dir}); err != nil {
+	ar2 := ApplyRequest{Force: true, Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan2, ar2, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -354,8 +355,8 @@ func TestApplyPlan_DryRun(t *testing.T) {
 		{Dst: file, Content: []byte("content"), SourcePack: "pack1"},
 	})
 
-	ar := ApplyRequest{DryRun: true, Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{DryRun: true, Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -395,8 +396,8 @@ func TestApplyPlan_CopyFile(t *testing.T) {
 		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
 	}
 
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -436,8 +437,8 @@ func TestApplyPlan_CopyDir(t *testing.T) {
 		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
 	}
 
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -500,8 +501,8 @@ func TestApplyPlan_CopyDirIdenticalNoLedger(t *testing.T) {
 		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
 	}
 
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -519,7 +520,7 @@ func TestApplyPlan_CopyDirIdenticalNoLedger(t *testing.T) {
 	}
 }
 
-func TestApplyPlan_PruneDeletesOrphaned(t *testing.T) {
+func TestApplyPlan_StaleDeletesOrphaned(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
@@ -531,8 +532,8 @@ func TestApplyPlan_PruneDeletesOrphaned(t *testing.T) {
 		{Dst: fileA, Content: []byte("alpha"), SourcePack: "pack1"},
 		{Dst: fileB, Content: []byte("beta"), SourcePack: "pack1"},
 	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("first ApplyPlan: %v", err)
 	}
 
@@ -544,12 +545,12 @@ func TestApplyPlan_PruneDeletesOrphaned(t *testing.T) {
 		t.Fatalf("fileB missing after first apply: %v", err)
 	}
 
-	// Second apply only has fileA. Prune=true, Yes=true should delete fileB.
+	// Second apply only has fileA. fileB should be deleted as stale.
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: fileA, Content: []byte("alpha"), SourcePack: "pack1"},
 	})
-	ar2 := ApplyRequest{Prune: true, Yes: true, Quiet: true}
-	if err := ApplyPlan(plan2, ar2, []string{dir}); err != nil {
+	ar2 := ApplyRequest{Yes: true, Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan2, ar2, []string{dir}); err != nil {
 		t.Fatalf("second ApplyPlan: %v", err)
 	}
 
@@ -560,7 +561,7 @@ func TestApplyPlan_PruneDeletesOrphaned(t *testing.T) {
 
 	// fileB should be deleted.
 	if _, err := os.Stat(fileB); !os.IsNotExist(err) {
-		t.Error("fileB should be deleted after prune")
+		t.Error("fileB should be deleted as stale")
 	}
 
 	// Ledger should only have fileA.
@@ -572,61 +573,7 @@ func TestApplyPlan_PruneDeletesOrphaned(t *testing.T) {
 		t.Error("ledger should still have fileA")
 	}
 	if _, ok := lg.Managed[fileB]; ok {
-		t.Error("ledger should not have fileB after prune")
-	}
-}
-
-func TestApplyPlan_StaleLedgerEntriesReconciledWithoutPrune(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	fileA := filepath.Join(dir, "rules", "alpha.md")
-	fileB := filepath.Join(dir, "rules", "beta.md")
-
-	// First apply creates both files.
-	plan1 := buildPlan(dir, []domain.WriteAction{
-		{Dst: fileA, Content: []byte("alpha"), SourcePack: "pack1"},
-		{Dst: fileB, Content: []byte("beta"), SourcePack: "pack1"},
-	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
-		t.Fatalf("first ApplyPlan: %v", err)
-	}
-
-	// Second apply only has fileA. Prune=false should leave fileB on disk
-	// but remove its ledger entry so it stops showing as a prune candidate.
-	plan2 := buildPlan(dir, []domain.WriteAction{
-		{Dst: fileA, Content: []byte("alpha"), SourcePack: "pack1"},
-	})
-	ar2 := ApplyRequest{Prune: false, Quiet: true}
-	if err := ApplyPlan(plan2, ar2, []string{dir}); err != nil {
-		t.Fatalf("second ApplyPlan: %v", err)
-	}
-
-	// fileB should still exist on disk (not deleted without Prune).
-	if _, err := os.Stat(fileB); err != nil {
-		t.Errorf("fileB should still exist on disk: %v", err)
-	}
-
-	// Ledger should only have fileA — fileB's entry should be reconciled away.
-	lg, _, err := LoadLedger(plan2.Ledger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := lg.Managed[fileA]; !ok {
-		t.Error("ledger should still have fileA")
-	}
-	if _, ok := lg.Managed[fileB]; ok {
-		t.Error("ledger should not have fileB after reconciliation")
-	}
-
-	// PruneCandidatesWithLedger should report nothing (ledger is clean).
-	candidates, err := PruneCandidatesWithLedger(plan2, []string{dir}, lg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(candidates) > 0 {
-		t.Errorf("expected no prune candidates after reconciliation, got %v", candidates)
+		t.Error("ledger should not have fileB after stale cleanup")
 	}
 }
 
@@ -640,8 +587,8 @@ func TestApplyPlan_DestinationValidation(t *testing.T) {
 		{Dst: outsidePath, Content: []byte("bad"), SourcePack: "pack1"},
 	})
 
-	ar := ApplyRequest{Quiet: true}
-	err := ApplyPlan(plan, ar, []string{dir})
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	_, err := ApplyPlan(plan, ar, []string{dir})
 	if err == nil {
 		t.Fatal("expected error for write outside managed roots")
 	}
@@ -650,7 +597,7 @@ func TestApplyPlan_DestinationValidation(t *testing.T) {
 	}
 }
 
-func TestPruneCandidates(t *testing.T) {
+func TestStaleCandidates(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
@@ -664,8 +611,8 @@ func TestPruneCandidates(t *testing.T) {
 		{Dst: fileB, Content: []byte("b"), SourcePack: "pack1"},
 		{Dst: fileC, Content: []byte("c"), SourcePack: "pack1"},
 	})
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan1, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 
@@ -676,15 +623,15 @@ func TestPruneCandidates(t *testing.T) {
 		}
 	}
 
-	// New plan only has A and B in writes/desired. C should be a prune candidate.
+	// New plan only has A and B in writes/desired. C should be a stale candidate.
 	plan2 := buildPlan(dir, []domain.WriteAction{
 		{Dst: fileA, Content: []byte("a"), SourcePack: "pack1"},
 		{Dst: fileB, Content: []byte("b"), SourcePack: "pack1"},
 	})
 
-	candidates, err := PruneCandidates(plan2, []string{dir})
+	candidates, err := staleCandidates(plan2, []string{dir})
 	if err != nil {
-		t.Fatalf("PruneCandidates: %v", err)
+		t.Fatalf("staleCandidates: %v", err)
 	}
 
 	sort.Strings(candidates)
@@ -721,8 +668,8 @@ func TestApplyPlan_SettingsSnapshot(t *testing.T) {
 		Ledger:  filepath.Join(dir, ".aipack", "ledger.json"),
 	}
 
-	ar := ApplyRequest{Quiet: true}
-	if err := ApplyPlan(plan, ar, []string{dir}); err != nil {
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := ApplyPlan(plan, ar, []string{dir}); err != nil {
 		t.Fatalf("ApplyPlan: %v", err)
 	}
 

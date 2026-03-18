@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -186,12 +187,16 @@ func renderTypedContent(frontmatter any, body []byte) ([]byte, error) {
 }
 
 // FlattenRules concatenates all rule Raw bytes with source comments, matching v1's format.
+// Rules are sorted by name so output is deterministic regardless of input order.
 func FlattenRules(rules []domain.Rule) string {
 	if len(rules) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(rules)*3)
-	for _, r := range rules {
+	sorted := make([]domain.Rule, len(rules))
+	copy(sorted, rules)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	parts := make([]string, 0, len(sorted)*3)
+	for _, r := range sorted {
 		t := strings.TrimRight(string(r.Raw), "\n")
 		parts = append(parts, "<!-- source: "+r.Name+".md -->\n")
 		parts = append(parts, t+"\n")

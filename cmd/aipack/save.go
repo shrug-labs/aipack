@@ -156,7 +156,6 @@ func (c *SaveCmd) runRoundTrip(g *Globals) error {
 		PackRoots: packRoots,
 		DryRun:    c.DryRun,
 		Force:     c.Force,
-		Stderr:    g.Stderr,
 	}, g.Registry)
 	if err != nil {
 		return err

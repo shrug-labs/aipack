@@ -2,7 +2,6 @@ package app
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,8 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/pelletier/go-toml/v2"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
@@ -133,16 +130,17 @@ func (o removePathOp) run(ctx cleanRunContext) error {
 	return os.RemoveAll(o.Path)
 }
 
-type editJSONOp struct {
+type editFileOp struct {
 	FilePath string
+	Format   harness.FileFormat
 	Edit     func(root map[string]any)
 }
 
-func (o editJSONOp) path() string { return o.FilePath }
+func (o editFileOp) path() string { return o.FilePath }
 
-func (o editJSONOp) run(ctx cleanRunContext) error {
+func (o editFileOp) run(ctx cleanRunContext) error {
 	if o.FilePath == "" || filepath.Clean(o.FilePath) == "." {
-		return fmt.Errorf("invalid JSON config path: %q", o.FilePath)
+		return fmt.Errorf("invalid config path: %q", o.FilePath)
 	}
 	b, err := os.ReadFile(o.FilePath)
 	if err != nil {
@@ -151,61 +149,9 @@ func (o editJSONOp) run(ctx cleanRunContext) error {
 		}
 		return err
 	}
-	root := map[string]any{}
-	if len(b) > 0 {
-		if err := json.Unmarshal(b, &root); err != nil {
-			return err
-		}
-	}
-	o.Edit(root)
-	out, err := json.MarshalIndent(root, "", "  ")
+	out, err := harness.ApplyEdit(b, o.Format, o.Edit)
 	if err != nil {
 		return err
-	}
-	out = append(out, '\n')
-	if !ctx.Yes {
-		ok, err := cleanPromptYesNo(ctx.Stdin, ctx.Stderr, fmt.Sprintf("Update config (surgical reset)? %s [y/N]: ", o.FilePath))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-	}
-	return util.WriteFileAtomic(o.FilePath, out)
-}
-
-type editTOMLOp struct {
-	FilePath string
-	Edit     func(root map[string]any)
-}
-
-func (o editTOMLOp) path() string { return o.FilePath }
-
-func (o editTOMLOp) run(ctx cleanRunContext) error {
-	if o.FilePath == "" || filepath.Clean(o.FilePath) == "." {
-		return fmt.Errorf("invalid TOML config path: %q", o.FilePath)
-	}
-	b, err := os.ReadFile(o.FilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	root := map[string]any{}
-	if len(b) > 0 {
-		if err := toml.Unmarshal(b, &root); err != nil {
-			return err
-		}
-	}
-	o.Edit(root)
-	out, err := toml.Marshal(root)
-	if err != nil {
-		return err
-	}
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		out = append(out, '\n')
 	}
 	if !ctx.Yes {
 		ok, err := cleanPromptYesNo(ctx.Stdin, ctx.Stderr, fmt.Sprintf("Update config (surgical reset)? %s [y/N]: ", o.FilePath))
@@ -221,6 +167,7 @@ func (o editTOMLOp) run(ctx cleanRunContext) error {
 
 func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool, reg *harness.Registry) []cleanOp {
 	var ops []cleanOp
+	seenRemovePaths := map[string]struct{}{}
 
 	baseDir := projectDir
 	if scope == domain.ScopeGlobal {
@@ -232,15 +179,47 @@ func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []doma
 		if err != nil {
 			continue
 		}
-		for _, ca := range h.CleanActions(scope, baseDir, home) {
-			switch ca.Format {
-			case harness.CleanRemove:
-				ops = append(ops, removePathOp{Path: ca.Path})
-			case harness.CleanJSON:
-				ops = append(ops, editJSONOp{FilePath: ca.Path, Edit: ca.Edit})
-			case harness.CleanTOML:
-				ops = append(ops, editTOMLOp{FilePath: ca.Path, Edit: ca.Edit})
+		layout := h.Layout(scope, baseDir, home)
+
+		// OwnedFiles are partially owned — reset managed keys, not delete.
+		ownedPaths := map[string]struct{}{}
+		for _, of := range layout.OwnedFiles {
+			ownedPaths[filepath.Clean(of.Path)] = struct{}{}
+			ops = append(ops, editFileOp{FilePath: of.Path, Format: of.Format, Edit: of.Reset})
+		}
+
+		// Explicit fully-owned paths are safe to remove wholesale.
+		for _, path := range layout.RemovePaths {
+			cleanPath := filepath.Clean(path)
+			if _, seen := seenRemovePaths[cleanPath]; seen {
+				continue
 			}
+			seenRemovePaths[cleanPath] = struct{}{}
+			ops = append(ops, removePathOp{Path: cleanPath})
+		}
+
+		// Mixed containers may also hold fully-owned leaf files (for example,
+		// plugin/drop-in config files). Remove any ledger-tracked paths inside
+		// validation roots that are not partially-owned files and not already
+		// covered by an explicit RemovePath.
+		ledgerPath := engine.LedgerPathForScope(scope, projectDir, home, strings.ToLower(string(hid)))
+		lg, _, err := engine.LoadLedger(ledgerPath)
+		if err != nil {
+			continue
+		}
+		for trackedPath := range lg.Managed {
+			cleanPath := filepath.Clean(trackedPath)
+			if !domain.IsUnderAny(cleanPath, layout.ValidationRoots) {
+				continue
+			}
+			if _, owned := ownedPaths[cleanPath]; owned {
+				continue
+			}
+			if _, seen := seenRemovePaths[cleanPath]; seen {
+				continue
+			}
+			seenRemovePaths[cleanPath] = struct{}{}
+			ops = append(ops, removePathOp{Path: cleanPath})
 		}
 	}
 

@@ -6,6 +6,26 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+### Added
+
+- macOS ad-hoc codesign for built binaries in `make install` and `make dist`, preventing quarantine issues.
+- `make lint` target runs `go vet` and `staticcheck`.
+
+### Changed
+
+- Cline global rules and workflows write to `~/Documents/Cline/Rules/` and `~/Documents/Cline/Workflows/` directly instead of an `aipack/` subdirectory. Re-sync to pick up the new paths; the old subdirectories can be removed manually or via `aipack clean`.
+- `RunSync` and `ApplyPlan` return structured `[]domain.Warning` instead of printing to stderr. Warnings are included in `--json` output as a `"warnings"` array and no longer shadow each other in the TUI.
+- Harness interface consolidated from six path/settings/clean methods into a single `Layout()` returning a `Layout` struct with `ValidationRoots`, `RemovePaths`, and `OwnedFiles`. Clean, prune, trace, and save all derive behavior from Layout.
+- Go version bumped from 1.24 to 1.26.
+
+### Fixed
+
+- `WriteFileAtomic` uses unique temp files via `os.CreateTemp`, preventing data loss when concurrent syncs race on the same destination.
+- `clean` properly handles mixed containers like `.opencode/` — partially-owned settings files are surgically reset while fully-owned content and ledger-tracked drop-in files are removed.
+- Cline project-scope `clean` no longer deletes the entire `.clinerules/` directory — only aipack-managed subdirectories (`workflows/`, `skills/`) are removed as RemovePaths. User-created files in `.clinerules/` root are preserved; aipack-managed rule files are cleaned individually via the ledger.
+- Pack list, pack update, and prompt list skip hidden (dot-prefixed) directories.
+- `ResolveProfile` no longer reads implicit environment state (`os.Getwd`, `os.Getenv`); callers pass `ProjectDir` and `Home` via `ResolveRequest`.
+
 ## [0.9.4]
 
 ### Fixed

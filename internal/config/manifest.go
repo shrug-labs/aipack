@@ -167,12 +167,8 @@ func (m PackManifest) ContentPaths() []string {
 	for name := range m.MCP.Servers {
 		paths = append(paths, filepath.ToSlash(filepath.Join("mcp", name+".json")))
 	}
-	for _, p := range m.Profiles {
-		paths = append(paths, p)
-	}
-	for _, p := range m.Registries {
-		paths = append(paths, p)
-	}
+	paths = append(paths, m.Profiles...)
+	paths = append(paths, m.Registries...)
 	for harness, files := range m.Configs.HarnessSettings {
 		for _, f := range files {
 			paths = append(paths, filepath.ToSlash(filepath.Join("configs", harness, f)))

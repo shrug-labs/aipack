@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -189,7 +188,6 @@ type RoundTripRequest struct {
 	PackRoots map[string]string // pack name → resolved root
 	DryRun    bool
 	Force     bool
-	Stderr    io.Writer
 }
 
 // RoundTripResult holds the output of a round-trip save.
@@ -228,10 +226,6 @@ type PendingSettingsChange struct {
 // back to their source packs using ledger provenance.
 // Each harness is processed independently with its own per-harness ledger.
 func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult, error) {
-	stderr := req.Stderr
-	if stderr == nil {
-		stderr = io.Discard
-	}
 	home := req.Home
 	ctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
 	var result RoundTripResult
@@ -243,7 +237,7 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 			return RoundTripResult{}, fmt.Errorf("loading ledger for %s: %w", hid, err)
 		}
 		if ledgerWarn != "" {
-			fmt.Fprintln(stderr, "WARNING: "+ledgerWarn)
+			result.CaptureWarnings = append(result.CaptureWarnings, domain.Warning{Field: "ledger", Message: ledgerWarn})
 		}
 		if len(lg.Managed) == 0 {
 			result.CaptureWarnings = append(result.CaptureWarnings, domain.Warning{
@@ -257,6 +251,11 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 		if err != nil {
 			return RoundTripResult{}, err
 		}
+		saveBaseDir := req.ProjectDir
+		if req.Scope == domain.ScopeGlobal {
+			saveBaseDir = home
+		}
+		layout := h.Layout(req.Scope, saveBaseDir, home)
 		res, err := h.Capture(ctx)
 		if err != nil {
 			return RoundTripResult{}, err
@@ -471,7 +470,7 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 			} else {
 				// Settings write — either save immediately when forced, or emit
 				// as pending so the caller can decide whether to persist it.
-				stripped, err := h.StripManagedSettings(w.Content, filepath.Base(w.Dst))
+				stripped, err := layout.StripManaged(w.Content, src)
 				if err != nil {
 					return RoundTripResult{}, fmt.Errorf("stripping managed settings from %s: %w", src, err)
 				}

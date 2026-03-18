@@ -19,29 +19,42 @@ type Harness struct{}
 
 func (Harness) ID() domain.Harness { return domain.HarnessOpenCode }
 
-func (Harness) PackRelativePaths() []string {
-	return []string{"opencode/" + baseSettingsFile}
-}
-
-func (Harness) SettingsPaths(scope domain.Scope, baseDir, _ string) []string {
+// Layout describes OpenCode's filesystem footprint for a given scope.
+func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
+	var l harness.Layout
+	var base, configPath string
 	if scope == domain.ScopeProject {
-		return []string{SettingsProjectPath(baseDir)}
+		base = configBaseProject(baseDir)
+		configPath = settingsProjectPath(baseDir)
+	} else {
+		base = configBaseGlobal(baseDir)
+		configPath = settingsGlobalPath(baseDir)
 	}
-	return []string{SettingsGlobalPath(baseDir)}
-}
-
-func (Harness) ManagedRoots(scope domain.Scope, baseDir, _ string) []string {
-	if scope == domain.ScopeProject {
-		return ManagedRootsProject(baseDir)
+	l.ValidationRoots = []string{
+		base,
 	}
-	return ManagedRootsGlobal(baseDir)
-}
-
-func (Harness) StrictExtraDirs(scope domain.Scope, baseDir, _ string) []string {
-	if scope == domain.ScopeProject {
-		return StrictExtraDirsProject(baseDir)
+	l.RemovePaths = []string{
+		filepath.Join(base, "agents"),
+		filepath.Join(base, "commands"),
+		filepath.Join(base, "rules"),
+		filepath.Join(base, "skills"),
 	}
-	return nil
+	l.OwnedFiles = []harness.OwnedFile{{
+		Path: configPath, Format: harness.FormatJSON,
+		Strip: func(root map[string]any) {
+			delete(root, "mcp")
+			delete(root, "tools")
+			delete(root, "instructions")
+			delete(root, "skills")
+		},
+		Reset: func(root map[string]any) {
+			root["mcp"] = map[string]any{}
+			root["tools"] = map[string]any{}
+			delete(root, "instructions")
+			delete(root, "skills")
+		},
+	}}
+	return l
 }
 
 // Plan produces a Fragment from typed content.
@@ -89,10 +102,10 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	var configPath string
 	var configBase string
 	if ctx.Scope == domain.ScopeProject {
-		configPath = SettingsProjectPath(ctx.TargetDir)
+		configPath = settingsProjectPath(ctx.TargetDir)
 		configBase = configBaseProject(ctx.TargetDir)
 	} else {
-		configPath = SettingsGlobalPath(ctx.TargetDir)
+		configPath = settingsGlobalPath(ctx.TargetDir)
 		configBase = configBaseGlobal(ctx.TargetDir)
 	}
 
@@ -187,40 +200,6 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 	return f, nil
 }
 
-// StripManagedSettings removes sync-managed keys from rendered settings.
-func (Harness) StripManagedSettings(rendered []byte, filename string) ([]byte, error) {
-	return StripManagedKeys(rendered, filename)
-}
-
-// CleanActions returns operations to reset OpenCode managed state.
-func (Harness) CleanActions(scope domain.Scope, baseDir, _ string) []harness.CleanAction {
-	var base string
-	var configPath string
-	if scope == domain.ScopeProject {
-		base = configBaseProject(baseDir)
-		configPath = SettingsProjectPath(baseDir)
-	} else {
-		base = configBaseGlobal(baseDir)
-		configPath = SettingsGlobalPath(baseDir)
-	}
-	return []harness.CleanAction{
-		{Path: filepath.Join(base, "agents")},
-		{Path: filepath.Join(base, "commands")},
-		{Path: filepath.Join(base, "skills")},
-		{Path: filepath.Join(base, "rules")},
-		{
-			Path:   configPath,
-			Format: harness.CleanJSON,
-			Edit: func(root map[string]any) {
-				root["mcp"] = map[string]any{}
-				root["tools"] = map[string]any{}
-				delete(root, "instructions")
-				delete(root, "skills")
-			},
-		},
-	}
-}
-
 // Capture extracts OpenCode content for round-trip save.
 // Only the base settings file (opencode.json) is captured. Drop-in config
 // files are pack-provided and should not be round-tripped from the harness.
@@ -231,10 +210,10 @@ func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error
 	var configPath string
 	if ctx.Scope == domain.ScopeProject {
 		baseDir = ctx.ProjectDir
-		configPath = SettingsProjectPath(baseDir)
+		configPath = settingsProjectPath(baseDir)
 	} else {
 		baseDir = ctx.Home
-		configPath = SettingsGlobalPath(baseDir)
+		configPath = settingsGlobalPath(baseDir)
 	}
 
 	dirs := contentDirsForScope(ctx.Scope, baseDir)

@@ -20,27 +20,53 @@ type Harness struct{}
 
 func (Harness) ID() domain.Harness { return domain.HarnessCodex }
 
-func (Harness) PackRelativePaths() []string { return []string{"codex/config.toml"} }
-
-func (Harness) SettingsPaths(scope domain.Scope, baseDir, _ string) []string {
+// Layout describes Codex's filesystem footprint for a given scope.
+func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
+	var l harness.Layout
+	var configPath string
 	if scope == domain.ScopeProject {
-		return []string{SettingsProjectPath(baseDir)}
+		configPath = settingsProjectPath(baseDir)
+		l.ValidationRoots = []string{
+			filepath.Join(baseDir, ".agents", "skills"),
+			filepath.Join(baseDir, "AGENTS.override.md"),
+			configPath,
+		}
+		l.RemovePaths = []string{
+			filepath.Join(baseDir, ".agents", "skills"),
+			filepath.Join(baseDir, "AGENTS.override.md"),
+		}
+	} else {
+		configPath = settingsGlobalPath(baseDir)
+		codexHome := filepath.Join(baseDir, ".codex")
+		l.ValidationRoots = []string{
+			filepath.Join(baseDir, ".agents", "skills"),
+			filepath.Join(codexHome, "AGENTS.override.md"),
+			configPath,
+		}
+		l.RemovePaths = []string{
+			filepath.Join(baseDir, ".agents", "skills"),
+			filepath.Join(codexHome, "AGENTS.override.md"),
+		}
 	}
-	p := SettingsGlobalPath(baseDir)
-	if p == "" {
-		return nil
+	if configPath != "" {
+		l.OwnedFiles = []harness.OwnedFile{{
+			Path: configPath, Format: harness.FormatTOML,
+			Strip: func(root map[string]any) { delete(root, "mcp_servers") },
+			Reset: func(root map[string]any) {
+				delete(root, "mcp_servers")
+				if m, ok := root["mcp"].(map[string]any); ok {
+					delete(m, "servers")
+					if len(m) == 0 {
+						delete(root, "mcp")
+					} else {
+						root["mcp"] = m
+					}
+				}
+			},
+		}}
 	}
-	return []string{p}
+	return l
 }
-
-func (Harness) ManagedRoots(scope domain.Scope, baseDir, _ string) []string {
-	if scope == domain.ScopeProject {
-		return ManagedRootsProject(baseDir)
-	}
-	return ManagedRootsGlobal(baseDir)
-}
-
-func (Harness) StrictExtraDirs(_ domain.Scope, _, _ string) []string { return nil }
 
 // Plan produces a Fragment from typed content.
 func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
@@ -61,12 +87,12 @@ func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
 }
 
 func planProject(f *domain.Fragment, ctx engine.SyncContext) error {
-	return planCodex(f, ctx, ctx.TargetDir, ctx.TargetDir, SettingsProjectPath(ctx.TargetDir))
+	return planCodex(f, ctx, ctx.TargetDir, ctx.TargetDir, settingsProjectPath(ctx.TargetDir))
 }
 
 func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 	codexHome := filepath.Join(ctx.TargetDir, ".codex")
-	return planCodex(f, ctx, codexHome, ctx.TargetDir, SettingsGlobalPath(ctx.TargetDir))
+	return planCodex(f, ctx, codexHome, ctx.TargetDir, settingsGlobalPath(ctx.TargetDir))
 }
 
 // planCodex is the shared implementation for both project and global scope.
@@ -161,48 +187,6 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 	}, nil
 }
 
-// StripManagedSettings removes sync-managed keys from rendered settings.
-func (Harness) StripManagedSettings(rendered []byte, _ string) ([]byte, error) {
-	return StripManagedKeys(rendered)
-}
-
-// CleanActions returns operations to reset Codex managed state.
-func (Harness) CleanActions(scope domain.Scope, baseDir, _ string) []harness.CleanAction {
-	var actions []harness.CleanAction
-	var configPath string
-	if scope == domain.ScopeProject {
-		configPath = SettingsProjectPath(baseDir)
-		actions = append(actions,
-			harness.CleanAction{Path: filepath.Join(baseDir, ".agents", "skills")},
-			harness.CleanAction{Path: filepath.Join(baseDir, "AGENTS.override.md")},
-		)
-	} else {
-		configPath = SettingsGlobalPath(baseDir)
-		codexHome := filepath.Join(baseDir, ".codex")
-		actions = append(actions,
-			harness.CleanAction{Path: filepath.Join(baseDir, ".agents", "skills")},
-			harness.CleanAction{Path: filepath.Join(codexHome, "rules")},
-			harness.CleanAction{Path: filepath.Join(codexHome, "AGENTS.override.md")},
-		)
-	}
-	actions = append(actions, harness.CleanAction{
-		Path:   configPath,
-		Format: harness.CleanTOML,
-		Edit: func(root map[string]any) {
-			delete(root, "mcp_servers")
-			if m, ok := root["mcp"].(map[string]any); ok {
-				delete(m, "servers")
-				if len(m) == 0 {
-					delete(root, "mcp")
-				} else {
-					root["mcp"] = m
-				}
-			}
-		},
-	})
-	return actions
-}
-
 // Capture extracts Codex content for round-trip save.
 func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
@@ -224,7 +208,7 @@ func captureProject(projectDir string, res harness.CaptureResult) (harness.Captu
 	// This is a one-way transform: rules must be round-tripped through the
 	// pack source, not through the harness.
 
-	settingsPath := SettingsProjectPath(projectDir)
+	settingsPath := settingsProjectPath(projectDir)
 	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
 		return res, fmt.Errorf("capture codex project settings: %w", err)
 	} else if ok {
@@ -238,37 +222,13 @@ func captureProject(projectDir string, res harness.CaptureResult) (harness.Captu
 }
 
 func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResult, error) {
-	codexHome := filepath.Join(home, ".codex")
-
 	harness.CapturePromotedContent(
 		filepath.Join(home, ".agents", "skills"),
 		&res,
 	)
-
-	// Capture user-authored .rules files (flat Dst).
-	// These are Codex-native format (not markdown+frontmatter), so they're
-	// captured as CopyActions rather than parsed into typed domain.Rule values.
-	// Other harnesses (claudecode, cline, opencode) use .md rules that get
-	// parsed; Codex rules stay as opaque files for round-trip fidelity.
-	rulesDir := filepath.Join(codexHome, "rules")
-	if entries, err := os.ReadDir(rulesDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			if strings.HasSuffix(strings.ToLower(e.Name()), ".rules") {
-				src := filepath.Join(rulesDir, e.Name())
-				res.Copies = append(res.Copies, domain.CopyAction{
-					Src: src, Dst: filepath.Join("rules", e.Name()), Kind: domain.CopyKindFile,
-				})
-			}
-		}
-	} else if !os.IsNotExist(err) {
-		res.Warnings = append(res.Warnings, domain.Warning{Path: rulesDir, Message: fmt.Sprintf("reading directory: %v", err)})
-	}
 	// AGENTS.override.md is fully generated by sync — not captured (see captureProject).
 
-	settingsPath := SettingsGlobalPath(home)
+	settingsPath := settingsGlobalPath(home)
 	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
 		return res, fmt.Errorf("capture codex global settings: %w", err)
 	} else if ok {

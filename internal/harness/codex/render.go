@@ -81,16 +81,3 @@ func RenderMCPOnly(servers []domain.MCPServer) ([]byte, []domain.Warning, error)
 	return RenderBytes(nil, servers)
 }
 
-// StripManagedKeys removes sync-managed keys from rendered settings.
-func StripManagedKeys(rendered []byte) ([]byte, error) {
-	root := map[string]any{}
-	if err := toml.Unmarshal(rendered, &root); err != nil {
-		return nil, err
-	}
-	delete(root, "mcp_servers")
-	out, err := toml.Marshal(root)
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
-}

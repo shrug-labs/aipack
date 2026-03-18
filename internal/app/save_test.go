@@ -246,19 +246,14 @@ type stubHarness struct {
 }
 
 func (s stubHarness) ID() domain.Harness                               { return s.id }
+func (s stubHarness) Layout(domain.Scope, string, string) harness.Layout { return harness.Layout{} }
 func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error) { return domain.Fragment{}, nil }
 func (s stubHarness) Render(harness.RenderContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s stubHarness) ManagedRoots(domain.Scope, string, string) []string      { return nil }
-func (s stubHarness) SettingsPaths(domain.Scope, string, string) []string     { return nil }
-func (s stubHarness) StrictExtraDirs(domain.Scope, string, string) []string   { return nil }
-func (s stubHarness) PackRelativePaths() []string                             { return nil }
-func (s stubHarness) StripManagedSettings(b []byte, _ string) ([]byte, error) { return b, nil }
 func (s stubHarness) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
 	return s.capture, nil
 }
-func (s stubHarness) CleanActions(domain.Scope, string, string) []harness.CleanAction { return nil }
 
 // writeLedger writes a ledger JSON file at path with the given entries.
 func writeLedger(t *testing.T, path string, entries map[string]domain.Entry) {

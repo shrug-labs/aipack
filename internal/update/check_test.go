@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -108,6 +109,92 @@ func TestCheck_NetworkFailureSilent(t *testing.T) {
 	r := Check("0.8.0", t.TempDir())
 	if r != nil {
 		t.Fatal("expected nil on network failure")
+	}
+}
+
+// Tests for internal distribution path — mutate package-level vars, do NOT add t.Parallel().
+func TestCheck_InternalFetchesVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("1.0.0\n"))
+	}))
+	defer srv.Close()
+
+	origDist := distribution
+	origURL := internalVersionURL
+	distribution = "internal"
+	internalVersionURL = srv.URL
+	t.Cleanup(func() { distribution = origDist; internalVersionURL = origURL })
+
+	r := Check("0.9.0", t.TempDir())
+	if r == nil {
+		t.Fatal("expected non-nil result for internal update")
+	}
+	if r.Latest != "1.0.0" {
+		t.Fatalf("expected latest=1.0.0, got %s", r.Latest)
+	}
+}
+
+func TestCheck_InternalNoURL(t *testing.T) {
+	origDist := distribution
+	origURL := internalVersionURL
+	distribution = "internal"
+	internalVersionURL = ""
+	t.Cleanup(func() { distribution = origDist; internalVersionURL = origURL })
+
+	r := Check("0.9.0", t.TempDir())
+	if r != nil {
+		t.Fatal("expected nil when internal URL not configured")
+	}
+}
+
+func TestCheck_InternalSameVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("0.9.0"))
+	}))
+	defer srv.Close()
+
+	origDist := distribution
+	origURL := internalVersionURL
+	distribution = "internal"
+	internalVersionURL = srv.URL
+	t.Cleanup(func() { distribution = origDist; internalVersionURL = origURL })
+
+	r := Check("0.9.0", t.TempDir())
+	if r != nil {
+		t.Fatal("expected nil when internal version matches current")
+	}
+}
+
+func TestNotice_Internal(t *testing.T) {
+	origDist := distribution
+	distribution = "internal"
+	t.Cleanup(func() { distribution = origDist })
+
+	r := &Result{Latest: "1.0.0", Current: "0.9.0"}
+	notice := r.Notice()
+	if !strings.Contains(notice, "aipack update") {
+		t.Fatalf("internal notice should suggest 'aipack update', got: %s", notice)
+	}
+	if strings.Contains(notice, "brew") {
+		t.Fatalf("internal notice should not mention brew, got: %s", notice)
+	}
+}
+
+func TestNotice_GitHub(t *testing.T) {
+	origDist := distribution
+	distribution = "github"
+	t.Cleanup(func() { distribution = origDist })
+
+	r := &Result{Latest: "1.0.0", Current: "0.9.0", UpdateURL: "https://example.com"}
+	notice := r.Notice()
+	if !strings.Contains(notice, "aipack update") {
+		t.Fatalf("github notice should suggest 'aipack update', got: %s", notice)
+	}
+}
+
+func TestDistribution(t *testing.T) {
+	if got := Distribution(); got != "github" {
+		t.Fatalf("default distribution should be 'github', got %s", got)
 	}
 }
 

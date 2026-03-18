@@ -12,6 +12,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
 )
 
@@ -996,7 +997,7 @@ func (m saveTabModel) loadCandidateDiff(c app.SaveCandidate) tea.Cmd {
 
 		labelA := filepath.Base(c.PackPath) + " (in pack)"
 		labelB := title + " (in harness)"
-		diffText := app.ComputeDiff(onDisk, desired, labelA, labelB)
+		diffText := engine.UnifiedDiff(onDisk, desired, labelA, labelB)
 		return diffLoadedMsg{dst: c.PackPath, title: title, diffText: diffText}
 	}
 }

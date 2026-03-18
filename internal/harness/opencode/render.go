@@ -109,23 +109,3 @@ func RenderManagedKeysOnly(servers []domain.MCPServer, instr InstructionsSpec, s
 	return append(out, '\n'), warnings, nil
 }
 
-// StripManagedKeys removes sync-managed keys from rendered settings.
-// Only the base settings file has managed keys; drop-in configs are returned as-is.
-func StripManagedKeys(rendered []byte, filename string) ([]byte, error) {
-	if filename != baseSettingsFile {
-		return rendered, nil
-	}
-	root := map[string]any{}
-	if err := json.Unmarshal(rendered, &root); err != nil {
-		return nil, err
-	}
-	delete(root, "mcp")
-	delete(root, "tools")
-	delete(root, "instructions")
-	delete(root, "skills")
-	out, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
-}

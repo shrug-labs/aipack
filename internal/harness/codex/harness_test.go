@@ -454,14 +454,20 @@ func TestBuildManagedContent_Empty(t *testing.T) {
 	}
 }
 
-// --- StripManagedKeys tests ---
+// --- Strip via Layout tests ---
 
-func TestStripManagedKeys_RemovesMCPServers(t *testing.T) {
+func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
 	t.Parallel()
+	projectDir := t.TempDir()
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
+	if len(layout.OwnedFiles) == 0 {
+		t.Fatal("expected at least one owned file")
+	}
 	input := []byte("foo = 'bar'\n\n[mcp_servers.test]\nenabled = true\ncommand = 'echo'\n")
-	out, err := StripManagedKeys(input)
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
 	if err != nil {
-		t.Fatalf("StripManagedKeys: %v", err)
+		t.Fatalf("StripManaged: %v", err)
 	}
 
 	var root map[string]any
@@ -561,22 +567,89 @@ startup_timeout_sec = 10
 	}
 }
 
-// --- Managed roots tests ---
+// --- Layout tests ---
 
-func TestManagedRootsProject(t *testing.T) {
+func TestLayout_Project(t *testing.T) {
 	t.Parallel()
-	projectDir := t.TempDir()
-	roots := ManagedRootsProject(projectDir)
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
-	wantOverride := filepath.Join(projectDir, "AGENTS.override.md")
-	found := false
-	for _, r := range roots {
-		if r == wantOverride {
-			found = true
+	want := map[string]bool{
+		"/proj/.agents/skills":     false,
+		"/proj/AGENTS.override.md": false,
+		"/proj/.codex/config.toml": false,
+	}
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
 		}
 	}
-	if !found {
-		t.Fatalf("missing AGENTS.override.md in managed roots; got %v", roots)
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
+	}
+	wantRemove := map[string]bool{
+		"/proj/.agents/skills":     false,
+		"/proj/AGENTS.override.md": false,
+	}
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected remove path: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing remove path: %s", path)
+		}
+	}
+
+	if len(layout.OwnedFiles) != 1 {
+		t.Fatalf("expected 1 OwnedFile, got %d", len(layout.OwnedFiles))
+	}
+}
+
+func TestLayout_Global(t *testing.T) {
+	t.Parallel()
+	h := Harness{}
+	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
+
+	want := map[string]bool{
+		"/home/.agents/skills":            false,
+		"/home/.codex/AGENTS.override.md": false,
+		"/home/.codex/config.toml":        false,
+	}
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
+		}
+	}
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
+	}
+	wantRemove := map[string]bool{
+		"/home/.agents/skills":            false,
+		"/home/.codex/AGENTS.override.md": false,
+	}
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected remove path: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing remove path: %s", path)
+		}
 	}
 }
 

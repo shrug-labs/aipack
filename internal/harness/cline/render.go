@@ -81,16 +81,3 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 	return append(out, '\n'), warnings, nil
 }
 
-// StripManagedKeys removes sync-managed keys from rendered settings.
-func StripManagedKeys(rendered []byte) ([]byte, error) {
-	root := map[string]any{}
-	if err := json.Unmarshal(rendered, &root); err != nil {
-		return nil, err
-	}
-	delete(root, "mcpServers")
-	out, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
-}

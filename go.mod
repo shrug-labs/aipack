@@ -1,6 +1,8 @@
 module github.com/shrug-labs/aipack
 
-go 1.24.0
+go 1.26
+
+toolchain go1.26.1
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.6

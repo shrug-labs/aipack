@@ -142,77 +142,13 @@ func TestSyncTab_ScopeToggle_EndToEnd(t *testing.T) {
 	}
 }
 
-func TestSyncTab_PruneToggle(t *testing.T) {
-	t.Parallel()
-	m := newSyncTabModel("")
-	m.width = 120
-	m.height = 40
-
-	if m.prune {
-		t.Fatal("expected prune=false by default")
-	}
-
-	// Move to prune field and toggle on.
-	m.cursor = m.fieldCount() - 1
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
-	if cmd != nil {
-		t.Fatal("expected prune toggle to be handled locally")
-	}
-	if !m.prune {
-		t.Fatal("expected prune=true after first toggle")
-	}
-
-	// Toggle off.
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
-	if cmd != nil {
-		t.Fatal("expected prune toggle to be handled locally")
-	}
-	if m.prune {
-		t.Fatal("expected prune=false after second toggle")
-	}
-}
-
-func TestSyncTab_PKeyDoesNotTogglePrune(t *testing.T) {
-	t.Parallel()
-	m := newSyncTabModel("")
-	m.width = 120
-	m.height = 40
-
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if m.prune {
-		t.Fatal("expected prune to ignore the p shortcut")
-	}
-}
-
-func TestSyncTab_ViewShowsPrune(t *testing.T) {
-	t.Parallel()
-	m := newSyncTabModel("")
-	m.width = 120
-	m.height = 40
-
-	view := m.View()
-	if !strings.Contains(view, "Prune:     off") {
-		t.Fatalf("expected 'Prune:     off' when prune is false, got:\n%s", view)
-	}
-
-	m.prune = true
-	view = m.View()
-	if !strings.Contains(view, "Prune:     on") {
-		t.Fatalf("expected 'Prune:     on' when prune is true, got:\n%s", view)
-	}
-}
-
-func TestSyncTab_ViewHighlightsPruneAndAlignsHarnessesLabel(t *testing.T) {
+func TestSyncTab_ViewAlignsHarnessesLabel(t *testing.T) {
 	t.Parallel()
 	m := newSyncTabModel("/tmp/config")
 	m.width = 120
 	m.height = 40
-	m.cursor = m.fieldCount() - 1
 
 	view := m.View()
-	if !strings.Contains(view, "> Prune:     off") {
-		t.Fatalf("expected prune field to be cursor-selectable, got:\n%s", view)
-	}
 	if !strings.Contains(view, "  Harnesses:") {
 		t.Fatalf("expected harnesses label to align with other fields, got:\n%s", view)
 	}

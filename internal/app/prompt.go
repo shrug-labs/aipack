@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -38,6 +39,9 @@ func PromptList(configDir string) ([]PromptEntry, error) {
 
 	var prompts []PromptEntry
 	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
 		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue
 		}

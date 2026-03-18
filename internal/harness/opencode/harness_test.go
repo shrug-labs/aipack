@@ -547,47 +547,93 @@ func TestMergeInstructions_NoManage(t *testing.T) {
 	}
 }
 
-// --- Managed roots tests ---
+// --- Layout tests ---
 
-func TestManagedRootsProject(t *testing.T) {
+func TestLayout_Project(t *testing.T) {
 	t.Parallel()
-	projectDir := t.TempDir()
-	roots := ManagedRootsProject(projectDir)
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
-	wantRules := filepath.Join(projectDir, ".opencode", "rules")
-	wantSkills := filepath.Join(projectDir, ".opencode", "skills")
-
-	foundRules, foundSkills := false, false
-	for _, r := range roots {
-		if r == wantRules {
-			foundRules = true
-		}
-		if r == wantSkills {
-			foundSkills = true
+	want := map[string]bool{
+		"/proj/.opencode": false,
+	}
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
 		}
 	}
-	if !foundRules {
-		t.Fatalf("missing rules dir %q; got %v", wantRules, roots)
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
 	}
-	if !foundSkills {
-		t.Fatalf("missing skills dir %q; got %v", wantSkills, roots)
+	wantRemove := map[string]bool{
+		"/proj/.opencode/agents":   false,
+		"/proj/.opencode/commands": false,
+		"/proj/.opencode/rules":    false,
+		"/proj/.opencode/skills":   false,
 	}
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected remove path: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing remove path: %s", path)
+		}
+	}
+
+	if len(layout.OwnedFiles) != 1 {
+		t.Fatalf("expected 1 OwnedFile, got %d", len(layout.OwnedFiles))
+	}
+	if layout.OwnedFiles[0].Path != "/proj/.opencode/opencode.json" {
+		t.Errorf("OwnedFile path = %s, want opencode.json", layout.OwnedFiles[0].Path)
+	}
+
 }
 
-func TestStrictExtraDirsProject(t *testing.T) {
+func TestLayout_Global(t *testing.T) {
 	t.Parallel()
-	projectDir := t.TempDir()
-	dirs := StrictExtraDirsProject(projectDir)
+	h := Harness{}
+	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
 
-	wantRules := filepath.Join(projectDir, ".opencode", "rules")
-	found := false
-	for _, d := range dirs {
-		if d == wantRules {
-			found = true
+	want := map[string]bool{
+		"/home/.config/opencode": false,
+	}
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
 		}
 	}
-	if !found {
-		t.Fatalf("missing rules dir %q; got %v", wantRules, dirs)
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
+	}
+	wantRemove := map[string]bool{
+		"/home/.config/opencode/agents":   false,
+		"/home/.config/opencode/commands": false,
+		"/home/.config/opencode/rules":    false,
+		"/home/.config/opencode/skills":   false,
+	}
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected remove path: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing remove path: %s", path)
+		}
 	}
 }
 
@@ -770,14 +816,17 @@ func TestCapture_Project_MultiSegmentServerName(t *testing.T) {
 	}
 }
 
-// --- StripManagedKeys tests ---
+// --- Strip via Layout tests ---
 
-func TestStripManagedKeys_RemovesMCPAndTools(t *testing.T) {
+func TestLayout_StripManaged_RemovesMCPAndTools(t *testing.T) {
 	t.Parallel()
+	projectDir := t.TempDir()
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
 	input := []byte(`{"mcp": {"foo": {}}, "tools": {"bar": true}, "custom": "keep"}`)
-	out, err := StripManagedKeys(input, "opencode.json")
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
 	if err != nil {
-		t.Fatalf("StripManagedKeys: %v", err)
+		t.Fatalf("StripManaged: %v", err)
 	}
 
 	var root map[string]any
@@ -795,12 +844,15 @@ func TestStripManagedKeys_RemovesMCPAndTools(t *testing.T) {
 	}
 }
 
-func TestStripManagedKeys_DropIn_PassThrough(t *testing.T) {
+func TestLayout_StripManaged_UnmatchedPath_PassThrough(t *testing.T) {
 	t.Parallel()
+	projectDir := t.TempDir()
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
 	input := []byte(`{"mcp": {"foo": {}}}`)
-	out, err := StripManagedKeys(input, "custom-theme.json")
+	out, err := layout.StripManaged(input, "/some/other/path.json")
 	if err != nil {
-		t.Fatalf("StripManagedKeys: %v", err)
+		t.Fatalf("StripManaged: %v", err)
 	}
 
 	var root map[string]any
@@ -808,7 +860,7 @@ func TestStripManagedKeys_DropIn_PassThrough(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, ok := root["mcp"]; !ok {
-		t.Fatal("drop-in config should pass through without stripping")
+		t.Fatal("unmatched path should pass through without stripping")
 	}
 }
 

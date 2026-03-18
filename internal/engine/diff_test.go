@@ -11,16 +11,16 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// ClassifyFileKind tests
+// classifyFileKind tests
 // ---------------------------------------------------------------------------
 
-func TestClassifyFileKind_Create(t *testing.T) {
+func Test_classifyFileKind_Create(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "missing.md")
 	lg := domain.NewLedger()
 
-	kind, err := ClassifyFileKind(dst, []byte("content"), lg)
+	kind, err := classifyFileKind(dst, []byte("content"), lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestClassifyFileKind_Create(t *testing.T) {
 	}
 }
 
-func TestClassifyFileKind_Identical(t *testing.T) {
+func Test_classifyFileKind_Identical(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "same.md")
@@ -39,7 +39,7 @@ func TestClassifyFileKind_Identical(t *testing.T) {
 	}
 	lg := domain.NewLedger()
 
-	kind, err := ClassifyFileKind(dst, content, lg)
+	kind, err := classifyFileKind(dst, content, lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestClassifyFileKind_Identical(t *testing.T) {
 	}
 }
 
-func TestClassifyFileKind_Managed(t *testing.T) {
+func Test_classifyFileKind_Managed(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "managed.md")
@@ -60,7 +60,7 @@ func TestClassifyFileKind_Managed(t *testing.T) {
 	lg := domain.NewLedger()
 	lg.Record(dst, oldContent, "pack1", nil, time.Now())
 
-	kind, err := ClassifyFileKind(dst, newContent, lg)
+	kind, err := classifyFileKind(dst, newContent, lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestClassifyFileKind_Managed(t *testing.T) {
 	}
 }
 
-func TestClassifyFileKind_Conflict(t *testing.T) {
+func Test_classifyFileKind_Conflict(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "conflict.md")
@@ -85,7 +85,7 @@ func TestClassifyFileKind_Conflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	kind, err := ClassifyFileKind(dst, newContent, lg)
+	kind, err := classifyFileKind(dst, newContent, lg)
 	if err != nil {
 		t.Fatal(err)
 	}

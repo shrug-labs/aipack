@@ -20,6 +20,11 @@ type Harness interface {
 	// ID returns the harness identifier.
 	ID() domain.Harness
 
+	// Layout describes the harness's filesystem footprint for a given scope:
+	// which paths it owns, which files it partially manages, and how to
+	// strip or reset its managed content.
+	Layout(scope domain.Scope, baseDir, home string) Layout
+
 	// Plan produces a Fragment of writes/copies/settings from typed content.
 	// Satisfies engine.Planner.
 	Plan(ctx engine.SyncContext) (domain.Fragment, error)
@@ -27,29 +32,44 @@ type Harness interface {
 	// Render produces a Fragment for pack rendering (portable output).
 	Render(ctx RenderContext) (domain.Fragment, error)
 
-	// ManagedRoots returns paths managed by this harness for the given scope.
-	// home is $HOME, always set even in project scope (needed by Cline for global MCP settings).
-	ManagedRoots(scope domain.Scope, baseDir, home string) []string
-
-	// SettingsPaths returns settings file paths for diff comparison.
-	SettingsPaths(scope domain.Scope, baseDir, home string) []string
-
-	// StrictExtraDirs returns extra directories to check in strict mode.
-	StrictExtraDirs(scope domain.Scope, baseDir, home string) []string
-
-	// PackRelativePaths returns pack-relative paths for this harness.
-	PackRelativePaths() []string
-
-	// StripManagedSettings removes sync-managed fields from rendered settings.
-	StripManagedSettings(rendered []byte, filename string) ([]byte, error)
-
 	// Capture extracts harness-native content for round-trip save.
 	Capture(ctx CaptureContext) (CaptureResult, error)
+}
 
-	// CleanActions returns operations to reset this harness's managed state.
-	// Each harness owns the knowledge of what paths to remove and what config
-	// keys to clear — app/clean.go only handles I/O mechanics.
-	CleanActions(scope domain.Scope, baseDir, home string) []CleanAction
+// FileFormat identifies the serialization format of an OwnedFile.
+type FileFormat int
+
+const (
+	FormatJSON FileFormat = iota
+	FormatTOML
+)
+
+// Layout describes a harness's filesystem footprint for a given deployment
+// context (scope + directories). ValidationRoots, RemovePaths, and OwnedFiles
+// express distinct ownership semantics and must not be conflated.
+type Layout struct {
+	// ValidationRoots are paths this harness is allowed to write under.
+	// Used for destination validation, stale-file scoping, and path ownership.
+	ValidationRoots []string
+
+	// RemovePaths are fully-owned paths safe to delete wholesale during clean.
+	// These may be directories or leaf files.
+	RemovePaths []string
+
+	// OwnedFiles are files where the harness manages specific keys.
+	// Both clean and capture derive their behavior from these entries.
+	OwnedFiles []OwnedFile
+}
+
+// OwnedFile describes a file where the harness manages specific keys.
+// Strip and Reset express different operations on the same ownership:
+// Strip selectively removes managed content (for capture/save),
+// Reset aggressively clears managed sections (for clean).
+type OwnedFile struct {
+	Path   string
+	Format FileFormat
+	Strip  func(root map[string]any) // capture: selectively remove managed content
+	Reset  func(root map[string]any) // clean: reset managed sections
 }
 
 // RenderContext provides typed data for pack rendering.
@@ -201,15 +221,15 @@ func (r *Registry) AsPlanners(ids []domain.Harness) ([]engine.Planner, error) {
 	return out, nil
 }
 
-// ManagedRoots returns all managed roots for the given scope and harness IDs.
-func ManagedRoots(r *Registry, scope domain.Scope, baseDir, home string, ids []domain.Harness) []string {
+// ValidationRoots returns all validation roots for the given scope and harness IDs.
+func ValidationRoots(r *Registry, scope domain.Scope, baseDir, home string, ids []domain.Harness) []string {
 	var roots []string
 	for _, id := range ids {
 		h, err := r.Lookup(id)
 		if err != nil {
 			continue
 		}
-		roots = append(roots, h.ManagedRoots(scope, baseDir, home)...)
+		roots = append(roots, h.Layout(scope, baseDir, home).ValidationRoots...)
 	}
 	return roots
 }
@@ -364,41 +384,40 @@ func PlanStandardContent(
 }
 
 // ---------------------------------------------------------------------------
-// Clean support
-// ---------------------------------------------------------------------------
-
-// CleanFormat specifies how a clean action processes a path.
-type CleanFormat int
-
-const (
-	CleanRemove CleanFormat = iota // remove the path entirely
-	CleanJSON                      // parse as JSON, apply Edit, rewrite
-	CleanTOML                      // parse as TOML, apply Edit, rewrite
-)
-
-// CleanAction describes a single clean operation for a harness.
-type CleanAction struct {
-	Path   string
-	Format CleanFormat
-	Edit   func(root map[string]any) // non-nil for CleanJSON/CleanTOML
-}
-
-// ---------------------------------------------------------------------------
 // Path ownership
 // ---------------------------------------------------------------------------
 
-// IdentifyHarness returns the harness that manages the given path, using
-// each harness's ManagedRoots for prefix matching. Returns "" if no harness
-// claims the path.
-func IdentifyHarness(reg *Registry, scope domain.Scope, baseDir, home, path string) domain.Harness {
-	cleanPath := filepath.Clean(path)
+// RootsIndex is a pre-computed mapping from cleaned ValidationRoots to harness IDs.
+// Build once with BuildRootsIndex, then call Identify per path.
+type RootsIndex struct {
+	entries []rootEntry
+}
+
+type rootEntry struct {
+	root string
+	id   domain.Harness
+}
+
+// BuildRootsIndex pre-computes ValidationRoots for all harnesses in the registry.
+func BuildRootsIndex(reg *Registry, scope domain.Scope, baseDir, home string) RootsIndex {
+	var entries []rootEntry
 	for _, h := range reg.All() {
-		for _, root := range h.ManagedRoots(scope, baseDir, home) {
-			cleanRoot := filepath.Clean(root)
-			if cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator)) {
-				return h.ID()
-			}
+		for _, root := range h.Layout(scope, baseDir, home).ValidationRoots {
+			entries = append(entries, rootEntry{root: filepath.Clean(root), id: h.ID()})
+		}
+	}
+	return RootsIndex{entries: entries}
+}
+
+// Identify returns the harness that manages the given path via prefix matching.
+// Returns "" if no harness claims the path.
+func (idx RootsIndex) Identify(path string) domain.Harness {
+	cleanPath := filepath.Clean(path)
+	for _, e := range idx.entries {
+		if cleanPath == e.root || strings.HasPrefix(cleanPath, e.root+string(filepath.Separator)) {
+			return e.id
 		}
 	}
 	return ""
 }
+

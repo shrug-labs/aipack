@@ -12,7 +12,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/harness"
 )
 
-// pipelineStub extends stubHarness with ManagedRoots support.
+// pipelineStub extends stubHarness with ValidationRoots support.
 type pipelineStub struct {
 	id      domain.Harness
 	capture harness.CaptureResult
@@ -20,23 +20,18 @@ type pipelineStub struct {
 }
 
 func (s pipelineStub) ID() domain.Harness { return s.id }
+func (s pipelineStub) Layout(domain.Scope, string, string) harness.Layout {
+	return harness.Layout{ValidationRoots: s.roots}
+}
 func (s pipelineStub) Plan(engine.SyncContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
 func (s pipelineStub) Render(harness.RenderContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
-func (s pipelineStub) ManagedRoots(domain.Scope, string, string) []string    { return s.roots }
-func (s pipelineStub) SettingsPaths(domain.Scope, string, string) []string   { return nil }
-func (s pipelineStub) StrictExtraDirs(domain.Scope, string, string) []string { return nil }
-func (s pipelineStub) PackRelativePaths() []string                           { return nil }
-func (s pipelineStub) StripManagedSettings(b []byte, _ string) ([]byte, error) {
-	return b, nil
-}
 func (s pipelineStub) Capture(harness.CaptureContext) (harness.CaptureResult, error) {
 	return s.capture, nil
 }
-func (s pipelineStub) CleanActions(domain.Scope, string, string) []harness.CleanAction { return nil }
 
 func TestDetectHarnessesWithContent(t *testing.T) {
 	t.Parallel()

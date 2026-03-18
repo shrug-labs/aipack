@@ -21,7 +21,7 @@ const (
 	PlanOpSkill    PlanOpKind = "skill"
 	PlanOpSettings PlanOpKind = "settings"
 	PlanOpMCP      PlanOpKind = "mcp"
-	PlanOpPrune    PlanOpKind = "prune"
+	PlanOpStale    PlanOpKind = "stale"
 )
 
 // PlanOp represents a single classified plan operation.
@@ -55,7 +55,7 @@ type PlanSummary struct {
 	NumSkills      int
 	NumSettings    int
 	NumMCP         int
-	NumPrunes      int
+	NumStale       int
 	LedgerPath     string
 	LedgerFiles    int
 	HarnessLedgers []HarnessLedgerInfo
@@ -69,7 +69,7 @@ func (ps PlanSummary) NumContent() int {
 
 // TotalChanges returns the total number of pending changes.
 func (ps PlanSummary) TotalChanges() int {
-	return ps.NumContent() + ps.NumSettings + ps.NumMCP + ps.NumPrunes
+	return ps.NumContent() + ps.NumSettings + ps.NumMCP + ps.NumStale
 }
 
 // PlanWithDiffs plans a sync and classifies each action against on-disk state,
@@ -229,13 +229,13 @@ func PlanWithDiffs(profile domain.Profile, req SyncRequest, reg *harness.Registr
 		summary.NumMCP += mCount
 		summary.Ops = append(summary.Ops, mOps...)
 
-		// Detect prune candidates per harness.
-		managedRoots := h.ManagedRoots(req.Scope, baseDir, req.Home)
-		if candidates, perr := engine.PruneCandidatesWithLedger(plan, managedRoots, lg); perr == nil {
+		// Detect stale files per harness.
+		managedRoots := h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
+		if candidates, perr := engine.StaleCandidatesWithLedger(plan, managedRoots, lg); perr == nil {
 			for _, p := range candidates {
-				summary.NumPrunes++
+				summary.NumStale++
 				summary.Ops = append(summary.Ops, PlanOp{
-					Kind: PlanOpPrune,
+					Kind: PlanOpStale,
 					Dst:  p,
 				})
 			}

@@ -98,7 +98,7 @@ func validateOutDir(profile domain.Profile, outDirAbs string) error {
 	// Refuse to render into any pack source directory.
 	for _, pack := range profile.Packs {
 		packRoot := filepath.Clean(pack.Root)
-		if filepath.Clean(outDirAbs) == packRoot || domain.IsUnder(outDirAbs, packRoot) {
+		if domain.IsUnderAny(outDirAbs, []string{packRoot}) {
 			return fmt.Errorf("refusing to render into pack content dir: out-dir=%s", outDirAbs)
 		}
 	}

@@ -192,40 +192,6 @@ func TestPlan_Project_EmptyContent(t *testing.T) {
 	}
 }
 
-func TestPlan_Project_NoManagedMd(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	h := Harness{}
-	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: dir,
-		Profile: domain.Profile{
-			Packs: []domain.Pack{{
-				Rules: []domain.Rule{
-					{Name: "rule", Raw: []byte("Some rule"), SourcePack: "test"},
-				},
-			}},
-		},
-	}
-
-	f, err := h.Plan(ctx)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-
-	for _, w := range f.Writes {
-		if strings.Contains(w.Dst, managedFile) {
-			t.Errorf("should not write %s, got write to %s", managedFile, w.Dst)
-		}
-	}
-	for _, c := range f.Copies {
-		if strings.Contains(c.Dst, managedFile) {
-			t.Errorf("should not copy %s, got copy to %s", managedFile, c.Dst)
-		}
-	}
-}
-
 func TestPlan_Global_WritesToGlobalDirs(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -698,52 +664,100 @@ func TestCapture_Project_ParsesSettingsPermissions(t *testing.T) {
 	}
 }
 
-func TestManagedRoots_Project(t *testing.T) {
+func TestLayout_Project(t *testing.T) {
 	t.Parallel()
 	h := Harness{}
-	roots := h.ManagedRoots(domain.ScopeProject, "/proj", "/home")
+	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
-	// Should include rules, agents, skills, commands, CLAUDE.managed.md, .mcp.json, settings.local.json.
-	if len(roots) < 5 {
-		t.Errorf("expected at least 5 managed roots, got %d: %v", len(roots), roots)
+	want := map[string]bool{
+		"/proj/.claude/rules":               false,
+		"/proj/.claude/agents":              false,
+		"/proj/.claude/commands":            false,
+		"/proj/.claude/skills":              false,
+		"/proj/.mcp.json":                   false,
+		"/proj/.claude/settings.local.json": false,
 	}
-
-	var hasRules, hasAgents, hasMCP bool
-	for _, r := range roots {
-		if strings.Contains(r, "rules") {
-			hasRules = true
-		}
-		if strings.Contains(r, "agents") {
-			hasAgents = true
-		}
-		if strings.Contains(r, ".mcp.json") {
-			hasMCP = true
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
 		}
 	}
-	if !hasRules || !hasAgents || !hasMCP {
-		t.Errorf("missing expected managed roots: rules=%v agents=%v mcp=%v", hasRules, hasAgents, hasMCP)
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
+	}
+	wantRemove := map[string]bool{
+		"/proj/.claude/rules":    false,
+		"/proj/.claude/agents":   false,
+		"/proj/.claude/commands": false,
+		"/proj/.claude/skills":   false,
+	}
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected remove path: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing remove path: %s", path)
+		}
+	}
+
+	if len(layout.OwnedFiles) != 2 {
+		t.Fatalf("expected 2 OwnedFiles, got %d", len(layout.OwnedFiles))
 	}
 }
 
-func TestManagedRoots_Global(t *testing.T) {
+func TestLayout_Global(t *testing.T) {
 	t.Parallel()
 	h := Harness{}
-	roots := h.ManagedRoots(domain.ScopeGlobal, "/home/user", "/home/user")
+	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
 
-	if len(roots) < 4 {
-		t.Errorf("expected at least 4 global managed roots, got %d: %v", len(roots), roots)
+	want := map[string]bool{
+		"/home/.claude/rules":               false,
+		"/home/.claude/agents":              false,
+		"/home/.claude/commands":            false,
+		"/home/.claude/skills":              false,
+		"/home/.claude.json":                false,
+		"/home/.claude/settings.local.json": false,
+	}
+	for _, r := range layout.ValidationRoots {
+		if _, ok := want[r]; ok {
+			want[r] = true
+		} else {
+			t.Errorf("unexpected validation root: %s", r)
+		}
+	}
+	for path, found := range want {
+		if !found {
+			t.Errorf("missing validation root: %s", path)
+		}
+	}
+	wantRemove := map[string]bool{
+		"/home/.claude/rules":    false,
+		"/home/.claude/agents":   false,
+		"/home/.claude/commands": false,
+		"/home/.claude/skills":   false,
+	}
+	for _, p := range layout.RemovePaths {
+		if _, ok := wantRemove[p]; ok {
+			wantRemove[p] = true
+		} else {
+			t.Errorf("unexpected remove path: %s", p)
+		}
+	}
+	for path, found := range wantRemove {
+		if !found {
+			t.Errorf("missing remove path: %s", path)
+		}
 	}
 
-	var hasRules, hasAgents bool
-	for _, r := range roots {
-		if strings.Contains(r, "rules") {
-			hasRules = true
-		}
-		if strings.Contains(r, "agents") {
-			hasAgents = true
-		}
-	}
-	if !hasRules || !hasAgents {
-		t.Errorf("missing expected global roots: rules=%v agents=%v", hasRules, hasAgents)
+	if len(layout.OwnedFiles) != 2 {
+		t.Fatalf("expected 2 OwnedFiles, got %d", len(layout.OwnedFiles))
 	}
 }
