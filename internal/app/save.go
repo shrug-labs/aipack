@@ -15,10 +15,6 @@ import (
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
-func ledgerPathForScope(scope domain.Scope, projectDir, home string, h domain.Harness) string {
-	return engine.LedgerPathForScope(scope, projectDir, home, strings.ToLower(string(h)))
-}
-
 func saveFileToPack(src, dst string) error {
 	b, err := os.ReadFile(src)
 	if err != nil {
@@ -231,7 +227,7 @@ func RunRoundTrip(req RoundTripRequest, reg *harness.Registry) (RoundTripResult,
 	var result RoundTripResult
 
 	for _, hid := range req.Harnesses {
-		ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, home, hid)
+		ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, home, hid)
 		lg, ledgerWarn, err := engine.LoadLedger(ledgerPath)
 		if err != nil {
 			return RoundTripResult{}, fmt.Errorf("loading ledger for %s: %w", hid, err)

@@ -256,7 +256,7 @@ func TestRunTrace_ClassifiesPromotedContentWithSourceDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		dstPath: {
 			SourcePack: "core",
@@ -337,7 +337,7 @@ func TestRunTrace_ClassifiesTrackedMCPConflictFromLiveConfig(t *testing.T) {
 		t.Fatalf("MCPTrackedBytes(desired): %v", err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		domain.MCPLedgerKey(configPath, "jira"): {
 			SourcePack: "core",

@@ -78,7 +78,7 @@ func InspectHarness(req InspectRequest, reg *harness.Registry) (InspectResult, e
 	lg := domain.NewLedger()
 	var firstLedgerPath string
 	for _, hid := range req.Harnesses {
-		lp := ledgerPathForScope(req.Scope, req.ProjectDir, home, hid)
+		lp := engine.LedgerPathForScope(req.Scope, req.ProjectDir, home, hid)
 		if firstLedgerPath == "" {
 			firstLedgerPath = lp
 		}

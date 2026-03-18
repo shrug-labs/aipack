@@ -27,7 +27,7 @@ func TestInspectHarness_UsesPerServerMCPPath(t *testing.T) {
 		t.Fatalf("MCPTrackedBytes: %v", err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		domain.MCPLedgerKey(configPath, "jira"): {
 			SourcePack: "test-pack",
@@ -112,7 +112,7 @@ func TestInspectHarness_MCPMetadataDoesNotCauseConflictAfterSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		domain.MCPLedgerKey(configPath, "jira"): {
 			SourcePack: "test-pack",

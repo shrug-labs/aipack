@@ -1,18 +1,35 @@
 package codex
 
-import (
-	"path/filepath"
-)
+import "github.com/shrug-labs/aipack/internal/domain"
 
-// settingsProjectPath returns the config.toml path for a project.
-func settingsProjectPath(projectDir string) string {
-	return filepath.Join(projectDir, ".codex", "config.toml")
+// Paths describes the filesystem locations Codex uses for a given scope.
+// All paths are relative to the scope's base directory (project dir or $HOME).
+// Codex does not support rules, agents, or workflows as separate content —
+// rules are flattened into AGENTS.override.md during Plan.
+type Paths struct {
+	SkillsDir    string
+	OverrideFile string
+	SettingsFile string
 }
 
-// settingsGlobalPath returns the global config.toml path (~/.codex/config.toml).
-func settingsGlobalPath(home string) string {
-	if home == "" {
-		return ""
+// ProjectPaths defines Codex's project-scope paths (relative to project dir).
+var ProjectPaths = Paths{
+	SkillsDir:    ".agents/skills",
+	OverrideFile: "AGENTS.override.md",
+	SettingsFile: ".codex/config.toml",
+}
+
+// GlobalPaths defines Codex's global-scope paths (relative to $HOME).
+var GlobalPaths = Paths{
+	SkillsDir:    ".agents/skills",
+	OverrideFile: ".codex/AGENTS.override.md",
+	SettingsFile: ".codex/config.toml",
+}
+
+// PathsForScope returns the Paths for the given scope.
+func PathsForScope(scope domain.Scope) Paths {
+	if scope == domain.ScopeProject {
+		return ProjectPaths
 	}
-	return filepath.Join(home, ".codex", "config.toml")
+	return GlobalPaths
 }

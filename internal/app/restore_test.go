@@ -33,14 +33,14 @@ func TestRunRestore_RestoresAllHarnesses(t *testing.T) {
 		Dst:     claudePath,
 		Desired: []byte("managed"),
 		Harness: domain.HarnessClaudeCode,
-	}}, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, string(domain.HarnessClaudeCode)), false); err != nil {
+	}}, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.SnapshotSettingsFiles([]domain.SettingsAction{{
 		Dst:     codexPath,
 		Desired: []byte("managed"),
 		Harness: domain.HarnessCodex,
-	}}, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, string(domain.HarnessCodex)), false); err != nil {
+	}}, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex), false); err != nil {
 		t.Fatal(err)
 	}
 

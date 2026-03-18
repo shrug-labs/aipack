@@ -73,5 +73,5 @@ func ledgerPath(req PlanRequest) string {
 	if len(req.Harnesses) == 0 {
 		return ""
 	}
-	return LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, string(req.Harnesses[0]))
+	return LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses[0])
 }

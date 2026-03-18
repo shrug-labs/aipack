@@ -18,7 +18,7 @@ func TestInspectHarness_ClassifiesPromotedContentWritesAsAgents(t *testing.T) {
 	packRoot := filepath.Join(home, "packs", "test-pack")
 	sourceDigest := domain.SingleFileDigest([]byte("promoted skill"))
 
-	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex"), map[string]domain.Entry{
+	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex), map[string]domain.Entry{
 		skillFile: {SourcePack: "test-pack", Digest: sourceDigest},
 	})
 

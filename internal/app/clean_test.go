@@ -224,7 +224,7 @@ func TestBuildCleanOps_OpenCodeRemovesLedgerTrackedDropInFile(t *testing.T) {
 	home := t.TempDir()
 
 	dropIn := filepath.Join(projectDir, ".opencode", "oh-my-opencode.json")
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, strings.ToLower(string(domain.HarnessOpenCode)))
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessOpenCode)
 	ledger := domain.NewLedger()
 	ledger.Managed[dropIn] = domain.Entry{Digest: "abc123", SourcePack: "test-pack"}
 	if err := engine.SaveLedger(ledgerPath, ledger, false); err != nil {

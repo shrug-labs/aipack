@@ -538,7 +538,7 @@ func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	if err := engine.SaveLedger(ledgerPath, domain.Ledger{
 		Managed: map[string]domain.Entry{
 			trackedFile: {Digest: domain.SingleFileDigest([]byte(`{"ok":true}`))},
@@ -566,7 +566,7 @@ func TestDoctorCheckStaleLedgers_FindsNestedProjectLedgerDirs(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".config", "aipack")
 	projectDir := filepath.Join(home, "project")
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 
 	if err := engine.SaveLedger(ledgerPath, domain.Ledger{Managed: map[string]domain.Entry{}}, false); err != nil {
 		t.Fatal(err)

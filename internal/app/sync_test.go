@@ -124,7 +124,7 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 		t.Fatalf("RunSync: %v", err)
 	}
 
-	newLedgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode")
+	newLedgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	if _, statErr := os.Stat(newLedgerPath); !os.IsNotExist(statErr) {
 		t.Fatalf("dry-run should not create migrated ledger %s; stat err=%v", newLedgerPath, statErr)
 	}
@@ -159,10 +159,10 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode"), map[string]domain.Entry{
+	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
 		claudeDst: {SourcePack: "core", Digest: domain.SingleFileDigest([]byte("alpha"))},
 	})
-	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex"), map[string]domain.Entry{
+	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex), map[string]domain.Entry{
 		codexDst: {SourcePack: "core", Digest: domain.SingleFileDigest([]byte("demo-agent"))},
 	})
 

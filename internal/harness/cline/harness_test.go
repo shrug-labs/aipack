@@ -142,7 +142,7 @@ func TestPlan_Global_Content(t *testing.T) {
 
 func TestPlan_Global_MCP(t *testing.T) {
 	home := t.TempDir()
-	// Need HOME set for settingsGlobalPath.
+	// Need HOME set for MCPSettingsPath (platform-dependent).
 	t.Setenv("HOME", home)
 
 	ctx := engine.SyncContext{
@@ -473,7 +473,7 @@ func TestCapture_Project_MCP(t *testing.T) {
 	home := t.TempDir()
 
 	// Create MCP settings at the global path.
-	settingsPath := settingsGlobalPath(home)
+	settingsPath := MCPSettingsPath(home)
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestLayout_Project(t *testing.T) {
 		"/proj/.clinerules/skills":    false,
 	}
 	// MCP settings path is also a managed root (always global for Cline).
-	mcpPath := settingsGlobalPath("/home")
+	mcpPath := MCPSettingsPath("/home")
 	if mcpPath != "" {
 		want[mcpPath] = false
 	}
@@ -606,7 +606,7 @@ func TestLayout_Global(t *testing.T) {
 		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
 		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
 	}
-	mcpPath := settingsGlobalPath("/home")
+	mcpPath := MCPSettingsPath("/home")
 	if mcpPath != "" {
 		want[mcpPath] = false
 	}

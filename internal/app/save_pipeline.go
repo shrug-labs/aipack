@@ -300,7 +300,7 @@ func RunSavePipeline(req SavePipelineRequest, reg *harness.Registry) (SavePipeli
 		if sl, ok := ledgers[scope]; ok {
 			return sl
 		}
-		lp := ledgerPathForScope(scope, req.ProjectDir, req.Home, req.HarnessID)
+		lp := engine.LedgerPathForScope(scope, req.ProjectDir, req.Home, req.HarnessID)
 		lg, _, lerr := engine.LoadLedger(lp)
 		if lerr != nil {
 			lg = domain.NewLedger()

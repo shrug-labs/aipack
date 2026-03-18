@@ -67,7 +67,7 @@ func AdoptFile(req AdoptFileRequest) error {
 	}
 
 	// Update ledger so this file is now tracked.
-	ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses[0])
+	ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses[0])
 	lg, _, err := engine.LoadLedger(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("loading ledger: %w", err)

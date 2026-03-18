@@ -1,28 +1,49 @@
 package opencode
 
-import "path/filepath"
+import "github.com/shrug-labs/aipack/internal/domain"
 
-// baseSettingsFile is the only hardcoded OpenCode config filename.
-// All other config files in a pack's opencode/ directory are treated
-// as drop-in files and deployed as-is.
-const baseSettingsFile = "opencode.json"
-
-// settingsProjectPath returns the opencode.json path for a project.
-func settingsProjectPath(projectDir string) string {
-	return filepath.Join(projectDir, ".opencode", baseSettingsFile)
+// Paths describes the filesystem locations OpenCode uses for a given scope.
+// All paths are relative to the scope's base directory (project dir or $HOME).
+type Paths struct {
+	ConfigBase   string // base config directory (settings + drop-ins deploy here)
+	RulesDir     string
+	AgentsDir    string
+	WorkflowsDir string
+	SkillsDir    string
+	SettingsFile string
+	AGENTSFile   string // root-level AGENTS.md capture path
 }
 
-// settingsGlobalPath returns the global opencode.json path.
-func settingsGlobalPath(home string) string {
-	return filepath.Join(home, ".config", "opencode", baseSettingsFile)
+// BaseSettingsFile is the primary OpenCode config filename.
+// Drop-in files in a pack's opencode/ directory are deployed alongside it.
+const BaseSettingsFile = "opencode.json"
+
+// ProjectPaths defines OpenCode's project-scope paths (relative to project dir).
+var ProjectPaths = Paths{
+	ConfigBase:   ".opencode",
+	RulesDir:     ".opencode/rules",
+	AgentsDir:    ".opencode/agents",
+	WorkflowsDir: ".opencode/commands",
+	SkillsDir:    ".opencode/skills",
+	SettingsFile: ".opencode/" + BaseSettingsFile,
+	AGENTSFile:   "AGENTS.md",
 }
 
-// configBaseProject returns the OpenCode config base directory for a project.
-func configBaseProject(projectDir string) string {
-	return filepath.Join(projectDir, ".opencode")
+// GlobalPaths defines OpenCode's global-scope paths (relative to $HOME).
+var GlobalPaths = Paths{
+	ConfigBase:   ".config/opencode",
+	RulesDir:     ".config/opencode/rules",
+	AgentsDir:    ".config/opencode/agents",
+	WorkflowsDir: ".config/opencode/commands",
+	SkillsDir:    ".config/opencode/skills",
+	SettingsFile: ".config/opencode/" + BaseSettingsFile,
+	AGENTSFile:   ".config/opencode/AGENTS.md",
 }
 
-// configBaseGlobal returns the global OpenCode config base directory.
-func configBaseGlobal(home string) string {
-	return filepath.Join(home, ".config", "opencode")
+// PathsForScope returns the Paths for the given scope.
+func PathsForScope(scope domain.Scope) Paths {
+	if scope == domain.ScopeProject {
+		return ProjectPaths
+	}
+	return GlobalPaths
 }

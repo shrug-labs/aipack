@@ -109,7 +109,7 @@ func TestPlanWithDiffs_ClassifiesMCPServersFirstClass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MCPInventoryBytes: %v", err)
 	}
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		configPath: {SourcePack: "settings-pack", Digest: domain.SingleFileDigest(settings.Desired)},
 	})
@@ -177,7 +177,7 @@ func TestPlanWithDiffs_ClassifiesTrackedMCPConflictFromLiveConfig(t *testing.T) 
 		t.Fatalf("MCPTrackedBytes(desired): %v", err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		domain.MCPLedgerKey(configPath, "jira"): {
 			SourcePack: "core",
@@ -249,7 +249,7 @@ func TestPlanWithDiffs_SkipsCleanPromotedContentUsingSourceDigest(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, "codex")
+	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		dstPath: {
 			SourcePack: "core",

@@ -21,40 +21,34 @@ func (Harness) ID() domain.Harness { return domain.HarnessOpenCode }
 
 // Layout describes OpenCode's filesystem footprint for a given scope.
 func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
-	var l harness.Layout
-	var base, configPath string
-	if scope == domain.ScopeProject {
-		base = configBaseProject(baseDir)
-		configPath = settingsProjectPath(baseDir)
-	} else {
-		base = configBaseGlobal(baseDir)
-		configPath = settingsGlobalPath(baseDir)
-	}
-	l.ValidationRoots = []string{
-		base,
-	}
-	l.RemovePaths = []string{
-		filepath.Join(base, "agents"),
-		filepath.Join(base, "commands"),
-		filepath.Join(base, "rules"),
-		filepath.Join(base, "skills"),
-	}
-	l.OwnedFiles = []harness.OwnedFile{{
-		Path: configPath, Format: harness.FormatJSON,
-		Strip: func(root map[string]any) {
-			delete(root, "mcp")
-			delete(root, "tools")
-			delete(root, "instructions")
-			delete(root, "skills")
+	paths := PathsForScope(scope)
+	configPath := filepath.Join(baseDir, paths.SettingsFile)
+	return harness.Layout{
+		ValidationRoots: []string{
+			filepath.Join(baseDir, paths.ConfigBase),
 		},
-		Reset: func(root map[string]any) {
-			root["mcp"] = map[string]any{}
-			root["tools"] = map[string]any{}
-			delete(root, "instructions")
-			delete(root, "skills")
+		RemovePaths: []string{
+			filepath.Join(baseDir, paths.AgentsDir),
+			filepath.Join(baseDir, paths.WorkflowsDir),
+			filepath.Join(baseDir, paths.RulesDir),
+			filepath.Join(baseDir, paths.SkillsDir),
 		},
-	}}
-	return l
+		OwnedFiles: []harness.OwnedFile{{
+			Path: configPath, Format: harness.FormatJSON,
+			Strip: func(root map[string]any) {
+				delete(root, "mcp")
+				delete(root, "tools")
+				delete(root, "instructions")
+				delete(root, "skills")
+			},
+			Reset: func(root map[string]any) {
+				root["mcp"] = map[string]any{}
+				root["tools"] = map[string]any{}
+				delete(root, "instructions")
+				delete(root, "skills")
+			},
+		}},
+	}
 }
 
 // Plan produces a Fragment from typed content.
@@ -82,32 +76,21 @@ func opencodeAgentTransform(a domain.Agent) (domain.Agent, error) {
 }
 
 func contentDirsForScope(scope domain.Scope, targetDir string) harness.ContentDirs {
-	var base string
-	if scope == domain.ScopeProject {
-		base = filepath.Join(targetDir, ".opencode")
-	} else {
-		base = filepath.Join(targetDir, ".config", "opencode")
-	}
+	paths := PathsForScope(scope)
 	return harness.ContentDirs{
-		Rules:     filepath.Join(base, "rules"),
-		Agents:    filepath.Join(base, "agents"),
-		Workflows: filepath.Join(base, "commands"),
-		Skills:    filepath.Join(base, "skills"),
+		Rules:     filepath.Join(targetDir, paths.RulesDir),
+		Agents:    filepath.Join(targetDir, paths.AgentsDir),
+		Workflows: filepath.Join(targetDir, paths.WorkflowsDir),
+		Skills:    filepath.Join(targetDir, paths.SkillsDir),
 	}
 }
 
 func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	sp := ctx.Profile.SettingsPackName(domain.HarnessOpenCode)
 
-	var configPath string
-	var configBase string
-	if ctx.Scope == domain.ScopeProject {
-		configPath = settingsProjectPath(ctx.TargetDir)
-		configBase = configBaseProject(ctx.TargetDir)
-	} else {
-		configPath = settingsGlobalPath(ctx.TargetDir)
-		configBase = configBaseGlobal(ctx.TargetDir)
-	}
+	paths := PathsForScope(ctx.Scope)
+	configPath := filepath.Join(ctx.TargetDir, paths.SettingsFile)
+	configBase := filepath.Join(ctx.TargetDir, paths.ConfigBase)
 
 	var ruleFilePaths []string
 	for _, r := range ctx.Profile.AllRules() {
@@ -128,7 +111,7 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	decision := engine.ClassifySettings(hasMCP, hasManagedContent, ctx.SkipSettings)
 	var mcpRendered []byte
 	if decision.EmitSettings {
-		base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, baseSettingsFile)
+		base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
 		out, _, err := RenderBytes(base, ctx.Profile.MCPServers, instr, skills)
 		if err != nil {
 			return fmt.Errorf("render opencode settings: %w", err)
@@ -136,7 +119,7 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		mcpRendered = out
 		f.Settings = append(f.Settings, domain.SettingsAction{
 			Dst: configPath, Desired: out, Harness: domain.HarnessOpenCode,
-			Label: baseSettingsFile, SourcePack: sp, MergeMode: true,
+			Label: BaseSettingsFile, SourcePack: sp, MergeMode: true,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(configPath))
 	} else if decision.EmitMCP {
@@ -147,7 +130,7 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		mcpRendered = managed
 		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst: configPath, Desired: managed, Harness: domain.HarnessOpenCode,
-			Label: baseSettingsFile + " (managed keys)", SourcePack: sp, MergeMode: decision.MergeMode,
+			Label: BaseSettingsFile + " (managed keys)", SourcePack: sp, MergeMode: decision.MergeMode,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(configPath))
 	}
@@ -167,7 +150,7 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	}
 
 	// Deploy any drop-in config files from the bundle as-is.
-	for _, df := range ctx.Profile.BaseSettings.DropInFiles(domain.HarnessOpenCode, baseSettingsFile) {
+	for _, df := range ctx.Profile.BaseSettings.DropInFiles(domain.HarnessOpenCode, BaseSettingsFile) {
 		dst := filepath.Join(configBase, df.Filename)
 		f.Settings = append(f.Settings, domain.SettingsAction{
 			Dst: dst, Desired: df.Content, Harness: domain.HarnessOpenCode,
@@ -180,19 +163,19 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 
 // Render produces a Fragment for pack rendering.
 func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
-	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, baseSettingsFile)
+	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
 	instr := InstructionsSpec{Manage: false}
 	skills := SkillsSpec{Manage: false}
 	out, _, err := RenderBytes(base, ctx.Profile.MCPServers, instr, skills)
 	if err != nil {
 		return domain.Fragment{}, err
 	}
-	p1 := filepath.Join(ctx.OutDir, "opencode", baseSettingsFile)
+	p1 := filepath.Join(ctx.OutDir, "opencode", BaseSettingsFile)
 	f := domain.Fragment{
 		Writes:  []domain.WriteAction{{Dst: p1, Content: out}},
 		Desired: []string{p1},
 	}
-	for _, df := range ctx.Profile.BaseSettings.DropInFiles(domain.HarnessOpenCode, baseSettingsFile) {
+	for _, df := range ctx.Profile.BaseSettings.DropInFiles(domain.HarnessOpenCode, BaseSettingsFile) {
 		p := filepath.Join(ctx.OutDir, "opencode", df.Filename)
 		f.Writes = append(f.Writes, domain.WriteAction{Dst: p, Content: df.Content})
 		f.Desired = append(f.Desired, p)
@@ -206,27 +189,21 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
+	paths := PathsForScope(ctx.Scope)
 	var baseDir string
-	var configPath string
 	if ctx.Scope == domain.ScopeProject {
 		baseDir = ctx.ProjectDir
-		configPath = settingsProjectPath(baseDir)
 	} else {
 		baseDir = ctx.Home
-		configPath = settingsGlobalPath(baseDir)
 	}
+	configPath := filepath.Join(baseDir, paths.SettingsFile)
 
 	dirs := contentDirsForScope(ctx.Scope, baseDir)
 	harness.CaptureContent(&res, dirs, func(raw []byte, name, src string) (domain.Agent, error) {
 		return ReverseTransformAgent(raw, name+".md")
 	})
 
-	var rulesFile string
-	if ctx.Scope == domain.ScopeProject {
-		rulesFile = filepath.Join(baseDir, "AGENTS.md")
-	} else {
-		rulesFile = filepath.Join(baseDir, ".config", "opencode", "AGENTS.md")
-	}
+	rulesFile := filepath.Join(baseDir, paths.AGENTSFile)
 
 	if util.ExistsFile(rulesFile) && !util.ExistsFile(filepath.Join(dirs.Rules, "AGENTS.md")) {
 		res.Copies = append(res.Copies, domain.CopyAction{
@@ -248,7 +225,7 @@ func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error
 		return res, fmt.Errorf("capture opencode config: %w", err)
 	} else if ok {
 		res.Writes = append(res.Writes, domain.WriteAction{
-			Dst: filepath.Join("configs", "opencode", baseSettingsFile), Content: b, Src: configPath,
+			Dst: filepath.Join("configs", "opencode", BaseSettingsFile), Content: b, Src: configPath,
 		})
 		res.Warnings = append(res.Warnings, parseOpenCodeSettings(res.MCPServers, res.AllowedTools, b)...)
 	}

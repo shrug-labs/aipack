@@ -178,7 +178,7 @@ func TestLoadLedger_CorruptJSON(t *testing.T) {
 
 func TestLedgerPathForScope_Project(t *testing.T) {
 	t.Parallel()
-	path := LedgerPathForScope(domain.ScopeProject, "/home/user/proj", "/home/user", "claudecode")
+	path := LedgerPathForScope(domain.ScopeProject, "/home/user/proj", "/home/user", domain.HarnessClaudeCode)
 	want := "/home/user/.config/aipack/ledger/-home-user-proj/claudecode.json"
 	if path != want {
 		t.Errorf("path = %q, want %q", path, want)
@@ -187,7 +187,7 @@ func TestLedgerPathForScope_Project(t *testing.T) {
 
 func TestLedgerPathForScope_Global(t *testing.T) {
 	t.Parallel()
-	path := LedgerPathForScope(domain.ScopeGlobal, "/home/user/proj", "/home/user", "claudecode")
+	path := LedgerPathForScope(domain.ScopeGlobal, "/home/user/proj", "/home/user", domain.HarnessClaudeCode)
 	want := "/home/user/.config/aipack/ledger/claudecode.json"
 	if path != want {
 		t.Errorf("path = %q, want %q", path, want)
@@ -219,12 +219,12 @@ func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := map[string][]string{
-		"claudecode": {filepath.Join(home, ".claude")},
-		"opencode":   {filepath.Join(home, ".opencode")},
+	roots := map[domain.Harness][]string{
+		domain.HarnessClaudeCode: {filepath.Join(home, ".claude")},
+		domain.HarnessOpenCode:   {filepath.Join(home, ".opencode")},
 	}
 
-	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []string{"claudecode", "opencode"}, roots)
+	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode}, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,11 +233,11 @@ func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 	}
 
 	// Verify per-harness ledgers.
-	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, "claudecode"))
+	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, domain.HarnessClaudeCode))
 	if len(cc.Managed) != 1 {
 		t.Errorf("claudecode entries = %d, want 1", len(cc.Managed))
 	}
-	oc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, "opencode"))
+	oc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, domain.HarnessOpenCode))
 	if len(oc.Managed) != 1 {
 		t.Errorf("opencode entries = %d, want 1", len(oc.Managed))
 	}
@@ -259,11 +259,11 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := map[string][]string{
-		"claudecode": {filepath.Join(projectDir, ".claude")},
+	roots := map[domain.Harness][]string{
+		domain.HarnessClaudeCode: {filepath.Join(projectDir, ".claude")},
 	}
 
-	n, err := MigrateOldLedgers(domain.ScopeProject, projectDir, home, []string{"claudecode"}, roots)
+	n, err := MigrateOldLedgers(domain.ScopeProject, projectDir, home, []domain.Harness{domain.HarnessClaudeCode}, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 		t.Errorf("migrated = %d, want 1", n)
 	}
 
-	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeProject, projectDir, home, "claudecode"))
+	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode))
 	if len(cc.Managed) != 1 {
 		t.Errorf("claudecode entries = %d, want 1", len(cc.Managed))
 	}
@@ -280,11 +280,11 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 func TestMigrateOldLedgers_NoOldFiles(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	roots := map[string][]string{
-		"claudecode": {filepath.Join(home, ".claude")},
+	roots := map[domain.Harness][]string{
+		domain.HarnessClaudeCode: {filepath.Join(home, ".claude")},
 	}
 
-	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []string{"claudecode"}, roots)
+	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []domain.Harness{domain.HarnessClaudeCode}, roots)
 	if err != nil {
 		t.Fatal(err)
 	}

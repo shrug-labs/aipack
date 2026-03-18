@@ -20,40 +20,40 @@ func (Harness) ID() domain.Harness { return domain.HarnessClaudeCode }
 
 // Layout describes Claude Code's filesystem footprint for a given scope.
 func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
-	base := filepath.Join(baseDir, ".claude")
+	paths := PathsForScope(scope)
+	mcpBase := baseDir
+	if scope == domain.ScopeGlobal {
+		mcpBase = home
+	}
+	mcpPath := filepath.Join(mcpBase, paths.MCPFile)
+	settingsPath := filepath.Join(baseDir, paths.SettingsFile)
+
 	l := harness.Layout{
 		ValidationRoots: []string{
-			filepath.Join(base, "rules"),
-			filepath.Join(base, "agents"),
-			filepath.Join(base, "commands"),
-			filepath.Join(base, "skills"),
+			filepath.Join(baseDir, paths.RulesDir),
+			filepath.Join(baseDir, paths.AgentsDir),
+			filepath.Join(baseDir, paths.WorkflowsDir),
+			filepath.Join(baseDir, paths.SkillsDir),
+			mcpPath,
+			settingsPath,
 		},
 		RemovePaths: []string{
-			filepath.Join(base, "rules"),
-			filepath.Join(base, "agents"),
-			filepath.Join(base, "commands"),
-			filepath.Join(base, "skills"),
+			filepath.Join(baseDir, paths.RulesDir),
+			filepath.Join(baseDir, paths.AgentsDir),
+			filepath.Join(baseDir, paths.WorkflowsDir),
+			filepath.Join(baseDir, paths.SkillsDir),
 		},
-	}
-	var mcpPath, settingsPath string
-	if scope == domain.ScopeProject {
-		mcpPath = mcpProjectPath(baseDir)
-		settingsPath = settingsProjectPath(baseDir)
-	} else {
-		mcpPath = mcpGlobalPath(home)
-		settingsPath = settingsGlobalPath(home)
-	}
-	l.ValidationRoots = append(l.ValidationRoots, mcpPath, settingsPath)
-	l.OwnedFiles = []harness.OwnedFile{
-		{
-			Path: mcpPath, Format: harness.FormatJSON,
-			Strip: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
-			Reset: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
-		},
-		{
-			Path: settingsPath, Format: harness.FormatJSON,
-			Strip: stripManagedPermissions,
-			Reset: func(root map[string]any) { delete(root, "permissions") },
+		OwnedFiles: []harness.OwnedFile{
+			{
+				Path: mcpPath, Format: harness.FormatJSON,
+				Strip: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+				Reset: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+			},
+			{
+				Path: settingsPath, Format: harness.FormatJSON,
+				Strip: stripManagedPermissions,
+				Reset: func(root map[string]any) { delete(root, "permissions") },
+			},
 		},
 	}
 	return l
@@ -89,12 +89,12 @@ func (Harness) Plan(ctx engine.SyncContext) (domain.Fragment, error) {
 }
 
 func planContent(f *domain.Fragment, baseDir string, p domain.Profile) error {
-	base := filepath.Join(baseDir, ".claude")
+	paths := ProjectPaths // content paths are the same for both scopes
 	return harness.PlanStandardContent(f, p, harness.ContentDirs{
-		Rules:     filepath.Join(base, "rules"),
-		Agents:    filepath.Join(base, "agents"),
-		Workflows: filepath.Join(base, "commands"),
-		Skills:    filepath.Join(base, "skills"),
+		Rules:     filepath.Join(baseDir, paths.RulesDir),
+		Agents:    filepath.Join(baseDir, paths.AgentsDir),
+		Workflows: filepath.Join(baseDir, paths.WorkflowsDir),
+		Skills:    filepath.Join(baseDir, paths.SkillsDir),
 	}, func(a domain.Agent) (domain.Agent, error) {
 		transformed, err := TransformAgent(a)
 		if err != nil {
@@ -108,13 +108,9 @@ func planContent(f *domain.Fragment, baseDir string, p domain.Profile) error {
 func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	sp := ctx.Profile.SettingsPackName(domain.HarnessClaudeCode)
 
-	// Resolve paths based on scope.
-	mcpPath := mcpProjectPath(ctx.TargetDir)
-	settingsPath := settingsProjectPath(ctx.TargetDir)
-	if ctx.Scope == domain.ScopeGlobal {
-		mcpPath = mcpGlobalPath(ctx.TargetDir)
-		settingsPath = settingsGlobalPath(ctx.TargetDir)
-	}
+	paths := PathsForScope(ctx.Scope)
+	mcpPath := filepath.Join(ctx.TargetDir, paths.MCPFile)
+	settingsPath := filepath.Join(ctx.TargetDir, paths.SettingsFile)
 
 	if len(ctx.Profile.MCPServers) > 0 {
 		mcpBytes, _, err := RenderMCPBytesFromTyped(ctx.Profile.MCPServers)
@@ -194,16 +190,15 @@ func (Harness) Render(ctx harness.RenderContext) (domain.Fragment, error) {
 func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
-	var baseDir, mcpPath, settingsPath string
+	paths := PathsForScope(ctx.Scope)
+	var baseDir string
 	if ctx.Scope == domain.ScopeProject {
 		baseDir = ctx.ProjectDir
-		mcpPath = mcpProjectPath(baseDir)
-		settingsPath = settingsProjectPath(baseDir)
 	} else {
 		baseDir = ctx.Home
-		mcpPath = mcpGlobalPath(ctx.Home)
-		settingsPath = settingsGlobalPath(ctx.Home)
 	}
+	mcpPath := filepath.Join(baseDir, paths.MCPFile)
+	settingsPath := filepath.Join(baseDir, paths.SettingsFile)
 
 	captureContent(&res, baseDir)
 
@@ -216,12 +211,12 @@ func (Harness) Capture(ctx harness.CaptureContext) (harness.CaptureResult, error
 
 // captureContent captures rules, agents, commands, and skills from baseDir/.claude/.
 func captureContent(res *harness.CaptureResult, baseDir string) {
-	base := filepath.Join(baseDir, ".claude")
+	paths := ProjectPaths // content paths are the same for both scopes
 	harness.CaptureContent(res, harness.ContentDirs{
-		Rules:     filepath.Join(base, "rules"),
-		Agents:    filepath.Join(base, "agents"),
-		Workflows: filepath.Join(base, "commands"),
-		Skills:    filepath.Join(base, "skills"),
+		Rules:     filepath.Join(baseDir, paths.RulesDir),
+		Agents:    filepath.Join(baseDir, paths.AgentsDir),
+		Workflows: filepath.Join(baseDir, paths.WorkflowsDir),
+		Skills:    filepath.Join(baseDir, paths.SkillsDir),
 	}, func(raw []byte, _ string, src string) (domain.Agent, error) {
 		return ReverseTransformAgent(raw, filepath.Base(src))
 	})

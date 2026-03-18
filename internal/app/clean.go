@@ -202,7 +202,7 @@ func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []doma
 		// plugin/drop-in config files). Remove any ledger-tracked paths inside
 		// validation roots that are not partially-owned files and not already
 		// covered by an explicit RemovePath.
-		ledgerPath := engine.LedgerPathForScope(scope, projectDir, home, strings.ToLower(string(hid)))
+		ledgerPath := engine.LedgerPathForScope(scope, projectDir, home, hid)
 		lg, _, err := engine.LoadLedger(ledgerPath)
 		if err != nil {
 			continue

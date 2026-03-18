@@ -4,11 +4,45 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
-// settingsGlobalPath returns the global cline_mcp_settings.json path using
-// the provided home directory. Prefer this over settingsGlobalPathFromEnv.
-func settingsGlobalPath(home string) string {
+// Paths describes the filesystem locations Cline uses for a given scope.
+// All paths are relative to the scope's base directory (project dir or $HOME).
+// Cline does not support agents as separate content — they are promoted to skills.
+type Paths struct {
+	RulesDir     string
+	WorkflowsDir string
+	SkillsDir    string
+}
+
+// ProjectPaths defines Cline's project-scope paths (relative to project dir).
+var ProjectPaths = Paths{
+	RulesDir:     ".clinerules",
+	WorkflowsDir: ".clinerules/workflows",
+	SkillsDir:    ".clinerules/skills",
+}
+
+// GlobalPaths defines Cline's global-scope paths (relative to $HOME).
+var GlobalPaths = Paths{
+	RulesDir:     "Documents/Cline/Rules",
+	WorkflowsDir: "Documents/Cline/Workflows",
+	SkillsDir:    ".cline/skills",
+}
+
+// PathsForScope returns the Paths for the given scope.
+func PathsForScope(scope domain.Scope) Paths {
+	if scope == domain.ScopeProject {
+		return ProjectPaths
+	}
+	return GlobalPaths
+}
+
+// MCPSettingsPath returns the global cline_mcp_settings.json path.
+// This is platform-dependent and cannot be a constant.
+// Cline MCP settings are always global, even in project scope.
+func MCPSettingsPath(home string) string {
 	if home == "" {
 		return ""
 	}

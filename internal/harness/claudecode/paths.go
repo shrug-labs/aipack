@@ -1,25 +1,43 @@
 package claudecode
 
-import "path/filepath"
+import "github.com/shrug-labs/aipack/internal/domain"
 
-// settingsProjectPath returns the settings.local.json path for a project.
-func settingsProjectPath(projectDir string) string {
-	return filepath.Join(projectDir, ".claude", "settings.local.json")
+// Paths describes the filesystem locations Claude Code uses for a given scope.
+// All paths are relative to the scope's base directory (project dir or $HOME).
+type Paths struct {
+	RulesDir     string
+	AgentsDir    string
+	WorkflowsDir string
+	SkillsDir    string
+	SettingsFile string
+	MCPFile      string
 }
 
-// mcpProjectPath returns the .mcp.json path for a project.
-func mcpProjectPath(projectDir string) string {
-	return filepath.Join(projectDir, ".mcp.json")
+// ProjectPaths defines Claude Code's project-scope paths (relative to project dir).
+var ProjectPaths = Paths{
+	RulesDir:     ".claude/rules",
+	AgentsDir:    ".claude/agents",
+	WorkflowsDir: ".claude/commands",
+	SkillsDir:    ".claude/skills",
+	SettingsFile: ".claude/settings.local.json",
+	MCPFile:      ".mcp.json",
 }
 
-// mcpGlobalPath returns the global MCP config path (~/.claude.json).
-// Claude Code reads global MCP config from ~/.claude.json,
-// not from ~/.mcp.json or ~/.claude/.mcp.json.
-func mcpGlobalPath(home string) string {
-	return filepath.Join(home, ".claude.json")
+// GlobalPaths defines Claude Code's global-scope paths (relative to $HOME).
+// Content paths are identical to project scope; only MCPFile differs.
+var GlobalPaths = Paths{
+	RulesDir:     ".claude/rules",
+	AgentsDir:    ".claude/agents",
+	WorkflowsDir: ".claude/commands",
+	SkillsDir:    ".claude/skills",
+	SettingsFile: ".claude/settings.local.json",
+	MCPFile:      ".claude.json",
 }
 
-// settingsGlobalPath returns the global settings.local.json path.
-func settingsGlobalPath(home string) string {
-	return filepath.Join(home, ".claude", "settings.local.json")
+// PathsForScope returns the Paths for the given scope.
+func PathsForScope(scope domain.Scope) Paths {
+	if scope == domain.ScopeProject {
+		return ProjectPaths
+	}
+	return GlobalPaths
 }

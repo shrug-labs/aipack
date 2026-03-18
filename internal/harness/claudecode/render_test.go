@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -246,7 +247,7 @@ func TestLayout_StripManaged_AllowOnly(t *testing.T) {
 
 	h := Harness{}
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
-	settingsPath := settingsProjectPath("/proj")
+	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
 	out, err := layout.StripManaged(input, settingsPath)
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
@@ -284,7 +285,7 @@ func TestLayout_StripManaged_StripsDenyEntries(t *testing.T) {
 
 	h := Harness{}
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
-	settingsPath := settingsProjectPath("/proj")
+	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
 	out, err := layout.StripManaged(input, settingsPath)
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)

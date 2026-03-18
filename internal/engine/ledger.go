@@ -70,7 +70,7 @@ func EncodeProjectPath(projectDir string) string {
 //   - Project local:   <projectDir>/.aipack/ledger.json
 //
 // Entries are routed by path prefix matching against harness managed roots.
-func MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []string, managedRoots map[string][]string) (int, error) {
+func MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
 	migrated := 0
 
 	// Check for old project-local ledger.
@@ -111,14 +111,14 @@ func MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []
 	return migrated, nil
 }
 
-func migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home string, harnesses []string, managedRoots map[string][]string) (int, error) {
+func migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
 	old, _, err := LoadLedger(oldPath)
 	if err != nil || len(old.Managed) == 0 {
 		return 0, err
 	}
 
 	// Load or create per-harness ledgers and distribute entries.
-	perHarness := map[string]*domain.Ledger{}
+	perHarness := map[domain.Harness]*domain.Ledger{}
 	for _, h := range harnesses {
 		lp := LedgerPathForScope(scope, projectDir, home, h)
 		lg, _, lerr := LoadLedger(lp)
@@ -161,7 +161,7 @@ func migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home strin
 // LedgerPathForScope returns the ledger file path for a single harness.
 // All ledgers live under ~/.config/aipack/ledger/. Project-scoped ledgers
 // use a path-encoded subdirectory.
-func LedgerPathForScope(scope domain.Scope, projectDir, home, harness string) string {
+func LedgerPathForScope(scope domain.Scope, projectDir, home string, harness domain.Harness) string {
 	if home == "" {
 		home = projectDir // fallback
 	}
@@ -169,5 +169,5 @@ func LedgerPathForScope(scope domain.Scope, projectDir, home, harness string) st
 	if scope == domain.ScopeProject {
 		base = filepath.Join(base, EncodeProjectPath(projectDir))
 	}
-	return filepath.Join(base, harness+".json")
+	return filepath.Join(base, string(harness)+".json")
 }

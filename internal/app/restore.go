@@ -29,7 +29,7 @@ func RunRestore(req RestoreRequest) (RestoreResult, error) {
 
 	var result RestoreResult
 	for _, harnessID := range req.Harnesses {
-		ledgerPath := ledgerPathForScope(req.Scope, req.ProjectDir, req.Home, harnessID)
+		ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, harnessID)
 		restored, err := engine.RestoreFromCache(ledgerPath, req.FilterHarness, req.DryRun)
 		if err != nil {
 			return RestoreResult{}, err

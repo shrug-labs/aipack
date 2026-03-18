@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
@@ -147,15 +146,13 @@ func RunSync(profile domain.Profile, req SyncRequest, reg *harness.Registry, std
 
 	if !req.DryRun {
 		// Migrate legacy ledgers (combined-harness or project-local) on first run.
-		managedRootsMap := map[string][]string{}
-		harnessNames := make([]string, len(req.Harnesses))
-		for i, hid := range req.Harnesses {
-			harnessNames[i] = strings.ToLower(string(hid))
+		managedRootsMap := map[domain.Harness][]string{}
+		for _, hid := range req.Harnesses {
 			if h, lerr := reg.Lookup(hid); lerr == nil {
-				managedRootsMap[harnessNames[i]] = h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
+				managedRootsMap[hid] = h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
 			}
 		}
-		if n, merr := engine.MigrateOldLedgers(req.Scope, req.ProjectDir, req.Home, harnessNames, managedRootsMap); merr != nil {
+		if n, merr := engine.MigrateOldLedgers(req.Scope, req.ProjectDir, req.Home, req.Harnesses, managedRootsMap); merr != nil {
 			warnings = append(warnings, domain.Warning{Field: "ledger-migration", Message: merr.Error()})
 		} else if n > 0 {
 			fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
@@ -256,7 +253,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.
 
 	ledgers := map[domain.Harness]domain.Ledger{}
 	for _, hid := range req.Harnesses {
-		path := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, strings.ToLower(string(hid)))
+		path := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, hid)
 		if lg, _, err := engine.LoadLedger(path); err == nil {
 			ledgers[hid] = lg
 		}
