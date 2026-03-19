@@ -520,6 +520,47 @@ func TestPackAdd_URL_CloudDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
 	}
 }
 
+func TestPackAdd_CloneFallback_BadSubPath_ListsAvailablePacks(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSeedSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	gitFn := func(_ context.Context, args ...string) error {
+		if len(args) >= 4 && args[0] == "clone" {
+			dir := args[len(args)-1]
+			// Repo has two packs and one non-pack directory.
+			writePackManifest(t, filepath.Join(dir, "actual-pack"), "actual-pack")
+			writePackManifest(t, filepath.Join(dir, "other-pack"), "other-pack")
+			if err := os.MkdirAll(filepath.Join(dir, "not-a-pack"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return nil
+	}
+	err := PackAdd(context.Background(), PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		SubPath:   "wrong-pack",
+		ConfigDir: configDir,
+		Register:  false,
+		RunGitFn:  gitFn,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err == nil {
+		t.Fatal("expected error for missing sub-path")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "wrong-pack") {
+		t.Fatalf("error should mention the requested path: %s", msg)
+	}
+	if !strings.Contains(msg, "actual-pack") || !strings.Contains(msg, "other-pack") {
+		t.Fatalf("error should list available packs: %s", msg)
+	}
+	if strings.Contains(msg, "not-a-pack") {
+		t.Fatalf("error should not list non-pack directories: %s", msg)
+	}
+}
+
 func TestPackAdd_URL_GitHubBlobSubdir_InstallsExtractedPackAndRecordsSubPath(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()

@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.2]
+
+### Changed
+
+- TUI achromatic color tokens (dim text, help bar, headers, summaries) now use 4-tier background detection instead of 2-tier adaptive colors. Gray terminals that are neither dark nor light get tinted gray palettes with WCAG 3:1+ contrast ratios. Adds a contrast ratio test suite covering all palettes.
+
+### Fixed
+
+- `pack install` with an incorrect sub-path now lists available packs in the repository instead of a bare "not found" error.
+
 ## [0.11.1]
 
 ### Changed

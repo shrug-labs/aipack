@@ -1,26 +1,106 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"os"
 
-// ac builds an AdaptiveColor that auto-selects based on terminal background.
-// Light value is used on light/white backgrounds, dark on dark backgrounds.
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+)
+
+// ac builds an AdaptiveColor for chromatic tokens that work on all backgrounds.
 func ac(light, dark string) lipgloss.AdaptiveColor {
 	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
 }
 
-// --- Adaptive color tokens ---
+// --- Background detection ---
 //
-// Each token defines a light-bg and dark-bg variant. lipgloss detects the
-// terminal background automatically (via termenv OSC 11) and picks the right
-// one at render time. Users can override detection by setting COLORFGBG.
+// Terminal backgrounds fall into four categories based on HSL lightness.
+// Pure dark/light terminals use xterm-256 grays. Gray terminals use true-color
+// tinted grays that provide WCAG 3:1+ contrast through luminance and hue
+// separation against neutral gray backgrounds.
+//
+// The tint hues are chosen for perceptual effect: cool blue-gray (210°) recedes
+// on dark backgrounds; warm gray (30°) grounds text on light backgrounds. Both
+// use 12% saturation — noticeable enough to aid contrast, subtle enough to read
+// as "gray" rather than "colored."
+
+type bgCategory int
+
+const (
+	bgDark      bgCategory = iota // HSL lightness < 0.25
+	bgGrayDark                    // HSL lightness 0.25–0.50
+	bgGrayLight                   // HSL lightness 0.50–0.75
+	bgLight                       // HSL lightness ≥ 0.75
+)
+
+func detectBackground() bgCategory {
+	o := termenv.NewOutput(os.Stdout)
+	c := termenv.ConvertToRGB(o.BackgroundColor())
+	_, _, l := c.Hsl()
+	switch {
+	case l < 0.25:
+		return bgDark
+	case l < 0.50:
+		return bgGrayDark
+	case l < 0.75:
+		return bgGrayLight
+	default:
+		return bgLight
+	}
+}
+
+// --- Achromatic color tokens (set by initColors based on background) ---
+
+var (
+	clrDim     lipgloss.TerminalColor
+	clrHelpBar lipgloss.TerminalColor
+	clrSubtle  lipgloss.TerminalColor
+	clrHeader  lipgloss.TerminalColor
+	clrSummary lipgloss.TerminalColor
+)
+
+func initColors(cat bgCategory) {
+	switch cat {
+	case bgDark:
+		// xterm-256 grays — good contrast against black/very dark backgrounds.
+		clrDim = lipgloss.Color("240")
+		clrHelpBar = lipgloss.Color("241")
+		clrSubtle = lipgloss.Color("244")
+		clrSummary = lipgloss.Color("246")
+		clrHeader = lipgloss.Color("252")
+
+	case bgGrayDark:
+		// Cool blue-gray tints (hue 210°, sat 12%) — lighter text on dark gray.
+		// WCAG 3:1+ against xterm 238–243 backgrounds.
+		clrDim = lipgloss.Color("#cdd3d8")     // L≈83%, CR≥3.0
+		clrHelpBar = lipgloss.Color("#cdd3d8") // same tier as dim
+		clrSubtle = lipgloss.Color("#d6dadf")  // L≈86%, CR≥3.2
+		clrSummary = lipgloss.Color("#dfe3e8") // L≈89%, CR≥3.5
+		clrHeader = lipgloss.Color("#fefefe")  // L≈99%, CR≥4.5
+
+	case bgGrayLight:
+		// Warm gray tints (hue 30°, sat 12%) — darker text on light gray.
+		// WCAG 3:1+ against xterm 244–249 backgrounds.
+		clrDim = lipgloss.Color("#3d3630")     // L≈21%, CR≥3.0
+		clrHelpBar = lipgloss.Color("#3d3630") // same tier as dim
+		clrSubtle = lipgloss.Color("#362f2a")  // L≈19%, CR≥3.2
+		clrSummary = lipgloss.Color("#302a24") // L≈17%, CR≥3.5
+		clrHeader = lipgloss.Color("#1a1714")  // L≈9%, CR≥4.5
+
+	case bgLight:
+		// xterm-256 grays — good contrast against white/very light backgrounds.
+		clrDim = lipgloss.Color("245")
+		clrHelpBar = lipgloss.Color("244")
+		clrSubtle = lipgloss.Color("242")
+		clrSummary = lipgloss.Color("240")
+		clrHeader = lipgloss.Color("235")
+	}
+}
+
+// --- Chromatic color tokens (adaptive, work on all backgrounds) ---
+
 var (
 	clrAccent  = ac("125", "205") // magenta — tabs, selection, borders, dialogs
-	clrDim     = ac("245", "240") // dim/inactive text
-	clrHelpBar = ac("244", "241") // help bar
-	clrSubtle  = ac("242", "244") // subtle/panel text
-	clrHeader  = ac("235", "252") // prominent headers
-	clrSummary = ac("240", "246") // content summaries
-
 	clrSuccess = ac("28", "46")   // green — active dots, checks
 	clrError   = ac("160", "196") // red — errors, inactive dots
 	clrWarning = ac("166", "214") // orange — warnings
@@ -33,6 +113,8 @@ var (
 	clrCyan   = ac("31", "81")   // MCP servers
 	clrStale  = ac("124", "203") // stale items
 )
+
+// --- Static styles (chromatic colors only, safe as var declarations) ---
 
 var (
 	tabBorder = lipgloss.Border{
@@ -64,16 +146,6 @@ var (
 			BorderForeground(clrAccent).
 			Padding(0, 2)
 
-	inactiveTabStyle = lipgloss.NewStyle().
-				Foreground(clrDim).
-				Border(tabBorderInactive).
-				BorderForeground(clrDim).
-				Padding(0, 2)
-
-	tabGapStyle = lipgloss.NewStyle().
-			Border(lipgloss.Border{Bottom: "─"}, false, false, true, false).
-			BorderForeground(clrDim)
-
 	contentStyle = lipgloss.NewStyle().
 			Padding(1, 2)
 
@@ -82,9 +154,6 @@ var (
 	statusDotLoading  = lipgloss.NewStyle().Foreground(clrLoading).Render("⟳")
 
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(clrAccent)
-	dimStyle      = lipgloss.NewStyle().Foreground(clrDim)
-
-	helpBarStyle = lipgloss.NewStyle().Foreground(clrHelpBar)
 
 	dialogBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
@@ -93,26 +162,12 @@ var (
 
 	dialogTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(clrAccent)
 
-	treeCheckOn  = lipgloss.NewStyle().Foreground(clrSuccess).Render("[x]")
-	treeCheckOff = lipgloss.NewStyle().Foreground(clrDim).Render("[ ]")
-
+	treeCheckOn   = lipgloss.NewStyle().Foreground(clrSuccess).Render("[x]")
 	treeExpanded  = "▼"
 	treeCollapsed = "▶"
 
-	fileSizeStyle = lipgloss.NewStyle().Foreground(clrDim)
-
 	errorStyle   = lipgloss.NewStyle().Foreground(clrError)
 	warningStyle = lipgloss.NewStyle().Foreground(clrWarning)
-
-	panelHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(clrHeader)
-
-	panelSubtleStyle = lipgloss.NewStyle().Foreground(clrSubtle)
-
-	categoryHeaderStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(clrHeader)
-
-	contentSummaryStyle = lipgloss.NewStyle().Foreground(clrSummary)
 
 	previewBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
@@ -164,6 +219,48 @@ var (
 		ac("30", "66"),   // dark teal
 	}
 )
+
+// --- Dynamic styles (depend on background-detected achromatic tokens) ---
+
+var (
+	inactiveTabStyle    lipgloss.Style
+	tabGapStyle         lipgloss.Style
+	dimStyle            lipgloss.Style
+	helpBarStyle        lipgloss.Style
+	treeCheckOff        string
+	fileSizeStyle       lipgloss.Style
+	panelHeaderStyle    lipgloss.Style
+	panelSubtleStyle    lipgloss.Style
+	categoryHeaderStyle lipgloss.Style
+	contentSummaryStyle lipgloss.Style
+)
+
+func initStyles() {
+	inactiveTabStyle = lipgloss.NewStyle().
+		Foreground(clrDim).
+		Border(tabBorderInactive).
+		BorderForeground(clrDim).
+		Padding(0, 2)
+
+	tabGapStyle = lipgloss.NewStyle().
+		Border(lipgloss.Border{Bottom: "─"}, false, false, true, false).
+		BorderForeground(clrDim)
+
+	dimStyle = lipgloss.NewStyle().Foreground(clrDim)
+	helpBarStyle = lipgloss.NewStyle().Foreground(clrHelpBar)
+	treeCheckOff = lipgloss.NewStyle().Foreground(clrDim).Render("[ ]")
+	fileSizeStyle = lipgloss.NewStyle().Foreground(clrDim)
+	panelHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(clrHeader)
+	panelSubtleStyle = lipgloss.NewStyle().Foreground(clrSubtle)
+	categoryHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(clrHeader)
+	contentSummaryStyle = lipgloss.NewStyle().Foreground(clrSummary)
+}
+
+func init() {
+	cat := detectBackground()
+	initColors(cat)
+	initStyles()
+}
 
 // packColorBright returns a style for a pack at the given profile index.
 func packColorBright(idx int) lipgloss.Style {

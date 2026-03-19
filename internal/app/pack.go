@@ -461,6 +461,11 @@ func packFallbackClone(ctx context.Context, req PackAddRequest, info config.Pack
 	manifestPath := filepath.Join(packRoot, "pack.json")
 	manifest, err := config.LoadPackManifest(manifestPath)
 	if err != nil {
+		if subPath != "" && os.IsNotExist(err) {
+			if hint := listClonePacks(tmpDir); hint != "" {
+				return packInstallResult{}, fmt.Errorf("path %q not found in repository; available packs: %s", subPath, hint)
+			}
+		}
 		return packInstallResult{}, fmt.Errorf("loading pack manifest from clone: %w", err)
 	}
 
@@ -488,6 +493,26 @@ func packFallbackClone(ctx context.Context, req PackAddRequest, info config.Pack
 	fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
 
 	return packInstallResult{name: name, destDir: destDir, method: config.MethodClone, manifest: manifest, commitHash: commitHash}, nil
+}
+
+// listClonePacks returns a comma-separated list of top-level subdirectories in
+// dir that contain a pack.json file. Only uses ReadDir and Stat on the
+// already-cloned local temp directory — no symlink following, no recursion.
+func listClonePacks(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var packs []string
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == ".git" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, e.Name(), "pack.json")); err == nil {
+			packs = append(packs, e.Name())
+		}
+	}
+	return strings.Join(packs, ", ")
 }
 
 // parseManifestFromTar extracts and parses pack.json from tar data.
