@@ -634,7 +634,15 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusText = dimStyle.Render(fmt.Sprintf("deleted %s", filepath.Base(msg.path)))
 		m.saveTab.loading = true
 		return m, m.saveTab.rediscoverFiles()
-	case harnessDetectedMsg, vectorsDiscoveredMsg, saveFilesDiscoveredMsg, savePipelineDoneMsg:
+	case savePipelineDoneMsg:
+		var cmd tea.Cmd
+		m.saveTab, cmd = m.saveTab.Update(msg)
+		m.statusText = ""
+		if msg.err == nil {
+			return m, tea.Batch(cmd, loadPacks(m.cfg.ConfigDir))
+		}
+		return m, cmd
+	case harnessDetectedMsg, vectorsDiscoveredMsg, saveFilesDiscoveredMsg:
 		var cmd tea.Cmd
 		m.saveTab, cmd = m.saveTab.Update(msg)
 		m.statusText = ""
