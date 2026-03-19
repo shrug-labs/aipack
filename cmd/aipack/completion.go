@@ -40,7 +40,10 @@ func predictPacks(a complete.Args) []string {
 	}
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
 			names = append(names, e.Name())
 		}
 	}

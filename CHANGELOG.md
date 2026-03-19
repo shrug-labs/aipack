@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.1]
+
+### Changed
+
+- `install-completions` replaced third-party kongplete implementation with a custom command supporting `--uninstall`, `--print`, `--yes`, and `--rc-file` flags. Install and uninstall are idempotent, use marker-delimited blocks in the rc file, and detect non-interactive sessions.
+
+### Fixed
+
+- Tab completions for pack names now include symlinked packs. Previously `pack delete`, `pack show`, and other pack-argument commands only completed directory-based packs, omitting symlinks.
+
 ## [0.11.0]
 
 ### Added
