@@ -28,13 +28,16 @@ func RunWatch(ctx context.Context, syncFn WatchSyncFunc, configFiles []string, s
 		return fmt.Errorf("creating watcher: %w", err)
 	}
 	defer watcher.Close()
-
 	// Initial sync.
 	fmt.Fprintln(stderr, "watch: initial sync")
 	watchDirs, err := syncFn()
 	if err != nil {
 		fmt.Fprintf(stderr, "watch: initial sync failed: %v\n", err)
 		// Continue watching — the user may fix the error.
+	}
+	if ctx.Err() != nil {
+		fmt.Fprintln(stderr, "watch: stopped")
+		return nil
 	}
 
 	// Watch config files (sync-config, profile YAML).
@@ -54,16 +57,27 @@ func RunWatch(ctx context.Context, syncFn WatchSyncFunc, configFiles []string, s
 	const debounce = 500 * time.Millisecond
 	var timer *time.Timer
 	var timerC <-chan time.Time // nil channel, never fires
+	stopping := false
 
 	for {
 		select {
 		case <-ctx.Done():
+			if stopping {
+				continue
+			}
+			stopping = true
+			stopWatchTimer(timer)
+			timer = nil
+			timerC = nil
 			fmt.Fprintln(stderr, "watch: stopped")
 			return nil
 
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
+			}
+			if stopping {
+				continue
 			}
 			if !isRelevantEvent(event) {
 				continue
@@ -76,7 +90,7 @@ func RunWatch(ctx context.Context, syncFn WatchSyncFunc, configFiles []string, s
 			}
 			// Debounce: reset timer on each event.
 			if timer != nil {
-				timer.Stop()
+				stopWatchTimer(timer)
 			}
 			timer = time.NewTimer(debounce)
 			timerC = timer.C
@@ -88,17 +102,46 @@ func RunWatch(ctx context.Context, syncFn WatchSyncFunc, configFiles []string, s
 			fmt.Fprintf(stderr, "watch: error: %v\n", err)
 
 		case <-timerC:
+			if ctx.Err() != nil {
+				stopping = true
+				stopWatchTimer(timer)
+				timer = nil
+				timerC = nil
+				fmt.Fprintln(stderr, "watch: stopped")
+				return nil
+			}
 			timerC = nil
+			timer = nil
 			fmt.Fprintln(stderr, "\nwatch: changes detected, re-syncing...")
 			newDirs, serr := syncFn()
 			if serr != nil {
 				fmt.Fprintf(stderr, "watch: sync failed: %v\n", serr)
+				if ctx.Err() != nil {
+					fmt.Fprintln(stderr, "watch: stopped")
+					return nil
+				}
 				continue
+			}
+			if ctx.Err() != nil {
+				fmt.Fprintln(stderr, "watch: stopped")
+				return nil
 			}
 			if err := updateWatchDirs(watcher, newDirs, stderr); err != nil {
 				fmt.Fprintf(stderr, "watch: updating watchers: %v\n", err)
 			}
 			fmt.Fprintf(stderr, "watch: watching %d directories\n", len(watcher.WatchList()))
+		}
+	}
+}
+
+func stopWatchTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
 		}
 	}
 }

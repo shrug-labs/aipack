@@ -61,3 +61,31 @@ func MCPSettingsPath(home string) string {
 		return filepath.Join(home, ".config", "Code", "User", suffix)
 	}
 }
+
+func mcpMirrorSettingsPath(home string) string {
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cline", "data", "settings", "cline_mcp_settings.json")
+}
+
+func mcpSettingsPaths(home string) []string {
+	paths := []string{MCPSettingsPath(home), mcpMirrorSettingsPath(home)}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		clean := filepath.Clean(p)
+		if clean == "." {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}

@@ -1,9 +1,15 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 
@@ -204,4 +210,231 @@ func TestUpdateWatchDirs(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRunWatch_StopsImmediatelyWhenIdle(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stderr strings.Builder
+	calls := 0
+	err := RunWatch(ctx, func() ([]string, error) {
+		calls++
+		cancel()
+		return nil, nil
+	}, nil, &stderr)
+	if err != nil {
+		t.Fatalf("RunWatch() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("syncFn calls = %d, want 1", calls)
+	}
+	if got := stderr.String(); !strings.Contains(got, "watch: stopped") {
+		t.Fatalf("stderr missing stop message: %q", got)
+	}
+}
+
+func TestRunWatch_StopsAfterInitialSyncCancellationBeforeWalkingDirs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	for i := 0; i < 200; i++ {
+		dir := filepath.Join(root, "dir", strings.Repeat("x", i%8), strconv.Itoa(i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stderr strings.Builder
+	err := RunWatch(ctx, func() ([]string, error) {
+		cancel()
+		return []string{root}, nil
+	}, nil, &stderr)
+	if err != nil {
+		t.Fatalf("RunWatch() error = %v", err)
+	}
+	if got := stderr.String(); strings.Contains(got, "watch: watching") {
+		t.Fatalf("expected stop before watcher setup, got %q", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "watch: stopped") {
+		t.Fatalf("stderr missing stop message: %q", got)
+	}
+}
+
+func TestRunWatch_DrainsSyncInProgressBeforeStopping(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	file := filepath.Join(root, "rule.md")
+	if err := os.WriteFile(file, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stderr strings.Builder
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	done := make(chan error, 1)
+
+	var mu sync.Mutex
+	calls := 0
+	go func() {
+		done <- RunWatch(ctx, func() ([]string, error) {
+			mu.Lock()
+			calls++
+			callNum := calls
+			mu.Unlock()
+			if callNum == 1 {
+				return []string{root}, nil
+			}
+			started <- struct{}{}
+			<-release
+			return []string{root}, nil
+		}, nil, &stderr)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(file, []byte("after"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for re-sync to start")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		t.Fatalf("RunWatch returned before sync drained: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWatch() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RunWatch to stop")
+	}
+
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("syncFn calls = %d, want 2", gotCalls)
+	}
+	if got := stderr.String(); !strings.Contains(got, "watch: stopped") {
+		t.Fatalf("stderr missing stop message: %q", got)
+	}
+}
+
+func TestRunWatch_DoesNotStartNewSyncAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	file := filepath.Join(root, "rule.md")
+	if err := os.WriteFile(file, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stderr strings.Builder
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	done := make(chan error, 1)
+
+	var mu sync.Mutex
+	calls := 0
+	go func() {
+		done <- RunWatch(ctx, func() ([]string, error) {
+			mu.Lock()
+			calls++
+			callNum := calls
+			mu.Unlock()
+			if callNum == 1 {
+				return []string{root}, nil
+			}
+			started <- struct{}{}
+			<-release
+			return []string{root}, nil
+		}, nil, &stderr)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(file, []byte("after-1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for re-sync to start")
+	}
+
+	cancel()
+	if err := os.WriteFile(file, []byte("after-2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWatch() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RunWatch to stop")
+	}
+
+	time.Sleep(700 * time.Millisecond)
+
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("syncFn calls = %d, want 2", gotCalls)
+	}
+}
+
+func TestRunWatch_InitialSyncFailureStillStopsOnCancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stderr strings.Builder
+	first := true
+	err := RunWatch(ctx, func() ([]string, error) {
+		if first {
+			first = false
+			cancel()
+			return nil, errors.New("boom")
+		}
+		return nil, nil
+	}, nil, &stderr)
+	if err != nil {
+		t.Fatalf("RunWatch() error = %v", err)
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "watch: initial sync failed: boom") {
+		t.Fatalf("stderr missing initial sync failure: %q", got)
+	}
+	if !strings.Contains(got, "watch: stopped") {
+		t.Fatalf("stderr missing stop message: %q", got)
+	}
 }

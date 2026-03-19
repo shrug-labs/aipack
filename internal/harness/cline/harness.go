@@ -1,6 +1,7 @@
 package cline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,7 +46,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 	if scope == domain.ScopeGlobal {
 		mcpHome = baseDir
 	}
-	if p := MCPSettingsPath(mcpHome); p != "" && filepath.Clean(p) != "." {
+	for _, p := range mcpSettingsPaths(mcpHome) {
 		l.ValidationRoots = append(l.ValidationRoots, p)
 		l.OwnedFiles = append(l.OwnedFiles, mcpOwnedFile(p))
 	}
@@ -118,8 +119,11 @@ func planGlobalMCP(f *domain.Fragment, ctx engine.SyncContext) error {
 			return fmt.Errorf("resolving home for Cline MCP settings: HOME is not set")
 		}
 	}
-	dst := MCPSettingsPath(home)
-	if dst == "" || len(ctx.Profile.MCPServers) == 0 {
+	if len(ctx.Profile.MCPServers) == 0 {
+		return nil
+	}
+	targets := mcpSettingsPaths(home)
+	if len(targets) == 0 {
 		return nil
 	}
 
@@ -129,8 +133,9 @@ func planGlobalMCP(f *domain.Fragment, ctx engine.SyncContext) error {
 	}
 	planned := map[string]domain.MCPServer{}
 	parseClineSettings(planned, map[string][]string{}, out)
+	canonical := targets[0]
 	mcpActions, err := domain.BuildMCPActions(
-		dst,
+		canonical,
 		domain.HarnessCline,
 		harness.PlannedMCPServers(ctx.Profile.MCPServers, planned),
 		false,
@@ -138,12 +143,14 @@ func planGlobalMCP(f *domain.Fragment, ctx engine.SyncContext) error {
 	if err != nil {
 		return fmt.Errorf("build cline MCP actions: %w", err)
 	}
-	f.MCP = append(f.MCP, domain.SettingsAction{
-		Dst: dst, Desired: out, Harness: domain.HarnessCline,
-		Label: "cline_mcp_settings.json", SourcePack: sp,
-	})
+	for _, dst := range targets {
+		f.MCP = append(f.MCP, domain.SettingsAction{
+			Dst: dst, Desired: out, Harness: domain.HarnessCline,
+			Label: "cline_mcp_settings.json", SourcePack: sp,
+		})
+		f.Desired = append(f.Desired, filepath.Clean(dst))
+	}
 	f.MCPServers = append(f.MCPServers, mcpActions...)
-	f.Desired = append(f.Desired, filepath.Clean(dst))
 	return nil
 }
 
@@ -192,16 +199,9 @@ func captureProject(projectDir string, home string, res harness.CaptureResult) (
 		})
 		return res, nil
 	}
-	settingsPath := MCPSettingsPath(home)
-	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
-		return res, fmt.Errorf("capture cline settings: %w", err)
-	} else if ok {
-		res.Writes = append(res.Writes, domain.WriteAction{
-			Dst: filepath.Join("configs", "cline", "cline_mcp_settings.json"), Content: b, Src: settingsPath,
-		})
-		res.Warnings = append(res.Warnings, parseClineSettings(res.MCPServers, res.AllowedTools, b)...)
+	if err := captureMCP(home, &res); err != nil {
+		return res, err
 	}
-	res.MaterializeCapturedMCP(settingsPath)
 
 	return res, nil
 }
@@ -217,18 +217,84 @@ func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResul
 	})
 	harness.CapturePromotedContent(filepath.Join(home, paths.SkillsDir), &res)
 
-	settingsPath := MCPSettingsPath(home)
-	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
-		return res, fmt.Errorf("capture cline settings: %w", err)
-	} else if ok {
-		res.Writes = append(res.Writes, domain.WriteAction{
-			Dst: filepath.Join("configs", "cline", "cline_mcp_settings.json"), Content: b, Src: settingsPath,
-		})
-		res.Warnings = append(res.Warnings, parseClineSettings(res.MCPServers, res.AllowedTools, b)...)
+	if err := captureMCP(home, &res); err != nil {
+		return res, err
 	}
-	res.MaterializeCapturedMCP(settingsPath)
 
 	return res, nil
+}
+
+func captureMCP(home string, res *harness.CaptureResult) error {
+	canonical := MCPSettingsPath(home)
+	if canonical == "" {
+		return nil
+	}
+
+	sourcePath := canonical
+	b, ok, err := util.ReadFileIfExists(canonical)
+	if err != nil {
+		return fmt.Errorf("capture cline settings: %w", err)
+	}
+
+	if !ok {
+		for _, p := range mcpSettingsPaths(home) {
+			if filepath.Clean(p) == filepath.Clean(canonical) {
+				continue
+			}
+			mirror, mirrorOK, mirrorErr := util.ReadFileIfExists(p)
+			if mirrorErr != nil {
+				res.Warnings = append(res.Warnings, domain.Warning{
+					Field:   p,
+					Message: fmt.Sprintf("checking secondary Cline MCP settings: %v", mirrorErr),
+				})
+				continue
+			}
+			if mirrorOK {
+				res.Warnings = append(res.Warnings, domain.Warning{
+					Field:   p,
+					Message: fmt.Sprintf("canonical Cline MCP settings path %s is missing; falling back to secondary path %s", canonical, p),
+				})
+				sourcePath = p
+				b = mirror
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil
+		}
+	}
+
+	res.Writes = append(res.Writes, domain.WriteAction{
+		Dst: filepath.Join("configs", "cline", "cline_mcp_settings.json"), Content: b, Src: sourcePath,
+	})
+	res.Warnings = append(res.Warnings, parseClineSettings(res.MCPServers, res.AllowedTools, b)...)
+
+	for _, p := range mcpSettingsPaths(home) {
+		if filepath.Clean(p) == filepath.Clean(sourcePath) {
+			continue
+		}
+		mirror, mirrorOK, mirrorErr := util.ReadFileIfExists(p)
+		if mirrorErr != nil {
+			res.Warnings = append(res.Warnings, domain.Warning{
+				Field:   p,
+				Message: fmt.Sprintf("checking secondary Cline MCP settings: %v", mirrorErr),
+			})
+			continue
+		}
+		if !mirrorOK {
+			continue
+		}
+		if !bytes.Equal(bytes.TrimSpace(mirror), bytes.TrimSpace(b)) {
+			res.Warnings = append(res.Warnings, domain.Warning{
+				Field:   p,
+				Message: fmt.Sprintf("secondary Cline MCP settings at %s differ from capture source %s; capture uses source content", p, sourcePath),
+			})
+		}
+	}
+
+	res.MaterializeCapturedMCP(sourcePath)
+	return nil
 }
 
 // captureRulesAndWorkflows captures rules and workflows from their separate

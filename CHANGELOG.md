@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.10.2]
+
+### Changed
+
+- Cline MCP sync now writes `cline_mcp_settings.json` to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`).
+- Cline MCP capture prefers the VS Code path, falls back to the standalone path when needed, and emits a warning when the secondary file differs from the capture source.
+- Go minimum version lowered to 1.25.
+
+### Fixed
+
+- Watch loop now drains in-progress syncs before exiting and refuses to start new syncs after context cancellation, preventing races on shutdown.
+
 ## [0.10.1]
 
 ### Changed

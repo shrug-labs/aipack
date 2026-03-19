@@ -165,8 +165,32 @@ func TestPlan_Global_MCP(t *testing.T) {
 	if len(f.MCP) == 0 {
 		t.Fatal("expected MCP settings action")
 	}
-	if f.MCP[0].Harness != domain.HarnessCline {
-		t.Fatalf("MCP harness: got %q want %q", f.MCP[0].Harness, domain.HarnessCline)
+	for _, action := range f.MCP {
+		if action.Harness != domain.HarnessCline {
+			t.Fatalf("MCP harness: got %q want %q", action.Harness, domain.HarnessCline)
+		}
+	}
+
+	wantTargets := mcpSettingsPaths(home)
+	if len(f.MCP) != len(wantTargets) {
+		t.Fatalf("MCP action count: got %d want %d", len(f.MCP), len(wantTargets))
+	}
+
+	have := map[string]bool{}
+	for _, action := range f.MCP {
+		have[action.Dst] = true
+	}
+	for _, target := range wantTargets {
+		if !have[target] {
+			t.Fatalf("missing MCP target action for %s", target)
+		}
+	}
+
+	if len(f.MCPServers) != 1 {
+		t.Fatalf("MCP server action count: got %d want 1", len(f.MCPServers))
+	}
+	if got, want := f.MCPServers[0].ConfigPath, MCPSettingsPath(home); got != want {
+		t.Fatalf("MCP server config path: got %s want %s", got, want)
 	}
 }
 
@@ -510,6 +534,130 @@ func TestCapture_Project_MCP(t *testing.T) {
 	}
 }
 
+func TestCapture_Project_MCP_CanonicalMissingMirrorWarns(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	mirrorPath := mcpMirrorSettingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(mirrorPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpJSON := []byte(`{"mcpServers":{"mirror-server":{"command":"echo","args":["hi"],"env":{}}}}`)
+	if err := os.WriteFile(mirrorPath, mcpJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		Home:       home,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if _, ok := res.MCPServers["mirror-server"]; !ok {
+		t.Fatalf("expected mirror MCP server when canonical settings are missing; got %+v", res.MCPServers)
+	}
+
+	foundWarning := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w.Message, "falling back to secondary path") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatal("expected warning about falling back from canonical Cline MCP settings path")
+	}
+}
+
+func TestCapture_Project_MCP_FallsBackToMirrorWhenCanonicalMissing(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	mirrorPath := mcpMirrorSettingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(mirrorPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpJSON := []byte(`{"mcpServers":{"mirror-server":{"command":"echo","args":["hi"],"env":{}}}}`)
+	if err := os.WriteFile(mirrorPath, mcpJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		Home:       home,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if _, ok := res.MCPServers["mirror-server"]; !ok {
+		t.Fatalf("expected mirror MCP server to be captured; got %+v", res.MCPServers)
+	}
+	if len(res.MCP) != 1 {
+		t.Fatalf("captured MCP count: got %d want 1", len(res.MCP))
+	}
+	if got := res.MCP[0].HarnessPath; got != filepath.Clean(mirrorPath) {
+		t.Fatalf("captured MCP harness path: got %s want %s", got, filepath.Clean(mirrorPath))
+	}
+}
+
+func TestCapture_Project_MCP_MirrorDiffWarns(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	canonicalPath := MCPSettingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalJSON := []byte(`{"mcpServers":{"canonical-server":{"command":"echo","args":["a"],"env":{}}}}`)
+	if err := os.WriteFile(canonicalPath, canonicalJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mirrorPath := mcpMirrorSettingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(mirrorPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mirrorJSON := []byte(`{"mcpServers":{"mirror-server":{"command":"echo","args":["b"],"env":{}}}}`)
+	if err := os.WriteFile(mirrorPath, mirrorJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		Home:       home,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if _, ok := res.MCPServers["canonical-server"]; !ok {
+		t.Fatalf("expected canonical MCP server from %s", canonicalPath)
+	}
+	if _, ok := res.MCPServers["mirror-server"]; ok {
+		t.Fatalf("did not expect mirror MCP server in canonical capture")
+	}
+
+	foundWarning := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w.Message, "differ from capture source") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatal("expected warning about differing secondary Cline MCP settings")
+	}
+}
+
 func TestCapture_Global_Agents(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -559,9 +707,9 @@ func TestLayout_Project(t *testing.T) {
 		"/proj/.clinerules/skills":    false,
 	}
 	// MCP settings path is also a managed root (always global for Cline).
-	mcpPath := MCPSettingsPath("/home")
-	if mcpPath != "" {
-		want[mcpPath] = false
+	mcpPaths := mcpSettingsPaths("/home")
+	for _, p := range mcpPaths {
+		want[p] = false
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {
@@ -592,8 +740,17 @@ func TestLayout_Project(t *testing.T) {
 		}
 	}
 
-	if mcpPath != "" && len(layout.OwnedFiles) != 1 {
-		t.Fatalf("expected 1 OwnedFile for MCP settings, got %d", len(layout.OwnedFiles))
+	if len(layout.OwnedFiles) != len(mcpPaths) {
+		t.Fatalf("expected %d OwnedFiles for MCP settings, got %d", len(mcpPaths), len(layout.OwnedFiles))
+	}
+	haveOwned := map[string]bool{}
+	for _, of := range layout.OwnedFiles {
+		haveOwned[of.Path] = true
+	}
+	for _, p := range mcpPaths {
+		if !haveOwned[p] {
+			t.Fatalf("missing OwnedFile for %s", p)
+		}
 	}
 }
 
@@ -607,9 +764,9 @@ func TestLayout_Global(t *testing.T) {
 		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
 		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
 	}
-	mcpPath := MCPSettingsPath("/home")
-	if mcpPath != "" {
-		want[mcpPath] = false
+	mcpPaths := mcpSettingsPaths("/home")
+	for _, p := range mcpPaths {
+		want[p] = false
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {

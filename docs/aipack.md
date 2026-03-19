@@ -557,7 +557,7 @@ Four harnesses are supported. Each implements content vectors and MCP differentl
 | Claude Code | `.mcp.json` (project), `~/.claude.json` (global) | JSON `mcpServers` object | Global only via `MCP_TIMEOUT` env var, milliseconds (default 10000); no per-server timeout in config |
 | OpenCode | `opencode.json` | JSON `mcp` key | Milliseconds (default 10000) |
 | Codex | `.codex/config.toml` | TOML `[mcp_servers.<name>]` tables | Seconds (`startup_timeout_sec`, default 10) |
-| Cline | VS Code extension storage `cline_mcp_settings.json` (global only) | JSON `mcpServers` object | Seconds (default 10) |
+| Cline | VS Code extension storage `cline_mcp_settings.json` + standalone `~/.cline/data/settings/cline_mcp_settings.json` (global only) | JSON `mcpServers` object | Seconds (default 10) |
 
 ### MCP tool permissions
 
@@ -588,7 +588,7 @@ Each harness controls MCP tool access differently. Some harnesses store permissi
 | Claude Code | `.claude/settings.local.json` | `.mcp.json` | JSON | **Always three-way merge** — user permissions preserved, only `mcp__*` entries managed |
 | OpenCode | `.opencode/opencode.json` | `.opencode/oh-my-opencode.json` | JSON | Template + managed keys overlay. With `--skip-settings`: MergeMode (managed keys only) |
 | Codex | `.codex/config.toml` | None | TOML | Template + MCP table merge. With `--skip-settings`: MergeMode (`mcp_servers` only) |
-| Cline | None | `cline_mcp_settings.json` | JSON | Generated from inventory (no base template). Always synced |
+| Cline | None | `cline_mcp_settings.json` (written to VS Code + standalone Cline global paths) | JSON | Generated from inventory (no base template). Always synced |
 
 `--skip-settings` skips settings files but **plugins always sync** regardless.
 
@@ -637,7 +637,7 @@ Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identical
 | Agents | `.clinerules/skills/<name>/SKILL.md` (promoted) | `~/.cline/skills/<name>/SKILL.md` (promoted) |
 | Workflows | `.clinerules/workflows/<file>.md` | `~/Documents/Cline/Workflows/<file>.md` |
 | Skills | `.clinerules/skills/<dirname>/` | `~/.cline/skills/<dirname>/` |
-| MCP | N/A | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS) |
+| MCP | N/A | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS VS Code) + `~/.cline/data/settings/cline_mcp_settings.json` |
 
 ### Managed keys
 
@@ -673,6 +673,8 @@ Keys stripped on save round-trip:
 
 **Cline**
 - MCP is global-only — there is no project-level MCP settings path.
+- Sync writes Cline MCP settings to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`).
+- Save/capture prefers the canonical VS Code path, falls back to the standalone path when the canonical file is missing, and warns when another discovered file differs from the capture source.
 - Agents (but not workflows) are promoted to skill directories in `.clinerules/skills/` (project) or `~/.cline/skills/` (global), with enriched YAML frontmatter (`source_type: agent`) that preserves agent metadata for round-trip capture. Workflows remain individual files in `.clinerules/workflows/`. The promotion mechanism uses the same enriched-frontmatter approach as Codex, but Codex also promotes workflows.
 - The MCP settings file is generated fresh from inventory on every sync (no base template concept). Existing user-defined `mcpServers` entries are preserved during merge.
 - `alwaysAllow` is allow-only — there is no mechanism to deny specific tools.
