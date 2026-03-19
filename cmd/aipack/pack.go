@@ -74,7 +74,7 @@ type PackInstallCmd struct {
 	Name       string `help:"Override the pack name from pack.json" name:"name"`
 	ConfigDir  string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Registry   string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
-	Profile    string `help:"Profile to register pack source in (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile    string `help:"Profile to register pack source in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	NoRegister bool   `help:"Do not auto-register pack as a source in any profile" name:"no-register"`
 	Copy       bool   `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
 	Seed       bool   `help:"Apply bundled registries and profiles from remote packs (preview-only by default)" name:"seed"`
@@ -327,8 +327,9 @@ func (c *PackListCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack delete ---
 
 type PackDeleteCmd struct {
-	Name      string `arg:"" help:"Name of the installed pack to delete"`
+	Name      string `arg:"" help:"Name of the installed pack to delete" predictor:"pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	Yes       bool   `help:"Skip confirmation prompt for seeded profile removal"`
 }
 
 func (c *PackDeleteCmd) Help() string {
@@ -347,16 +348,47 @@ func (c *PackDeleteCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	if err := app.PackRemove(cfgDir, c.Name, g.Stdout); err != nil {
+	result, err := app.PackRemove(cfgDir, c.Name, g.Stdout)
+	if err != nil {
 		return err
 	}
+	if len(result.SeededProfiles) == 0 {
+		return nil
+	}
+	fmt.Fprintf(g.Stderr, "This pack seeded profiles that still exist: %s\n", strings.Join(result.SeededProfiles, ", "))
+	if !c.Yes {
+		fmt.Fprint(g.Stderr, "Remove them? [y/N] ")
+		if !g.StdinTTY {
+			fmt.Fprintln(g.Stderr, "Skipped (non-interactive, use --yes to confirm).")
+			return nil
+		}
+		type promptResult struct {
+			answer string
+			err    error
+		}
+		ch := make(chan promptResult, 1)
+		go func() {
+			var answer string
+			_, err := fmt.Fscan(g.Stdin, &answer)
+			ch <- promptResult{answer, err}
+		}()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case res := <-ch:
+			if res.err != nil || strings.ToLower(strings.TrimSpace(res.answer)) != "y" {
+				return nil
+			}
+		}
+	}
+	app.RemoveSeededProfiles(cfgDir, result.SeededProfiles, g.Stdout)
 	return nil
 }
 
 // --- pack rename ---
 
 type PackRenameCmd struct {
-	OldName   string `arg:"" help:"Current name of the installed pack"`
+	OldName   string `arg:"" help:"Current name of the installed pack" predictor:"pack"`
 	NewName   string `arg:"" help:"New name for the pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 }
@@ -382,9 +414,9 @@ func (c *PackRenameCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack enable (profile) ---
 
 type PackEnableCmd struct {
-	Name      string `arg:"" help:"Name of the installed pack to enable in the profile"`
+	Name      string `arg:"" help:"Name of the installed pack to enable in the profile" predictor:"pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Profile   string `help:"Profile to enable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile   string `help:"Profile to enable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 }
 
 func (c *PackEnableCmd) Help() string {
@@ -423,9 +455,9 @@ func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack disable (profile) ---
 
 type PackDisableCmd struct {
-	Name      string `arg:"" help:"Name of the pack to disable in the profile"`
+	Name      string `arg:"" help:"Name of the pack to disable in the profile" predictor:"pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Profile   string `help:"Profile to disable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile   string `help:"Profile to disable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 }
 
 func (c *PackDisableCmd) Help() string {
@@ -457,7 +489,7 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack update ---
 
 type PackUpdateCmd struct {
-	Name      string `arg:"" optional:"" help:"Name of the pack to update"`
+	Name      string `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	All       bool   `help:"Update all installed packs" name:"all"`
 }
@@ -520,7 +552,7 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack show ---
 
 type PackShowCmd struct {
-	Name      string `arg:"" help:"Name of the installed pack to show"`
+	Name      string `arg:"" help:"Name of the installed pack to show" predictor:"pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	JSON      bool   `help:"Emit machine-readable JSON" name:"json"`
 }

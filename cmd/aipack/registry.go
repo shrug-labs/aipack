@@ -162,7 +162,7 @@ func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 // --- registry remove ---
 
 type RegistryRemoveCmd struct {
-	Name      string `arg:"" help:"Name of the registry source to remove"`
+	Name      string `arg:"" help:"Name of the registry source to remove" predictor:"registry-source"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 }
 

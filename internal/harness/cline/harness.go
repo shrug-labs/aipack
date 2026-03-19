@@ -28,7 +28,8 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 		filepath.Join(baseDir, paths.SkillsDir),
 	}
 	if scope == domain.ScopeProject {
-		// Project: RulesDir (.clinerules) is the parent of workflows/skills, don't remove it.
+		// Project: RulesDir (.clinerules) is the parent of workflows; don't remove it.
+		// SkillsDir (.agents/skills) is outside .clinerules — safe to remove wholesale.
 		l.RemovePaths = []string{
 			filepath.Join(baseDir, paths.WorkflowsDir),
 			filepath.Join(baseDir, paths.SkillsDir),

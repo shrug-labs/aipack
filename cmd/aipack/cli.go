@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/alecthomas/kong"
+	"github.com/willabides/kongplete"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -116,6 +117,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool
 			code = cmdutil.ExitFail
 			return
 		}
+		kongplete.Complete(parser,
+			kongplete.WithPredictors(completionPredictors()),
+		)
 		kctx, err := parser.Parse(args)
 		if err != nil {
 			parser.FatalIfErrorf(err)

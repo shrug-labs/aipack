@@ -107,9 +107,9 @@ No concurrent/parallel harness planning or capture. Most users have 1-2 harnesse
 | Vector | Claude Code | OpenCode | Codex | Cline |
 |--------|-------------|----------|-------|-------|
 | Rules | `.claude/rules/` | `.opencode/rules/` + `instructions` ref | Flattened `AGENTS.override.md` | `.clinerules/` |
-| Agents | `.claude/agents/` | `.opencode/agents/` | Promoted to `.agents/skills/` | Promoted to `.clinerules/skills/` |
+| Agents | `.claude/agents/` | `.opencode/agents/` | Promoted to `.agents/skills/` | Promoted to `.agents/skills/` (shared with Codex) |
 | Workflows | `.claude/commands/` | `.opencode/commands/` | Promoted to `.agents/skills/` | `.clinerules/workflows/` |
-| Skills | `.claude/skills/` | `.opencode/skills/` | `.agents/skills/` | `.clinerules/skills/` |
+| Skills | `.claude/skills/` | `.opencode/skills/` | `.agents/skills/` | `.agents/skills/` (shared with Codex) |
 | MCP | `.mcp.json` | `opencode.json` | `config.toml` | Global VS Code storage |
 
 Full per-harness details including merge behavior and tool permissions: `docs/aipack.md` Per-harness reference.

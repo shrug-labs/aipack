@@ -12,14 +12,14 @@ import (
 )
 
 type TraceCmd struct {
-	Type        string  `arg:"" enum:"rule,agent,workflow,skill,mcp" help:"Resource type to trace"`
-	Name        string  `arg:"" help:"Resource name (rule name, agent name, skill name, MCP server name)"`
-	Profile     string  `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Type        string  `arg:"" enum:"rule,agent,workflow,skill,mcp" help:"Resource type to trace" predictor:"trace-type"`
+	Name        string  `arg:"" help:"Resource name (rule name, agent name, skill name, MCP server name)" predictor:"resource"`
+	Profile     string  `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string  `help:"Direct path to a profile YAML file" name:"profile-path" type:"path"`
 	ConfigDir   string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Scope       string  `help:"Scope: project|global (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
 	ProjectDir  *string `help:"Project directory for scope=project" name:"project-dir" type:"path"`
-	Harness     string  `help:"Filter to specific harness" name:"harness"`
+	Harness     string  `help:"Filter to specific harness" name:"harness" predictor:"harness"`
 	JSON        bool    `help:"Machine-readable JSON output" name:"json"`
 }
 

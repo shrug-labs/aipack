@@ -6,6 +6,19 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.0]
+
+### Added
+
+- `aipack install-completions` command registers tab completions for bash, zsh, and fish. Dynamic predictors suggest pack names, profile names, harness names, resource types, and other arguments based on current config state.
+- `pack delete` detects profiles seeded by the removed pack and offers to clean them up. Use `--yes` to auto-confirm; the TUI auto-removes seeded profiles without prompting.
+
+### Changed
+
+- Cline skills and agents now write to `.agents/skills/` (shared with Codex) instead of `.clinerules/skills/` and `~/.cline/skills/`. Cline reads both locations natively, so sharing a single canonical skills directory prevents duplication when multiple harnesses target the same project.
+- TUI colors use adaptive tokens that auto-select light or dark variants based on terminal background. Light-background terminals now get readable contrast instead of washed-out colors.
+- Confirmation prompts in `clean` and `sync --yes` now respect context cancellation (Ctrl-C exits immediately instead of blocking on stdin).
+
 ## [0.10.2]
 
 ### Changed

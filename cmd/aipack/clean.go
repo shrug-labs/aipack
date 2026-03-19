@@ -18,7 +18,7 @@ type CleanCmd struct {
 	Yes        bool    `help:"Skip confirmation prompt and proceed immediately"`
 	DryRun     bool    `help:"Preview what would be removed without deleting anything" name:"dry-run"`
 	Ledger     bool    `help:"Also delete the .aipack/ ledger directory"`
-	Harness    string  `help:"Optional harness filter: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then all harnesses)" name:"harness"`
+	Harness    string  `help:"Optional harness filter: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then all harnesses)" name:"harness" predictor:"harness"`
 }
 
 func (c *CleanCmd) Help() string {
@@ -87,7 +87,7 @@ func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	if err := app.RunClean(app.CleanRequest{
+	if err := app.RunClean(ctx, app.CleanRequest{
 		TargetSpec: app.TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectAbs,

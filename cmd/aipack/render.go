@@ -12,7 +12,7 @@ import (
 )
 
 type RenderCmd struct {
-	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
 	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	OutDir      string `help:"Output directory (default: auto-generated temporary directory under $TMPDIR)" name:"out-dir" type:"path"`

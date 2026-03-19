@@ -64,10 +64,10 @@ func (c *SaveCmd) resolveSaveEnv(optionalHarness bool) (saveEnv, error) {
 type SaveCmd struct {
 	Scope       string  `help:"Where to capture from: 'project' reads project directory, 'global' reads ~/ config locations (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
 	ProjectDir  *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
-	Harness     string  `help:"Harness to save from: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness"`
-	ToPack      string  `help:"Save content to this installed pack (creates pack if it does not exist)" name:"to-pack"`
+	Harness     string  `help:"Harness to save from: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness" predictor:"harness"`
+	ToPack      string  `help:"Save content to this installed pack (creates pack if it does not exist)" name:"to-pack" predictor:"pack"`
 	Types       string  `help:"Content types to save: rules,agents,workflows,skills,mcp,settings (comma-separated; default: all types)" name:"types"`
-	Profile     string  `help:"Profile name for round-trip mode (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile     string  `help:"Profile name for round-trip mode (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string  `help:"Direct path to a profile YAML file for round-trip mode" name:"profile-path" type:"path"`
 	ConfigDir   string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Force       bool    `help:"Auto-approve settings saves and overwrite file conflicts"`

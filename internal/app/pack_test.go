@@ -309,7 +309,7 @@ func TestPackRemove(t *testing.T) {
 	}, &out)
 
 	out.Reset()
-	if err := PackRemove(configDir, "test-pack", &out); err != nil {
+	if _, err := PackRemove(configDir, "test-pack", &out); err != nil {
 		t.Fatalf("PackRemove: %v", err)
 	}
 
@@ -324,7 +324,7 @@ func TestPackRemove_NotInstalled(t *testing.T) {
 	configDir := t.TempDir()
 
 	var out bytes.Buffer
-	err := PackRemove(configDir, "nonexistent", &out)
+	_, err := PackRemove(configDir, "nonexistent", &out)
 	if err == nil {
 		t.Fatal("expected error for removing nonexistent pack")
 	}
@@ -782,7 +782,7 @@ func TestPackRemove_ClearsOriginFromSyncConfig(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := PackRemove(configDir, "test-pack", &out); err != nil {
+	if _, err := PackRemove(configDir, "test-pack", &out); err != nil {
 		t.Fatalf("PackRemove: %v", err)
 	}
 
@@ -826,7 +826,7 @@ func TestPackRemove_DeregistersFromProfile(t *testing.T) {
 
 	// Remove pack.
 	out.Reset()
-	if err := PackRemove(configDir, "test-pack", &out); err != nil {
+	if _, err := PackRemove(configDir, "test-pack", &out); err != nil {
 		t.Fatalf("PackRemove: %v", err)
 	}
 
@@ -843,6 +843,78 @@ func TestPackRemove_DeregistersFromProfile(t *testing.T) {
 	// Verify output mentions deregistration.
 	if !strings.Contains(out.String(), "Deregistered") {
 		t.Fatalf("expected deregistration message, got: %s", out.String())
+	}
+}
+
+func TestPackRemove_ReturnsSeededProfiles(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+
+	// Write a manifest that declares a seeded profile.
+	m := map[string]any{
+		"schema_version": 1,
+		"name":           "test-pack",
+		"version":        "1.0.0",
+		"root":           ".",
+		"profiles":       []string{"profiles/team.yaml"},
+	}
+	b, _ := json.Marshal(m)
+	os.MkdirAll(packDir, 0o700)
+	os.WriteFile(filepath.Join(packDir, "pack.json"), b, 0o600)
+
+	// Write the seed profile inside the pack.
+	os.MkdirAll(filepath.Join(packDir, "profiles"), 0o700)
+	os.WriteFile(filepath.Join(packDir, "profiles", "team.yaml"),
+		[]byte("schema_version: 1\npacks: []\n"), 0o600)
+
+	writeSeedProfile(t, configDir, "default")
+	writeSeedSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	_ = PackAdd(context.Background(), PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		Register:  true,
+		Profile:   "default",
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+
+	// Verify the seeded profile was created.
+	teamProfile := filepath.Join(configDir, "profiles", "team.yaml")
+	if _, err := os.Stat(teamProfile); err != nil {
+		t.Fatalf("expected seeded profile to exist: %v", err)
+	}
+
+	// Remove pack.
+	out.Reset()
+	result, err := PackRemove(configDir, "test-pack", &out)
+	if err != nil {
+		t.Fatalf("PackRemove: %v", err)
+	}
+
+	// Result should list the seeded profile by name.
+	if len(result.SeededProfiles) != 1 {
+		t.Fatalf("expected 1 seeded profile, got %d", len(result.SeededProfiles))
+	}
+	if result.SeededProfiles[0] != "team" {
+		t.Fatalf("expected seeded profile name %q, got %q", "team", result.SeededProfiles[0])
+	}
+
+	// Profile file should still exist (caller is responsible for removal).
+	if _, err := os.Stat(teamProfile); err != nil {
+		t.Fatalf("expected seeded profile to still exist before explicit removal: %v", err)
+	}
+
+	// Now remove seeded profiles.
+	out.Reset()
+	RemoveSeededProfiles(configDir, result.SeededProfiles, &out)
+	if _, err := os.Stat(teamProfile); !os.IsNotExist(err) {
+		t.Fatalf("expected seeded profile to be removed")
+	}
+	if !strings.Contains(out.String(), "Removed seeded profile") {
+		t.Fatalf("expected removal message, got: %s", out.String())
 	}
 }
 
@@ -1362,7 +1434,7 @@ func TestPackLifecycle_AddListUpdateShowRemove(t *testing.T) {
 
 	// --- Step 5: Remove ---
 	var removeOut bytes.Buffer
-	err = PackRemove(configDir, "lifecycle-pack", &removeOut)
+	_, err = PackRemove(configDir, "lifecycle-pack", &removeOut)
 	if err != nil {
 		t.Fatalf("PackRemove: %v", err)
 	}

@@ -564,19 +564,34 @@ func PackList(configDir string) ([]PackShowEntry, error) {
 }
 
 // PackRemove uninstalls a pack and deregisters it from all profiles.
-func PackRemove(configDir string, name string, stdout io.Writer) error {
+// PackRemoveResult holds post-removal metadata for callers to act on.
+type PackRemoveResult struct {
+	// SeededProfiles lists profile names that were seeded by this pack
+	// and still exist after removal. Callers should prompt for confirmation
+	// before deleting these.
+	SeededProfiles []string
+}
+
+func PackRemove(configDir string, name string, stdout io.Writer) (PackRemoveResult, error) {
+	var result PackRemoveResult
+
 	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("pack name is required")
+		return result, fmt.Errorf("pack name is required")
 	}
 	packsDir := PacksDir(configDir)
 	destDir := filepath.Join(packsDir, name)
 
 	if _, err := os.Lstat(destDir); os.IsNotExist(err) {
-		return fmt.Errorf("pack %q is not installed", name)
+		return result, fmt.Errorf("pack %q is not installed", name)
+	}
+
+	// Load manifest before removing so we know which profiles were seeded.
+	if manifest, err := config.LoadPackManifest(filepath.Join(destDir, "pack.json")); err == nil {
+		result.SeededProfiles = packFindSeededProfiles(configDir, manifest.Profiles)
 	}
 
 	if err := os.RemoveAll(destDir); err != nil {
-		return fmt.Errorf("removing pack: %w", err)
+		return result, fmt.Errorf("removing pack: %w", err)
 	}
 	fmt.Fprintf(stdout, "Removed: %s\n", destDir)
 
@@ -586,7 +601,38 @@ func PackRemove(configDir string, name string, stdout io.Writer) error {
 	// Best-effort deregister from all profiles.
 	packDeregisterFromAllProfiles(configDir, name, stdout)
 
-	return nil
+	return result, nil
+}
+
+// packFindSeededProfiles returns profile names (without extension) for profiles
+// declared in the pack manifest that still exist on disk.
+func packFindSeededProfiles(configDir string, manifestProfiles []string) []string {
+	if len(manifestProfiles) == 0 {
+		return nil
+	}
+	profilesDir := filepath.Join(configDir, "profiles")
+	var found []string
+	for _, relPath := range manifestProfiles {
+		base := filepath.Base(relPath)
+		name := strings.TrimSuffix(base, filepath.Ext(base))
+		dest := filepath.Join(profilesDir, base)
+		if _, err := os.Stat(dest); err == nil {
+			found = append(found, name)
+		}
+	}
+	return found
+}
+
+// RemoveSeededProfiles deletes seeded profile files by name, clearing the
+// active-profile setting if needed. Delegates to ProfileDelete for each profile.
+func RemoveSeededProfiles(configDir string, names []string, stdout io.Writer) {
+	for _, name := range names {
+		if err := ProfileDelete(ProfileDeleteRequest{ConfigDir: configDir, Name: name}); err != nil {
+			fmt.Fprintf(stdout, "Warning: failed to remove seeded profile %q: %v\n", name, err)
+			continue
+		}
+		fmt.Fprintf(stdout, "Removed seeded profile %q\n", name)
+	}
 }
 
 // packDeregisterFromAllProfiles removes source and pack entries for a given pack

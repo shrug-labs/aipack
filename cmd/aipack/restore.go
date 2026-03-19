@@ -16,7 +16,7 @@ type RestoreCmd struct {
 	ConfigDir  string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Scope      string  `help:"Where to restore: 'project' or 'global' (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
 	ProjectDir *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
-	Harness    string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then all)" name:"harness"`
+	Harness    string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then all)" name:"harness" predictor:"harness"`
 	Yes        bool    `help:"Skip confirmation prompt and proceed immediately"`
 	DryRun     bool    `help:"Preview what would be restored without writing any files" name:"dry-run"`
 	JSON       bool    `help:"Emit machine-readable JSON output" name:"json"`

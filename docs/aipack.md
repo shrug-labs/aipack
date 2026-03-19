@@ -538,9 +538,9 @@ Four harnesses are supported. Each implements content vectors and MCP differentl
 | Vector | Claude Code | OpenCode | Codex | Cline |
 |--------|-------------|----------|-------|-------|
 | Rules | Individual files in `.claude/rules/` (frontmatter preserved, `paths:` scoping works natively) | Individual files in `.opencode/rules/` + referenced via `instructions` key in `opencode.json` | Flattened into `AGENTS.override.md` | Individual files in `.clinerules/` |
-| Agents | Individual files in `.claude/agents/` (frontmatter transformed to Claude Code subagent format) | Individual files in `.opencode/agents/` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) | Promoted to skill dirs in `.clinerules/skills/` (enriched frontmatter preserves type + metadata for round-trip) |
+| Agents | Individual files in `.claude/agents/` (frontmatter transformed to Claude Code subagent format) | Individual files in `.opencode/agents/` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) | Promoted to skill dirs in `.agents/skills/` (shared with Codex; enriched frontmatter preserves type + metadata for round-trip) |
 | Workflows | Individual files in `.claude/commands/` | Individual files in `.opencode/commands/` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) | Individual files in `.clinerules/workflows/` |
-| Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.agents/skills/` | Per-skill dirs in `.clinerules/skills/` |
+| Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.agents/skills/` | Per-skill dirs in `.agents/skills/` (shared with Codex) |
 
 ### Scope support
 
@@ -634,9 +634,9 @@ Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identical
 | What | Project path | Global path |
 |------|-------------|------------|
 | Rules | `.clinerules/<file>.md` | `~/Documents/Cline/Rules/<file>.md` |
-| Agents | `.clinerules/skills/<name>/SKILL.md` (promoted) | `~/.cline/skills/<name>/SKILL.md` (promoted) |
+| Agents | `.agents/skills/<name>/SKILL.md` (promoted, shared with Codex) | `~/.agents/skills/<name>/SKILL.md` (promoted, shared with Codex) |
 | Workflows | `.clinerules/workflows/<file>.md` | `~/Documents/Cline/Workflows/<file>.md` |
-| Skills | `.clinerules/skills/<dirname>/` | `~/.cline/skills/<dirname>/` |
+| Skills | `.agents/skills/<dirname>/` (shared with Codex) | `~/.agents/skills/<dirname>/` (shared with Codex) |
 | MCP | N/A | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS VS Code) + `~/.cline/data/settings/cline_mcp_settings.json` |
 
 ### Managed keys
@@ -675,7 +675,7 @@ Keys stripped on save round-trip:
 - MCP is global-only — there is no project-level MCP settings path.
 - Sync writes Cline MCP settings to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`).
 - Save/capture prefers the canonical VS Code path, falls back to the standalone path when the canonical file is missing, and warns when another discovered file differs from the capture source.
-- Agents (but not workflows) are promoted to skill directories in `.clinerules/skills/` (project) or `~/.cline/skills/` (global), with enriched YAML frontmatter (`source_type: agent`) that preserves agent metadata for round-trip capture. Workflows remain individual files in `.clinerules/workflows/`. The promotion mechanism uses the same enriched-frontmatter approach as Codex, but Codex also promotes workflows.
+- Agents (but not workflows) are promoted to skill directories in `.agents/skills/` (project) or `~/.agents/skills/` (global), sharing the same canonical skills location as Codex. This avoids duplication since Cline natively reads both `.clinerules/` and `.agents/`. Enriched YAML frontmatter (`source_type: agent`) preserves agent metadata for round-trip capture. Workflows remain individual files in `.clinerules/workflows/`. The promotion mechanism uses the same enriched-frontmatter approach as Codex, but Codex also promotes workflows.
 - The MCP settings file is generated fresh from inventory on every sync (no base template concept). Existing user-defined `mcpServers` entries are preserved during merge.
 - `alwaysAllow` is allow-only — there is no mechanism to deny specific tools.
 

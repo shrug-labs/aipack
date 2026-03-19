@@ -43,8 +43,8 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 	wantRule := filepath.Join(projectDir, ".clinerules", "team.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
-	// Agent promoted to skill → .clinerules/skills/reviewer/SKILL.md
-	wantAgent := filepath.Join(projectDir, ".clinerules", "skills", "reviewer", "SKILL.md")
+	// Agent promoted to skill → .agents/skills/reviewer/SKILL.md
+	wantAgent := filepath.Join(projectDir, ".agents", "skills", "reviewer", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 }
 
@@ -76,8 +76,8 @@ func TestPlan_Project_WorkflowsAndSkills(t *testing.T) {
 	wantWf := filepath.Join(projectDir, ".clinerules", "workflows", "onboard.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
-	// Skill → .clinerules/skills/deploy
-	wantSkill := filepath.Join(projectDir, ".clinerules", "skills", "deploy")
+	// Skill → .agents/skills/deploy
+	wantSkill := filepath.Join(projectDir, ".agents", "skills", "deploy")
 	found := false
 	for _, c := range f.Copies {
 		if c.Dst == wantSkill {
@@ -121,15 +121,15 @@ func TestPlan_Global_Content(t *testing.T) {
 	wantRule := filepath.Join(home, "Documents", "Cline", "Rules", "global-rule.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
-	// Agent promoted to skill → ~/.cline/skills/planner/SKILL.md
-	wantAgent := filepath.Join(home, ".cline", "skills", "planner", "SKILL.md")
+	// Agent promoted to skill → ~/.agents/skills/planner/SKILL.md
+	wantAgent := filepath.Join(home, ".agents", "skills", "planner", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 
 	wantWf := filepath.Join(home, "Documents", "Cline", "Workflows", "deploy.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
-	// Skill → ~/.cline/skills/diagnose
-	wantSkill := filepath.Join(home, ".cline", "skills", "diagnose")
+	// Skill → ~/.agents/skills/diagnose
+	wantSkill := filepath.Join(home, ".agents", "skills", "diagnose")
 	found := false
 	for _, c := range f.Copies {
 		if c.Dst == wantSkill {
@@ -415,8 +415,8 @@ func TestCapture_Project(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a promoted agent in skills dir.
-	agentSkillDir := filepath.Join(rulesDir, "skills", "reviewer")
+	// Create a promoted agent in skills dir (.agents/skills, shared with Codex).
+	agentSkillDir := filepath.Join(projectDir, ".agents", "skills", "reviewer")
 	if err := os.MkdirAll(agentSkillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -662,8 +662,8 @@ func TestCapture_Global_Agents(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 
-	// Create a promoted agent in the global skills directory.
-	agentSkillDir := filepath.Join(home, ".cline", "skills", "planner")
+	// Create a promoted agent in the global skills directory (.agents/skills, shared with Codex).
+	agentSkillDir := filepath.Join(home, ".agents", "skills", "planner")
 	if err := os.MkdirAll(agentSkillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +704,7 @@ func TestLayout_Project(t *testing.T) {
 	want := map[string]bool{
 		"/proj/.clinerules":           false,
 		"/proj/.clinerules/workflows": false,
-		"/proj/.clinerules/skills":    false,
+		"/proj/.agents/skills":        false,
 	}
 	// MCP settings path is also a managed root (always global for Cline).
 	mcpPaths := mcpSettingsPaths("/home")
@@ -725,7 +725,7 @@ func TestLayout_Project(t *testing.T) {
 	}
 	wantRemove := map[string]bool{
 		"/proj/.clinerules/workflows": false,
-		"/proj/.clinerules/skills":    false,
+		"/proj/.agents/skills":        false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {
@@ -760,7 +760,7 @@ func TestLayout_Global(t *testing.T) {
 	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
 
 	want := map[string]bool{
-		"/home/.cline/skills": false,
+		"/home/.agents/skills":                                    false,
 		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
 		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
 	}
@@ -781,7 +781,7 @@ func TestLayout_Global(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/home/.cline/skills": false,
+		"/home/.agents/skills":                                    false,
 		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
 		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
 	}

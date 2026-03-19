@@ -300,8 +300,16 @@ func createPack(configDir, name string) tea.Cmd {
 // removePack removes an installed pack.
 func removePack(configDir, name string) tea.Cmd {
 	return func() tea.Msg {
-		err := app.PackRemove(configDir, name, io.Discard)
-		return packRemovedMsg{name: name, err: err}
+		result, err := app.PackRemove(configDir, name, io.Discard)
+		if err != nil {
+			return packRemovedMsg{name: name, err: err}
+		}
+		// TUI auto-removes seeded profiles without prompting — the user already
+		// confirmed the pack removal via the destructive dialog.
+		if len(result.SeededProfiles) > 0 {
+			app.RemoveSeededProfiles(configDir, result.SeededProfiles, io.Discard)
+		}
+		return packRemovedMsg{name: name, err: nil}
 	}
 }
 

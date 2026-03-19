@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +30,7 @@ type CleanRequest struct {
 }
 
 // RunClean resets harness capability vectors without bricking the harness.
-func RunClean(req CleanRequest, reg *harness.Registry) error {
+func RunClean(ctx context.Context, req CleanRequest, reg *harness.Registry) error {
 	home := req.Home
 	if req.Scope == domain.ScopeGlobal && strings.TrimSpace(home) == "" {
 		return fmt.Errorf("HOME is not set (required for global scope)")
@@ -82,9 +83,9 @@ func RunClean(req CleanRequest, reg *harness.Registry) error {
 
 	ops := buildCleanOps(req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
 
-	ctx := cleanRunContext{Yes: req.Yes, Stdin: stdin, Stderr: stderr}
+	rctx := cleanRunContext{Yes: req.Yes, Stdin: stdin, Stderr: stderr}
 	for _, op := range ops {
-		if err := op.run(ctx); err != nil {
+		if err := op.run(ctx, rctx); err != nil {
 			return err
 		}
 	}
@@ -98,7 +99,7 @@ type cleanRunContext struct {
 }
 
 type cleanOp interface {
-	run(ctx cleanRunContext) error
+	run(ctx context.Context, rctx cleanRunContext) error
 	path() string
 }
 
@@ -108,7 +109,7 @@ type removePathOp struct {
 
 func (o removePathOp) path() string { return o.Path }
 
-func (o removePathOp) run(ctx cleanRunContext) error {
+func (o removePathOp) run(ctx context.Context, rctx cleanRunContext) error {
 	if o.Path == "" || filepath.Clean(o.Path) == "." {
 		return fmt.Errorf("invalid clean path: %q", o.Path)
 	}
@@ -118,8 +119,8 @@ func (o removePathOp) run(ctx cleanRunContext) error {
 		}
 		return err
 	}
-	if !ctx.Yes {
-		ok, err := cleanPromptYesNo(ctx.Stdin, ctx.Stderr, fmt.Sprintf("Delete path? %s [y/N]: ", o.Path))
+	if !rctx.Yes {
+		ok, err := cleanPromptYesNo(ctx, rctx.Stdin, rctx.Stderr, fmt.Sprintf("Delete path? %s [y/N]: ", o.Path))
 		if err != nil {
 			return err
 		}
@@ -138,7 +139,7 @@ type editFileOp struct {
 
 func (o editFileOp) path() string { return o.FilePath }
 
-func (o editFileOp) run(ctx cleanRunContext) error {
+func (o editFileOp) run(ctx context.Context, rctx cleanRunContext) error {
 	if o.FilePath == "" || filepath.Clean(o.FilePath) == "." {
 		return fmt.Errorf("invalid config path: %q", o.FilePath)
 	}
@@ -153,8 +154,8 @@ func (o editFileOp) run(ctx cleanRunContext) error {
 	if err != nil {
 		return err
 	}
-	if !ctx.Yes {
-		ok, err := cleanPromptYesNo(ctx.Stdin, ctx.Stderr, fmt.Sprintf("Update config (surgical reset)? %s [y/N]: ", o.FilePath))
+	if !rctx.Yes {
+		ok, err := cleanPromptYesNo(ctx, rctx.Stdin, rctx.Stderr, fmt.Sprintf("Update config (surgical reset)? %s [y/N]: ", o.FilePath))
 		if err != nil {
 			return err
 		}
@@ -240,15 +241,29 @@ func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []doma
 	return ops
 }
 
-func cleanPromptYesNo(r io.Reader, w io.Writer, msg string) (bool, error) {
+func cleanPromptYesNo(ctx context.Context, r io.Reader, w io.Writer, msg string) (bool, error) {
 	if _, err := fmt.Fprint(w, msg); err != nil {
 		return false, err
 	}
-	br := bufio.NewReader(r)
-	line, err := br.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
+	// Read in a goroutine so context cancellation (e.g. Ctrl-C) is respected.
+	type result struct {
+		line string
+		err  error
 	}
-	ans := strings.ToLower(strings.TrimSpace(line))
-	return ans == "y" || ans == "yes", nil
+	ch := make(chan result, 1)
+	go func() {
+		br := bufio.NewReader(r)
+		line, err := br.ReadString('\n')
+		ch <- result{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case res := <-ch:
+		if res.err != nil && !errors.Is(res.err, io.EOF) {
+			return false, res.err
+		}
+		ans := strings.ToLower(strings.TrimSpace(res.line))
+		return ans == "y" || ans == "yes", nil
+	}
 }

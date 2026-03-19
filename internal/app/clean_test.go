@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,7 @@ func TestRemovePathOp_Nonexistent(t *testing.T) {
 	op := removePathOp{Path: filepath.Join(dir, "does-not-exist")}
 	ctx := cleanRunContext{Yes: true}
 
-	if err := op.run(ctx); err != nil {
+	if err := op.run(context.Background(), ctx); err != nil {
 		t.Fatalf("expected no error for non-existent path, got: %v", err)
 	}
 }
@@ -43,7 +44,7 @@ func TestRemovePathOp_ExistingFile(t *testing.T) {
 	op := removePathOp{Path: path}
 	ctx := cleanRunContext{Yes: true}
 
-	if err := op.run(ctx); err != nil {
+	if err := op.run(context.Background(), ctx); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
@@ -68,7 +69,7 @@ func TestEditFileOp_EmptyTOMLFile(t *testing.T) {
 		},
 	}
 
-	if err := op.run(cleanRunContext{Yes: true}); err != nil {
+	if err := op.run(context.Background(), cleanRunContext{Yes: true}); err != nil {
 		t.Fatalf("expected no error cleaning empty TOML file, got: %v", err)
 	}
 
@@ -148,7 +149,7 @@ func TestCleanCline_GlobalScope_RemovesManagedPaths(t *testing.T) {
 	layout := h.Layout(domain.ScopeGlobal, home, home)
 
 	want := map[string]bool{
-		filepath.Join(home, ".cline", "skills"):                false,
+		filepath.Join(home, ".agents", "skills"):               false,
 		filepath.Join(home, "Documents", "Cline", "Rules"):     false,
 		filepath.Join(home, "Documents", "Cline", "Workflows"): false,
 	}
@@ -169,7 +170,7 @@ func TestCleanCline_GlobalScope_RemovesManagedPaths(t *testing.T) {
 func TestRunClean_InvalidHarness(t *testing.T) {
 	t.Parallel()
 
-	err := RunClean(CleanRequest{
+	err := RunClean(context.Background(), CleanRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: t.TempDir(),

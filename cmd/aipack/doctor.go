@@ -14,7 +14,7 @@ import (
 type DoctorCmd struct {
 	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	ProfilePath string `help:"Direct path to a profile YAML file" name:"profile-path" type:"path"`
-	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	JSON        bool   `help:"Emit machine-readable JSON report instead of human-readable text" name:"json"`
 	Fix         bool   `help:"Auto-fix safe issues (remove orphaned ledger entries, fill missing SourcePack)" name:"fix"`
 }

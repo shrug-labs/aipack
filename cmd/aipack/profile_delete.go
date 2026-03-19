@@ -10,7 +10,7 @@ import (
 )
 
 type ProfileDeleteCmd struct {
-	Name      string `arg:"" help:"Profile name to delete"`
+	Name      string `arg:"" help:"Profile name to delete" predictor:"profile"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 }
 

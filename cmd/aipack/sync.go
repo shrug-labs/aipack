@@ -16,12 +16,12 @@ import (
 )
 
 type SyncCmd struct {
-	Profile      string  `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile      string  `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath  string  `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
 	ConfigDir    string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Scope        string  `help:"Where to apply: 'project' writes to project directory, 'global' writes to ~/ config locations (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
 	ProjectDir   *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
-	Harness      string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness"`
+	Harness      string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness" predictor:"harness"`
 	Force        bool    `help:"Override file conflicts"`
 	SkipSettings bool    `help:"Skip harness settings file sync (MCP configs still sync)" name:"skip-settings"`
 	Yes          bool    `help:"Auto-confirm deletions and overwrites without prompting"`

@@ -49,7 +49,7 @@ func (c *PromptListCmd) Run(ctx context.Context, g *Globals) error {
 }
 
 type PromptCopyCmd struct {
-	Name string `arg:"" help:"Prompt name to copy"`
+	Name string `arg:"" help:"Prompt name to copy" predictor:"prompt"`
 }
 
 func (c *PromptCopyCmd) Run(ctx context.Context, g *Globals) error {
@@ -67,7 +67,7 @@ func (c *PromptCopyCmd) Run(ctx context.Context, g *Globals) error {
 }
 
 type PromptShowCmd struct {
-	Name string `arg:"" help:"Prompt name to display"`
+	Name string `arg:"" help:"Prompt name to display" predictor:"prompt"`
 }
 
 func (c *PromptShowCmd) Run(ctx context.Context, g *Globals) error {

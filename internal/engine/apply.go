@@ -189,7 +189,7 @@ func ApplyPlan(ctx context.Context, plan domain.Plan, ar ApplyRequest, managedRo
 				return warnings, err
 			}
 
-			ok, err := shouldDelete(k, ar.Yes, lg.PrevDigest(k), ar.DryRun)
+			ok, err := shouldDelete(ctx, k, ar.Yes, lg.PrevDigest(k), ar.DryRun)
 			if err != nil {
 				return warnings, err
 			}
@@ -322,7 +322,7 @@ func showFileDiff(w io.Writer, d FileDiff) {
 	fmt.Fprintln(w, d.Diff)
 }
 
-func shouldDelete(path string, yes bool, prevDigest string, dryRun bool) (bool, error) {
+func shouldDelete(ctx context.Context, path string, yes bool, prevDigest string, dryRun bool) (bool, error) {
 	if prevDigest != "" {
 		if d, err := pathDigest(path); err == nil && d == prevDigest {
 			return true, nil
@@ -337,7 +337,7 @@ func shouldDelete(path string, yes bool, prevDigest string, dryRun bool) (bool, 
 	if !isTerminal() {
 		return false, fmt.Errorf("refusing to delete %s without --yes (non-interactive)", path)
 	}
-	ans, err := prompt(fmt.Sprintf("Delete path? %s [y/N]: ", path))
+	ans, err := prompt(ctx, fmt.Sprintf("Delete path? %s [y/N]: ", path))
 	if err != nil {
 		return false, err
 	}
@@ -352,17 +352,30 @@ func isTerminal() bool {
 	return (st.Mode() & os.ModeCharDevice) != 0
 }
 
-func prompt(msg string) (string, error) {
+func prompt(ctx context.Context, msg string) (string, error) {
 	_, err := fmt.Fprint(os.Stderr, msg)
 	if err != nil {
 		return "", err
 	}
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return "", err
+	type result struct {
+		line string
+		err  error
 	}
-	return strings.ToLower(strings.TrimSpace(line)), nil
+	ch := make(chan result, 1)
+	go func() {
+		r := bufio.NewReader(os.Stdin)
+		line, err := r.ReadString('\n')
+		ch <- result{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-ch:
+		if res.err != nil {
+			return "", res.err
+		}
+		return strings.ToLower(strings.TrimSpace(res.line)), nil
+	}
 }
 
 func validatePlanDestinations(plan domain.Plan, allowed []string) error {

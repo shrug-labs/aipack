@@ -90,7 +90,7 @@ func (c *ProfileListCmd) Run(ctx context.Context, g *Globals) error {
 // --- profile set ---
 
 type ProfileSetCmd struct {
-	Name      string `arg:"" help:"Profile name to activate"`
+	Name      string `arg:"" help:"Profile name to activate" predictor:"profile"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Install   bool   `help:"Install missing packs from registry after setting profile" name:"install"`
 }
@@ -152,7 +152,7 @@ func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
 // --- profile show ---
 
 type ProfileShowCmd struct {
-	Name        string `arg:"" optional:"" help:"Profile name (default: sync-config defaults.profile, then 'default')"`
+	Name        string `arg:"" optional:"" help:"Profile name (default: sync-config defaults.profile, then 'default')" predictor:"profile"`
 	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	ProfilePath string `help:"Direct path to a profile YAML file (overrides name)" name:"profile-path" type:"path"`
 	JSON        bool   `help:"Emit machine-readable JSON" name:"json"`

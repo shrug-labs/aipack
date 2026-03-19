@@ -12,7 +12,7 @@ import (
 )
 
 type StatusCmd struct {
-	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile"`
+	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
 	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	JSON        bool   `help:"Emit machine-readable JSON" name:"json"`

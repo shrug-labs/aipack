@@ -69,7 +69,7 @@ func (e *contractEnv) sync(profile domain.Profile) SyncResult {
 func (e *contractEnv) clean() {
 	e.t.Helper()
 	var stderr bytes.Buffer
-	err := RunClean(CleanRequest{
+	err := RunClean(context.Background(), CleanRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: e.projectDir,

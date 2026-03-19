@@ -18,17 +18,22 @@ type Paths struct {
 }
 
 // ProjectPaths defines Cline's project-scope paths (relative to project dir).
+// SkillsDir uses .agents/skills — shared with Codex — because Cline reads
+// both .clinerules/ and .agents/ natively. Using a single canonical skills
+// location prevents duplication when multiple harnesses target the same project.
 var ProjectPaths = Paths{
 	RulesDir:     ".clinerules",
 	WorkflowsDir: ".clinerules/workflows",
-	SkillsDir:    ".clinerules/skills",
+	SkillsDir:    ".agents/skills",
 }
 
 // GlobalPaths defines Cline's global-scope paths (relative to $HOME).
+// SkillsDir uses .agents/skills — shared with Codex — for the same reason
+// as ProjectPaths (see above).
 var GlobalPaths = Paths{
 	RulesDir:     "Documents/Cline/Rules",
 	WorkflowsDir: "Documents/Cline/Workflows",
-	SkillsDir:    ".cline/skills",
+	SkillsDir:    ".agents/skills",
 }
 
 // PathsForScope returns the Paths for the given scope.

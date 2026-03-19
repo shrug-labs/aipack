@@ -14,9 +14,9 @@ type SearchCmd struct {
 	Terms     []string `arg:"" optional:"" help:"Search terms (FTS5 full-text search on name, description, and body)"`
 	Tags      []string `help:"Filter by tags (comma-separated or repeated)" name:"tags" sep:","`
 	Role      string   `help:"Filter by role" name:"role"`
-	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, pack)" name:"kind"`
-	Pack      string   `help:"Filter by pack name" name:"pack"`
-	Category  string   `help:"Filter by category (ops, dev, infra, governance, meta)" name:"category"`
+	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, pack)" name:"kind" predictor:"kind"`
+	Pack      string   `help:"Filter by pack name" name:"pack" predictor:"pack"`
+	Category  string   `help:"Filter by category (ops, dev, infra, governance, meta)" name:"category" predictor:"category"`
 	Installed bool     `help:"Show only installed resources" name:"installed"`
 	Available bool     `help:"Show only available (uninstalled) packs" name:"available"`
 	JSON      bool     `help:"Emit machine-readable JSON" name:"json"`

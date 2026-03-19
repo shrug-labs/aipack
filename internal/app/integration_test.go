@@ -245,7 +245,7 @@ func TestSyncThenClean_ReturnsToBaseline(t *testing.T) {
 
 			// Clean.
 			var stderr bytes.Buffer
-			err := RunClean(CleanRequest{
+			err := RunClean(context.Background(), CleanRequest{
 				TargetSpec: TargetSpec{
 					Scope:      domain.ScopeProject,
 					ProjectDir: projectDir,
