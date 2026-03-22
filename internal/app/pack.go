@@ -40,7 +40,14 @@ type PackAddRequest struct {
 	// Seed enables auto-seeding of bundled registries and profiles for remote
 	// installs. When false (default for URL installs), seeding candidates are
 	// printed but not applied. Local path installs always seed regardless.
+	// When true, existing profiles are overwritten with the pack's version.
 	Seed bool
+
+	// SeedConfirmFn, if non-nil, is called when an existing profile would be
+	// overwritten during seeding and Seed is false. The function receives the
+	// profile name and returns true to replace, false to skip. When nil and
+	// Seed is false, existing profiles are silently skipped.
+	SeedConfirmFn func(name string) bool
 
 	// SubPath is the subdirectory within a cloned repo where pack.json lives.
 	// Set when installing from a registry entry that specifies a path.
@@ -76,10 +83,15 @@ func PackAdd(ctx context.Context, req PackAddRequest, stdout io.Writer) error {
 
 	// Validate profile exists early, before doing any work.
 	if req.Register {
+		// Auto-create default config files if missing so pack install works
+		// without an explicit 'aipack init' first.
+		if _, err := config.EnsureInit(req.ConfigDir); err != nil {
+			return fmt.Errorf("ensuring config: %w", err)
+		}
 		profile := packProfileName(req.Profile)
 		profilePath := filepath.Join(req.ConfigDir, "profiles", profile+".yaml")
 		if _, err := os.Stat(profilePath); os.IsNotExist(err) {
-			return fmt.Errorf("profile %q does not exist at %s (run 'aipack init' first)", profile, profilePath)
+			return fmt.Errorf("profile %q does not exist at %s", profile, profilePath)
 		}
 	}
 
@@ -188,7 +200,7 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 		}
 	}
 
-	packSeedProfiles(req.ConfigDir, destDir, manifest.Profiles, stdout)
+	packSeedProfiles(req.ConfigDir, destDir, manifest.Profiles, req.Seed, req.SeedConfirmFn, stdout)
 
 	if req.Register {
 		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, stdout); err != nil {
@@ -293,7 +305,7 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 	}
 
 	if req.Seed {
-		packSeedProfiles(req.ConfigDir, result.destDir, result.manifest.Profiles, stdout)
+		packSeedProfiles(req.ConfigDir, result.destDir, result.manifest.Profiles, true, nil, stdout)
 	} else {
 		packPreviewSeeding(result.destDir, result.manifest.Profiles, stdout)
 	}
@@ -890,8 +902,10 @@ func extractSubtree(parentDir, cloneDir, subPath string) (string, error) {
 }
 
 // packSeedProfiles copies profile YAML files from the installed pack to
-// configDir/profiles/ if they don't already exist there.
-func packSeedProfiles(configDir, packDir string, profiles []string, stdout io.Writer) {
+// configDir/profiles/. When force is true (explicit --seed), existing profiles
+// are overwritten. When force is false and confirm is non-nil, existing
+// profiles prompt via confirm. Otherwise existing profiles are skipped.
+func packSeedProfiles(configDir, packDir string, profiles []string, force bool, confirm func(string) bool, stdout io.Writer) {
 	if len(profiles) == 0 {
 		return
 	}
@@ -905,8 +919,10 @@ func packSeedProfiles(configDir, packDir string, profiles []string, stdout io.Wr
 		base := filepath.Base(relPath)
 		name := strings.TrimSuffix(base, filepath.Ext(base))
 		dest := filepath.Join(profilesDir, base)
-		if _, err := os.Stat(dest); err == nil {
-			continue // never overwrite
+		if _, err := os.Stat(dest); err == nil && !force {
+			if confirm == nil || !confirm(name) {
+				continue
+			}
 		}
 		data, err := os.ReadFile(src)
 		if err != nil {

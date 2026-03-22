@@ -148,6 +148,7 @@ func planGlobalMCP(f *domain.Fragment, ctx engine.SyncContext) error {
 		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst: dst, Desired: out, Harness: domain.HarnessCline,
 			Label: "cline_mcp_settings.json", SourcePack: sp,
+			MergeMode: true,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(dst))
 	}

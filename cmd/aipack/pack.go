@@ -193,6 +193,18 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		Register:  !c.NoRegister,
 		Profile:   profile,
 		Seed:      c.Seed,
+		SeedConfirmFn: func(name string) bool {
+			fmt.Fprintf(g.Stderr, "Profile %q already exists. Replace with pack version? [y/N] ", name)
+			if !g.StdinTTY {
+				fmt.Fprintln(g.Stderr, "Skipped (non-interactive, use --seed to overwrite).")
+				return false
+			}
+			var answer string
+			if _, err := fmt.Fscan(g.Stdin, &answer); err != nil {
+				return false
+			}
+			return strings.ToLower(strings.TrimSpace(answer)) == "y"
+		},
 	}
 	if c.URL != "" {
 		req.URL = c.URL

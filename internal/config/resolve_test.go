@@ -137,16 +137,26 @@ func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first"}, {Name: "second"}},
 	}, filepath.Join(root, "profile.yaml"), root)
-	if err == nil || !strings.Contains(err.Error(), `rules id "shared" appears in both "first" and "second"`) {
+	if err == nil || !strings.Contains(err.Error(), `rules id "shared" appears in both`) {
 		t.Fatalf("expected duplicate rules error, got %v", err)
 	}
 
+	// Override referencing a non-existent resource is an error (catches typos).
 	_, _, err = ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
-		Packs:         []PackEntry{{Name: "first"}, {Name: "second", Overrides: Overrides{Rules: []string{"missing"}}}},
+		Packs:         []PackEntry{{Name: "first", Overrides: Overrides{Rules: []string{"typo-rule"}}}},
 	}, filepath.Join(root, "profile.yaml"), root)
-	if err == nil || !strings.Contains(err.Error(), `pack "second" overrides.rules references unknown id "missing"`) {
+	if err == nil || !strings.Contains(err.Error(), `overrides.rules references "typo-rule"`) {
 		t.Fatalf("expected unknown override error, got %v", err)
+	}
+
+	// Same for MCP overrides.
+	_, _, err = ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "first", Overrides: Overrides{MCP: []string{"nonexistent-server"}}}},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err == nil || !strings.Contains(err.Error(), `overrides.mcp references "nonexistent-server"`) {
+		t.Fatalf("expected unknown MCP override error, got %v", err)
 	}
 }
 
@@ -197,6 +207,193 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 	}, filepath.Join(root, "profile.yaml"), root)
 	if err == nil || !strings.Contains(err.Error(), `multiple packs have settings.enabled`) {
 		t.Fatalf("expected multiple settings pack error, got %v", err)
+	}
+}
+
+func TestResolveProfile_OverrideStripsEarlierPack(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Two packs both provide rule "shared" and MCP server "tracker".
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1,
+		Name:          "team",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared", "team-only"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+	}, map[string]string{
+		"rules/shared.md":    "---\nname: shared\n---\nteam version\n",
+		"rules/team-only.md": "---\nname: team-only\n---\nbody\n",
+		"mcp/tracker.json":   `{"name":"tracker"}`,
+	})
+	installPackForResolveTest(t, root, "org", PackManifest{
+		SchemaVersion: 1,
+		Name:          "org",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared", "org-only"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+	}, map[string]string{
+		"rules/shared.md":   "---\nname: shared\n---\norg version\n",
+		"rules/org-only.md": "---\nname: org-only\n---\nbody\n",
+		"mcp/tracker.json":  `{"name":"tracker"}`,
+	})
+
+	// org declares overrides — its version of "shared" and "tracker" should win.
+	packs, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "team"},
+			{Name: "org", Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"tracker"}}},
+		},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+
+	// team pack should have "shared" stripped, keeping only "team-only".
+	teamPack := packs[0]
+	if teamPack.Name != "team" {
+		t.Fatalf("expected pack[0] = team, got %s", teamPack.Name)
+	}
+	for _, r := range teamPack.Rules {
+		if r == "shared" {
+			t.Error("team pack should not have 'shared' rule after override")
+		}
+	}
+	if len(teamPack.Rules) != 1 || teamPack.Rules[0] != "team-only" {
+		t.Errorf("team rules = %v, want [team-only]", teamPack.Rules)
+	}
+	if _, ok := teamPack.MCP["tracker"]; ok {
+		t.Error("team pack should not have 'tracker' MCP after override")
+	}
+
+	// org pack should have "shared" and "tracker".
+	orgPack := packs[1]
+	if orgPack.Name != "org" {
+		t.Fatalf("expected pack[1] = org, got %s", orgPack.Name)
+	}
+	hasShared := false
+	for _, r := range orgPack.Rules {
+		if r == "shared" {
+			hasShared = true
+		}
+	}
+	if !hasShared {
+		t.Error("org pack should have 'shared' rule")
+	}
+	if _, ok := orgPack.MCP["tracker"]; !ok {
+		t.Error("org pack should have 'tracker' MCP")
+	}
+}
+
+func TestResolveProfile_OverrideWinsRegardlessOfOrder(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Two packs both provide rule "shared" and MCP server "tracker".
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1,
+		Name:          "team",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+	}, map[string]string{
+		"rules/shared.md":  "---\nname: shared\n---\nteam version\n",
+		"mcp/tracker.json": `{"name":"tracker"}`,
+	})
+	installPackForResolveTest(t, root, "org", PackManifest{
+		SchemaVersion: 1,
+		Name:          "org",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+	}, map[string]string{
+		"rules/shared.md":  "---\nname: shared\n---\norg version\n",
+		"mcp/tracker.json": `{"name":"tracker"}`,
+	})
+
+	// team declares override but is listed FIRST — should still win.
+	packs, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "team", Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"tracker"}}},
+			{Name: "org"},
+		},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+
+	// team (first, override owner) keeps "shared" and "tracker".
+	if len(packs[0].Rules) != 1 || packs[0].Rules[0] != "shared" {
+		t.Errorf("team rules = %v, want [shared]", packs[0].Rules)
+	}
+	if _, ok := packs[0].MCP["tracker"]; !ok {
+		t.Error("team should have 'tracker' MCP")
+	}
+	// org (second, not owner) has them stripped.
+	for _, r := range packs[1].Rules {
+		if r == "shared" {
+			t.Error("org should not have 'shared' rule")
+		}
+	}
+	if _, ok := packs[1].MCP["tracker"]; ok {
+		t.Error("org should not have 'tracker' MCP")
+	}
+}
+
+func TestResolveProfile_ExcludePreventsDuplicate(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Two packs both define MCP servers "alpha" and "beta".
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1,
+		Name:          "team",
+		Version:       "1",
+		Root:          ".",
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"alpha": {}, "beta": {}}},
+	}, map[string]string{"mcp/alpha.json": `{"name":"alpha"}`, "mcp/beta.json": `{"name":"beta"}`})
+	installPackForResolveTest(t, root, "org", PackManifest{
+		SchemaVersion: 1,
+		Name:          "org",
+		Version:       "1",
+		Root:          ".",
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"alpha": {}, "beta": {}}},
+	}, map[string]string{"mcp/alpha.json": `{"name":"alpha"}`, "mcp/beta.json": `{"name":"beta"}`})
+
+	// org disables both via enabled:false — no conflict.
+	packs, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "team"},
+			{Name: "org", MCP: map[string]MCPServerConfig{
+				"alpha": {Enabled: BoolPtr(false)},
+				"beta":  {Enabled: BoolPtr(false)},
+			}},
+		},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+
+	// team should have both servers.
+	if _, ok := packs[0].MCP["alpha"]; !ok {
+		t.Error("team pack should have 'alpha'")
+	}
+	if _, ok := packs[0].MCP["beta"]; !ok {
+		t.Error("team pack should have 'beta'")
+	}
+	// org should have neither.
+	if _, ok := packs[1].MCP["alpha"]; ok {
+		t.Error("org pack should not have 'alpha' (excluded)")
+	}
+	if _, ok := packs[1].MCP["beta"]; ok {
+		t.Error("org pack should not have 'beta' (excluded)")
 	}
 }
 

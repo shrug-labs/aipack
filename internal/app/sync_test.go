@@ -213,6 +213,116 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 	}
 }
 
+func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	// Set up a skill source directory with one file.
+	skillSrc := filepath.Join(projectDir, "pack", "skills", "my-skill")
+	skillDst := filepath.Join(projectDir, ".claude", "skills", "my-skill")
+	if err := os.MkdirAll(skillSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillSrc, "SKILL.md"), []byte("v2 content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		setupDst   func(t *testing.T)
+		setupLedge func(t *testing.T)
+		wantOut    string
+	}{
+		{
+			name:     "new skill reports copy",
+			setupDst: func(t *testing.T) { /* no destination */ },
+			wantOut:  "copy: " + skillDst + "\nplan: 1 changes, 0 identical\n",
+		},
+		{
+			name: "identical skill is silent",
+			setupDst: func(t *testing.T) {
+				t.Helper()
+				if err := os.MkdirAll(skillDst, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDst, "SKILL.md"), []byte("v2 content"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			setupLedge: func(t *testing.T) {
+				t.Helper()
+				writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
+					filepath.Join(skillDst, "SKILL.md"): {SourcePack: "pack", Digest: domain.SingleFileDigest([]byte("v2 content"))},
+				})
+			},
+			wantOut: "plan: 0 changes, 1 identical\n",
+		},
+		{
+			name: "changed skill reports update",
+			setupDst: func(t *testing.T) {
+				t.Helper()
+				if err := os.MkdirAll(skillDst, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(skillDst, "SKILL.md"), []byte("v1 content"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			setupLedge: func(t *testing.T) {
+				t.Helper()
+				writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
+					filepath.Join(skillDst, "SKILL.md"): {SourcePack: "pack", Digest: domain.SingleFileDigest([]byte("v1 content"))},
+				})
+			},
+			wantOut: "update: " + skillDst + "\nplan: 1 changes, 0 identical\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clean destination and ledger between subtests.
+			os.RemoveAll(skillDst)
+			lgPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+			os.Remove(lgPath)
+
+			tt.setupDst(t)
+			if tt.setupLedge != nil {
+				tt.setupLedge(t)
+			}
+
+			plan := domain.Plan{
+				Copies: []domain.CopyAction{{
+					Src:        skillSrc,
+					Dst:        skillDst,
+					Kind:       domain.CopyKindDir,
+					SourcePack: "pack",
+				}},
+			}
+
+			reg := harness.NewRegistry(syncStubHarness{
+				id:    domain.HarnessClaudeCode,
+				roots: []string{filepath.Join(projectDir, ".claude")},
+			})
+
+			var buf bytes.Buffer
+			printDryRun(plan, SyncRequest{
+				TargetSpec: TargetSpec{
+					Scope:      domain.ScopeProject,
+					ProjectDir: projectDir,
+					Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
+					Home:       home,
+				},
+			}, reg, &buf)
+
+			if got := buf.String(); got != tt.wantOut {
+				t.Errorf("output = %q, want %q", got, tt.wantOut)
+			}
+		})
+	}
+}
+
 func TestProcessEmbeddedRegistries_MergesIntoRegistryCache(t *testing.T) {
 	t.Parallel()
 

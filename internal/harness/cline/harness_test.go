@@ -194,6 +194,32 @@ func TestPlan_Global_MCP(t *testing.T) {
 	}
 }
 
+func TestPlan_Global_MCPMergeMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeGlobal,
+		TargetDir: home,
+		Profile: domain.Profile{
+			MCPServers: []domain.MCPServer{
+				{Name: "test-server", Command: []string{"echo", "hi"}},
+			},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	for _, action := range f.MCP {
+		if !action.MergeMode {
+			t.Errorf("MCP action for %s must use MergeMode to preserve user-added servers", action.Dst)
+		}
+	}
+}
+
 func TestPlan_Global_NoMCP(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

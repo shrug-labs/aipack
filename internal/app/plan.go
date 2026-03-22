@@ -116,10 +116,6 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 			return PlanSummary{}, err
 		}
 		summary.Warnings = append(summary.Warnings, captured.Warnings...)
-		currentMCP, err := capturedMCPDigests(captured)
-		if err != nil {
-			return PlanSummary{}, err
-		}
 
 		// Load per-harness ledger.
 		var lg domain.Ledger
@@ -223,12 +219,15 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 		summary.NumSettings += sCount
 		summary.Ops = append(summary.Ops, sOps...)
 
-		mOps, mCount, mErr := classifyMCPOps(plan.MCPServers, currentMCP, lg)
-		if mErr != nil {
-			return summary, fmt.Errorf("classify mcp: %w", mErr)
+		// MCP config actions (plan.MCP) are file-level MergeMode settings
+		// that are never gated by SkipSettings. Process them through the
+		// same three-way merge classification as plan.Settings.
+		mcpCfgOps, mcpCfgCount, mcpCfgErr := classifySettingsOps(plan.MCP, lg, PlanOpMCP)
+		if mcpCfgErr != nil {
+			return summary, fmt.Errorf("classify mcp config: %w", mcpCfgErr)
 		}
-		summary.NumMCP += mCount
-		summary.Ops = append(summary.Ops, mOps...)
+		summary.NumMCP += mcpCfgCount
+		summary.Ops = append(summary.Ops, mcpCfgOps...)
 
 		// Detect stale files per harness.
 		managedRoots := h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
@@ -392,30 +391,4 @@ func classifySettingsOps(actions []domain.SettingsAction, lg domain.Ledger, kind
 		})
 	}
 	return ops, count, nil
-}
-
-func classifyMCPOps(actions []domain.MCPAction, current map[string]string, lg domain.Ledger) ([]PlanOp, int, error) {
-	ops := make([]PlanOp, 0, len(actions))
-	for _, action := range actions {
-		diffKind, err := classifyMCPDiffKind(action, current, lg)
-		if err != nil {
-			return nil, 0, err
-		}
-		if diffKind == domain.DiffIdentical {
-			continue
-		}
-		ops = append(ops, PlanOp{
-			Kind:       PlanOpMCP,
-			Dst:        action.ConfigPath,
-			SourcePack: action.SourcePack,
-			Size:       len(action.Content),
-			Content:    action.Content,
-			DiffKind:   diffKind,
-		})
-	}
-	return ops, len(ops), nil
-}
-
-func classifyMCPDiffKind(action domain.MCPAction, current map[string]string, lg domain.Ledger) (domain.DiffKind, error) {
-	return classifyMCPAction(action, current, lg)
 }

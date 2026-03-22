@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -13,7 +14,6 @@ const (
 	capAgents    = "agents"
 	capWorkflows = "workflows"
 	capSkills    = "skills"
-	capMCP       = "mcp"
 )
 
 type ResolvedPack struct {
@@ -39,11 +39,38 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 
 	var packs []ResolvedPack
 	var settingsPack string
-	seenRules := map[string]string{}
-	seenAgents := map[string]string{}
-	seenWorkflows := map[string]string{}
-	seenSkills := map[string]string{}
 	seenServers := map[string]string{}
+
+	// vectorState tracks seen IDs and override owners for each string-slice
+	// resource vector (rules, agents, workflows, skills). Keyed by label.
+	type vectorState struct {
+		label     string
+		seen      map[string]string
+		owner     map[string]string
+		field     func(*ResolvedPack) *[]string
+		overrides func(PackEntry) []string
+	}
+	vectors := []vectorState{
+		{capRules, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Rules }, func(pe PackEntry) []string { return pe.Overrides.Rules }},
+		{capAgents, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Agents }, func(pe PackEntry) []string { return pe.Overrides.Agents }},
+		{capWorkflows, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Workflows }, func(pe PackEntry) []string { return pe.Overrides.Workflows }},
+		{capSkills, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Skills }, func(pe PackEntry) []string { return pe.Overrides.Skills }},
+	}
+
+	// Pre-scan: build override owner maps so the declaring pack wins
+	// regardless of pack ordering.
+	overrideOwnerMCP := map[string]string{}
+	for _, pc := range cfg.Packs {
+		name := strings.TrimSpace(pc.Name)
+		for _, v := range vectors {
+			for _, id := range v.overrides(pc) {
+				v.owner[id] = name
+			}
+		}
+		for _, id := range pc.Overrides.MCP {
+			overrideOwnerMCP[id] = name
+		}
+	}
 
 	for _, packCfg := range cfg.Packs {
 		packName := strings.TrimSpace(packCfg.Name)
@@ -98,59 +125,26 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 			MCP:       map[string]ResolvedMCPServer{},
 		}
 
-		overrideRules := toSet(packCfg.Overrides.Rules)
-		overrideAgents := toSet(packCfg.Overrides.Agents)
-		overrideWorkflows := toSet(packCfg.Overrides.Workflows)
-		overrideSkills := toSet(packCfg.Overrides.Skills)
-		overrideMCP := toSet(packCfg.Overrides.MCP)
-
-		if err := validateOverrides(packName, capRules, overrideRules, seenRules); err != nil {
-			return nil, "", err
-		}
-		if err := validateOverrides(packName, capAgents, overrideAgents, seenAgents); err != nil {
-			return nil, "", err
-		}
-		if err := validateOverrides(packName, capWorkflows, overrideWorkflows, seenWorkflows); err != nil {
-			return nil, "", err
-		}
-		if err := validateOverrides(packName, capSkills, overrideSkills, seenSkills); err != nil {
-			return nil, "", err
-		}
-		if err := validateOverrides(packName, capMCP, overrideMCP, seenServers); err != nil {
-			return nil, "", err
-		}
-
-		for _, id := range rules {
-			if prev, ok := seenRules[id]; ok {
-				if _, allowed := overrideRules[id]; !allowed {
-					return nil, "", fmt.Errorf("rules id %q appears in both %q and %q (add to packs[%s].overrides.rules to override)", id, prev, packName, packName)
+		// Override resolution is order-independent. The owner maps built
+		// above determine winners regardless of pack ordering.
+		for vi := range vectors {
+			v := &vectors[vi]
+			for _, id := range *v.field(&packResolved) {
+				if prev, ok := v.seen[id]; ok {
+					owner := v.owner[id]
+					if owner == "" {
+						return nil, "", fmt.Errorf("%s id %q appears in both %q and %q (declare overrides.%s in the pack that should win)", v.label, id, prev, packName, v.label)
+					}
+					if owner == packName {
+						stripFromPack(packs, prev, id, v.field)
+					} else {
+						f := v.field(&packResolved)
+						*f = slices.DeleteFunc(*f, func(s string) bool { return s == id })
+						continue
+					}
 				}
+				v.seen[id] = packName
 			}
-			seenRules[id] = packName
-		}
-		for _, id := range agents {
-			if prev, ok := seenAgents[id]; ok {
-				if _, allowed := overrideAgents[id]; !allowed {
-					return nil, "", fmt.Errorf("agents id %q appears in both %q and %q (add to packs[%s].overrides.agents to override)", id, prev, packName, packName)
-				}
-			}
-			seenAgents[id] = packName
-		}
-		for _, id := range workflows {
-			if prev, ok := seenWorkflows[id]; ok {
-				if _, allowed := overrideWorkflows[id]; !allowed {
-					return nil, "", fmt.Errorf("workflows id %q appears in both %q and %q (add to packs[%s].overrides.workflows to override)", id, prev, packName, packName)
-				}
-			}
-			seenWorkflows[id] = packName
-		}
-		for _, id := range skills {
-			if prev, ok := seenSkills[id]; ok {
-				if _, allowed := overrideSkills[id]; !allowed {
-					return nil, "", fmt.Errorf("skills id %q appears in both %q and %q (add to packs[%s].overrides.skills to override)", id, prev, packName, packName)
-				}
-			}
-			seenSkills[id] = packName
 		}
 
 		mcpSelection := packCfg.MCP
@@ -177,8 +171,15 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 			}
 			packResolved.MCP[name] = entry
 			if prev, ok := seenServers[name]; ok {
-				if _, allowed := overrideMCP[name]; !allowed {
-					return nil, "", fmt.Errorf("mcp server %q appears in both %q and %q (add to packs[%s].overrides.mcp to override)", name, prev, packName, packName)
+				owner := overrideOwnerMCP[name]
+				if owner == "" {
+					return nil, "", fmt.Errorf("mcp server %q appears in both %q and %q (declare overrides.mcp in the pack that should win)", name, prev, packName)
+				}
+				if owner == packName {
+					stripMCP(packs, prev, name)
+				} else {
+					delete(packResolved.MCP, name)
+					continue
 				}
 			}
 			seenServers[name] = packName
@@ -196,28 +197,42 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 	if len(packs) == 0 {
 		return nil, "", errors.New("no enabled packs in profile")
 	}
+
+	// Post-resolution validation: every override ID must match an actual
+	// resource that appeared in some pack. Unmatched IDs are typos.
+	for _, v := range vectors {
+		for id, owner := range v.owner {
+			if _, ok := v.seen[id]; !ok {
+				return nil, "", fmt.Errorf("pack %q overrides.%s references %q, but no pack provides that %s", owner, v.label, id, v.label)
+			}
+		}
+	}
+	for id, owner := range overrideOwnerMCP {
+		if _, ok := seenServers[id]; !ok {
+			return nil, "", fmt.Errorf("pack %q overrides.mcp references %q, but no pack provides that server", owner, id)
+		}
+	}
+
 	return packs, settingsPack, nil
 }
 
-func toSet(items []string) map[string]struct{} {
-	set := map[string]struct{}{}
-	for _, raw := range items {
-		v := strings.TrimSpace(raw)
-		if v == "" {
-			continue
+func stripFromPack(packs []ResolvedPack, packName, id string, field func(*ResolvedPack) *[]string) {
+	for i := range packs {
+		if packs[i].Name == packName {
+			s := field(&packs[i])
+			*s = slices.DeleteFunc(*s, func(v string) bool { return v == id })
+			return
 		}
-		set[v] = struct{}{}
 	}
-	return set
 }
 
-func validateOverrides(packName string, label string, overrides map[string]struct{}, seen map[string]string) error {
-	for id := range overrides {
-		if _, ok := seen[id]; !ok {
-			return fmt.Errorf("pack %q overrides.%s references unknown id %q", packName, label, id)
+func stripMCP(packs []ResolvedPack, packName, name string) {
+	for i := range packs {
+		if packs[i].Name == packName {
+			delete(packs[i].MCP, name)
+			return
 		}
 	}
-	return nil
 }
 
 // defaultTrue delegates to PackEnabled for nil-defaults-to-true semantics.

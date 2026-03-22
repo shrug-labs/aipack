@@ -378,6 +378,10 @@ packs:
 			}
 			return []byte(data), nil
 		},
+		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
+			// Default registry is always appended; return valid data.
+			return []byte(testRemoteRegistryYAML), nil
+		},
 	}, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -399,6 +403,16 @@ packs:
 	if _, ok := regB.Packs["pack-b"]; !ok {
 		t.Error("missing pack-b in source-b cache")
 	}
+
+	// Default registry should also be cached.
+	defaultName := config.DeriveSourceName(config.DefaultRegistryRepo)
+	regDefault, err := config.LoadRegistry(config.SourceCachePath(dir, defaultName))
+	if err != nil {
+		t.Fatalf("loading default cache: %v", err)
+	}
+	if len(regDefault.Packs) == 0 {
+		t.Error("default registry cache is empty")
+	}
 }
 
 func TestRegistryFetch_AllSourcesFail(t *testing.T) {
@@ -418,11 +432,14 @@ func TestRegistryFetch_AllSourcesFail(t *testing.T) {
 		FetchFn: func(url string) ([]byte, error) {
 			return nil, fmt.Errorf("network error")
 		},
+		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
+			return nil, fmt.Errorf("network error")
+		},
 	}, &buf)
 	if err == nil {
 		t.Fatal("expected error when all sources fail")
 	}
-	if !strings.Contains(err.Error(), "all 2 registry source(s) failed") {
+	if !strings.Contains(err.Error(), "registry source(s) failed") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }

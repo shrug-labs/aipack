@@ -1050,6 +1050,44 @@ func TestPackAdd_RegisterMissingProfile(t *testing.T) {
 	}
 }
 
+func TestPackAdd_RegisterAutoCreatesDefaultProfile(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "test-pack")
+
+	// Config directory exists but has no sync-config or profile.
+	// PackAdd with Register=true and no explicit profile (defaults to "default")
+	// should auto-create the default profile instead of failing.
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Register:  true,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Default profile should exist and contain the pack.
+	profPath := filepath.Join(configDir, "profiles", "default.yaml")
+	prof, err := config.LoadProfile(profPath)
+	if err != nil {
+		t.Fatalf("loading auto-created profile: %v", err)
+	}
+	found := false
+	for _, p := range prof.Packs {
+		if p.Name == "test-pack" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("test-pack not found in auto-created profile")
+	}
+}
+
 // --- Update tests ---
 
 func TestPackUpdate_Link_VerifiesTarget(t *testing.T) {
@@ -2312,5 +2350,127 @@ func TestPackAdd_URL_Install_ShowsChanges(t *testing.T) {
 	}
 	if !strings.Contains(output, "Changes:") {
 		t.Fatalf("expected 'Changes:' in output, got:\n%s", output)
+	}
+}
+
+// setupSeedConflictTest creates a pack with a "team" profile and a configDir
+// with a stale version of that profile already in place. Returns packDir, configDir.
+func setupSeedConflictTest(t *testing.T, staleContent string) (string, string) {
+	t.Helper()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+
+	m := map[string]any{
+		"schema_version": 1,
+		"name":           "test-pack",
+		"version":        "2.0.0",
+		"root":           ".",
+		"profiles":       []string{"profiles/team.yaml"},
+	}
+	b, _ := json.Marshal(m)
+	os.WriteFile(filepath.Join(packDir, "pack.json"), b, 0o600)
+	os.MkdirAll(filepath.Join(packDir, "profiles"), 0o700)
+	os.WriteFile(filepath.Join(packDir, "profiles", "team.yaml"),
+		[]byte("schema_version: 1\npacks:\n  - updated-pack\n"), 0o600)
+
+	writeSeedProfile(t, configDir, "default")
+	writeSeedSyncConfig(t, configDir)
+	os.WriteFile(filepath.Join(configDir, "profiles", "team.yaml"),
+		[]byte(staleContent), 0o600)
+
+	return packDir, configDir
+}
+
+func TestPackSeedProfiles_SeedOverwritesExisting(t *testing.T) {
+	t.Parallel()
+	packDir, configDir := setupSeedConflictTest(t, "schema_version: 1\npacks:\n  - stale-pack\n")
+
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		Register:  true,
+		Profile:   "default",
+		Seed:      true,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(configDir, "profiles", "team.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read profile: %v", err)
+	}
+	if strings.Contains(string(got), "stale-pack") {
+		t.Fatalf("expected profile to be overwritten with --seed, but still contains stale content:\n%s", got)
+	}
+	if !strings.Contains(string(got), "updated-pack") {
+		t.Fatalf("expected profile to contain updated content, got:\n%s", got)
+	}
+}
+
+func TestPackSeedProfiles_ConfirmFnPromptsOnConflict(t *testing.T) {
+	t.Parallel()
+	packDir, configDir := setupSeedConflictTest(t, "schema_version: 1\npacks:\n  - stale-pack\n")
+
+	confirmed := false
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		Register:  true,
+		Profile:   "default",
+		SeedConfirmFn: func(name string) bool {
+			confirmed = true
+			return true
+		},
+		NowFn: func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	if !confirmed {
+		t.Fatal("expected SeedConfirmFn to be called for conflicting profile")
+	}
+
+	got, err := os.ReadFile(filepath.Join(configDir, "profiles", "team.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read profile: %v", err)
+	}
+	if !strings.Contains(string(got), "updated-pack") {
+		t.Fatalf("expected profile to be replaced after confirmation, got:\n%s", got)
+	}
+}
+
+func TestPackSeedProfiles_ConfirmFnDeclinesKeepsExisting(t *testing.T) {
+	t.Parallel()
+	packDir, configDir := setupSeedConflictTest(t, "schema_version: 1\npacks:\n  - existing-pack\n")
+
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		Register:  true,
+		Profile:   "default",
+		SeedConfirmFn: func(name string) bool {
+			return false
+		},
+		NowFn: func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(configDir, "profiles", "team.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read profile: %v", err)
+	}
+	if !strings.Contains(string(got), "existing-pack") {
+		t.Fatalf("expected profile to be preserved after declined confirmation, got:\n%s", got)
 	}
 }

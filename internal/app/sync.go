@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
@@ -127,6 +128,7 @@ type SyncRequest struct {
 	DryRun       bool
 	Quiet        bool
 	Verbose      bool
+	NowFn        func() time.Time // test injection; nil = time.Now
 }
 
 // SyncResult holds the result of a sync operation.
@@ -203,6 +205,17 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 		if err != nil {
 			return SyncResult{}, warnings, err
 		}
+
+		// Reconcile per-server MCP ledger entries with actual on-disk state.
+		// ApplyPlan records per-server entries using planned content, but
+		// three-way merge may write different content (preserving user
+		// additions). Re-capture from the now-updated file and record the
+		// actual digests so that save/inspect classify correctly.
+		if len(plan.MCPServers) > 0 {
+			reconWarnings := reconcileMCPLedger(ctx, plan, h, req, req.NowFn)
+			warnings = append(warnings, reconWarnings...)
+		}
+
 		mergePlans(&aggregatePlan, plan)
 	}
 
@@ -244,6 +257,63 @@ func mergePlans(dst *domain.Plan, src domain.Plan) {
 	if dst.Ledger == "" {
 		dst.Ledger = src.Ledger
 	}
+}
+
+// reconcileMCPLedger re-captures MCP servers from the now-updated harness
+// config and overwrites the per-server ledger entries with actual (post-merge)
+// digests. This corrects the planned-vs-merged divergence that occurs when
+// three-way merge preserves user additions in the config file.
+func reconcileMCPLedger(ctx context.Context, plan domain.Plan, h harness.Harness, req SyncRequest, nowFn func() time.Time) []domain.Warning {
+	if plan.Ledger == "" {
+		return nil
+	}
+
+	res, err := h.Capture(ctx, harness.CaptureContext{
+		Scope:      req.Scope,
+		ProjectDir: req.ProjectDir,
+		Home:       req.Home,
+	})
+	if err != nil {
+		return []domain.Warning{{Field: "mcp-reconcile", Message: fmt.Sprintf("re-capture failed: %v", err)}}
+	}
+
+	if len(res.MCP) == 0 && len(res.MCPServers) > 0 {
+		res.MaterializeCapturedMCP(sourcePathForMCP(res))
+	}
+
+	lg, _, err := engine.LoadLedger(plan.Ledger)
+	if err != nil {
+		return []domain.Warning{{Field: "mcp-reconcile", Message: fmt.Sprintf("load ledger: %v", err)}}
+	}
+
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
+	updated := false
+	for _, captured := range res.MCP {
+		key := domain.MCPLedgerKey(captured.HarnessPath, captured.Server.Name)
+		entry, ok := lg.Managed[key]
+		if !ok {
+			continue // only reconcile entries that were recorded during apply
+		}
+		trackedContent, terr := domain.MCPTrackedBytes(captured.Server)
+		if terr != nil {
+			continue
+		}
+		actualDigest := domain.SingleFileDigest(trackedContent)
+		if actualDigest != entry.Digest {
+			lg.Record(key, trackedContent, entry.SourcePack, nil, now)
+			updated = true
+		}
+	}
+
+	if updated {
+		if serr := engine.SaveLedger(plan.Ledger, lg, false); serr != nil {
+			return []domain.Warning{{Field: "mcp-reconcile", Message: fmt.Sprintf("save ledger: %v", serr)}}
+		}
+	}
+	return nil
 }
 
 func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.Writer) {
@@ -302,20 +372,70 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.
 		}
 	}
 	for _, cp := range plan.Copies {
-		if _, err := os.Stat(cp.Dst); err == nil {
+		lg := ledgerForPath(cp.Dst)
+		dirKind := classifyCopyKind(cp, lg)
+		switch dirKind {
+		case domain.DiffIdentical:
+			skips++
+		case domain.DiffCreate:
+			fmt.Fprintf(w, "copy: %s\n", cp.Dst)
+			changes++
+		case domain.DiffManaged:
+			fmt.Fprintf(w, "update: %s\n", cp.Dst)
+			changes++
+		case domain.DiffConflict:
 			if req.Force {
-				fmt.Fprintf(w, "overwrite(copy): %s\n", cp.Dst)
+				fmt.Fprintf(w, "overwrite: %s\n", cp.Dst)
 				changes++
 			} else {
-				fmt.Fprintf(w, "skip(existing copy): %s\n", cp.Dst)
+				fmt.Fprintf(w, "skip(conflict): %s\n", cp.Dst)
 				skips++
 			}
-			continue
 		}
-		fmt.Fprintf(w, "copy: %s\n", cp.Dst)
-		changes++
 	}
 	fmt.Fprintf(w, "plan: %d changes, %d identical\n", changes, skips)
+}
+
+// classifyCopyKind aggregates per-file classifications for a CopyAction into a
+// single DiffKind. For directory copies it walks the source and classifies each
+// file; for file copies it classifies the single file. The worst per-file kind
+// wins: any conflict makes the whole copy a conflict; any non-identical file
+// without conflict makes it managed; all identical means identical.
+func classifyCopyKind(cp domain.CopyAction, lg domain.Ledger) domain.DiffKind {
+	switch cp.Kind {
+	case domain.CopyKindDir:
+		fds, err := engine.ClassifyCopy(cp.Src, cp.Dst, cp.SourcePack, lg)
+		if err != nil {
+			// Can't classify — treat as new copy so it shows up.
+			return domain.DiffCreate
+		}
+		worst := domain.DiffIdentical
+		for _, fd := range fds {
+			switch fd.Kind {
+			case domain.DiffConflict:
+				return domain.DiffConflict
+			case domain.DiffManaged:
+				worst = domain.DiffManaged
+			case domain.DiffCreate:
+				if worst == domain.DiffIdentical {
+					worst = domain.DiffCreate
+				}
+			}
+		}
+		return worst
+	case domain.CopyKindFile:
+		content, err := os.ReadFile(cp.Src)
+		if err != nil {
+			return domain.DiffCreate
+		}
+		fd, err := engine.ClassifyFile(cp.Dst, content, filepath.Base(cp.Dst), cp.SourcePack, lg)
+		if err != nil {
+			return domain.DiffCreate
+		}
+		return fd.Kind
+	default:
+		return domain.DiffCreate
+	}
 }
 
 func updateIndex(profile domain.Profile, home string) error {

@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.3]
+
+### Fixed
+
+- Default registry no longer evicted when custom registry sources are added. The compiled-in shrug-labs registry is always included during `registry fetch`, keeping aipack-core and essentials resolvable.
+- `pack install` no longer fails when the default profile is missing. Config files are auto-created on first use, removing the need to run `aipack init` first.
+- Profile override resolution is now order-independent. The pack that declares `overrides` wins regardless of its position in the profile's pack list. Typos in override IDs now produce an error instead of being silently ignored.
+- `--seed` on reinstall now overwrites existing profiles with the pack version. Without `--seed`, an interactive prompt asks whether to replace each existing profile.
+- Dry-run output classifies skill directory copies as `copy`, `update`, or `skip(conflict)` instead of treating all existing destinations as overwrites.
+- Cline MCP settings sync no longer requires `--force` when the settings file already exists. Uses three-way merge to preserve user-added servers while applying pack changes.
+- MCP ledger reconciliation after sync now uses injectable time for testability.
+
 ## [0.11.2]
 
 ### Changed

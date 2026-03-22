@@ -128,7 +128,7 @@ func TestLoadMCPInventoryForPacks_FiltersToPackMCPMap(t *testing.T) {
 	}
 }
 
-func TestLoadMCPInventoryForPacks_DetectsDuplicateInventoryAcrossPacks(t *testing.T) {
+func TestLoadMCPInventoryForPacks_ErrorsOnUnresolvedDuplicate(t *testing.T) {
 	root1 := t.TempDir()
 	root2 := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root1, "mcp"), 0o755); err != nil {
@@ -174,6 +174,66 @@ func TestLoadMCPInventoryForPacks_DetectsDuplicateInventoryAcrossPacks(t *testin
 	}
 	if got, want := err.Error(), "duplicate MCP server inventory for foo"; got != want {
 		t.Fatalf("error: got %q want %q", got, want)
+	}
+}
+
+func TestLoadMCPInventoryForPacks_NoDuplicateAfterResolverStrip(t *testing.T) {
+	// Simulates what happens after the profile resolver strips the
+	// overridden server from the earlier pack. Only the overriding
+	// pack should have the server in its MCP map.
+	root1 := t.TempDir()
+	root2 := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root1, "mcp"), 0o755); err != nil {
+		t.Fatalf("mkdir mcp root1: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root2, "mcp"), 0o755); err != nil {
+		t.Fatalf("mkdir mcp root2: %v", err)
+	}
+
+	// Both packs have foo.json on disk, but only p2 has it in MCP map
+	// (p1's was stripped by the resolver because p2 declared an override).
+	writeTestFile(t, filepath.Join(root1, "mcp", "foo.json"), `{
+		"name": "foo", "transport": "stdio", "command": ["foo-p1"], "available_tools": []
+	}`)
+	writeTestFile(t, filepath.Join(root1, "mcp", "bar.json"), `{
+		"name": "bar", "transport": "stdio", "command": ["bar-p1"], "available_tools": []
+	}`)
+	writeTestFile(t, filepath.Join(root2, "mcp", "foo.json"), `{
+		"name": "foo", "transport": "stdio", "command": ["foo-p2"], "available_tools": []
+	}`)
+
+	packs := []config.ResolvedPack{
+		{
+			Name: "p1",
+			Root: root1,
+			MCP: map[string]config.ResolvedMCPServer{
+				// foo stripped by resolver; only bar remains
+				"bar": {},
+			},
+		},
+		{
+			Name: "p2",
+			Root: root2,
+			MCP: map[string]config.ResolvedMCPServer{
+				"foo": {},
+			},
+		},
+	}
+
+	inv, err := LoadMCPInventoryForPacks(packs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(inv) != 2 {
+		t.Fatalf("expected 2 servers (bar, foo), got %d", len(inv))
+	}
+	// foo comes from p2 (the override winner)
+	if got := inv["foo"].Command[0]; got != "foo-p2" {
+		t.Errorf("foo: expected p2 command, got %q", got)
+	}
+	// bar comes from p1 (no conflict)
+	if got := inv["bar"].Command[0]; got != "bar-p1" {
+		t.Errorf("bar: expected p1 command, got %q", got)
 	}
 }
 

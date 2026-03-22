@@ -84,7 +84,12 @@ func TestCountProfileContent_StableAcrossHarnesses(t *testing.T) {
 	}
 }
 
-func TestPlanWithDiffs_ClassifiesMCPServersFirstClass(t *testing.T) {
+// TestPlanWithDiffs_PerServerMCPActionsProduceNoOps verifies that per-server
+// MCPActions do not generate PlanOps. Per-server tracking exists for ledger
+// bookkeeping during apply; the file-level SettingsAction diff is authoritative
+// for the TUI. Per-server digest comparison is incompatible with MergeMode
+// settings where the three-way merge preserves user additions.
+func TestPlanWithDiffs_PerServerMCPActionsProduceNoOps(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	projectDir := filepath.Join(home, "project")
@@ -144,93 +149,13 @@ func TestPlanWithDiffs_ClassifiesMCPServersFirstClass(t *testing.T) {
 		t.Fatalf("PlanWithDiffs: %v", err)
 	}
 
-	if summary.NumMCP != 1 {
-		t.Fatalf("NumMCP = %d, want 1", summary.NumMCP)
+	// Per-server MCPActions should not produce PlanOps — the file-level
+	// SettingsAction (which is DiffIdentical here) is authoritative.
+	if summary.NumMCP != 0 {
+		t.Fatalf("NumMCP = %d, want 0", summary.NumMCP)
 	}
-	if len(summary.Ops) != 1 {
-		t.Fatalf("expected 1 op, got %d", len(summary.Ops))
-	}
-	if summary.Ops[0].Kind != PlanOpMCP {
-		t.Fatalf("Kind = %q, want %q", summary.Ops[0].Kind, PlanOpMCP)
-	}
-}
-
-func TestPlanWithDiffs_ClassifiesTrackedMCPConflictFromLiveConfig(t *testing.T) {
-	t.Parallel()
-
-	home := t.TempDir()
-	projectDir := filepath.Join(home, "project")
-	configPath := filepath.Join(projectDir, ".codex", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, []byte("[mcp_servers.jira]\ncommand='uvx'\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	desiredServer := domain.MCPServer{
-		Name:      "jira",
-		Transport: domain.TransportStdio,
-		Command:   []string{"uvx", "jira-mcp"},
-	}
-	desiredContent, err := domain.MCPTrackedBytes(desiredServer)
-	if err != nil {
-		t.Fatalf("MCPTrackedBytes(desired): %v", err)
-	}
-
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
-	writeLedger(t, ledgerPath, map[string]domain.Entry{
-		domain.MCPLedgerKey(configPath, "jira"): {
-			SourcePack: "core",
-			Digest:     domain.SingleFileDigest(desiredContent),
-		},
-	})
-
-	liveServer := desiredServer
-	liveServer.Command = []string{"uvx", "jira-mcp", "--debug"}
-
-	reg := harness.NewRegistry(planHarnessStub{
-		id: "codex",
-		fragment: domain.Fragment{
-			MCPServers: []domain.MCPAction{{
-				Name:       "jira",
-				ConfigPath: configPath,
-				Content:    desiredContent,
-				SourcePack: "core",
-				Harness:    domain.HarnessCodex,
-				Embedded:   true,
-			}},
-			Desired: []string{configPath},
-		},
-		capture: harness.CaptureResult{
-			MCP: []domain.CapturedMCP{{
-				Server:      liveServer,
-				HarnessPath: configPath,
-			}},
-		},
-		roots: []string{filepath.Dir(configPath)},
-	})
-
-	summary, err := PlanWithDiffs(context.Background(), domain.Profile{}, SyncRequest{
-		TargetSpec: TargetSpec{
-			Scope:      domain.ScopeProject,
-			Harnesses:  []domain.Harness{"codex"},
-			ProjectDir: projectDir,
-			Home:       home,
-		},
-	}, reg)
-	if err != nil {
-		t.Fatalf("PlanWithDiffs: %v", err)
-	}
-
-	if len(summary.Ops) != 1 {
-		t.Fatalf("expected 1 op, got %d", len(summary.Ops))
-	}
-	if summary.Ops[0].Kind != PlanOpMCP {
-		t.Fatalf("Kind = %q, want %q", summary.Ops[0].Kind, PlanOpMCP)
-	}
-	if summary.Ops[0].DiffKind != domain.DiffConflict {
-		t.Fatalf("DiffKind = %q, want %q", summary.Ops[0].DiffKind, domain.DiffConflict)
+	if len(summary.Ops) != 0 {
+		t.Fatalf("expected 0 ops, got %d", len(summary.Ops))
 	}
 }
 

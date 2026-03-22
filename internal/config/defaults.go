@@ -17,13 +17,10 @@ var InitSyncConfigBytes = []byte("schema_version: 1\n" +
 var InitProfileBytes = []byte("schema_version: 2\n" +
 	"packs: []\n")
 
-// EnsureInit creates the config directory and writes default config files if
-// the directory does not already exist. Returns true if first-time creation
-// occurred, false if the directory was already present.
+// EnsureInit ensures the config directory and default files exist. Missing
+// files are created without overwriting existing ones. Returns true if any
+// file was written, false when everything was already in place.
 func EnsureInit(configDir string) (bool, error) {
-	if _, err := os.Stat(configDir); err == nil {
-		return false, nil
-	}
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return false, fmt.Errorf("creating config dir: %w", err)
 	}
@@ -34,20 +31,25 @@ func EnsureInit(configDir string) (bool, error) {
 		{SyncConfigPath(configDir), InitSyncConfigBytes},
 		{filepath.Join(configDir, "profiles", "default.yaml"), InitProfileBytes},
 	}
+	wrote := false
 	for _, f := range files {
-		if err := writeIfNotExists(f.path, f.content); err != nil {
+		created, err := writeIfNotExists(f.path, f.content)
+		if err != nil {
 			return false, err
 		}
+		if created {
+			wrote = true
+		}
 	}
-	return true, nil
+	return wrote, nil
 }
 
-func writeIfNotExists(path string, content []byte) error {
+func writeIfNotExists(path string, content []byte) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(path, content, 0o600)
+	return true, os.WriteFile(path, content, 0o600)
 }

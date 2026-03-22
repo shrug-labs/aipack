@@ -17,16 +17,18 @@ func TestProfileList_HelpReturnsOK(t *testing.T) {
 	}
 }
 
-func TestProfileList_NoProfiles(t *testing.T) {
+func TestProfileList_FreshConfigDir_ShowsDefault(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 
+	// EnsureInit now auto-creates the default profile for any config dir,
+	// so a fresh directory should show the default profile, not "No profiles found".
 	stdout, stderr, code := runApp(t, "profile", "list", "--config-dir", configDir)
 	if code != cmdutil.ExitOK {
 		t.Fatalf("profile list exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
-	if !strings.Contains(stdout, "No profiles found") {
-		t.Fatalf("expected 'No profiles found', got: %s", stdout)
+	if !strings.Contains(stdout, "default") {
+		t.Fatalf("expected default profile in output, got: %s", stdout)
 	}
 }
 

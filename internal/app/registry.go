@@ -204,14 +204,23 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		}}
 	}
 
-	// No sources at all: use compiled-in default.
-	if len(sources) == 0 {
-		sources = []config.RegistrySourceEntry{{
+	// Ensure the compiled-in default registry is always present so that
+	// aipack-core and essentials remain resolvable even when the user has
+	// added custom registry sources.
+	defaultPresent := false
+	for _, s := range sources {
+		if s.URL == config.DefaultRegistryRepo {
+			defaultPresent = true
+			break
+		}
+	}
+	if !defaultPresent {
+		sources = append(sources, config.RegistrySourceEntry{
 			Name: config.DeriveSourceName(config.DefaultRegistryRepo),
 			URL:  config.DefaultRegistryRepo,
 			Ref:  config.DefaultRegistryRef,
 			Path: config.DefaultRegistryPath,
-		}}
+		})
 	}
 
 	var totalPacks, succeeded int
