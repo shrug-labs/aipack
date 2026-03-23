@@ -546,6 +546,9 @@ func InstalledPackNames(configDir string) ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
 		// Only include directories that have a pack.json.
 		if _, err := os.Stat(filepath.Join(packsDir, e.Name(), "pack.json")); err == nil {
 			names = append(names, e.Name())

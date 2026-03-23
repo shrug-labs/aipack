@@ -461,6 +461,89 @@ func TestPackAdd_URL_ClonesIntoPacksDir(t *testing.T) {
 	}
 }
 
+func TestPackAdd_URL_CloneFailure_CleansUpTempDirs(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSeedSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		URL:       "ssh://git@example.com/repo.git",
+		ConfigDir: configDir,
+		Register:  false,
+		RunGitFn: func(_ context.Context, args ...string) error {
+			if len(args) > 0 && args[0] == "clone" {
+				return fmt.Errorf("simulated clone failure")
+			}
+			return nil
+		},
+		NowFn: func() time.Time { return fixedNow },
+	}, &out)
+	if err == nil {
+		t.Fatal("expected clone failure")
+	}
+
+	assertNoStagingDirs(t, filepath.Join(configDir, "packs"))
+	assertNoStagingDirs(t, packStagingDir(configDir))
+}
+
+func TestPackAdd_URL_SubPath_CleansUpCloneDir(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSeedSyncConfig(t, configDir)
+
+	// Fake a mono-repo clone that contains a pack in a subdirectory.
+	gitFn := func(_ context.Context, args ...string) error {
+		if len(args) >= 4 && args[0] == "clone" {
+			dir := args[len(args)-1]
+			// Write pack.json inside the subpath directory.
+			writePackManifest(t, filepath.Join(dir, "my-sub-pack"), "my-sub-pack")
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		URL:       "ssh://git@example.com/mono-repo.git",
+		SubPath:   "my-sub-pack",
+		ConfigDir: configDir,
+		Register:  false,
+		RunGitFn:  gitFn,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd subpath: %v", err)
+	}
+
+	// The pack should be installed.
+	dest := filepath.Join(configDir, "packs", "my-sub-pack")
+	if _, serr := os.Stat(filepath.Join(dest, "pack.json")); serr != nil {
+		t.Fatalf("expected pack.json at dest: %v", serr)
+	}
+
+	// No staging dirs should remain — the clone dir must be cleaned up.
+	assertNoStagingDirs(t, filepath.Join(configDir, "packs"))
+	assertNoStagingDirs(t, packStagingDir(configDir))
+}
+
+// assertNoStagingDirs fails if dir contains any temp/staging directories.
+func assertNoStagingDirs(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // dir may not exist
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasPrefix(n, "clone-") || strings.HasPrefix(n, "archive-") ||
+			strings.HasPrefix(n, "copy-") || strings.HasPrefix(n, "subdir-") ||
+			strings.HasPrefix(n, ".clone-") || strings.HasPrefix(n, ".archive-") ||
+			strings.HasPrefix(n, ".copy-") || strings.HasPrefix(n, ".subdir-") {
+			t.Fatalf("orphaned staging dir in %s: %s", dir, n)
+		}
+	}
+}
+
 func TestPackAdd_URL_GenericRepository_SkipsPackURLProbe(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()

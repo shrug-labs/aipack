@@ -1044,6 +1044,10 @@ func TestInstalledPackNames(t *testing.T) {
 		os.MkdirAll(dir, 0o755)
 		os.WriteFile(filepath.Join(dir, "pack.json"), []byte("{}"), 0o644)
 	}
+	// Hidden staging-style dirs should never be treated as installed packs.
+	hidden := filepath.Join(packsDir, ".clone-deadbeef")
+	os.MkdirAll(hidden, 0o755)
+	os.WriteFile(filepath.Join(hidden, "pack.json"), []byte("{}"), 0o644)
 	os.MkdirAll(filepath.Join(packsDir, "not-a-pack"), 0o755)
 
 	names, err := InstalledPackNames(configDir)

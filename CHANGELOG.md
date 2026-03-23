@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.4]
+
+### Added
+
+- FAQ document (`docs/faq.md`) covering basics, setup, usage, and pack creation/sharing.
+
+### Fixed
+
+- Pack install temp directories (clone, archive, copy, subtree extraction) are now created in a dedicated staging area (`<configDir>/.tmp/pack-staging/`) instead of inside the `packs/` directory. Orphaned staging dirs from interrupted installs no longer appear as installed packs or interfere with pack enumeration.
+
 ## [0.11.3]
 
 ### Fixed
