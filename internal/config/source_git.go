@@ -191,6 +191,8 @@ func runGitOutput(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 // classifyArchiveError maps generic git errors to archive-specific sentinel errors.
+// Only Bitbucket Server uses git archive --remote; GitHub and DevOps SCM use
+// other strategies and never reach this code.
 func classifyArchiveError(err error) error {
 	msg := err.Error()
 	lower := strings.ToLower(msg)
@@ -205,14 +207,6 @@ func classifyArchiveError(err error) error {
 		if strings.Contains(lower, "pathspec") {
 			return fmt.Errorf("%w: %s", ErrArchivePathNotFound, msg)
 		}
-		return ErrArchiveNotSupported
-	}
-	// GitHub (and some other forges) reject git archive --remote over HTTPS
-	// with HTTP 422, producing: "expected ACK/NAK, got a flush packet".
-	// They may also reject with "Invalid command: git-upload-archive" when
-	// the server-side archive endpoint is absent entirely.
-	if strings.Contains(lower, "expected ack/nak") ||
-		strings.Contains(lower, "git-upload-archive") {
 		return ErrArchiveNotSupported
 	}
 	return err

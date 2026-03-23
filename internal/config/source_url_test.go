@@ -375,6 +375,38 @@ func TestParseBitbucketServerRepo_Projects(t *testing.T) {
 	}
 }
 
+func TestSelectFetchStrategy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		url  string
+		want FetchStrategy
+	}{
+		{"github https", "https://github.com/owner/repo", StrategyHTTPTarball},
+		{"github https with .git", "https://github.com/owner/repo.git", StrategyHTTPTarball},
+		{"github http", "http://github.com/owner/repo", StrategyHTTPTarball},
+		{"github ssh", "git@github.com:owner/repo.git", StrategyShallowClone},
+		{"bitbucket server ssh port 7999", "ssh://git@bitbucket.example.com:7999/PROJ/tools.git", StrategyGitArchive},
+		{"bitbucket server scp-style", "git@bitbucket.example.com:7999/PROJ/repo.git", StrategyGitArchive},
+		{"oci devops scm ssh", "ssh://devops.scmservice.us-phoenix-1.example.internal/namespaces/ns/projects/p/repositories/r", StrategyShallowClone},
+		{"devops scm ssh alt region", "ssh://devops.scmservice.us-region-1.example.internal/namespaces/ns/projects/p/repositories/r", StrategyShallowClone},
+		{"bitbucket.org https", "https://bitbucket.org/workspace/repo", StrategyShallowClone},
+		{"unknown https", "https://example.com/some/repo.git", StrategyShallowClone},
+		{"unknown ssh", "git@example.com:org/repo.git", StrategyShallowClone},
+		{"not a url", "not-a-url", StrategyShallowClone},
+		{"unparseable", "://bad-url", StrategyShallowClone},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := SelectFetchStrategy(tc.url)
+			if got != tc.want {
+				t.Fatalf("SelectFetchStrategy(%q) = %d, want %d", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestURLOK_Success(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

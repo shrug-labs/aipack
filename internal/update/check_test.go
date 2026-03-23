@@ -64,7 +64,7 @@ func TestCheck_CachedSameVersion(t *testing.T) {
 // Tests below mutate package-level releaseURL — do NOT add t.Parallel().
 func TestCheck_FetchesWhenCacheStale(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(ghRelease{TagName: "v1.2.3", HTMLURL: "https://example.com/v1.2.3"})
+		http.Redirect(w, r, "https://github.com/shrug-labs/aipack/releases/tag/v1.2.3", http.StatusFound)
 	}))
 	defer srv.Close()
 
@@ -190,6 +190,44 @@ func TestNotice_GitHub(t *testing.T) {
 	notice := r.Notice()
 	if !strings.Contains(notice, "aipack update") {
 		t.Fatalf("github notice should suggest 'aipack update', got: %s", notice)
+	}
+}
+
+func TestFetchLatestGitHub_ParsesRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://github.com/shrug-labs/aipack/releases/tag/v2.5.1", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	origURL := releaseURL
+	releaseURL = srv.URL
+	t.Cleanup(func() { releaseURL = origURL })
+
+	ver, loc, err := fetchLatestGitHub(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ver != "2.5.1" {
+		t.Fatalf("expected version 2.5.1, got %s", ver)
+	}
+	if loc != "https://github.com/shrug-labs/aipack/releases/tag/v2.5.1" {
+		t.Fatalf("unexpected url: %s", loc)
+	}
+}
+
+func TestFetchLatestGitHub_NoRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // no redirect
+	}))
+	defer srv.Close()
+
+	origURL := releaseURL
+	releaseURL = srv.URL
+	t.Cleanup(func() { releaseURL = origURL })
+
+	_, _, err := fetchLatestGitHub(context.Background())
+	if err == nil {
+		t.Fatal("expected error when no redirect")
 	}
 }
 

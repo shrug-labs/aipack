@@ -35,9 +35,9 @@ const (
 //	-X github.com/shrug-labs/aipack/internal/update.distribution=internal
 var distribution = "github"
 
-// releaseURL is the GitHub API endpoint for the latest release.
-// Var (not const) so tests can override it.
-var releaseURL = "https://api.github.com/repos/shrug-labs/aipack/releases/latest"
+// releaseURL is the GitHub releases page used to resolve the latest tag via
+// HTTP redirect (no API rate limit). Var so tests can override it.
+var releaseURL = "https://github.com/shrug-labs/aipack/releases/latest"
 
 // internalVersionURL points to a plain text file containing the latest version.
 // Set at build time or overridden in tests.
@@ -161,12 +161,6 @@ func Check(ctx context.Context, currentVersion, configDir string) *Result {
 	return nil
 }
 
-// ghRelease is the subset of the GitHub releases response we care about.
-type ghRelease struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-}
-
 func fetchLatest(ctx context.Context) (version, url string, err error) {
 	if distribution == "internal" {
 		return fetchLatestInternal(ctx)
@@ -177,24 +171,36 @@ func fetchLatest(ctx context.Context) (version, url string, err error) {
 func fetchLatestGitHub(ctx context.Context) (version, url string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releaseURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, releaseURL, nil)
 	if err != nil {
 		return "", "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// Don't follow redirects — we parse the tag from the Location header.
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	resp.Body.Close()
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "", "", fmt.Errorf("no redirect from %s (status %d)", releaseURL, resp.StatusCode)
 	}
-	var rel ghRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return "", "", err
+	// Location is https://github.com/<owner>/<repo>/releases/tag/<tag>
+	idx := strings.LastIndex(loc, "/")
+	if idx < 0 {
+		return "", "", fmt.Errorf("unexpected redirect URL: %s", loc)
 	}
-	tag := strings.TrimPrefix(rel.TagName, "v")
-	return tag, rel.HTMLURL, nil
+	tag := strings.TrimPrefix(loc[idx+1:], "v")
+	if tag == "" {
+		return "", "", fmt.Errorf("empty tag in redirect URL: %s", loc)
+	}
+	return tag, loc, nil
 }
 
 // fetchLatestInternal fetches the latest version from a plain text file

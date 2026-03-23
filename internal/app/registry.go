@@ -293,8 +293,18 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	if isGit {
 		gitFetchFn := req.GitFetchFn
 		if gitFetchFn == nil {
-			gitFetchFn = func(repo, ref, path string) ([]byte, error) {
-				return config.FetchFileViaGit(ctx, repo, ref, path)
+			if config.SelectFetchStrategy(url) == config.StrategyHTTPTarball {
+				gitFetchFn = func(repo, gitRef, path string) ([]byte, error) {
+					tarballURL, urlErr := config.GitHubTarballURL(repo, gitRef)
+					if urlErr != nil {
+						return nil, urlErr
+					}
+					return config.FetchFileHTTPTarball(ctx, tarballURL, path)
+				}
+			} else {
+				gitFetchFn = func(repo, gitRef, path string) ([]byte, error) {
+					return config.FetchFileViaGit(ctx, repo, gitRef, path)
+				}
 			}
 		}
 		data, err = gitFetchFn(url, ref, filePath)

@@ -43,6 +43,12 @@ func AdoptFile(req AdoptFileRequest) error {
 	}
 	resolvedRoot := ResolvePackRootWithFallback(manifestPath, manifest, packRoot)
 
+	// Populate nil content fields from disk so that adding a single item
+	// does not silently drop everything that was previously auto-discovered.
+	if err := config.DiscoverContent(&manifest, resolvedRoot); err != nil {
+		return fmt.Errorf("discovering pack content: %w", err)
+	}
+
 	// Build destination path: <pack_root>/<category>/<relpath>.md (or .json for mcp).
 	dst := filepath.Join(resolvedRoot, req.Category.DirName(), req.RelPath+req.Category.Ext())
 

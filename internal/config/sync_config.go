@@ -24,11 +24,12 @@ type RegistrySourceEntry struct {
 
 // Install method constants for InstalledPackMeta.Method.
 const (
-	MethodLink    = "link"
-	MethodCopy    = "copy"
-	MethodClone   = "clone"
-	MethodArchive = "archive"
-	MethodLocal   = "local" // pack already resides in the packs directory; registered in-place
+	MethodLink        = "link"
+	MethodCopy        = "copy"
+	MethodClone       = "clone"
+	MethodArchive     = "archive"
+	MethodHTTPTarball = "http-tarball"
+	MethodLocal       = "local" // pack already resides in the packs directory; registered in-place
 )
 
 // InstalledPackMeta records the origin and install method for a pack.

@@ -334,31 +334,3 @@ func TestGitArchiveFilesWith_GenericError(t *testing.T) {
 		t.Fatal("should not be ErrArchiveNotSupported for generic errors")
 	}
 }
-
-func TestClassifyArchiveError_GitHub422(t *testing.T) {
-	t.Parallel()
-	// GitHub rejects git archive --remote over HTTPS with HTTP 422, producing
-	// this specific protocol error.
-	err := fmt.Errorf("git archive --remote=https://github.com/org/repo.git main registry.yaml failed: " +
-		"error: RPC failed; HTTP 422 curl 22 The requested URL returned error: 422\n" +
-		"fatal: git archive: expected ACK/NAK, got a flush packet")
-	got := classifyArchiveError(err)
-	if !errors.Is(got, ErrArchiveNotSupported) {
-		t.Fatalf("got %v, want ErrArchiveNotSupported", got)
-	}
-}
-
-func TestClassifyArchiveError_GitUploadArchiveMissing(t *testing.T) {
-	t.Parallel()
-	// GitHub may also reject with the server-side archive endpoint missing.
-	err := fmt.Errorf("git archive --remote=https://github.com/org/repo.git HEAD pack.json failed: " +
-		"Invalid command: git-upload-archive '/org/repo.git'\n" +
-		"You appear to be using ssh to clone a git:// URL.\n" +
-		"Make sure your core.gitProxy config option and the\n" +
-		"GIT_PROXY_COMMAND environment variable are NOT set.\n" +
-		"fatal: the remote end hung up unexpectedly")
-	got := classifyArchiveError(err)
-	if !errors.Is(got, ErrArchiveNotSupported) {
-		t.Fatalf("got %v, want ErrArchiveNotSupported", got)
-	}
-}

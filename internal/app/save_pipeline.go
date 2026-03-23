@@ -291,6 +291,12 @@ func RunSavePipeline(req SavePipelineRequest, reg *harness.Registry) (SavePipeli
 	}
 	resolvedRoot := ResolvePackRootWithFallback(manifestPath, manifest, packRoot)
 
+	// Populate nil content fields from disk so that adding a single item
+	// does not silently drop everything that was previously auto-discovered.
+	if err := config.DiscoverContent(&manifest, resolvedRoot); err != nil {
+		return result, fmt.Errorf("discovering pack content: %w", err)
+	}
+
 	// Load ledgers. When candidates span both scopes we need one ledger per scope.
 	type scopeLedger struct {
 		path   string

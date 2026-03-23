@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.6]
+
+### Changed
+
+- `pack install` and `pack update` for GitHub HTTPS URLs now download tarballs directly instead of trying git-archive then falling back to clone. Removes the git binary requirement for GitHub-hosted packs and avoids protocol-level rejections from GitHub's git-archive endpoint.
+- URL-based fetch strategy selection replaces the try-then-fallback cascade. Bitbucket Server SSH uses git archive, GitHub HTTPS uses HTTP tarball, everything else uses shallow clone. Each strategy's errors are terminal rather than triggering fallback chains.
+- Version update check uses redirect parsing (`/releases/latest` → `Location` header) instead of the GitHub releases JSON API, avoiding the 60 req/hr unauthenticated rate limit.
+
+### Fixed
+
+- `adopt` and `save` now discover existing pack content before writing the manifest, preventing previously auto-discovered rules/skills/workflows from being silently dropped when adding a single new item.
+
 ## [0.11.5]
 
 ### Changed

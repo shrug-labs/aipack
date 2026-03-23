@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -86,7 +85,7 @@ func TestUpdate_EmptyVersion(t *testing.T) {
 
 func TestUpdate_AlreadyLatest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(ghRelease{TagName: "v0.9.0"})
+		http.Redirect(w, r, "https://github.com/shrug-labs/aipack/releases/tag/v0.9.0", http.StatusFound)
 	}))
 	defer srv.Close()
 
@@ -117,7 +116,7 @@ func TestUpdate_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
-			json.NewEncoder(w).Encode(ghRelease{TagName: "v1.0.0"})
+			http.Redirect(w, r, "https://github.com/shrug-labs/aipack/releases/tag/v1.0.0", http.StatusFound)
 		case strings.HasSuffix(r.URL.Path, "/"+asset):
 			w.Write(newBinary)
 		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
@@ -167,7 +166,7 @@ func TestUpdate_ChecksumMismatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
-			json.NewEncoder(w).Encode(ghRelease{TagName: "v1.0.0"})
+			http.Redirect(w, r, "https://github.com/shrug-labs/aipack/releases/tag/v1.0.0", http.StatusFound)
 		case strings.HasSuffix(r.URL.Path, "/"+asset):
 			w.Write([]byte("binary content"))
 		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
@@ -211,7 +210,7 @@ func TestUpdate_BinaryNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
-			json.NewEncoder(w).Encode(ghRelease{TagName: "v1.0.0"})
+			http.Redirect(w, r, "https://github.com/shrug-labs/aipack/releases/tag/v1.0.0", http.StatusFound)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

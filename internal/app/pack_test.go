@@ -468,7 +468,7 @@ func TestPackAdd_URL_CloneFailure_CleansUpTempDirs(t *testing.T) {
 
 	var out bytes.Buffer
 	err := PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@example.com/PROJ/repo.git",
 		ConfigDir: configDir,
 		Register:  false,
 		RunGitFn: func(_ context.Context, args ...string) error {
@@ -622,7 +622,7 @@ func TestPackAdd_CloneFallback_BadSubPath_ListsAvailablePacks(t *testing.T) {
 		return nil
 	}
 	err := PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@example.com/PROJ/repo.git",
 		SubPath:   "wrong-pack",
 		ConfigDir: configDir,
 		Register:  false,
@@ -2210,12 +2210,12 @@ func TestPackUpdate_Archive_ReResolvesRegistryRef(t *testing.T) {
 	newFiles := map[string]string{"rules/old.md": "new content"}
 
 	// Install with ref "old-branch" via archive.
-	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@example.com/repo.git")
+	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@bitbucket.example.com:7999/PROJ/repo.git")
 	writeSeedProfile(t, configDir, "default")
 
 	var out bytes.Buffer
 	err := PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
 		ConfigDir: configDir,
 		Ref:       "old-branch",
 		Name:      "my-pack",
@@ -2235,7 +2235,7 @@ func TestPackUpdate_Archive_ReResolvesRegistryRef(t *testing.T) {
 
 	// Update registry cache to point to "new-branch".
 	writeRegistryCache(t, configDir, "test-source", "my-pack", config.RegistryEntry{
-		Repo: "ssh://git@example.com/repo.git",
+		Repo: "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
 		Ref:  "new-branch",
 	})
 
@@ -2297,7 +2297,7 @@ func TestPackUpdate_Archive_FallsBackWhenNotInRegistry(t *testing.T) {
 
 	var out bytes.Buffer
 	err := PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
 		ConfigDir: configDir,
 		Ref:       "main",
 		Name:      "my-pack",
@@ -2345,7 +2345,7 @@ func TestPackUpdate_Archive_FallsBackWhenNotInRegistry(t *testing.T) {
 func TestPackAdd_URL_Install_ShowsContentUnchanged(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
-	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@example.com/repo.git")
+	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@bitbucket.example.com:7999/PROJ/repo.git")
 	writeSeedProfile(t, configDir, "default")
 
 	manifest := `{"schema_version":1,"name":"my-pack","version":"1.0.0","root":".","rules":["example"]}`
@@ -2354,7 +2354,7 @@ func TestPackAdd_URL_Install_ShowsContentUnchanged(t *testing.T) {
 	// First install.
 	var out bytes.Buffer
 	err := PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		Ref:       "main",
@@ -2369,7 +2369,7 @@ func TestPackAdd_URL_Install_ShowsContentUnchanged(t *testing.T) {
 	// Second install with same content.
 	out.Reset()
 	err = PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		Ref:       "main",
@@ -2389,7 +2389,7 @@ func TestPackAdd_URL_Install_ShowsContentUnchanged(t *testing.T) {
 func TestPackAdd_URL_Install_ShowsChanges(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
-	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@example.com/repo.git")
+	writeSyncConfigWithSource(t, configDir, "test-source", "ssh://git@bitbucket.example.com:7999/PROJ/repo.git")
 	writeSeedProfile(t, configDir, "default")
 
 	oldManifest := `{"schema_version":1,"name":"my-pack","version":"1.0.0","root":".","rules":["example"]}`
@@ -2400,7 +2400,7 @@ func TestPackAdd_URL_Install_ShowsChanges(t *testing.T) {
 	// First install.
 	var out bytes.Buffer
 	err := PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		Ref:       "main",
@@ -2415,7 +2415,7 @@ func TestPackAdd_URL_Install_ShowsChanges(t *testing.T) {
 	// Second install with different content.
 	out.Reset()
 	err = PackAdd(context.Background(), PackAddRequest{
-		URL:       "ssh://git@example.com/repo.git",
+		URL:       "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
 		ConfigDir: configDir,
 		Name:      "my-pack",
 		Ref:       "main",
