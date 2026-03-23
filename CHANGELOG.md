@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.5]
+
+### Changed
+
+- Default registry moved from `shrug-labs/aipack` to `shrug-labs/packs`. The registry now lives alongside the packs it indexes, decoupling content changes from tool releases and eliminating a redundant clone during `pack install`.
+
 ## [0.11.4]
 
 ### Added

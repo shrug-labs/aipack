@@ -21,7 +21,7 @@ const RegistrySchemaVersion = 1
 // sync-config or passed as a flag. Git-based fetch piggybacks on the user's
 // existing git credentials (SSH keys, credential helpers, etc.).
 const (
-	DefaultRegistryRepo = "https://github.com/shrug-labs/aipack.git"
+	DefaultRegistryRepo = "https://github.com/shrug-labs/packs.git"
 	DefaultRegistryRef  = "main"
 	DefaultRegistryPath = "registry.yaml"
 )

@@ -452,7 +452,7 @@ The fully-resolved profile object. Shape follows the `domain.Profile` struct —
 [
   {
     "name": "default",
-    "url": "https://github.com/shrug-labs/aipack.git",
+    "url": "https://github.com/shrug-labs/packs.git",
     "ref": "main",
     "path": "registry.yaml",
     "cached": true

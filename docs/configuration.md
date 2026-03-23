@@ -65,7 +65,7 @@ installed_packs:          # managed by pack install/delete/update
 
 registry_sources:         # managed by registry fetch
   - name: default
-    url: https://github.com/shrug-labs/aipack.git
+    url: https://github.com/shrug-labs/packs.git
     ref: main
     path: registry.yaml
   - name: team-tools

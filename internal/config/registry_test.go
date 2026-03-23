@@ -114,7 +114,7 @@ func TestDeriveSourceName(t *testing.T) {
 		url  string
 		want string
 	}{
-		{"https://github.com/shrug-labs/aipack.git", "aipack"},
+		{"https://github.com/shrug-labs/packs.git", "packs"},
 		{"https://bitbucket.example.com/scm/TEAM/my-tools.git", "my-tools"},
 		{"https://example.com/my-team/registry.yaml", "my-team"},
 		{"https://example.com/registry.yaml", "example"},
