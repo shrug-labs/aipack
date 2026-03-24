@@ -65,14 +65,14 @@ aipack pack create ./path/to/dir --name custom-pack-name
 Installs a pack into `~/.config/aipack/packs/<name>/`. Supports three sources:
 
 - **Local path** (symlinked by default, `--copy` for full copy)
-- **URL** (`--url` — fetched via `git archive` with automatic fallback to shallow clone)
+- **URL** (`--url` — fetched via HTTP tarball for GitHub, shallow clone for everything else)
 - **Registry name** (bare name like `my-team-pack` — looked up in registry, then fetched)
 
 `aipack install` is a top-level alias for `aipack pack install`.
 
 With `-m`/`--missing`, installs all missing packs from the active profile by looking them up in the registry. This is the easiest way to catch up after setting a profile or after new packs are added to a shared profile.
 
-Remote packs are fetched using a two-phase process: first the manifest (`pack.json`) is retrieved to determine declared content, then only the declared files are fetched. This avoids downloading the full repository. When the remote doesn't support `git archive --remote` (e.g. GitHub), aipack falls back to a shallow clone automatically.
+Remote packs from GitHub HTTPS URLs are fetched as HTTP tarballs (no git binary required). All other URLs use a shallow clone (`git clone --depth 1`).
 
 Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts.
 
@@ -108,7 +108,7 @@ aipack pack install ./my-pack --profile production
 
 ### pack list
 
-Lists all installed packs with name, install method (link/copy/clone/archive), version, origin, and broken-link status.
+Lists all installed packs with name, install method (link/copy/clone/http-tarball), version, origin, and broken-link status.
 
 ```bash
 aipack pack list
@@ -126,7 +126,7 @@ aipack pack show my-pack --json
 
 ### pack update
 
-Updates installed pack(s) to latest version from their origin. For archive-installed packs, re-fetches declared content and shows a file-level diff of changes. For git-cloned packs, runs `git pull`. For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
+Updates installed pack(s) to latest version from their origin. For cloned packs, runs `git pull`. For HTTP-tarball packs, re-downloads and shows a file-level diff. For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
 
 ```bash
 aipack pack update my-pack

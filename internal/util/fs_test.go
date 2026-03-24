@@ -102,6 +102,314 @@ func TestCopyDir_RegularFiles(t *testing.T) {
 	}
 }
 
+func TestIsWithinDir(t *testing.T) {
+	tests := []struct {
+		path, dir string
+		want      bool
+	}{
+		{"/a/b/c", "/a/b", true},
+		{"/a/b", "/a/b", true},
+		{"/a/bc", "/a/b", false},
+		{"/a", "/a/b", false},
+		{"/x/y", "/a/b", false},
+	}
+	for _, tt := range tests {
+		got := IsWithinDir(tt.path, tt.dir)
+		if got != tt.want {
+			t.Errorf("IsWithinDir(%q, %q) = %v, want %v", tt.path, tt.dir, got, tt.want)
+		}
+	}
+}
+
+func TestValidateSymlinkTarget_WithinBoundary(t *testing.T) {
+	boundary := t.TempDir()
+	target := filepath.Join(boundary, "file.txt")
+	if err := os.WriteFile(target, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// In real usage, resolvedTarget comes from filepath.EvalSymlinks.
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSymlinkTarget(resolved, boundary); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateSymlinkTarget_EscapesBoundary(t *testing.T) {
+	boundary := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "escape.txt")
+	if err := os.WriteFile(target, []byte("bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := ValidateSymlinkTarget(target, boundary)
+	if err == nil {
+		t.Fatal("expected error for target outside boundary")
+	}
+	if !strings.Contains(err.Error(), "escapes boundary") {
+		t.Errorf("error %q should mention 'escapes boundary'", err)
+	}
+}
+
+func TestValidateSymlinkTarget_GitDir(t *testing.T) {
+	boundary := t.TempDir()
+	gitDir := filepath.Join(boundary, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(gitDir, "config")
+	if err := os.WriteFile(target, []byte("bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := ValidateSymlinkTarget(target, boundary)
+	if err == nil {
+		t.Fatal("expected error for .git traversal")
+	}
+	if !strings.Contains(err.Error(), ".git") {
+		t.Errorf("error %q should mention '.git'", err)
+	}
+}
+
+func TestValidateSymlinkTarget_DirectoryRejected(t *testing.T) {
+	boundary := t.TempDir()
+	sub := filepath.Join(boundary, "subdir")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved, ferr := filepath.EvalSymlinks(sub)
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	err := ValidateSymlinkTarget(resolved, boundary)
+	if err == nil {
+		t.Fatal("expected error for directory target")
+	}
+	if !strings.Contains(err.Error(), "directory") {
+		t.Errorf("error %q should mention 'directory'", err)
+	}
+}
+
+func TestFindRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := FindRepoRoot(sub)
+	if got != root {
+		t.Errorf("FindRepoRoot(%q) = %q, want %q", sub, got, root)
+	}
+}
+
+func TestFindRepoRoot_NoGit(t *testing.T) {
+	dir := t.TempDir()
+	got := FindRepoRoot(dir)
+	if got != "" {
+		t.Errorf("FindRepoRoot(%q) = %q, want empty", dir, got)
+	}
+}
+
+func TestCopyDirResolvingSymlinks_ResolvesFileSymlink(t *testing.T) {
+	// Create a repo-like structure with shared content.
+	root := t.TempDir()
+	shared := filepath.Join(root, "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "base.md"), []byte("shared content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pack directory with a symlink to shared content.
+	packDir := filepath.Join(root, "packs", "team")
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "local.md"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink: packs/team/rules/shared.md -> ../../../shared/base.md
+	if err := os.Symlink(filepath.Join(shared, "base.md"), filepath.Join(packDir, "rules", "shared.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := t.TempDir()
+	if err := CopyDirResolvingSymlinks(packDir, dst, root); err != nil {
+		t.Fatalf("CopyDirResolvingSymlinks failed: %v", err)
+	}
+
+	// Verify the symlink was resolved to a regular file with correct content.
+	got, err := os.ReadFile(filepath.Join(dst, "rules", "shared.md"))
+	if err != nil {
+		t.Fatalf("missing resolved file: %v", err)
+	}
+	if string(got) != "shared content" {
+		t.Errorf("resolved content = %q, want %q", string(got), "shared content")
+	}
+
+	// Verify the file is a regular file, not a symlink.
+	info, err := os.Lstat(filepath.Join(dst, "rules", "shared.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("expected regular file, got symlink")
+	}
+
+	// Verify regular files are also copied.
+	got, err = os.ReadFile(filepath.Join(dst, "rules", "local.md"))
+	if err != nil {
+		t.Fatalf("missing regular file: %v", err)
+	}
+	if string(got) != "local" {
+		t.Errorf("regular file content = %q, want %q", string(got), "local")
+	}
+}
+
+func TestCopyDirResolvingSymlinks_RejectsEscapingBoundary(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packDir := filepath.Join(root, "pack")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(packDir, "evil.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := t.TempDir()
+	err := CopyDirResolvingSymlinks(packDir, dst, root)
+	if err == nil {
+		t.Fatal("expected error for escaping symlink")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q should mention 'symlink'", err)
+	}
+}
+
+func TestCopyDirResolvingSymlinks_EmptyBoundaryRejects(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(src, "real.txt"), filepath.Join(src, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := t.TempDir()
+	err := CopyDirResolvingSymlinks(src, dst, "")
+	if err == nil {
+		t.Fatal("expected error for symlink with empty boundary")
+	}
+	if !strings.Contains(err.Error(), "no git repository found") {
+		t.Errorf("error %q should mention 'no git repository found'", err)
+	}
+}
+
+func TestCopyDirResolvingSymlinks_RejectsDirectorySymlink(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packDir := filepath.Join(root, "pack")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sub, filepath.Join(packDir, "linked-dir")); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := t.TempDir()
+	err := CopyDirResolvingSymlinks(packDir, dst, root)
+	if err == nil {
+		t.Fatal("expected error for directory symlink")
+	}
+	if !strings.Contains(err.Error(), "directory") {
+		t.Errorf("error %q should mention 'directory'", err)
+	}
+}
+
+func TestResolveSymlinksInDir(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "base.md"), []byte("resolved"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "regular.md"), []byte("normal"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Create symlink at root level pointing to shared/base.md
+	if err := os.Symlink(filepath.Join(shared, "base.md"), filepath.Join(root, "link.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ResolveSymlinksInDir(root); err != nil {
+		t.Fatalf("ResolveSymlinksInDir failed: %v", err)
+	}
+
+	// Verify symlink was replaced with regular file.
+	info, err := os.Lstat(filepath.Join(root, "link.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("expected regular file after resolution, got symlink")
+	}
+	got, err := os.ReadFile(filepath.Join(root, "link.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "resolved" {
+		t.Errorf("resolved content = %q, want %q", string(got), "resolved")
+	}
+
+	// Regular file should be unchanged.
+	got, err = os.ReadFile(filepath.Join(root, "regular.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "normal" {
+		t.Errorf("regular content = %q, want %q", string(got), "normal")
+	}
+}
+
+func TestResolveSymlinksInDir_SkipsGitDir(t *testing.T) {
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink inside .git should be ignored.
+	if err := os.WriteFile(filepath.Join(gitDir, "target"), []byte("git"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(gitDir, "target"), filepath.Join(gitDir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should succeed without touching .git.
+	if err := ResolveSymlinksInDir(root); err != nil {
+		t.Fatalf("ResolveSymlinksInDir failed: %v", err)
+	}
+}
+
 func TestCopyDir_SkipsIgnoredNames(t *testing.T) {
 	src := t.TempDir()
 

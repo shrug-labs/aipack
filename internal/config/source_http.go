@@ -2,6 +2,7 @@ package config
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -42,11 +43,22 @@ func GitHubTarballURL(repoURL, ref string) (string, error) {
 	return fmt.Sprintf("https://github.com/%s/%s/archive/%s.tar.gz", owner, repo, ref), nil
 }
 
+// httpPendingSymlink records a symlink found in an HTTP tarball that needs resolution.
+type httpPendingSymlink struct {
+	dest               string // absolute path where the resolved file goes
+	targetFullStripped string // target path in stripped namespace (repo root)
+}
+
 // FetchHTTPTarball downloads a gzipped tarball from tarballURL and extracts its
 // contents into destDir. The first path component of every tar entry is stripped
 // (GitHub tarballs prefix entries with "{repo}-{ref}/"). If subPath is non-empty,
 // only entries under that sub-directory (after prefix stripping) are extracted,
 // and the subPath prefix itself is removed from the destination path.
+//
+// Symlinks with relative targets within the repository boundary are resolved to
+// regular files. If a symlink's target is outside the subPath scope, a second
+// pass over the tarball extracts the target file. Hard links and symlinks
+// escaping the repo boundary are rejected.
 func FetchHTTPTarball(ctx context.Context, tarballURL, destDir, subPath string, opts ArchiveOpts) error {
 	maxFile := opts.MaxFileSize
 	if maxFile <= 0 {
@@ -80,8 +92,20 @@ func FetchHTTPTarball(ctx context.Context, tarballURL, destDir, subPath string, 
 	}
 	defer gz.Close()
 
-	tr := tar.NewReader(gz)
+	// Read the decompressed tar into memory so we can do a second pass if
+	// symlinks reference files outside the subPath scope. The maxTotal limit
+	// (default 50MB) bounds the memory usage.
+	tarData, err := io.ReadAll(io.LimitReader(gz, maxTotal+1))
+	if err != nil {
+		return fmt.Errorf("reading decompressed tarball: %w", err)
+	}
+	if int64(len(tarData)) > maxTotal {
+		return fmt.Errorf("decompressed tarball exceeds size limit (%d bytes)", maxTotal)
+	}
+
+	tr := tar.NewReader(bytes.NewReader(tarData))
 	var totalSize int64
+	var pendingSymlinks []httpPendingSymlink
 
 	// Normalise subPath for prefix matching.
 	subPath = strings.Trim(subPath, "/")
@@ -98,14 +122,17 @@ func FetchHTTPTarball(ctx context.Context, tarballURL, destDir, subPath string, 
 		// Strip the first path component (the GitHub prefix directory).
 		stripped := stripFirstComponent(hdr.Name)
 		if stripped == "" {
-			continue // prefix directory entry itself, or root-level entry with no slash
+			continue
 		}
+
+		// Symlink targets are repo-relative, not subPath-relative, so
+		// preserve the pre-filter path for symlink validation.
+		fullStripped := stripped
 
 		// If subPath filtering is active, only keep entries under subPath/.
 		if subPath != "" {
 			rest, ok := strings.CutPrefix(stripped, subPath+"/")
 			if !ok {
-				// Also match the subPath directory entry itself.
 				if strings.TrimSuffix(stripped, "/") == subPath && hdr.Typeflag == tar.TypeDir {
 					continue
 				}
@@ -123,7 +150,7 @@ func FetchHTTPTarball(ctx context.Context, tarballURL, destDir, subPath string, 
 			return fmt.Errorf("path traversal in tar entry: %s", hdr.Name)
 		}
 		dest := filepath.Join(destDir, clean)
-		if !isWithinDir(dest, destDir) {
+		if !util.IsWithinDir(dest, destDir) {
 			return fmt.Errorf("tar entry escapes destination: %s", hdr.Name)
 		}
 
@@ -152,13 +179,142 @@ func FetchHTTPTarball(ctx context.Context, tarballURL, destDir, subPath string, 
 				return fmt.Errorf("writing %s: %w", clean, err)
 			}
 
-		case tar.TypeSymlink, tar.TypeLink:
-			return fmt.Errorf("symlink or hard link not allowed in pack archive: %s", hdr.Name)
+		case tar.TypeSymlink:
+			// Validate using fullStripped because symlink targets are
+			// repo-relative, not subPath-relative.
+			targetFull, symErr := validateTarSymlink(fullStripped, hdr.Linkname)
+			if symErr != nil {
+				return symErr
+			}
+			pendingSymlinks = append(pendingSymlinks, httpPendingSymlink{
+				dest:               dest,
+				targetFullStripped: targetFull,
+			})
+
+		case tar.TypeLink:
+			return fmt.Errorf("hard link not allowed in pack archive: %s", hdr.Name)
 
 		default:
 			continue
 		}
 	}
+
+	if len(pendingSymlinks) == 0 {
+		return nil
+	}
+
+	// Try to resolve symlinks from already-extracted files.
+	var unresolved []httpPendingSymlink
+	for _, ps := range pendingSymlinks {
+		var targetOnDisk string
+		if subPath != "" {
+			if rest, ok := strings.CutPrefix(ps.targetFullStripped, subPath+"/"); ok {
+				targetOnDisk = filepath.Join(destDir, filepath.Clean(rest))
+			}
+		} else {
+			targetOnDisk = filepath.Join(destDir, filepath.Clean(ps.targetFullStripped))
+		}
+
+		if targetOnDisk != "" {
+			data, readErr := os.ReadFile(targetOnDisk)
+			if readErr == nil {
+				if int64(len(data)) > maxFile {
+					return fmt.Errorf("symlink target %s exceeds size limit (%d > %d bytes)", ps.targetFullStripped, len(data), maxFile)
+				}
+				totalSize += int64(len(data))
+				if totalSize > maxTotal {
+					return fmt.Errorf("total extraction size exceeds limit (%d > %d bytes)", totalSize, maxTotal)
+				}
+				if err := os.MkdirAll(filepath.Dir(ps.dest), 0o700); err != nil {
+					return err
+				}
+				if err := util.WriteFileAtomicWithPerms(ps.dest, data, 0o700, 0o600); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		unresolved = append(unresolved, ps)
+	}
+
+	if len(unresolved) == 0 {
+		return nil
+	}
+
+	// Second pass: re-read the tarball from memory to find unresolved targets.
+
+	// Build lookup of needed target paths.
+	neededTargets := make(map[string][]int) // targetFullStripped -> indices into unresolved
+	for i, ps := range unresolved {
+		neededTargets[ps.targetFullStripped] = append(neededTargets[ps.targetFullStripped], i)
+	}
+
+	tr2 := tar.NewReader(bytes.NewReader(tarData))
+	resolved := make(map[string]bool)
+
+	for {
+		hdr, err := tr2.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("reading tar entry (second pass): %w", err)
+		}
+
+		stripped := stripFirstComponent(hdr.Name)
+		if stripped == "" {
+			continue
+		}
+		clean := filepath.Clean(stripped)
+
+		indices, ok := neededTargets[clean]
+		if !ok {
+			continue
+		}
+
+		if hdr.Typeflag == tar.TypeSymlink {
+			return fmt.Errorf("chained symlinks not allowed in pack archive: target %s is also a symlink", clean)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		data, err := io.ReadAll(io.LimitReader(tr2, maxFile+1))
+		if err != nil {
+			return fmt.Errorf("reading symlink target %s: %w", clean, err)
+		}
+		if int64(len(data)) > maxFile {
+			return fmt.Errorf("symlink target %s exceeds size limit (%d > %d bytes)", clean, len(data), maxFile)
+		}
+		totalSize += int64(len(data))
+		if totalSize > maxTotal {
+			return fmt.Errorf("total extraction size exceeds limit (%d > %d bytes)", totalSize, maxTotal)
+		}
+
+		// Write content to all symlink destinations pointing to this target.
+		for _, idx := range indices {
+			ps := unresolved[idx]
+			if err := os.MkdirAll(filepath.Dir(ps.dest), 0o700); err != nil {
+				return err
+			}
+			if err := util.WriteFileAtomicWithPerms(ps.dest, data, 0o700, 0o600); err != nil {
+				return err
+			}
+		}
+		resolved[clean] = true
+	}
+
+	// Check for any still-unresolved targets.
+	var missing []string
+	for target := range neededTargets {
+		if !resolved[target] {
+			missing = append(missing, target)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("symlink targets not found in archive: %s", strings.Join(missing, ", "))
+	}
+
 	return nil
 }
 

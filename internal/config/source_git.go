@@ -3,7 +3,6 @@ package config
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -114,43 +113,6 @@ func runGit(ctx context.Context, args ...string) error {
 	return err
 }
 
-// ErrArchiveNotSupported indicates the remote does not support git archive --remote.
-var ErrArchiveNotSupported = errors.New("remote does not support git archive --remote")
-
-// ErrArchivePathNotFound indicates git archive failed because a requested path
-// does not exist in the repo. This usually means the pack manifest (pack.json)
-// declares content that hasn't been committed.
-var ErrArchivePathNotFound = errors.New("archive path not found")
-
-// GitArchiveFiles fetches specific files/directories from a remote git repo
-// using `git archive --remote`. Returns the raw tar stream as bytes.
-// Caller is responsible for extracting and validating the archive content.
-//
-// The ref defaults to "HEAD" if empty. Paths are passed directly to git archive.
-// Directory paths are fetched recursively by git archive.
-//
-// Returns ErrArchiveNotSupported if the remote does not support git archive.
-func GitArchiveFiles(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) {
-	return gitArchiveFiles(ctx, repoURL, ref, paths, runGitOutput)
-}
-
-// GitArchiveFilesWith is like GitArchiveFiles but accepts a custom git runner for testing.
-func GitArchiveFilesWith(ctx context.Context, repoURL, ref string, paths []string, runFn func(ctx context.Context, args ...string) ([]byte, error)) ([]byte, error) {
-	return gitArchiveFiles(ctx, repoURL, ref, paths, runFn)
-}
-
-func gitArchiveFiles(ctx context.Context, repoURL, ref string, paths []string, runFn func(ctx context.Context, args ...string) ([]byte, error)) ([]byte, error) {
-	if err := CheckGit(); err != nil {
-		return nil, err
-	}
-	if ref == "" {
-		ref = "HEAD"
-	}
-	args := []string{"archive", "--remote=" + repoURL, ref}
-	args = append(args, paths...)
-	return runFn(ctx, args...)
-}
-
 // runGitCore runs a git command with shared setup (timeout, env, error formatting)
 // and returns stdout bytes. Both runGit and runGitOutput delegate to this.
 func runGitCore(ctx context.Context, args ...string) ([]byte, error) {
@@ -178,38 +140,6 @@ func runGitCore(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
 	}
 	return stdout.Bytes(), nil
-}
-
-// runGitOutput runs a git command and returns its stdout as bytes.
-// Adds archive-specific error classification on top of runGitCore.
-func runGitOutput(ctx context.Context, args ...string) ([]byte, error) {
-	out, err := runGitCore(ctx, args...)
-	if err != nil {
-		return nil, classifyArchiveError(err)
-	}
-	return out, nil
-}
-
-// classifyArchiveError maps generic git errors to archive-specific sentinel errors.
-// Only Bitbucket Server uses git archive --remote; GitHub and DevOps SCM use
-// other strategies and never reach this code.
-func classifyArchiveError(err error) error {
-	msg := err.Error()
-	lower := strings.ToLower(msg)
-	if strings.Contains(lower, "operation not supported") ||
-		strings.Contains(lower, "does not appear to support") {
-		return ErrArchiveNotSupported
-	}
-	// "archiver died" can mean the remote doesn't support archive, OR a
-	// pathspec didn't match. A missing file is a content error (pack.json
-	// declares files not in the repo), not a capability error.
-	if strings.Contains(lower, "archiver died") {
-		if strings.Contains(lower, "pathspec") {
-			return fmt.Errorf("%w: %s", ErrArchivePathNotFound, msg)
-		}
-		return ErrArchiveNotSupported
-	}
-	return err
 }
 
 // gitErrorHint returns an actionable hint for common git failures.

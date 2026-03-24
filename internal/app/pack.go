@@ -1,9 +1,7 @@
 package app
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,7 +56,6 @@ type PackAddRequest struct {
 
 	// Test injection points:
 	RunGitFn      func(ctx context.Context, args ...string) error
-	ArchiveFn     func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) // nil = config.GitArchiveFiles
 	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts config.ArchiveOpts) error
 	URLOKFn       func(ctx context.Context, raw string) (bool, error)
 	NowFn         func() time.Time
@@ -180,7 +177,8 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 			return fmt.Errorf("creating temp dir: %w", err)
 		}
 		defer os.RemoveAll(tmpDir)
-		if err := util.CopyDir(packDir, tmpDir); err != nil {
+		boundary := util.FindRepoRoot(packDir)
+		if err := util.CopyDirResolvingSymlinks(packDir, tmpDir, boundary); err != nil {
 			return fmt.Errorf("copying pack: %w", err)
 		}
 		packRemoveExisting(destDir, stdout)
@@ -297,8 +295,6 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 	switch strategy {
 	case config.StrategyHTTPTarball:
 		result, err = packFetchHTTPTarball(ctx, req, info, packsDir, stdout)
-	case config.StrategyGitArchive:
-		result, err = packTryArchive(ctx, req, info, packsDir, stdout)
 	default:
 		result, err = packShallowClone(ctx, req, info, packsDir, stdout)
 	}
@@ -349,100 +345,6 @@ type packInstallResult struct {
 	method     string
 	manifest   config.PackManifest
 	commitHash string
-}
-
-// packTryArchive performs a two-phase git archive fetch (Bitbucket Server only).
-// Archive errors are terminal — no fallback to clone.
-func packTryArchive(ctx context.Context, req PackAddRequest, info config.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
-	subPath := info.SubPath
-	archiveFn := req.ArchiveFn
-	if archiveFn == nil {
-		archiveFn = config.GitArchiveFiles
-	}
-
-	// Phase 1: fetch only pack.json via archive.
-	manifestRelPath := "pack.json"
-	if subPath != "" {
-		manifestRelPath = subPath + "/pack.json"
-	}
-
-	tarData, err := archiveFn(ctx, info.RepoURL, info.Ref, []string{manifestRelPath})
-	if err != nil {
-		return packInstallResult{}, fmt.Errorf("fetching manifest from %s: %w", info.RepoURL, err)
-	}
-
-	// Extract pack.json from the tar stream to parse manifest.
-	manifest, err := parseManifestFromTar(tarData, manifestRelPath)
-	if err != nil {
-		return packInstallResult{}, fmt.Errorf("parsing manifest from archive: %w", err)
-	}
-
-	name, err := resolvePackName(req.Name, manifest.Name)
-	if err != nil {
-		return packInstallResult{}, err
-	}
-
-	// Phase 2: compute content paths and fetch all declared files.
-	contentPaths := manifest.ContentPaths()
-	// Prepend subPath prefix if the pack lives in a subdirectory.
-	if subPath != "" {
-		for i, p := range contentPaths {
-			contentPaths[i] = subPath + "/" + p
-		}
-	}
-
-	tarData, err = archiveFn(ctx, info.RepoURL, info.Ref, contentPaths)
-	if err != nil {
-		if errors.Is(err, config.ErrArchivePathNotFound) {
-			return packInstallResult{}, fmt.Errorf("pack.json declares content not found in the repository — check that all listed rules/skills/workflows are committed: %w", err)
-		}
-		return packInstallResult{}, fmt.Errorf("fetching pack content from %s: %w", info.RepoURL, err)
-	}
-
-	// Extract into temp dir with safety validation.
-	archiveDir, err := makePackTempDir(req.ConfigDir, "archive-*")
-	if err != nil {
-		return packInstallResult{}, fmt.Errorf("creating temp dir: %w", err)
-	}
-	// Archive dir is always transient — clean it unconditionally.
-	defer os.RemoveAll(archiveDir)
-
-	if err := config.ExtractArchive(bytes.NewReader(tarData), archiveDir, config.ArchiveOpts{}); err != nil {
-		return packInstallResult{}, fmt.Errorf("extracting pack archive: %w", err)
-	}
-
-	// For subdirectory packs, the extracted content is under archiveDir/<subPath>/.
-	// Extract it into its own temp dir so we can install just the subtree.
-	installDir := archiveDir
-	packRoot := archiveDir
-	if subPath != "" {
-		subTmp, err := extractSubtree(packStagingDir(req.ConfigDir), archiveDir, subPath)
-		if err != nil {
-			return packInstallResult{}, err
-		}
-		defer func() {
-			if _, serr := os.Lstat(subTmp); serr == nil {
-				os.RemoveAll(subTmp)
-			}
-		}()
-		installDir = subTmp
-		packRoot = subTmp
-	}
-
-	// Verify pack.json exists in the extracted content.
-	if _, err := os.Stat(filepath.Join(packRoot, "pack.json")); err != nil {
-		return packInstallResult{}, fmt.Errorf("pack.json not found in extracted archive")
-	}
-
-	destDir := filepath.Join(packsDir, name)
-	packRemoveExisting(destDir, stdout)
-
-	if err := os.Rename(installDir, destDir); err != nil {
-		return packInstallResult{}, fmt.Errorf("moving archive to %s: %w", destDir, err)
-	}
-	fmt.Fprintf(stdout, "Installed: %s -> %s\n", req.URL, destDir)
-
-	return packInstallResult{name: name, destDir: destDir, method: config.MethodArchive, manifest: manifest}, nil
 }
 
 // packFetchHTTPTarball installs a pack by downloading a GitHub HTTP tarball.
@@ -563,6 +465,16 @@ func packShallowClone(ctx context.Context, req PackAddRequest, info config.PackU
 	if err := os.Rename(installDir, destDir); err != nil {
 		return packInstallResult{}, fmt.Errorf("moving clone to %s: %w", destDir, err)
 	}
+
+	// For root packs (no subPath extraction), the installed directory may
+	// contain symlinks from the cloned repo. Resolve them in-place so the
+	// installed pack contains only regular files.
+	if subPath == "" {
+		if err := util.ResolveSymlinksInDir(destDir); err != nil {
+			return packInstallResult{}, fmt.Errorf("resolving symlinks in clone: %w", err)
+		}
+	}
+
 	fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
 
 	return packInstallResult{name: name, destDir: destDir, method: config.MethodClone, manifest: manifest, commitHash: commitHash}, nil
@@ -586,17 +498,6 @@ func listClonePacks(dir string) string {
 		}
 	}
 	return strings.Join(packs, ", ")
-}
-
-// parseManifestFromTar extracts and parses pack.json from tar data.
-// The expectedPath is the relative path within the tar (e.g. "pack.json"
-// or "subdir/pack.json").
-func parseManifestFromTar(tarData []byte, expectedPath string) (config.PackManifest, error) {
-	data, err := config.ExtractSingleFileFromTar(tarData, expectedPath)
-	if err != nil {
-		return config.PackManifest{}, err
-	}
-	return config.ParsePackManifest(data)
 }
 
 // packProfileName returns the trimmed profile name, defaulting to "default".
@@ -955,7 +856,7 @@ func extractSubtree(parentDir, cloneDir, subPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := util.CopyDir(src, tmp); err != nil {
+	if err := util.CopyDirResolvingSymlinks(src, tmp, cloneDir); err != nil {
 		os.RemoveAll(tmp)
 		return "", fmt.Errorf("copying pack subtree: %w", err)
 	}
@@ -1112,10 +1013,9 @@ type PackUpdateRequest struct {
 	ConfigDir     string
 	Name          string // empty when All=true
 	All           bool
-	RunGitFn      func(ctx context.Context, args ...string) error                                // test injection; nil = real git
-	NowFn         func() time.Time                                                               // test injection; nil = time.Now
-	GitHashFn     func(ctx context.Context, dir string) (string, error)                          // test injection; nil = config.GitHeadHash
-	ArchiveFn     func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error) // test injection; nil = config.GitArchiveFiles
+	RunGitFn      func(ctx context.Context, args ...string) error       // test injection; nil = real git
+	NowFn         func() time.Time                                      // test injection; nil = time.Now
+	GitHashFn     func(ctx context.Context, dir string) (string, error) // test injection; nil = config.GitHeadHash
 	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts config.ArchiveOpts) error
 }
 
@@ -1174,7 +1074,6 @@ type packUpdateContext struct {
 	runGitFn      func(ctx context.Context, args ...string) error
 	nowFn         func() time.Time
 	gitHashFn     func(ctx context.Context, dir string) (string, error)
-	archiveFn     func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error)
 	httpTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts config.ArchiveOpts) error
 	stdout        io.Writer
 }
@@ -1202,7 +1101,6 @@ func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io
 		runGitFn:      runGitFn,
 		nowFn:         nowFn,
 		gitHashFn:     req.GitHashFn,
-		archiveFn:     req.ArchiveFn,
 		httpTarballFn: req.HTTPTarballFn,
 		stdout:        stdout,
 	}
@@ -1374,7 +1272,6 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 			Ref:           ref,
 			SubPath:       subPath,
 			Name:          name,
-			ArchiveFn:     uctx.archiveFn,
 			HTTPTarballFn: uctx.httpTarballFn,
 		}
 		addInfo := config.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
@@ -1383,7 +1280,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 		if method == config.MethodHTTPTarball {
 			result, err = packFetchHTTPTarball(ctx, addReq, addInfo, uctx.packsDir, io.Discard)
 		} else {
-			result, err = packTryArchive(ctx, addReq, addInfo, uctx.packsDir, io.Discard)
+			result, err = packShallowClone(ctx, addReq, addInfo, uctx.packsDir, io.Discard)
 		}
 		if err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}

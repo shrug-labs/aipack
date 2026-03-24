@@ -327,7 +327,7 @@ Always an array. Empty `[]` when no packs are installed.
   {
     "name": "essentials",
     "path": "/Users/x/.config/aipack/packs/essentials",
-    "method": "archive",
+    "method": "http-tarball",
     "version": "2026.03.07",
     "origin": "https://github.com/shrug-labs/packs.git",
     "is_link": false
@@ -354,7 +354,7 @@ Content ID arrays are always present (empty `[]`, never null).
   "name": "essentials",
   "version": "2026.03.07",
   "path": "/Users/x/.config/aipack/packs/essentials",
-  "method": "archive",
+  "method": "http-tarball",
   "origin": "https://github.com/shrug-labs/packs.git",
   "ref": "main",
   "commit_hash": "abc123def456",
@@ -497,7 +497,7 @@ Several flags follow a common resolution chain across commands:
 
 **Diff kinds:** `create` (file doesn't exist on disk), `identical` (desired matches on-disk), `managed` (on-disk matches ledger — safe to update), `conflict` (user-modified since last sync), `untracked` (exists on disk but not in ledger), `error` (classification failed)
 
-**Install methods:** `archive` (git archive fetch), `clone` (shallow git clone), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place)
+**Install methods:** `clone` (shallow git clone), `http-tarball` (GitHub HTTP tarball), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place), `archive` (legacy — treated as clone on update)
 
 **Finding categories:** `frontmatter`, `policy`, `consistency`, `inventory`
 

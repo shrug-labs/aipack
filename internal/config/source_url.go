@@ -317,29 +317,15 @@ type FetchStrategy int
 const (
 	// StrategyHTTPTarball downloads a tarball over HTTP (GitHub HTTPS).
 	StrategyHTTPTarball FetchStrategy = iota
-	// StrategyGitArchive uses git archive --remote (Bitbucket Server SSH).
-	StrategyGitArchive
 	// StrategyShallowClone uses git clone --depth 1 (universal fallback).
 	StrategyShallowClone
 )
 
 // SelectFetchStrategy chooses the best fetch strategy for the given URL.
 func SelectFetchStrategy(rawURL string) FetchStrategy {
-	// SCP-style URLs (git@host:path) — url.Parse won't handle these correctly.
-	if strings.HasPrefix(rawURL, "git@") {
-		// GitHub SSH → shallow clone (can't HTTP tarball over SSH).
-		if strings.HasPrefix(rawURL, "git@github.com:") {
-			return StrategyShallowClone
-		}
-		// Bitbucket Server SCP-style with port 7999.
-		if strings.Contains(rawURL, ":7999/") {
-			return StrategyGitArchive
-		}
-		return StrategyShallowClone
-	}
-
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
+		// Includes SCP-style URLs (git@host:path) which url.Parse can't handle.
 		return StrategyShallowClone
 	}
 
@@ -351,19 +337,7 @@ func SelectFetchStrategy(rawURL string) FetchStrategy {
 		return StrategyHTTPTarball
 	}
 
-	// SSH URLs (ssh:// scheme).
-	if scheme == "ssh" {
-		// Bitbucket Server: port 7999 or parseBitbucketServerRepo matches.
-		if u.Port() == "7999" {
-			return StrategyGitArchive
-		}
-		if _, ok := parseBitbucketServerRepo(u); ok {
-			return StrategyGitArchive
-		}
-		return StrategyShallowClone
-	}
-
-	// Everything else (HTTPS bitbucket.org, unknown hosts, etc.).
+	// Everything else: SSH, HTTPS non-GitHub, unknown hosts.
 	return StrategyShallowClone
 }
 

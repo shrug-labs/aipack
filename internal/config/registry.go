@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -103,39 +102,17 @@ func FetchRegistryFromURL(ctx context.Context, rawURL string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// FetchFileViaGit fetches a single file from a remote git repo. It tries
-// git archive --remote first (fetches only the requested file) and falls
-// back to a shallow clone when the remote doesn't support archive.
+// FetchFileViaGit fetches a single file from a remote git repo via shallow clone.
 func FetchFileViaGit(ctx context.Context, repoURL, ref, filePath string) ([]byte, error) {
-	return fetchFileViaGit(ctx, repoURL, ref, filePath, RunGit, GitArchiveFiles)
+	return FetchFileViaGitWith(ctx, repoURL, ref, filePath, RunGit)
 }
 
-// FetchFileViaGitWith is like FetchFileViaGit but accepts custom runners for testing.
+// FetchFileViaGitWith is like FetchFileViaGit but accepts a custom git runner for testing.
 func FetchFileViaGitWith(ctx context.Context, repoURL, ref, filePath string,
 	runGitFn func(ctx context.Context, args ...string) error,
-	archiveFn func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error),
-) ([]byte, error) {
-	return fetchFileViaGit(ctx, repoURL, ref, filePath, runGitFn, archiveFn)
-}
-
-func fetchFileViaGit(ctx context.Context, repoURL, ref, filePath string,
-	runGitFn func(ctx context.Context, args ...string) error,
-	archiveFn func(ctx context.Context, repoURL, ref string, paths []string) ([]byte, error),
 ) ([]byte, error) {
 	if err := CheckGit(); err != nil {
 		return nil, err
-	}
-
-	// Try archive first — fetches only the requested file.
-	if archiveFn != nil {
-		data, err := extractFileFromArchive(ctx, archiveFn, repoURL, ref, filePath)
-		if err == nil {
-			return data, nil
-		}
-		if !errors.Is(err, ErrArchiveNotSupported) {
-			return nil, err
-		}
-		// Fall through to clone.
 	}
 
 	tmp, err := os.MkdirTemp("", "aipack-fetch-*")
@@ -157,16 +134,6 @@ func fetchFileViaGit(ctx context.Context, repoURL, ref, filePath string,
 		return nil, fmt.Errorf("reading %s from clone: %w", filePath, err)
 	}
 	return data, nil
-}
-
-// extractFileFromArchive fetches a single file via git archive and extracts
-// its content from the resulting tar stream.
-func extractFileFromArchive(ctx context.Context, archiveFn func(context.Context, string, string, []string) ([]byte, error), repoURL, ref, filePath string) ([]byte, error) {
-	tarData, err := archiveFn(ctx, repoURL, ref, []string{filePath})
-	if err != nil {
-		return nil, err
-	}
-	return ExtractSingleFileFromTar(tarData, filePath)
 }
 
 // RegistriesCacheDir returns the directory for cached remote registries.

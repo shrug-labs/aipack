@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.11.7]
+
+### Added
+
+- Symlinks in pack content are now resolved at install time when the target is within the source repository boundary. This enables packs in monorepos to share content via symlinks (e.g. `rules/shared.md -> ../../shared/base.md`). The installed pack always contains regular files. Symlinks that escape the repo boundary, point to directories, traverse `.git/`, or use absolute targets are rejected. The `--link` install method is unchanged.
+
+### Changed
+
+- Bitbucket Server SSH URLs (port 7999) now use shallow clone instead of `git archive --remote`. This fixes auto-discovery for packs with incomplete manifests and simplifies the install pipeline. Packs previously installed via archive will update via clone on next `pack update`.
+
 ## [0.11.6]
 
 ### Changed

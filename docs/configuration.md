@@ -53,7 +53,7 @@ defaults:
 installed_packs:          # managed by pack install/delete/update
   essentials:
     origin: "https://github.com/shrug-labs/packs.git"
-    method: archive
+    method: http-tarball
     installed_at: "2026-03-10T08:30:00Z"
     ref: main
     sub_path: essentials
@@ -91,7 +91,7 @@ Each entry records how a pack was installed. Keys are pack names.
 | Field | Type | Description |
 |-------|------|-------------|
 | `origin` | string | Absolute local path or remote URL |
-| `method` | string | `link`, `copy`, `clone`, or `archive` |
+| `method` | string | `link`, `copy`, `clone`, `http-tarball`, or `archive` (legacy) |
 | `installed_at` | string | RFC 3339 timestamp |
 | `ref` | string | Git ref used at install time (remote only) |
 | `sub_path` | string | Subdirectory within the repo (remote only) |
@@ -121,10 +121,10 @@ Packs live under `~/.config/aipack/packs/<name>/`. Four install methods produce 
 | `link` | Symlink to source directory | Yes — edits at either location hit the same files | Re-validates symlink target |
 | `copy` | Full copy from local path | No — edits are local only | Re-copies from recorded origin |
 | `clone` | Shallow git clone | Yes (with `git pull`) | `git pull` in the clone |
-| `archive` | Extracted from `git archive` | No — edits are local only | Re-fetches via archive, shows file-level diff |
+| `http-tarball` | Downloaded from GitHub | No — edits are local only | Re-downloads tarball, shows file-level diff |
 | `local` | Pack already in packs directory | Yes — it's the source | Registered in-place, no fetch |
 
-`link` is the default for local installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `archive` is the default for remote installs and is the most space-efficient for consumers.
+`link` is the default for local installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for SSH remote installs; `http-tarball` is used for GitHub HTTPS URLs.
 
 ### Integrity tracking
 

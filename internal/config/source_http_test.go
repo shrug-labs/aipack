@@ -173,6 +173,145 @@ func TestFetchHTTPTarball_RejectsSymlinks(t *testing.T) {
 	}
 }
 
+// buildTestTarGzEntries wraps buildTar output in gzip compression.
+func buildTestTarGzEntries(t *testing.T, entries []tarEntry) []byte {
+	t.Helper()
+	tarBuf := buildTar(t, entries)
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(tarBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	gw.Close()
+	return buf.Bytes()
+}
+
+func TestFetchHTTPTarball_ResolvesSymlinksNoSubPath(t *testing.T) {
+	tgz := buildTestTarGzEntries(t, []tarEntry{
+		{Name: "repo-main/", Type: tar.TypeDir},
+		{Name: "repo-main/shared/", Type: tar.TypeDir},
+		{Name: "repo-main/shared/base.md", Type: tar.TypeReg, Body: "shared content"},
+		{Name: "repo-main/rules/", Type: tar.TypeDir},
+		{Name: "repo-main/rules/local.md", Type: tar.TypeReg, Body: "local"},
+		{Name: "repo-main/rules/shared.md", Type: tar.TypeSymlink, Link: "../shared/base.md"},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tgz)
+	}))
+	defer srv.Close()
+
+	dest := t.TempDir()
+	err := FetchHTTPTarball(context.Background(), srv.URL, dest, "", ArchiveOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dest, "rules", "shared.md"))
+	if err != nil {
+		t.Fatalf("reading resolved symlink: %v", err)
+	}
+	if string(got) != "shared content" {
+		t.Errorf("resolved content = %q, want %q", string(got), "shared content")
+	}
+}
+
+func TestFetchHTTPTarball_ResolvesSymlinksWithSubPath(t *testing.T) {
+	// Repo structure: shared/ at root, pack in packs/team-ops/
+	// Symlink in pack points to ../../shared/base.md
+	tgz := buildTestTarGzEntries(t, []tarEntry{
+		{Name: "repo-main/", Type: tar.TypeDir},
+		{Name: "repo-main/shared/", Type: tar.TypeDir},
+		{Name: "repo-main/shared/base.md", Type: tar.TypeReg, Body: "shared from repo root"},
+		{Name: "repo-main/packs/", Type: tar.TypeDir},
+		{Name: "repo-main/packs/team-ops/", Type: tar.TypeDir},
+		{Name: "repo-main/packs/team-ops/pack.json", Type: tar.TypeReg, Body: `{"name":"team-ops"}`},
+		{Name: "repo-main/packs/team-ops/rules/", Type: tar.TypeDir},
+		{Name: "repo-main/packs/team-ops/rules/local.md", Type: tar.TypeReg, Body: "local rule"},
+		{Name: "repo-main/packs/team-ops/rules/shared.md", Type: tar.TypeSymlink, Link: "../../../shared/base.md"},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tgz)
+	}))
+	defer srv.Close()
+
+	dest := t.TempDir()
+	err := FetchHTTPTarball(context.Background(), srv.URL, dest, "packs/team-ops", ArchiveOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Symlink should be resolved via second pass (target is outside subPath).
+	got, err := os.ReadFile(filepath.Join(dest, "rules", "shared.md"))
+	if err != nil {
+		t.Fatalf("reading resolved symlink: %v", err)
+	}
+	if string(got) != "shared from repo root" {
+		t.Errorf("resolved content = %q, want %q", string(got), "shared from repo root")
+	}
+
+	// Regular file should also be present.
+	got, err = os.ReadFile(filepath.Join(dest, "rules", "local.md"))
+	if err != nil {
+		t.Fatalf("reading regular file: %v", err)
+	}
+	if string(got) != "local rule" {
+		t.Errorf("regular content = %q, want %q", string(got), "local rule")
+	}
+
+	// Shared directory should NOT be in dest (it's outside subPath).
+	if _, err := os.Stat(filepath.Join(dest, "shared")); !os.IsNotExist(err) {
+		t.Error("shared/ directory should not exist in dest")
+	}
+}
+
+func TestFetchHTTPTarball_RejectsEscapingSymlink(t *testing.T) {
+	tgz := buildTestTarGzEntries(t, []tarEntry{
+		{Name: "repo-main/", Type: tar.TypeDir},
+		{Name: "repo-main/rules/", Type: tar.TypeDir},
+		{Name: "repo-main/rules/evil.md", Type: tar.TypeSymlink, Link: "../../etc/passwd"},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tgz)
+	}))
+	defer srv.Close()
+
+	dest := t.TempDir()
+	err := FetchHTTPTarball(context.Background(), srv.URL, dest, "", ArchiveOpts{})
+	if err == nil {
+		t.Fatal("expected error for escaping symlink")
+	}
+	if !strings.Contains(err.Error(), "escapes archive boundary") {
+		t.Errorf("error %q should mention 'escapes archive boundary'", err)
+	}
+}
+
+func TestFetchHTTPTarball_RejectsSymlinkToGitDir(t *testing.T) {
+	tgz := buildTestTarGzEntries(t, []tarEntry{
+		{Name: "repo-main/", Type: tar.TypeDir},
+		{Name: "repo-main/.git/", Type: tar.TypeDir},
+		{Name: "repo-main/.git/config", Type: tar.TypeReg, Body: "git config"},
+		{Name: "repo-main/rules/", Type: tar.TypeDir},
+		{Name: "repo-main/rules/gitcfg.md", Type: tar.TypeSymlink, Link: "../.git/config"},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tgz)
+	}))
+	defer srv.Close()
+
+	dest := t.TempDir()
+	err := FetchHTTPTarball(context.Background(), srv.URL, dest, "", ArchiveOpts{})
+	if err == nil {
+		t.Fatal("expected error for .git symlink target")
+	}
+	if !strings.Contains(err.Error(), ".git") {
+		t.Errorf("error %q should mention '.git'", err)
+	}
+}
+
 func TestFetchHTTPTarball_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

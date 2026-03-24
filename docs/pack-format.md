@@ -499,8 +499,8 @@ Without the override declaration, duplicate IDs across packs are treated as erro
 
 Packs are installed from git repositories. Two fetch strategies are supported:
 
-1. **Archive fetch** (preferred) — `git archive --remote` retrieves only declared content. Two phases: manifest first (to discover content), then declared files. Efficient for large repos where the pack is a subdirectory.
-2. **Shallow clone** (fallback) — used when the remote doesn't support `git archive` (e.g., GitHub). Performs a depth-1 clone.
+1. **HTTP tarball** — GitHub HTTPS URLs download a tarball directly (no git binary required).
+2. **Shallow clone** — all other URLs use `git clone --depth 1`.
 
 Both HTTPS and SSH URLs are supported. Packs can live in a subdirectory of a larger repository (common for team mono-repos).
 
@@ -560,7 +560,7 @@ aipack sync
 
 Pack versioning uses git refs. The `version` field in `pack.json` is informational. The authoritative version is the git ref (branch, tag, or commit) used at install time.
 
-For archive-installed packs, the commit hash at install time is recorded, enabling update detection.
+For remotely installed packs, the commit hash at install time is recorded, enabling update detection.
 
 ## 10. Harness Contract
 
