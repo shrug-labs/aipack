@@ -477,7 +477,7 @@ Several flags follow a common resolution chain across commands:
 | `--profile` | `--profile-path` → `--profile` → `sync-config defaults.profile` → `"default"` |
 | `--scope` | `--scope` → `sync-config defaults.scope` → `"project"` |
 | `--harness` | `--harness` → `sync-config defaults.harnesses` → `$AIPACK_DEFAULT_HARNESS` |
-| `--config-dir` | `--config-dir` → `$AIPACK_CONFIG_DIR` → `~/.config/aipack` |
+| `--config-dir` | `--config-dir` → `$AIPACK_CONFIG_DIR` → `~/.config/aipack` (`%APPDATA%\aipack` on Windows) |
 
 ## Environment variables
 

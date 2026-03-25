@@ -10,7 +10,10 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
@@ -20,7 +23,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: make fmt-check
-      - run: make test
+        if: runner.os != 'Windows'
+      - name: Run tests
+        run: go test ./...
       - run: go vet ./...
 
   release:

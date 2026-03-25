@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 type SearchCmd struct {
@@ -67,7 +67,7 @@ func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 
 	results, err := app.RunIndexSearch(app.IndexSearchRequest{
 		ConfigDir: c.ConfigDir,
-		Home:      os.Getenv("HOME"),
+		Home:      config.HomeDir(),
 		Terms:     strings.Join(c.Terms, " "),
 		Tags:      c.Tags,
 		Role:      c.Role,
@@ -139,7 +139,7 @@ See also: search (for convenience FTS search)`
 }
 
 func (c *QueryCmd) Run(ctx context.Context, g *Globals) error {
-	home := os.Getenv("HOME")
+	home := config.HomeDir()
 
 	if c.Schema {
 		schema, err := app.RunIndexSchema(c.ConfigDir, home)

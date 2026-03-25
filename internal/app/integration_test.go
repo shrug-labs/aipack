@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -396,6 +397,9 @@ func TestSyncThenCapture_ContentFidelity(t *testing.T) {
 
 func TestWriteFileAtomic_Concurrent(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file locking prevents concurrent rename to the same target")
+	}
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "target.json")
 

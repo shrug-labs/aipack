@@ -53,7 +53,7 @@ func (c *CleanCmd) Validate() error {
 func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 	// Load sync-config for scope and harness resolution.
 	var syncCfg config.SyncConfig
-	if cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, os.Getenv("HOME")); err == nil {
+	if cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, config.HomeDir()); err == nil {
 		if sc, serr := config.LoadSyncConfig(config.SyncConfigPath(cfgDir)); serr == nil {
 			syncCfg = sc
 		}
@@ -92,7 +92,7 @@ func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 			Scope:      scope,
 			ProjectDir: projectAbs,
 			Harnesses:  harnesses,
-			Home:       os.Getenv("HOME"),
+			Home:       config.HomeDir(),
 		},
 		WipeLedger: c.Ledger,
 		Yes:        c.Yes,

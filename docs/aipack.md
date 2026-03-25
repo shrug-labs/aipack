@@ -18,7 +18,7 @@ Complete CLI reference for `aipack`. For pack authoring and team setup, start wi
 
 ### init
 
-Creates `~/.config/aipack/sync-config.yaml` and `~/.config/aipack/profiles/default.yaml` with starter content. Skips files that already exist unless `--force` is set.
+Creates `~/.config/aipack/sync-config.yaml` and `~/.config/aipack/profiles/default.yaml` with starter content. Skips files that already exist unless `--force` is set. (On Windows, `%APPDATA%\aipack` replaces `~/.config/aipack`.)
 
 ```bash
 aipack init

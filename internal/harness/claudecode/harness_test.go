@@ -538,12 +538,13 @@ func TestCapture_Project(t *testing.T) {
 	// Verify copy destinations.
 	var ruleFound, agentFound, cmdFound bool
 	for _, c := range res.Copies {
+		dst := filepath.ToSlash(c.Dst)
 		switch {
-		case strings.HasPrefix(c.Dst, "rules/"):
+		case strings.HasPrefix(dst, "rules/"):
 			ruleFound = true
-		case strings.HasPrefix(c.Dst, "agents/"):
+		case strings.HasPrefix(dst, "agents/"):
 			agentFound = true
-		case strings.HasPrefix(c.Dst, "workflows/"):
+		case strings.HasPrefix(dst, "workflows/"):
 			cmdFound = true
 		}
 	}
@@ -671,12 +672,12 @@ func TestLayout_Project(t *testing.T) {
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
 	want := map[string]bool{
-		"/proj/.claude/rules":               false,
-		"/proj/.claude/agents":              false,
-		"/proj/.claude/commands":            false,
-		"/proj/.claude/skills":              false,
-		"/proj/.mcp.json":                   false,
-		"/proj/.claude/settings.local.json": false,
+		filepath.Join("/proj", ".claude", "rules"):               false,
+		filepath.Join("/proj", ".claude", "agents"):              false,
+		filepath.Join("/proj", ".claude", "commands"):            false,
+		filepath.Join("/proj", ".claude", "skills"):              false,
+		filepath.Join("/proj", ".mcp.json"):                      false,
+		filepath.Join("/proj", ".claude", "settings.local.json"): false,
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {
@@ -691,10 +692,10 @@ func TestLayout_Project(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/proj/.claude/rules":    false,
-		"/proj/.claude/agents":   false,
-		"/proj/.claude/commands": false,
-		"/proj/.claude/skills":   false,
+		filepath.Join("/proj", ".claude", "rules"):    false,
+		filepath.Join("/proj", ".claude", "agents"):   false,
+		filepath.Join("/proj", ".claude", "commands"): false,
+		filepath.Join("/proj", ".claude", "skills"):   false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {
@@ -720,12 +721,12 @@ func TestLayout_Global(t *testing.T) {
 	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
 
 	want := map[string]bool{
-		"/home/.claude/rules":               false,
-		"/home/.claude/agents":              false,
-		"/home/.claude/commands":            false,
-		"/home/.claude/skills":              false,
-		"/home/.claude.json":                false,
-		"/home/.claude/settings.local.json": false,
+		filepath.Join("/home", ".claude", "rules"):               false,
+		filepath.Join("/home", ".claude", "agents"):              false,
+		filepath.Join("/home", ".claude", "commands"):            false,
+		filepath.Join("/home", ".claude", "skills"):              false,
+		filepath.Join("/home", ".claude.json"):                   false,
+		filepath.Join("/home", ".claude", "settings.local.json"): false,
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {
@@ -740,10 +741,10 @@ func TestLayout_Global(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/home/.claude/rules":    false,
-		"/home/.claude/agents":   false,
-		"/home/.claude/commands": false,
-		"/home/.claude/skills":   false,
+		filepath.Join("/home", ".claude", "rules"):    false,
+		filepath.Join("/home", ".claude", "agents"):   false,
+		filepath.Join("/home", ".claude", "commands"): false,
+		filepath.Join("/home", ".claude", "skills"):   false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {

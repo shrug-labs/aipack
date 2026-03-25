@@ -264,7 +264,7 @@ aipack sync
 
 ## Profiles
 
-Profiles are YAML files (schema version 2) that control which packs to load, what parameters to expand, and what content each role needs. They live in `~/.config/aipack/profiles/` once installed.
+Profiles are YAML files (schema version 2) that control which packs to load, what parameters to expand, and what content each role needs. They live in `~/.config/aipack/profiles/` once installed (on Windows: `%APPDATA%\aipack\profiles\`).
 
 ### Parameters
 

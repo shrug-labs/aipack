@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/testutil"
 
 	"gopkg.in/yaml.v3"
 )
@@ -527,6 +528,7 @@ func TestPackAdd_URL_SubPath_CleansUpCloneDir(t *testing.T) {
 
 func TestPackAdd_URL_SubPath_ResolvesSymlinks(t *testing.T) {
 	t.Parallel()
+	testutil.SkipWithoutSymlinks(t)
 	configDir := t.TempDir()
 	writeSeedSyncConfig(t, configDir)
 
@@ -610,6 +612,7 @@ func TestPackAdd_URL_SubPath_ResolvesSymlinks(t *testing.T) {
 
 func TestPackAdd_Path_ResolvesSymlinks(t *testing.T) {
 	t.Parallel()
+	testutil.SkipWithoutSymlinks(t)
 	configDir := t.TempDir()
 	writeSeedSyncConfig(t, configDir)
 

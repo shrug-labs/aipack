@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -441,7 +440,7 @@ func (m profilesModel) profilePackNames() []string {
 
 // shortPath replaces $HOME prefix with ~.
 func shortPath(p string) string {
-	home := os.Getenv("HOME")
+	home := config.HomeDir()
 	if home == "" {
 		return p
 	}

@@ -71,7 +71,10 @@ type ExtractArchiveResult struct {
 // resolved target path within the tar namespace. Rejects absolute targets,
 // targets escaping the archive root, and targets traversing .git directories.
 func validateTarSymlink(entryName, linkname string) (string, error) {
-	if filepath.IsAbs(linkname) {
+	// filepath.IsAbs on Windows requires a drive letter, but tar archives
+	// use Unix-style paths. Check for both OS-native absolute paths and
+	// Unix-rooted paths (leading /) to reject absolute symlink targets.
+	if filepath.IsAbs(linkname) || strings.HasPrefix(linkname, "/") {
 		return "", fmt.Errorf("absolute symlink target not allowed in pack archive: %s -> %s", entryName, linkname)
 	}
 	entryDir := filepath.Dir(entryName)

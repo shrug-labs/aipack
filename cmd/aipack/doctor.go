@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 type DoctorCmd struct {
@@ -50,7 +50,7 @@ func (c *DoctorCmd) Run(ctx context.Context, g *Globals) error {
 		ConfigDir:   c.ConfigDir,
 		ProfilePath: c.ProfilePath,
 		ProfileName: c.Profile,
-		Home:        os.Getenv("HOME"),
+		Home:        config.HomeDir(),
 		Fix:         c.Fix,
 		Version:     version,
 	})

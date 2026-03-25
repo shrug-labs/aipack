@@ -136,7 +136,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 				Scope:      scope,
 				ProjectDir: projectDirValue,
 				Harnesses:  hs,
-				Home:       os.Getenv("HOME"),
+				Home:       config.HomeDir(),
 			},
 			Force:        c.Force,
 			SkipSettings: c.SkipSettings,
@@ -192,7 +192,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 		// Resolve config file paths to watch for changes.
 		configDir := c.ConfigDir
 		if configDir == "" {
-			if d, derr := config.DefaultConfigDir(os.Getenv("HOME")); derr == nil {
+			if d, derr := config.DefaultConfigDir(config.HomeDir()); derr == nil {
 				configDir = d
 			}
 		}
@@ -211,7 +211,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 			configFiles = append(configFiles, c.ProfilePath)
 		} else if configDir != "" {
 			profileName := resolveProfileName(c.Profile, watchSyncCfg)
-			if p, perr := config.ResolveProfilePath("", configDir, profileName, os.Getenv("HOME")); perr == nil {
+			if p, perr := config.ResolveProfilePath("", configDir, profileName, config.HomeDir()); perr == nil {
 				configFiles = append(configFiles, p)
 			}
 		}
@@ -220,7 +220,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 	}
 
 	// Non-watch: single sync.
-	updateCh := update.CheckAsync(ctx, version, os.Getenv("HOME"))
+	updateCh := update.CheckAsync(ctx, version, config.HomeDir())
 	_, err := resolveAndSync()
 	if err != nil {
 		return err
@@ -241,7 +241,7 @@ func resolveWatchDirs(profileFlag, profilePathFlag, configDirFlag string) ([]str
 	configDir := configDirFlag
 	if configDir == "" {
 		var err error
-		configDir, err = config.DefaultConfigDir(os.Getenv("HOME"))
+		configDir, err = config.DefaultConfigDir(config.HomeDir())
 		if err != nil {
 			return nil, err
 		}
@@ -253,7 +253,7 @@ func resolveWatchDirs(profileFlag, profilePathFlag, configDirFlag string) ([]str
 	}
 
 	profileName := resolveProfileName(profileFlag, syncCfg)
-	profilePath, err := config.ResolveProfilePath(profilePathFlag, configDir, profileName, os.Getenv("HOME"))
+	profilePath, err := config.ResolveProfilePath(profilePathFlag, configDir, profileName, config.HomeDir())
 	if err != nil {
 		return nil, err
 	}

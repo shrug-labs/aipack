@@ -119,9 +119,26 @@ func Update(ctx context.Context, currentVersion string, w io.Writer) error {
 		return fmt.Errorf("setting permissions: %w", err)
 	}
 
-	// Atomic replace. On Unix, the running process keeps its fd to the old inode.
-	if err := os.Rename(tmpPath, realPath); err != nil {
-		return fmt.Errorf("replacing %s: %w", realPath, err)
+	if runtime.GOOS == "windows" {
+		// Windows locks running executables, preventing direct overwrite.
+		// Rename the running binary out of the way first (rename of a locked
+		// file is allowed on Windows), then move the new binary into place.
+		oldPath := realPath + ".old"
+		_ = os.Remove(oldPath) // clean up from a previous update
+		if err := os.Rename(realPath, oldPath); err != nil {
+			return fmt.Errorf("moving old binary: %w", err)
+		}
+		if err := os.Rename(tmpPath, realPath); err != nil {
+			// Try to restore the old binary.
+			_ = os.Rename(oldPath, realPath)
+			return fmt.Errorf("replacing %s: %w", realPath, err)
+		}
+		// The .old file is locked until the process exits; clean up on next run.
+	} else {
+		// Atomic replace. On Unix, the running process keeps its fd to the old inode.
+		if err := os.Rename(tmpPath, realPath); err != nil {
+			return fmt.Errorf("replacing %s: %w", realPath, err)
+		}
 	}
 
 	// Ad-hoc code sign on macOS to suppress Gatekeeper warnings.
@@ -137,7 +154,11 @@ func Update(ctx context.Context, currentVersion string, w io.Writer) error {
 
 // AssetName returns the expected release asset name for the current platform.
 func AssetName() string {
-	return fmt.Sprintf("aipack-%s-%s", runtime.GOOS, runtime.GOARCH)
+	name := fmt.Sprintf("aipack-%s-%s", runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
 
 // fetchChecksum downloads a SHA256SUMS file and extracts the hash for asset.

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -266,8 +267,9 @@ func TestEnsureTree_SkipsDisabledPacks(t *testing.T) {
 
 func TestTreeModel_FilePath(t *testing.T) {
 	t.Parallel()
+	root := filepath.Join("/tmp", "pack")
 	packs := []app.ProfilePackInfo{
-		{Index: 0, Name: "test-pack", Root: "/tmp/pack", Manifest: config.PackManifest{
+		{Index: 0, Name: "test-pack", Root: root, Manifest: config.PackManifest{
 			Rules:     []string{"rule-a"},
 			Agents:    []string{"agent-a"},
 			Workflows: []string{"flow-a"},
@@ -286,20 +288,24 @@ func TestTreeModel_FilePath(t *testing.T) {
 		fp := tree.filePath()
 		switch n.category {
 		case domain.CategoryRules:
-			if fp != "/tmp/pack/rules/rule-a.md" {
-				t.Fatalf("rules: expected /tmp/pack/rules/rule-a.md, got %q", fp)
+			want := filepath.Join(root, "rules", "rule-a.md")
+			if fp != want {
+				t.Fatalf("rules: expected %s, got %q", want, fp)
 			}
 		case domain.CategoryAgents:
-			if fp != "/tmp/pack/agents/agent-a.md" {
-				t.Fatalf("agents: expected /tmp/pack/agents/agent-a.md, got %q", fp)
+			want := filepath.Join(root, "agents", "agent-a.md")
+			if fp != want {
+				t.Fatalf("agents: expected %s, got %q", want, fp)
 			}
 		case domain.CategoryWorkflows:
-			if fp != "/tmp/pack/workflows/flow-a.md" {
-				t.Fatalf("workflows: expected /tmp/pack/workflows/flow-a.md, got %q", fp)
+			want := filepath.Join(root, "workflows", "flow-a.md")
+			if fp != want {
+				t.Fatalf("workflows: expected %s, got %q", want, fp)
 			}
 		case domain.CategorySkills:
-			if fp != "/tmp/pack/skills/skill-a/SKILL.md" {
-				t.Fatalf("skills: expected /tmp/pack/skills/skill-a/SKILL.md, got %q", fp)
+			want := filepath.Join(root, "skills", "skill-a", "SKILL.md")
+			if fp != want {
+				t.Fatalf("skills: expected %s, got %q", want, fp)
 			}
 		}
 	}
@@ -313,19 +319,21 @@ func TestTreeModel_FilePath(t *testing.T) {
 
 func TestTreeModel_FilePathMCP(t *testing.T) {
 	t.Parallel()
+	root := filepath.Join("/tmp", "pack")
 	packs := []app.ProfilePackInfo{
-		{Index: 0, Name: "test-pack", Root: "/tmp/pack", Manifest: config.PackManifest{
+		{Index: 0, Name: "test-pack", Root: root, Manifest: config.PackManifest{
 			MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{"srv": {}}},
 		}},
 	}
 	ct := app.BuildContentTree(packs, []config.PackEntry{{Name: "test-pack"}})
 	tree := buildTreeFromContent(ct)
+	want := filepath.Join(root, "mcp", "srv.json")
 	for i, n := range tree.nodes {
 		if n.kind == nodeItem && n.category == domain.CategoryMCP {
 			tree.cursor = i
 			fp := tree.filePath()
-			if fp != "/tmp/pack/mcp/srv.json" {
-				t.Fatalf("expected /tmp/pack/mcp/srv.json, got %q", fp)
+			if fp != want {
+				t.Fatalf("expected %s, got %q", want, fp)
 			}
 			return
 		}

@@ -57,8 +57,8 @@ func PackCreate(req PackCreateRequest) error {
 	}
 
 	// Write a seed profile that references this pack by name.
-	profileRel := filepath.Join("profiles", name+".yaml")
-	profilePath := filepath.Join(dir, profileRel)
+	profileRel := "profiles/" + name + ".yaml"
+	profilePath := filepath.Join(dir, "profiles", name+".yaml")
 	profileContent := []byte("schema_version: 2\npacks:\n  - name: " + name + "\n")
 	if err := os.WriteFile(profilePath, profileContent, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", profilePath, err)

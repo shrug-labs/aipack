@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -35,8 +36,9 @@ func TestSaveLedger_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ledger.json")
 
+	testFile := filepath.Join(dir, "test-file")
 	lg := domain.NewLedger()
-	lg.Record("/tmp/test-file", []byte("hello"), "pack1", nil, time.Now())
+	lg.Record(testFile, []byte("hello"), "pack1", nil, time.Now())
 
 	if err := SaveLedger(path, lg, false); err != nil {
 		t.Fatal(err)
@@ -50,9 +52,9 @@ func TestSaveLedger_RoundTrip(t *testing.T) {
 		t.Fatalf("Managed = %d, want 1", len(loaded.Managed))
 	}
 
-	e, ok := loaded.Managed["/tmp/test-file"]
+	e, ok := loaded.Managed[testFile]
 	if !ok {
-		t.Fatal("expected /tmp/test-file in ledger")
+		t.Fatalf("expected %s in ledger", testFile)
 	}
 	if e.Digest == "" {
 		t.Error("Digest should be set")
@@ -178,8 +180,11 @@ func TestLoadLedger_CorruptJSON(t *testing.T) {
 
 func TestLedgerPathForScope_Project(t *testing.T) {
 	t.Parallel()
-	path := LedgerPathForScope(domain.ScopeProject, "/home/user/proj", "/home/user", domain.HarnessClaudeCode)
-	want := "/home/user/.config/aipack/ledger/-home-user-proj/claudecode.json"
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "proj")
+	path := LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	cfgDir, _ := config.DefaultConfigDir(home)
+	want := filepath.Join(cfgDir, "ledger", EncodeProjectPath(projectDir), "claudecode.json")
 	if path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
@@ -187,8 +192,10 @@ func TestLedgerPathForScope_Project(t *testing.T) {
 
 func TestLedgerPathForScope_Global(t *testing.T) {
 	t.Parallel()
-	path := LedgerPathForScope(domain.ScopeGlobal, "/home/user/proj", "/home/user", domain.HarnessClaudeCode)
-	want := "/home/user/.config/aipack/ledger/claudecode.json"
+	home := t.TempDir()
+	path := LedgerPathForScope(domain.ScopeGlobal, filepath.Join(home, "proj"), home, domain.HarnessClaudeCode)
+	cfgDir, _ := config.DefaultConfigDir(home)
+	want := filepath.Join(cfgDir, "ledger", "claudecode.json")
 	if path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
@@ -201,12 +208,20 @@ func TestEncodeProjectPath(t *testing.T) {
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
+
+	// Windows-style path.
+	got2 := EncodeProjectPath(`C:\Users\foo\bar`)
+	want2 := "C-Users-foo-bar"
+	if got2 != want2 {
+		t.Errorf("got %q, want %q", got2, want2)
+	}
 }
 
 func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	ledgerDir := filepath.Join(home, ".config", "aipack", "ledger")
+	cfgDir, _ := config.DefaultConfigDir(home) // uses home-relative path on all platforms
+	ledgerDir := filepath.Join(cfgDir, "ledger")
 	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -57,7 +57,7 @@ Examples:
 3. GitHub Actions will:
     - run formatting, test, and vet checks
     - verify the pushed tag matches `VERSION`
-    - build `darwin/arm64`, `darwin/amd64`, and `linux/amd64` binaries
+    - build `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `windows/amd64`, and `windows/arm64` binaries
     - generate `SHA256SUMS`
     - publish GitHub Release assets
     - update `dfoster-oracle/homebrew-tap` for stable tags (requires `HOMEBREW_TAP_GITHUB_TOKEN`)
@@ -65,7 +65,7 @@ Examples:
 ## After publish
 
 1. Confirm the release page contains:
-   - all three binaries
+   - all five binaries (darwin/arm64, darwin/amd64, linux/amd64, windows/amd64, windows/arm64)
    - `SHA256SUMS`
    - generated release notes
 2. Confirm the release is marked as a prerelease when the tag contains a prerelease suffix.
@@ -78,18 +78,25 @@ Examples:
    Then run the downloaded binary and confirm `aipack version` reports the
    published release line.
 
-4. Run the installer against the published release:
+4. Run the Unix installer against the published release:
 
    ```bash
    VERSION=vX.Y.Z BIN_DIR="$PWD/bin" ./install.sh
    ./bin/aipack version
    ```
 
-5. For stable tags, confirm the Homebrew tap updated to the published version:
+5. Run the Windows installer (PowerShell) against the published release:
+
+   ```powershell
+   $env:AIPACK_VERSION = "vX.Y.Z"; irm https://raw.githubusercontent.com/shrug-labs/aipack/main/install.ps1 | iex
+   aipack version
+   ```
+
+6. For stable tags, confirm the Homebrew tap updated to the published version:
 
    ```bash
    brew install dfoster-oracle/tap/aipack
    brew info dfoster-oracle/tap/aipack
    ```
 
-6. If install instructions changed, update `README.md` in the same release-prep change.
+7. If install instructions changed, update `README.md` in the same release-prep change.

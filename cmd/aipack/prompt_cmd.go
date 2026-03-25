@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"text/tabwriter"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -86,5 +85,5 @@ func (c *PromptShowCmd) Run(ctx context.Context, g *Globals) error {
 }
 
 func resolvePromptConfigDir() (string, error) {
-	return config.DefaultConfigDir(os.Getenv("HOME"))
+	return config.DefaultConfigDir(config.HomeDir())
 }

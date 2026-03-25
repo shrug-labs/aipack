@@ -23,9 +23,12 @@ func CheckGit() error {
 	checkGitOnce.Do(func() {
 		_, err := exec.LookPath("git")
 		if err != nil {
-			if runtime.GOOS == "darwin" {
+			switch runtime.GOOS {
+			case "darwin":
 				checkGitErr = fmt.Errorf("git not found: install Xcode Command Line Tools with: xcode-select --install")
-			} else {
+			case "windows":
+				checkGitErr = fmt.Errorf("git not found: install Git for Windows with: winget install Git.Git")
+			default:
 				checkGitErr = fmt.Errorf("git not found: install git from https://git-scm.com/downloads")
 			}
 		}
@@ -183,9 +186,16 @@ func gitErrorHint(output string, args []string) string {
 		// Check if an HTTPS URL is in the args.
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "https://") || strings.HasPrefix(arg, "http://") {
+				helper := "osxkeychain"
+				switch runtime.GOOS {
+				case "windows":
+					helper = "manager"
+				case "linux":
+					helper = "store"
+				}
 				return "hint: HTTPS git requires credentials. Try one of:\n" +
 					"  - Use SSH URL instead: git@<host>:<project>/<repo>.git\n" +
-					"  - Configure a credential helper: git config --global credential.helper osxkeychain\n" +
+					"  - Configure a credential helper: git config --global credential.helper " + helper + "\n" +
 					"  - Set up a personal access token"
 			}
 		}

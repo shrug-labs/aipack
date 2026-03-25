@@ -15,7 +15,8 @@ func TestInstallCompletions_Print(t *testing.T) {
 	if code != cmdutil.ExitOK {
 		t.Fatalf("exit=%d, want %d", code, cmdutil.ExitOK)
 	}
-	if !strings.Contains(stdout, "complete") {
+	// Bash/zsh snippets contain "complete"; PowerShell uses "Completer"/"Completion".
+	if !strings.Contains(strings.ToLower(stdout), "complet") {
 		t.Fatalf("expected completion snippet in stdout, got: %s", stdout)
 	}
 }

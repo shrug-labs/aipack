@@ -4,7 +4,7 @@ What aipack puts on your machine, how to configure it, and how to manage it. For
 
 ## Config directory layout
 
-`aipack init` bootstraps `~/.config/aipack/`. All subsequent commands read from and write to this tree.
+`aipack init` bootstraps `~/.config/aipack/`. All subsequent commands read from and write to this tree. On Windows the config directory is `%APPDATA%\aipack` instead. In WSL, Linux paths apply — see the [FAQ](./faq.md) for WSL-specific guidance.
 
 ```
 ~/.config/aipack/

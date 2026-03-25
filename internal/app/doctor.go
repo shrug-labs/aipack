@@ -144,6 +144,11 @@ func RunDoctor(ctx context.Context, req DoctorRequest) (rep DoctorReport) {
 	// git availability (warning-only — registry fetch and pack install need git)
 	add(doctorCheckGit())
 
+	// WSL cross-filesystem warning (Cline global rules target the Windows filesystem)
+	if wslCheck := doctorCheckWSL(syncCfg); wslCheck.Name != "" {
+		add(wslCheck)
+	}
+
 	// unregistered packs (warning-only, does not block subsequent checks)
 	add(doctorCheckUnregisteredPacks(configDir, syncCfg))
 
@@ -314,6 +319,29 @@ func doctorCheckGit() CheckResult {
 	}
 	check.Message = "git available"
 	return check
+}
+
+// doctorCheckWSL warns when running inside WSL with Cline configured.
+// Cline reads global rules from the Windows filesystem, but aipack in WSL
+// writes to the Linux filesystem — the two don't overlap.
+func doctorCheckWSL(syncCfg config.SyncConfig) CheckResult {
+	if !config.IsWSL() {
+		return CheckResult{} // empty Name signals "no check to add"
+	}
+	for _, h := range syncCfg.Defaults.Harnesses {
+		if strings.EqualFold(h, "cline") {
+			return CheckResult{
+				Name:     "wsl_cline_paths",
+				Severity: "warning",
+				Status:   "warn",
+				OK:       false,
+				Message:  "WSL detected with Cline harness configured — global-scope Cline rules target the Linux filesystem, but the Cline VS Code extension reads from the Windows filesystem",
+				Remediation: "For global scope, run aipack natively on Windows. " +
+					"For project scope in WSL directories, use: aipack sync --scope project",
+			}
+		}
+	}
+	return CheckResult{}
 }
 
 func doctorSkippedCheck(name string, reason string) CheckResult {

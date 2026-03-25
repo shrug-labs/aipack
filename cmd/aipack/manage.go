@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/shrug-labs/aipack/cmd/aipack/tui"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -50,7 +49,7 @@ func (c *ManageCmd) Run(ctx context.Context, g *Globals) error {
 		return ExitError{Code: cmdutil.ExitUsage}
 	}
 
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

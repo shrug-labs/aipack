@@ -45,7 +45,11 @@ Sync is non-destructive by default. aipack tracks what it manages via a ledger. 
 
 ### What platforms does it run on?
 
-macOS (ARM and Intel) and Linux (amd64). Install via Homebrew, the install script, or build from source with Go 1.24+. Windows is not yet supported — there's a backlog of blockers being tracked.
+macOS (ARM and Intel), Linux (amd64), and Windows (amd64). Install via Homebrew (macOS/Linux), the install script, the PowerShell installer (Windows), or build from source with Go 1.24+.
+
+### What about WSL?
+
+aipack runs in WSL as a Linux binary. Project-scope sync works normally — rules land in the project directory on the WSL filesystem, where VS Code Remote-WSL can read them. Global-scope sync for Cline requires care: the Cline extension reads from the Windows filesystem (`C:\Users\...\Documents\Cline\Rules`), but aipack in WSL writes to the Linux filesystem. `aipack doctor` will warn about this. For global Cline sync, run aipack natively on Windows. Codex and Claude Code work fine in WSL because they read from the same filesystem aipack writes to.
 
 ## Using packs
 

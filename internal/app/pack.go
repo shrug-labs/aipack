@@ -165,7 +165,7 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 	} else if req.Link {
 		method = config.MethodLink
 		packRemoveExisting(destDir, stdout)
-		if err := os.Symlink(packDir, destDir); err != nil {
+		if err := createLink(packDir, destDir); err != nil {
 			return fmt.Errorf("creating symlink: %w", err)
 		}
 		fmt.Fprintf(stdout, "Linked: %s -> %s\n", destDir, packDir)

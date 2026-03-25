@@ -125,7 +125,7 @@ func checkSyncStatus(ctx context.Context, configDir, profileName, profilePath st
 			ProfileCfg:  profileCfg,
 			SyncCfg:     syncCfg,
 			ProjectDir:  cwd,
-			Home:        os.Getenv("HOME"),
+			Home:        config.HomeDir(),
 		})
 		if err != nil {
 			return syncStatusMsg{profileName: profileName, warnings: warnings, err: err}
@@ -179,7 +179,7 @@ func runSync(ctx context.Context, configDir, profileName, profilePath, scope, ha
 			ProfileCfg:  profileCfg,
 			SyncCfg:     syncCfg,
 			ProjectDir:  cwd,
-			Home:        os.Getenv("HOME"),
+			Home:        config.HomeDir(),
 		})
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, warnings: warnings, err: err}

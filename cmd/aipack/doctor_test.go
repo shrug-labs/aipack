@@ -8,6 +8,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 func TestDoctor_JSON_HappyPath(t *testing.T) {
@@ -95,9 +96,7 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(installedPackDir), 0o755); err != nil {
 		t.Fatalf("mkdir installed packs: %v", err)
 	}
-	if err := os.Symlink(packDir, installedPackDir); err != nil {
-		t.Fatalf("symlink pack: %v", err)
-	}
+	testutil.Symlink(t, packDir, installedPackDir)
 
 	profilePath := filepath.Join(t.TempDir(), "profile.yaml")
 	profile := []byte("" +

@@ -6,6 +6,30 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.12.0]
+
+### Added
+
+- **Windows support (amd64 + arm64).** Cross-platform config paths (`%APPDATA%\aipack` on Windows, `~/.config/aipack` elsewhere), PowerShell installer (`install.ps1`) with `AIPACK_VERSION` support, PowerShell shell completion, Windows self-update with locked-executable handling, `clip.exe` clipboard support, and `windows/amd64` + `windows/arm64` release binaries.
+- **CI Windows test runner.** Tests now run on both Ubuntu and Windows in the validate pipeline.
+- **WSL detection.** `aipack doctor` warns when running in WSL with Cline configured, since global-scope Cline rules target the Windows filesystem which WSL cannot reach.
+- **Symlink test portability.** Tests that create symlinks skip gracefully on Windows without Developer Mode instead of failing.
+
+### Changed
+
+- Home directory resolution uses `os.UserHomeDir()` instead of `$HOME`, which works across all platforms (HOME on Unix, USERPROFILE on Windows).
+- Cline Documents folder is resolved via the Windows shell API (`SHGetKnownFolderPath`) to handle OneDrive folder redirection. Non-Windows platforms use the conventional `~/Documents` path.
+- `pack install --link` falls back to a directory junction (`mklink /J`) on Windows when symlinks require elevated privileges.
+- Git error hints are platform-aware: credential helper suggestions use `manager` on Windows, `store` on Linux, `osxkeychain` on macOS. Git-not-found on Windows suggests `winget install Git.Git`.
+- Cline global paths changed from a package-level variable to a `GlobalPathsFor(home)` function to support platform-dependent Documents folder resolution.
+- Ledger path encoding handles Windows drive letters and backslashes.
+- Test assertions use `filepath.Join` and `t.TempDir()` instead of hardcoded Unix path literals.
+
+### Known limitations
+
+- **WSL + Cline global scope:** aipack in WSL writes to the Linux filesystem, but Cline reads from the Windows filesystem. Use `aipack sync --scope project` in WSL, or run aipack natively on Windows for global scope.
+- **OpenCode harness:** Global paths still use `.config/opencode` (Unix convention). Windows-specific resolution is not yet implemented.
+
 ## [0.11.7]
 
 ### Added

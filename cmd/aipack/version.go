@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/update"
 )
 
@@ -18,7 +18,7 @@ var (
 type VersionCmd struct{}
 
 func (c *VersionCmd) Run(ctx context.Context, g *Globals) error {
-	updateCh := update.CheckAsync(ctx, version, os.Getenv("HOME"))
+	updateCh := update.CheckAsync(ctx, version, config.HomeDir())
 
 	fmt.Fprintf(g.Stdout, "aipack %s (%s)\n", version, commit)
 

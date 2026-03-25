@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 func TestCopyDir_RejectsSymlinks(t *testing.T) {
@@ -16,9 +18,7 @@ func TestCopyDir_RejectsSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(src, "link.txt")
-	if err := os.Symlink(regular, link); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, regular, link)
 
 	dst := t.TempDir()
 	err := CopyDir(src, dst)
@@ -42,9 +42,7 @@ func TestCopyDir_RejectsSymlinkDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkDir := filepath.Join(src, "linkdir")
-	if err := os.Symlink(sub, linkDir); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, sub, linkDir)
 
 	dst := t.TempDir()
 	err := CopyDir(src, dst)
@@ -234,9 +232,7 @@ func TestCopyDirResolvingSymlinks_ResolvesFileSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Symlink: packs/team/rules/shared.md -> ../../../shared/base.md
-	if err := os.Symlink(filepath.Join(shared, "base.md"), filepath.Join(packDir, "rules", "shared.md")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, filepath.Join(shared, "base.md"), filepath.Join(packDir, "rules", "shared.md"))
 
 	dst := t.TempDir()
 	if err := CopyDirResolvingSymlinks(packDir, dst, root); err != nil {
@@ -282,9 +278,7 @@ func TestCopyDirResolvingSymlinks_RejectsEscapingBoundary(t *testing.T) {
 	if err := os.MkdirAll(packDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(packDir, "evil.md")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, filepath.Join(outside, "secret.txt"), filepath.Join(packDir, "evil.md"))
 
 	dst := t.TempDir()
 	err := CopyDirResolvingSymlinks(packDir, dst, root)
@@ -301,9 +295,7 @@ func TestCopyDirResolvingSymlinks_EmptyBoundaryRejects(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(src, "real.txt"), filepath.Join(src, "link.txt")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, filepath.Join(src, "real.txt"), filepath.Join(src, "link.txt"))
 
 	dst := t.TempDir()
 	err := CopyDirResolvingSymlinks(src, dst, "")
@@ -329,9 +321,7 @@ func TestCopyDirResolvingSymlinks_RejectsDirectorySymlink(t *testing.T) {
 	if err := os.MkdirAll(packDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(sub, filepath.Join(packDir, "linked-dir")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, sub, filepath.Join(packDir, "linked-dir"))
 
 	dst := t.TempDir()
 	err := CopyDirResolvingSymlinks(packDir, dst, root)
@@ -356,9 +346,7 @@ func TestResolveSymlinksInDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Create symlink at root level pointing to shared/base.md
-	if err := os.Symlink(filepath.Join(shared, "base.md"), filepath.Join(root, "link.md")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, filepath.Join(shared, "base.md"), filepath.Join(root, "link.md"))
 
 	if err := ResolveSymlinksInDir(root); err != nil {
 		t.Fatalf("ResolveSymlinksInDir failed: %v", err)
@@ -400,9 +388,7 @@ func TestResolveSymlinksInDir_SkipsGitDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gitDir, "target"), []byte("git"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(gitDir, "target"), filepath.Join(gitDir, "link")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, filepath.Join(gitDir, "target"), filepath.Join(gitDir, "link"))
 
 	// Should succeed without touching .git.
 	if err := ResolveSymlinksInDir(root); err != nil {
