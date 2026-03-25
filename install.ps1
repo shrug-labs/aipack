@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 
 $repo = "shrug-labs/aipack"
 $binaryName = "aipack"
-$requestedVersion = if ($env:AIPACK_VERSION) { $env:AIPACK_VERSION } else { "latest" }
+$requestedVersion = $(if ($env:AIPACK_VERSION) { $env:AIPACK_VERSION } else { "latest" })
 
 function Normalize-Tag([string]$version) {
     if (-not $version -or $version -eq "latest") {
@@ -26,7 +26,7 @@ function Get-LatestVersion {
 }
 
 function Get-InstallDir {
-    $dir = Join-Path $env:LOCALAPPDATA "aipack" "bin"
+    $dir = Join-Path (Join-Path $env:LOCALAPPDATA "aipack") "bin"
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
@@ -43,7 +43,7 @@ function Install-Aipack {
         Write-Host "Using requested version: $tag" -ForegroundColor Cyan
     }
 
-    $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'X64') { 'amd64' } else { 'arm64' }
+    $arch = $(if ($env:PROCESSOR_ARCHITECTURE -eq 'AMD64') { 'amd64' } else { 'arm64' })
     $asset = "$binaryName-windows-$arch.exe"
     $url = "https://github.com/$repo/releases/download/$tag/$asset"
     $sumsUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS"
@@ -57,8 +57,14 @@ function Install-Aipack {
 
     # Verify checksum
     Write-Host "Verifying checksum..." -ForegroundColor Cyan
-    $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
-    $expectedHash = ($sums -split "`n" | Where-Object { $_ -match $asset } | ForEach-Object { ($_ -split '\s+')[0] })
+    $resp = Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing
+    # .Content may be byte[] in PS 5.1 depending on content-type; coerce to string.
+    if ($resp.Content -is [byte[]]) {
+        $sums = [System.Text.Encoding]::UTF8.GetString($resp.Content)
+    } else {
+        $sums = $resp.Content
+    }
+    $expectedHash = ($sums -split '[\r\n]+' | Where-Object { $_ -like "*$asset*" } | ForEach-Object { ($_ -split '\s+')[0] })
     if (-not $expectedHash) {
         Remove-Item $tmpFile -Force
         throw "No checksum found for $asset"
