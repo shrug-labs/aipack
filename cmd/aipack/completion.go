@@ -128,5 +128,5 @@ func predictResources(a complete.Args) []string {
 }
 
 func configBaseDir() (string, error) {
-	return config.DefaultConfigDir(os.Getenv("HOME"))
+	return config.DefaultConfigDir(config.HomeDir())
 }

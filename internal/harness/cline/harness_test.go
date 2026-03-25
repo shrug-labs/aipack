@@ -118,14 +118,15 @@ func TestPlan_Global_Content(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	wantRule := filepath.Join(home, "Documents", "Cline", "Rules", "global-rule.md")
+	docs := documentsDir(home)
+	wantRule := filepath.Join(docs, "Cline", "Rules", "global-rule.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
 	// Agent promoted to skill → ~/.agents/skills/planner/SKILL.md
 	wantAgent := filepath.Join(home, ".agents", "skills", "planner", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 
-	wantWf := filepath.Join(home, "Documents", "Cline", "Workflows", "deploy.md")
+	wantWf := filepath.Join(docs, "Cline", "Workflows", "deploy.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
 	// Skill → ~/.agents/skills/diagnose
@@ -728,9 +729,9 @@ func TestLayout_Project(t *testing.T) {
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
 	want := map[string]bool{
-		"/proj/.clinerules":           false,
-		"/proj/.clinerules/workflows": false,
-		"/proj/.agents/skills":        false,
+		filepath.Join("/proj", ".clinerules"):              false,
+		filepath.Join("/proj", ".clinerules", "workflows"): false,
+		filepath.Join("/proj", ".agents", "skills"):        false,
 	}
 	// MCP settings path is also a managed root (always global for Cline).
 	mcpPaths := mcpSettingsPaths("/home")
@@ -750,8 +751,8 @@ func TestLayout_Project(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/proj/.clinerules/workflows": false,
-		"/proj/.agents/skills":        false,
+		filepath.Join("/proj", ".clinerules", "workflows"): false,
+		filepath.Join("/proj", ".agents", "skills"):        false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {
@@ -782,15 +783,18 @@ func TestLayout_Project(t *testing.T) {
 
 func TestLayout_Global(t *testing.T) {
 	t.Parallel()
+	home := t.TempDir()
 	h := Harness{}
-	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
+	layout := h.Layout(domain.ScopeGlobal, home, home)
 
+	// Use GlobalPathsFor so expected values respect platform Documents resolution.
+	gp := GlobalPathsFor(home)
 	want := map[string]bool{
-		"/home/.agents/skills":                                    false,
-		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
-		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
+		gp.SkillsDir:    false,
+		gp.RulesDir:     false,
+		gp.WorkflowsDir: false,
 	}
-	mcpPaths := mcpSettingsPaths("/home")
+	mcpPaths := mcpSettingsPaths(home)
 	for _, p := range mcpPaths {
 		want[p] = false
 	}
@@ -807,9 +811,9 @@ func TestLayout_Global(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/home/.agents/skills":                                    false,
-		filepath.Join("/home", "Documents", "Cline", "Rules"):     false,
-		filepath.Join("/home", "Documents", "Cline", "Workflows"): false,
+		gp.SkillsDir:    false,
+		gp.RulesDir:     false,
+		gp.WorkflowsDir: false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {

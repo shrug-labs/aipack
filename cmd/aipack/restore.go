@@ -47,7 +47,7 @@ func (c *RestoreCmd) Validate() error {
 }
 
 func (c *RestoreCmd) Run(ctx context.Context, g *Globals) error {
-	home := os.Getenv("HOME")
+	home := config.HomeDir()
 
 	// Load sync-config for scope and harness resolution.
 	cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, home)

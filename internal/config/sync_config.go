@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/util"
@@ -57,11 +58,23 @@ type SyncConfig struct {
 	RegistrySources []RegistrySourceEntry        `yaml:"registry_sources,omitempty"`
 }
 
-// DefaultConfigDir returns the default config directory (~/.config/aipack).
-// Callers must pass the HOME value explicitly to avoid deep os.Getenv calls.
+// HomeDir returns the current user's home directory.
+// It uses os.UserHomeDir which works cross-platform (HOME on Unix, USERPROFILE on Windows).
+func HomeDir() string {
+	h, _ := os.UserHomeDir()
+	return h
+}
+
+// DefaultConfigDir returns the default config directory.
+// On Windows it uses <home>\AppData\Roaming\aipack; on Unix it uses ~/.config/aipack.
+// Callers must pass the home value explicitly to keep paths deterministic
+// (important for test isolation and non-default home directories).
 func DefaultConfigDir(home string) (string, error) {
 	if home == "" {
 		return "", os.ErrNotExist
+	}
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "AppData", "Roaming", "aipack"), nil
 	}
 	return filepath.Join(home, ".config", "aipack"), nil
 }

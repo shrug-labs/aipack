@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -225,7 +226,11 @@ func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []doma
 	}
 
 	if wipeLedger && home != "" {
-		ledgerDir := filepath.Join(home, ".config", "aipack", "ledger")
+		cfgDir, _ := config.DefaultConfigDir(home)
+		if cfgDir == "" {
+			cfgDir = filepath.Join(home, ".config", "aipack")
+		}
+		ledgerDir := filepath.Join(cfgDir, "ledger")
 		if scope == domain.ScopeProject {
 			ops = append(ops, removePathOp{Path: filepath.Join(ledgerDir, engine.EncodeProjectPath(projectDir))})
 			ops = append(ops, removePathOp{Path: filepath.Join(projectDir, ".aipack", "ledger.json")})

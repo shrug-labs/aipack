@@ -7,9 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/harness/cline"
 	ccharness "github.com/shrug-labs/aipack/internal/harness/claudecode"
 	clharness "github.com/shrug-labs/aipack/internal/harness/cline"
 	cxharness "github.com/shrug-labs/aipack/internal/harness/codex"
@@ -148,10 +150,11 @@ func TestCleanCline_GlobalScope_RemovesManagedPaths(t *testing.T) {
 	}
 	layout := h.Layout(domain.ScopeGlobal, home, home)
 
+	gp := cline.GlobalPathsFor(home)
 	want := map[string]bool{
-		filepath.Join(home, ".agents", "skills"):               false,
-		filepath.Join(home, "Documents", "Cline", "Rules"):     false,
-		filepath.Join(home, "Documents", "Cline", "Workflows"): false,
+		filepath.Join(home, ".agents", "skills"): false,
+		gp.RulesDir:     false,
+		gp.WorkflowsDir: false,
 	}
 
 	for _, root := range layout.RemovePaths {
@@ -257,7 +260,8 @@ func TestBuildCleanOps_ProjectLedgerWipeIncludesLegacyAndPerHarnessLedgers(t *te
 		paths[op.path()] = true
 	}
 
-	newLedgerPath := filepath.Join(filepath.Join(home, ".config", "aipack", "ledger"), engine.EncodeProjectPath(projectDir))
+	cfgDir, _ := config.DefaultConfigDir(home)
+	newLedgerPath := filepath.Join(cfgDir, "ledger", engine.EncodeProjectPath(projectDir))
 	legacyLedgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
 
 	if !paths[newLedgerPath] {

@@ -217,7 +217,7 @@ func TestLedger_Record(t *testing.T) {
 	lg := NewLedger()
 	content := []byte("hello world")
 	lg.Record("/tmp/test-file", content, "mypack", nil, time.Now())
-	e, ok := lg.Managed["/tmp/test-file"]
+	e, ok := lg.Managed[filepath.Clean("/tmp/test-file")]
 	if !ok {
 		t.Fatal("expected ledger entry")
 	}
@@ -236,9 +236,10 @@ func TestLedger_Record(t *testing.T) {
 func TestLedger_UpdateMetadata(t *testing.T) {
 	t.Parallel()
 	lg := NewLedger()
-	lg.Managed["/a/b"] = Entry{Digest: "abc123", SourcePack: "old"}
+	key := filepath.Clean("/a/b")
+	lg.Managed[key] = Entry{Digest: "abc123", SourcePack: "old"}
 	lg.UpdateMetadata("/a/b", "newpack", []byte("overlay"), time.Now())
-	e := lg.Managed["/a/b"]
+	e := lg.Managed[key]
 	if e.SourcePack != "newpack" {
 		t.Errorf("SourcePack = %q, want %q", e.SourcePack, "newpack")
 	}
@@ -262,9 +263,10 @@ func TestLedger_UpdateMetadata_Nonexistent(t *testing.T) {
 func TestLedger_Delete(t *testing.T) {
 	t.Parallel()
 	lg := NewLedger()
-	lg.Managed["/a/b"] = Entry{Digest: "abc"}
+	key := filepath.Clean("/a/b")
+	lg.Managed[key] = Entry{Digest: "abc"}
 	lg.Delete("/a/b")
-	if _, ok := lg.Managed["/a/b"]; ok {
+	if _, ok := lg.Managed[key]; ok {
 		t.Error("entry should be deleted")
 	}
 }
@@ -272,7 +274,7 @@ func TestLedger_Delete(t *testing.T) {
 func TestLedger_PrevDigest(t *testing.T) {
 	t.Parallel()
 	lg := NewLedger()
-	lg.Managed["/a/b"] = Entry{Digest: "abc123"}
+	lg.Managed[filepath.Clean("/a/b")] = Entry{Digest: "abc123"}
 	if got := lg.PrevDigest("/a/b"); got != "abc123" {
 		t.Errorf("PrevDigest = %q, want %q", got, "abc123")
 	}
@@ -284,7 +286,7 @@ func TestLedger_PrevDigest(t *testing.T) {
 func TestLedger_PrevManagedOverlay(t *testing.T) {
 	t.Parallel()
 	lg := NewLedger()
-	lg.Managed["/a/b"] = Entry{ManagedOverlay: []byte("overlay")}
+	lg.Managed[filepath.Clean("/a/b")] = Entry{ManagedOverlay: []byte("overlay")}
 	if got := lg.PrevManagedOverlay("/a/b"); string(got) != "overlay" {
 		t.Errorf("PrevManagedOverlay = %q, want %q", got, "overlay")
 	}

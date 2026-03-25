@@ -45,7 +45,7 @@ Sync is non-destructive by default. aipack tracks what it manages via a ledger. 
 
 ### What platforms does it run on?
 
-macOS (ARM and Intel) and Linux (amd64). Install via Homebrew, the install script, or build from source with Go 1.24+. Windows is not yet supported — there's a backlog of blockers being tracked.
+macOS (ARM and Intel), Linux (amd64), and Windows (amd64). Install via Homebrew (macOS/Linux), the install script, the PowerShell installer (Windows), or build from source with Go 1.24+.
 
 ## Using packs
 

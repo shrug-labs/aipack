@@ -77,7 +77,7 @@ func ResolveActiveProfile(configDir string) (ResolveResult, []domain.Warning, er
 	if err != nil {
 		return ResolveResult{}, nil, fmt.Errorf("resolving working directory: %w", err)
 	}
-	home := os.Getenv("HOME")
+	home := config.HomeDir()
 	syncCfgPath := config.SyncConfigPath(configDir)
 	syncCfg, err := config.LoadSyncConfig(syncCfgPath)
 	if err != nil {

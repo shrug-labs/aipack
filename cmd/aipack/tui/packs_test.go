@@ -255,18 +255,19 @@ func TestPacksModel_ListSelectionDoesNotLoadInlinePreview(t *testing.T) {
 
 func TestPacksModel_ContentFilePath(t *testing.T) {
 	t.Parallel()
+	root := filepath.Join("/tmp", "pack")
 	m := newTestPacksModel([]packItemDetail{
-		{entry: app.PackShowEntry{Name: "test-pack", Path: "/tmp/pack"}},
+		{entry: app.PackShowEntry{Name: "test-pack", Path: root}},
 	})
 
 	tests := []struct {
 		ci       contentItem
 		expected string
 	}{
-		{contentItem{category: domain.CategoryRules, id: "rule-a"}, "/tmp/pack/rules/rule-a.md"},
-		{contentItem{category: domain.CategoryAgents, id: "agent-a"}, "/tmp/pack/agents/agent-a.md"},
-		{contentItem{category: domain.CategoryWorkflows, id: "wf-a"}, "/tmp/pack/workflows/wf-a.md"},
-		{contentItem{category: domain.CategorySkills, id: "skill-a"}, "/tmp/pack/skills/skill-a/SKILL.md"},
+		{contentItem{category: domain.CategoryRules, id: "rule-a"}, filepath.Join(root, "rules", "rule-a.md")},
+		{contentItem{category: domain.CategoryAgents, id: "agent-a"}, filepath.Join(root, "agents", "agent-a.md")},
+		{contentItem{category: domain.CategoryWorkflows, id: "wf-a"}, filepath.Join(root, "workflows", "wf-a.md")},
+		{contentItem{category: domain.CategorySkills, id: "skill-a"}, filepath.Join(root, "skills", "skill-a", "SKILL.md")},
 	}
 	for _, tt := range tests {
 		got := m.contentFilePath(tt.ci)

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -57,7 +56,7 @@ See also: registry fetch, pack install`
 }
 
 func (c *RegistryListCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -136,7 +135,7 @@ func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 		return fmt.Errorf("--path requires a git URL (ending in .git) or --ref")
 	}
 
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -180,7 +179,7 @@ See also: registry sources, registry fetch`
 }
 
 func (c *RegistryRemoveCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -213,7 +212,7 @@ See also: registry fetch, registry remove`
 }
 
 func (c *RegistrySourcesCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

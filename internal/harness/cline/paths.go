@@ -1,7 +1,6 @@
 package cline
 
 import (
-	"os"
 	"path/filepath"
 	"runtime"
 
@@ -27,21 +26,25 @@ var ProjectPaths = Paths{
 	SkillsDir:    ".agents/skills",
 }
 
-// GlobalPaths defines Cline's global-scope paths (relative to $HOME).
-// SkillsDir uses .agents/skills — shared with Codex — for the same reason
-// as ProjectPaths (see above).
-var GlobalPaths = Paths{
-	RulesDir:     "Documents/Cline/Rules",
-	WorkflowsDir: "Documents/Cline/Workflows",
-	SkillsDir:    ".agents/skills",
+// GlobalPathsFor returns Cline's global-scope paths rooted at home.
+// On Windows the Documents folder may be redirected (e.g. OneDrive), so the
+// actual location is resolved via the shell API rather than hardcoded.
+func GlobalPathsFor(home string) Paths {
+	docs := documentsDir(home)
+	return Paths{
+		RulesDir:     filepath.Join(docs, "Cline", "Rules"),
+		WorkflowsDir: filepath.Join(docs, "Cline", "Workflows"),
+		SkillsDir:    filepath.Join(home, ".agents", "skills"),
+	}
 }
 
 // PathsForScope returns the Paths for the given scope.
-func PathsForScope(scope domain.Scope) Paths {
+// For global scope the returned paths are absolute.
+func PathsForScope(scope domain.Scope, home string) Paths {
 	if scope == domain.ScopeProject {
 		return ProjectPaths
 	}
-	return GlobalPaths
+	return GlobalPathsFor(home)
 }
 
 // MCPSettingsPath returns the global cline_mcp_settings.json path.
@@ -58,9 +61,6 @@ func MCPSettingsPath(home string) string {
 	case "linux":
 		return filepath.Join(home, ".config", "Code", "User", suffix)
 	case "windows":
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "Code", "User", suffix)
-		}
 		return filepath.Join(home, "AppData", "Roaming", "Code", "User", suffix)
 	default:
 		return filepath.Join(home, ".config", "Code", "User", suffix)

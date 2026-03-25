@@ -54,15 +54,18 @@ validate: ## Validate pack content (PACK_ROOT required)
 
 dist: ## Cross-compile for all platforms
 	@mkdir -p $(DIST)
-	@for platform in darwin/arm64 darwin/amd64 linux/amd64; do \
-		GOOS=$${platform%/*} GOARCH=$${platform#*/} \
+	@for platform in darwin/arm64 darwin/amd64 linux/amd64 windows/amd64; do \
+		goos=$${platform%/*}; goarch=$${platform#*/}; \
+		ext=""; if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
+		outname=$(BINARY)-$${goos}-$${goarch}$${ext}; \
+		GOOS=$$goos GOARCH=$$goarch \
 		go build $(GO_TAGS) -ldflags "$(LDFLAGS)" \
-			-o $(DIST)/$(BINARY)-$${platform%/*}-$${platform#*/} ./cmd/aipack || exit 1; \
-		case "$${platform%/*}" in darwin) \
+			-o $(DIST)/$$outname ./cmd/aipack || exit 1; \
+		case "$$goos" in darwin) \
 			if [ "$$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then \
-				codesign -s - -f $(DIST)/$(BINARY)-$${platform%/*}-$${platform#*/} 2>/dev/null; \
+				codesign -s - -f $(DIST)/$$outname 2>/dev/null; \
 			fi ;; esac; \
-		echo "  $(DIST)/$(BINARY)-$${platform%/*}-$${platform#*/}"; \
+		echo "  $(DIST)/$$outname"; \
 	done
 
 clean: ## Remove build artifacts

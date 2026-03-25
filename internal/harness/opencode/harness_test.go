@@ -556,7 +556,7 @@ func TestLayout_Project(t *testing.T) {
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
 	want := map[string]bool{
-		"/proj/.opencode": false,
+		filepath.Join("/proj", ".opencode"): false,
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {
@@ -571,10 +571,10 @@ func TestLayout_Project(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/proj/.opencode/agents":   false,
-		"/proj/.opencode/commands": false,
-		"/proj/.opencode/rules":    false,
-		"/proj/.opencode/skills":   false,
+		filepath.Join("/proj", ".opencode", "agents"):   false,
+		filepath.Join("/proj", ".opencode", "commands"): false,
+		filepath.Join("/proj", ".opencode", "rules"):    false,
+		filepath.Join("/proj", ".opencode", "skills"):   false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {
@@ -592,7 +592,7 @@ func TestLayout_Project(t *testing.T) {
 	if len(layout.OwnedFiles) != 1 {
 		t.Fatalf("expected 1 OwnedFile, got %d", len(layout.OwnedFiles))
 	}
-	if layout.OwnedFiles[0].Path != "/proj/.opencode/opencode.json" {
+	if layout.OwnedFiles[0].Path != filepath.Join("/proj", ".opencode", "opencode.json") {
 		t.Errorf("OwnedFile path = %s, want opencode.json", layout.OwnedFiles[0].Path)
 	}
 
@@ -604,7 +604,7 @@ func TestLayout_Global(t *testing.T) {
 	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
 
 	want := map[string]bool{
-		"/home/.config/opencode": false,
+		filepath.Join("/home", ".config", "opencode"): false,
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {
@@ -619,10 +619,10 @@ func TestLayout_Global(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/home/.config/opencode/agents":   false,
-		"/home/.config/opencode/commands": false,
-		"/home/.config/opencode/rules":    false,
-		"/home/.config/opencode/skills":   false,
+		filepath.Join("/home", ".config", "opencode", "agents"):   false,
+		filepath.Join("/home", ".config", "opencode", "commands"): false,
+		filepath.Join("/home", ".config", "opencode", "rules"):    false,
+		filepath.Join("/home", ".config", "opencode", "skills"):   false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {

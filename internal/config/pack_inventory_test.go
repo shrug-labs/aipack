@@ -275,8 +275,9 @@ func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 
 func TestResolvePackRoot(t *testing.T) {
 	t.Parallel()
-	manifestPath := filepath.Join(string(filepath.Separator), "tmp", "packs", "demo", "pack.json")
-	abs := filepath.Join(string(filepath.Separator), "opt", "packs", "demo")
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "packs", "demo", "pack.json")
+	abs := filepath.Join(dir, "opt", "packs", "demo")
 
 	if got := ResolvePackRoot(manifestPath, ""); got != "" {
 		t.Fatalf("ResolvePackRoot(empty) = %q, want empty", got)
@@ -284,7 +285,7 @@ func TestResolvePackRoot(t *testing.T) {
 	if got := ResolvePackRoot(manifestPath, abs); got != abs {
 		t.Fatalf("ResolvePackRoot(abs) = %q, want %q", got, abs)
 	}
-	wantRel := filepath.Join(string(filepath.Separator), "tmp", "packs", "demo", "content")
+	wantRel := filepath.Join(dir, "packs", "demo", "content")
 	if got := ResolvePackRoot(manifestPath, "content"); got != wantRel {
 		t.Fatalf("ResolvePackRoot(rel) = %q, want %q", got, wantRel)
 	}

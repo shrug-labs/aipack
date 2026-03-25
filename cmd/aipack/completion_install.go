@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -134,10 +135,20 @@ func confirmPrompt(ctx context.Context, g *Globals) bool {
 
 func detectShell() string {
 	shell := os.Getenv("SHELL")
-	if shell == "" {
-		return "bash"
+	if shell != "" {
+		name := filepath.Base(shell)
+		// Strip .exe suffix on Windows (e.g. "bash.exe" → "bash").
+		name = strings.TrimSuffix(name, ".exe")
+		return name
 	}
-	return filepath.Base(shell)
+	// On Windows, $SHELL is not set. Detect PowerShell via PSModulePath
+	// (always set inside pwsh/powershell). Fall back to bash for Git Bash users.
+	if runtime.GOOS == "windows" {
+		if os.Getenv("PSModulePath") != "" {
+			return "powershell"
+		}
+	}
+	return "bash"
 }
 
 func defaultRCFile(shell string) string {
@@ -152,6 +163,12 @@ func defaultRCFile(shell string) string {
 		return filepath.Join(home, ".bashrc")
 	case "fish":
 		return filepath.Join(home, ".config", "fish", "config.fish")
+	case "powershell":
+		// Use $PROFILE if available, otherwise the conventional path.
+		if p := os.Getenv("PROFILE"); p != "" {
+			return p
+		}
+		return filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
 	default:
 		return ""
 	}
@@ -175,6 +192,14 @@ func completionSnippet(shell, bin, cmd string) string {
 end
 complete -f -c %s -a "(__complete_%s)"
 `, cmd, bin, cmd, cmd)
+	case "powershell":
+		body = fmt.Sprintf(`Register-ArgumentCompleter -CommandName %s -Native -ScriptBlock {
+    param($wordToComplete, $commandAst, $cursorPosition)
+    $env:COMP_LINE = $commandAst.ToString()
+    & %s | ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+    Remove-Item env:COMP_LINE
+}
+`, cmd, bin)
 	default:
 		return ""
 	}

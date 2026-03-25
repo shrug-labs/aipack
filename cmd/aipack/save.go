@@ -22,7 +22,7 @@ type saveEnv struct {
 func (c *SaveCmd) resolveSaveEnv(optionalHarness bool) (saveEnv, error) {
 	// Load sync-config for scope and harness resolution.
 	var syncCfg config.SyncConfig
-	if cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, os.Getenv("HOME")); err == nil {
+	if cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, config.HomeDir()); err == nil {
 		if sc, serr := config.LoadSyncConfig(config.SyncConfigPath(cfgDir)); serr == nil {
 			syncCfg = sc
 		}
@@ -152,7 +152,7 @@ func (c *SaveCmd) runRoundTrip(ctx context.Context, g *Globals) error {
 			Scope:      env.scope,
 			ProjectDir: env.projectDir,
 			Harnesses:  env.harnesses,
-			Home:       os.Getenv("HOME"),
+			Home:       config.HomeDir(),
 		},
 		PackRoots: packRoots,
 		DryRun:    c.DryRun,
@@ -211,7 +211,7 @@ func (c *SaveCmd) runToPack(ctx context.Context, g *Globals) error {
 		fmt.Fprintln(g.Stderr, "ERROR:", err)
 		return ExitError{Code: cmdutil.ExitUsage}
 	}
-	configDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	configDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -231,7 +231,7 @@ func (c *SaveCmd) runToPack(ctx context.Context, g *Globals) error {
 		return fmt.Errorf("no harness resolved — specify --harness or configure defaults.harnesses in sync-config")
 	}
 
-	home := os.Getenv("HOME")
+	home := config.HomeDir()
 	packRoot := filepath.Join(configDir, "packs", c.ToPack)
 	createPack := false
 	if _, statErr := os.Stat(packRoot + "/pack.json"); os.IsNotExist(statErr) {

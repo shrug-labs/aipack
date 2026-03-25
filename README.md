@@ -53,10 +53,16 @@ On macOS and Linux, you can also use the release-backed installer script:
 curl -fsSL https://raw.githubusercontent.com/shrug-labs/aipack/main/install.sh | sh
 ```
 
-The installer detects your platform, downloads the matching release binary, verifies
-`SHA256SUMS`, installs `aipack`, and prints the installed version.
+On Windows (PowerShell):
 
-Useful overrides:
+```powershell
+irm https://raw.githubusercontent.com/shrug-labs/aipack/main/install.ps1 | iex
+```
+
+The installers detect your platform, download the matching release binary, verify
+`SHA256SUMS`, install `aipack`, and print the installed version.
+
+Useful overrides (macOS/Linux):
 
 ```bash
 # Pin a specific release tag
@@ -69,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/shrug-labs/aipack/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/shrug-labs/aipack/main/install.sh | PREFIX=$HOME/.local sh
 ```
 
-Release binaries are published for `darwin/arm64`, `darwin/amd64`, and `linux/amd64`. Stable releases also update the Homebrew formula in `dfoster-oracle/homebrew-tap`. If you prefer a manual install, use the matching release asset from <https://github.com/shrug-labs/aipack/releases> together with `SHA256SUMS`.
+Release binaries are published for `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `windows/amd64`. Stable releases also update the Homebrew formula in `dfoster-oracle/homebrew-tap`. If you prefer a manual install, use the matching release asset from <https://github.com/shrug-labs/aipack/releases> together with `SHA256SUMS`.
 
 ### Build from source
 

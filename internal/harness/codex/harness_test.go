@@ -576,9 +576,9 @@ func TestLayout_Project(t *testing.T) {
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 
 	want := map[string]bool{
-		"/proj/.agents/skills":     false,
-		"/proj/AGENTS.override.md": false,
-		"/proj/.codex/config.toml": false,
+		filepath.Join("/proj", ".agents", "skills"):     false,
+		filepath.Join("/proj", "AGENTS.override.md"):    false,
+		filepath.Join("/proj", ".codex", "config.toml"): false,
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {
@@ -593,8 +593,8 @@ func TestLayout_Project(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/proj/.agents/skills":     false,
-		"/proj/AGENTS.override.md": false,
+		filepath.Join("/proj", ".agents", "skills"):  false,
+		filepath.Join("/proj", "AGENTS.override.md"): false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {
@@ -620,9 +620,9 @@ func TestLayout_Global(t *testing.T) {
 	layout := h.Layout(domain.ScopeGlobal, "/home", "/home")
 
 	want := map[string]bool{
-		"/home/.agents/skills":            false,
-		"/home/.codex/AGENTS.override.md": false,
-		"/home/.codex/config.toml":        false,
+		filepath.Join("/home", ".agents", "skills"):            false,
+		filepath.Join("/home", ".codex", "AGENTS.override.md"): false,
+		filepath.Join("/home", ".codex", "config.toml"):        false,
 	}
 	for _, r := range layout.ValidationRoots {
 		if _, ok := want[r]; ok {
@@ -637,8 +637,8 @@ func TestLayout_Global(t *testing.T) {
 		}
 	}
 	wantRemove := map[string]bool{
-		"/home/.agents/skills":            false,
-		"/home/.codex/AGENTS.override.md": false,
+		filepath.Join("/home", ".agents", "skills"):            false,
+		filepath.Join("/home", ".codex", "AGENTS.override.md"): false,
 	}
 	for _, p := range layout.RemovePaths {
 		if _, ok := wantRemove[p]; ok {

@@ -106,6 +106,8 @@ func PromptCopy(name string, configDir string) error {
 		cmd = exec.Command("pbcopy")
 	case "linux":
 		cmd = exec.Command("xclip", "-selection", "clipboard")
+	case "windows":
+		cmd = exec.Command("clip")
 	default:
 		return fmt.Errorf("clipboard not supported on %s", runtime.GOOS)
 	}

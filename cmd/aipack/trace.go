@@ -8,6 +8,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -91,7 +92,7 @@ func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 			Scope:      scope,
 			ProjectDir: projectDir,
 			Harnesses:  hs,
-			Home:       os.Getenv("HOME"),
+			Home:       config.HomeDir(),
 		},
 		ResourceType: c.Type,
 		ResourceName: c.Name,

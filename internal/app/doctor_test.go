@@ -527,7 +527,7 @@ func TestDoctorCheckManifestDrift_FixAddsUndeclaredAndRemovesMissing(t *testing.
 func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
+	configDir, _ := config.DefaultConfigDir(home)
 	projectDir := filepath.Join(home, "project")
 	trackedFile := filepath.Join(projectDir, ".claude", "settings.local.json")
 
@@ -564,7 +564,7 @@ func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
 func TestDoctorCheckStaleLedgers_FindsNestedProjectLedgerDirs(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
+	configDir, _ := config.DefaultConfigDir(home)
 	projectDir := filepath.Join(home, "project")
 	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 

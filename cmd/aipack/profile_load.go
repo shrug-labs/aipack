@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
@@ -27,7 +26,7 @@ type loadedProfile struct {
 func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.Writer) (loadedProfile, int) {
 	configDir := configDirFlag
 	if configDir == "" {
-		if d, err := config.DefaultConfigDir(os.Getenv("HOME")); err == nil {
+		if d, err := config.DefaultConfigDir(config.HomeDir()); err == nil {
 			configDir = d
 		}
 	}
@@ -43,7 +42,7 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 
 	profile := resolveProfileName(profileFlag, syncCfg)
 
-	path, err := config.ResolveProfilePath(profilePathFlag, configDir, profile, os.Getenv("HOME"))
+	path, err := config.ResolveProfilePath(profilePathFlag, configDir, profile, config.HomeDir())
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail

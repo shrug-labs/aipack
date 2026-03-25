@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -79,7 +78,7 @@ func printEcosystemStatus(es *app.EcosystemStatus, w io.Writer) {
 	fmt.Fprintf(w, "\ntotals: %d rules, %d agents, %d workflows, %d skills, %d mcp servers\n",
 		es.TotalRules, es.TotalAgents, es.TotalWorkflows, es.TotalSkills, es.TotalMCP)
 
-	if len(os.Getenv("HOME")) > 0 {
+	if len(config.HomeDir()) > 0 {
 		// Check for config dir in the status output.
 		if es.ConfigDir != "" {
 			fmt.Fprintf(w, "config: %s\n", es.ConfigDir)

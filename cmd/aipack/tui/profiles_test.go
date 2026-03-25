@@ -98,9 +98,9 @@ func TestTwoPanelView_UnsyncedShowsPendingCount(t *testing.T) {
 func TestShortPath(t *testing.T) {
 	t.Parallel()
 
-	home := os.Getenv("HOME")
-	if home == "" {
-		t.Skip("HOME not set")
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("home directory not available")
 	}
 
 	tests := []struct {

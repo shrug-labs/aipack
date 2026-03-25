@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -58,8 +59,13 @@ func SaveLedger(path string, l domain.Ledger, dryRun bool) error {
 // EncodeProjectPath encodes an absolute project directory as a directory name
 // using the Claude Code convention: replace path separators with hyphens.
 // /Users/foo/bar → -Users-foo-bar
+// On Windows, colons (from drive letters like C:) are also stripped and
+// both forward and back slashes are replaced.
 func EncodeProjectPath(projectDir string) string {
-	return strings.ReplaceAll(projectDir, string(filepath.Separator), "-")
+	s := strings.ReplaceAll(projectDir, "\\", "-")
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, ":", "")
+	return s
 }
 
 // MigrateOldLedgers checks for legacy ledger formats and splits entries into
@@ -84,7 +90,11 @@ func MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []
 	}
 
 	// Check for old combined-harness ledgers in global ledger dir.
-	ledgerDir := filepath.Join(home, ".config", "aipack", "ledger")
+	cfgDir, _ := config.DefaultConfigDir(home)
+	if cfgDir == "" {
+		cfgDir = filepath.Join(home, ".config", "aipack")
+	}
+	ledgerDir := filepath.Join(cfgDir, "ledger")
 	entries, err := os.ReadDir(ledgerDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -165,7 +175,11 @@ func LedgerPathForScope(scope domain.Scope, projectDir, home string, harness dom
 	if home == "" {
 		home = projectDir // fallback
 	}
-	base := filepath.Join(home, ".config", "aipack", "ledger")
+	cfgDir, err := config.DefaultConfigDir(home)
+	if err != nil {
+		cfgDir = filepath.Join(home, ".config", "aipack")
+	}
+	base := filepath.Join(cfgDir, "ledger")
 	if scope == domain.ScopeProject {
 		base = filepath.Join(base, EncodeProjectPath(projectDir))
 	}

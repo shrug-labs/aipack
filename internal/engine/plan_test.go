@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -32,14 +33,16 @@ func TestPlanSync_SingleHarness(t *testing.T) {
 		ProjectDir: dir,
 	}
 
+	aPath := filepath.Join(dir, "a.md")
+	bPath := filepath.Join(dir, "b.md")
 	planner := &mockPlanner{
 		id: domain.HarnessClaudeCode,
 		frag: domain.Fragment{
 			Writes: []domain.WriteAction{
-				{Dst: dir + "/a.md", Content: []byte("alpha")},
-				{Dst: dir + "/b.md", Content: []byte("bravo")},
+				{Dst: aPath, Content: []byte("alpha")},
+				{Dst: bPath, Content: []byte("bravo")},
 			},
-			Desired: []string{dir + "/a.md", dir + "/b.md"},
+			Desired: []string{aPath, bPath},
 		},
 	}
 
@@ -54,7 +57,7 @@ func TestPlanSync_SingleHarness(t *testing.T) {
 	if got := len(plan.Desired); got != 2 {
 		t.Errorf("len(Desired) = %d, want 2", got)
 	}
-	for _, dst := range []string{dir + "/a.md", dir + "/b.md"} {
+	for _, dst := range []string{aPath, bPath} {
 		if _, ok := plan.Desired[dst]; !ok {
 			t.Errorf("Desired missing %q", dst)
 		}
@@ -72,22 +75,24 @@ func TestPlanSync_MultipleHarnesses(t *testing.T) {
 		ProjectDir: dir,
 	}
 
+	claudePath := filepath.Join(dir, "claude.md")
+	clinePath := filepath.Join(dir, "cline.md")
 	p1 := &mockPlanner{
 		id: domain.HarnessClaudeCode,
 		frag: domain.Fragment{
 			Writes: []domain.WriteAction{
-				{Dst: dir + "/claude.md", Content: []byte("claude")},
+				{Dst: claudePath, Content: []byte("claude")},
 			},
-			Desired: []string{dir + "/claude.md"},
+			Desired: []string{claudePath},
 		},
 	}
 	p2 := &mockPlanner{
 		id: domain.HarnessCline,
 		frag: domain.Fragment{
 			Writes: []domain.WriteAction{
-				{Dst: dir + "/cline.md", Content: []byte("cline")},
+				{Dst: clinePath, Content: []byte("cline")},
 			},
-			Desired: []string{dir + "/cline.md"},
+			Desired: []string{clinePath},
 		},
 	}
 
@@ -167,8 +172,9 @@ func TestPlanSync_LedgerPath_Project(t *testing.T) {
 		t.Fatalf("PlanSync: %v", err)
 	}
 
-	if !strings.Contains(plan.Ledger, ".config/aipack/ledger/") {
-		t.Errorf("Ledger %q should contain %q", plan.Ledger, ".config/aipack/ledger/")
+	// The ledger path should be inside the aipack config dir.
+	if !strings.Contains(plan.Ledger, "aipack") || !strings.Contains(plan.Ledger, "ledger") {
+		t.Errorf("Ledger %q should contain aipack config ledger path", plan.Ledger)
 	}
 	if !strings.HasSuffix(plan.Ledger, ".json") {
 		t.Errorf("Ledger %q should end with .json", plan.Ledger)
@@ -196,7 +202,8 @@ func TestPlanSync_LedgerPath_Global(t *testing.T) {
 	if !strings.HasPrefix(plan.Ledger, home) {
 		t.Errorf("Ledger %q should be under Home %q", plan.Ledger, home)
 	}
-	want := filepath.Join(home, ".config", "aipack", "ledger", "claudecode.json")
+	cfgDir, _ := config.DefaultConfigDir(home)
+	want := filepath.Join(cfgDir, "ledger", "claudecode.json")
 	if plan.Ledger != want {
 		t.Errorf("Ledger = %q, want %q", plan.Ledger, want)
 	}

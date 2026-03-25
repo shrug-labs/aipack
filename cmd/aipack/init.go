@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"os"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 type InitCmd struct {
@@ -31,7 +31,7 @@ See also: doctor, sync`
 }
 
 func (c *InitCmd) Run(ctx context.Context, g *Globals) error {
-	configDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, os.Getenv("HOME"), g.Stderr)
+	configDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

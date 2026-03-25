@@ -327,7 +327,7 @@ func TestProcessEmbeddedRegistries_MergesIntoRegistryCache(t *testing.T) {
 	t.Parallel()
 
 	home := t.TempDir()
-	configDir := filepath.Join(home, ".config", "aipack")
+	configDir, _ := config.DefaultConfigDir(home)
 	packRoot := filepath.Join(home, "packs", "demo")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
