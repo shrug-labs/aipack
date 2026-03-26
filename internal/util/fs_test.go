@@ -412,6 +412,16 @@ func TestCopyDir_SkipsIgnoredNames(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pycache, "mod.pyc"), []byte("bytecode"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Create ignored directories: .venv, .git, node_modules
+	for _, dir := range []string{".venv", ".git", "node_modules"} {
+		d := filepath.Join(src, dir)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "file.txt"), []byte("should be ignored"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	dst := t.TempDir()
 	if err := CopyDir(src, dst); err != nil {
@@ -429,5 +439,11 @@ func TestCopyDir_SkipsIgnoredNames(t *testing.T) {
 	// __pycache__ directory should not exist.
 	if _, err := os.Stat(filepath.Join(dst, "__pycache__")); err == nil {
 		t.Error("__pycache__ should have been skipped")
+	}
+	// .venv, .git, node_modules should not exist.
+	for _, dir := range []string{".venv", ".git", "node_modules"} {
+		if _, err := os.Stat(filepath.Join(dst, dir)); err == nil {
+			t.Errorf("%s should have been skipped", dir)
+		}
 	}
 }

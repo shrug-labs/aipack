@@ -57,7 +57,7 @@ func ExistsFile(path string) bool {
 // directories but must not affect digest computation or be copied.
 func IgnoredName(name string) bool {
 	switch name {
-	case "__pycache__", ".DS_Store":
+	case "__pycache__", ".DS_Store", ".venv", ".git", "node_modules":
 		return true
 	}
 	return false

@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.12.1]
+
+### Changed
+
+- `IgnoredName` now excludes `.venv`, `.git`, and `node_modules` in addition to `__pycache__` and `.DS_Store`. Packs developed inside git repositories, Python virtualenvs, or Node projects no longer include these directories in sync, digest computation, or file watching.
+
 ## [0.12.0]
 
 ### Added
