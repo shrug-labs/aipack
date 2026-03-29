@@ -227,7 +227,7 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 			}
 			printDryRunVerbose(summary, stdout)
 		} else {
-			printDryRun(aggregatePlan, req, reg, stdout)
+			printDryRun(aggregatePlan, req, reg, CountProfileContent(profile), stdout)
 		}
 		return SyncResult{Plan: aggregatePlan}, warnings, nil
 	}
@@ -316,7 +316,7 @@ func reconcileMCPLedger(ctx context.Context, plan domain.Plan, h harness.Harness
 	return nil
 }
 
-func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.Writer) {
+func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, w io.Writer) {
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
@@ -348,7 +348,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.
 	for _, wr := range plan.Writes {
 		kind, err := classifyWriteKind(wr, ledgerForPath(wr.Dst))
 		if err != nil {
-			fmt.Fprintf(w, "write: %s\n", wr.Dst)
+			fmt.Fprintf(w, "create: %s\n", wr.Dst)
 			changes++
 			continue
 		}
@@ -356,7 +356,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.
 		case domain.DiffIdentical:
 			skips++
 		case domain.DiffCreate:
-			fmt.Fprintf(w, "write: %s\n", wr.Dst)
+			fmt.Fprintf(w, "create: %s\n", wr.Dst)
 			changes++
 		case domain.DiffManaged:
 			fmt.Fprintf(w, "update: %s\n", wr.Dst)
@@ -378,7 +378,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.
 		case domain.DiffIdentical:
 			skips++
 		case domain.DiffCreate:
-			fmt.Fprintf(w, "copy: %s\n", cp.Dst)
+			fmt.Fprintf(w, "create: %s\n", cp.Dst)
 			changes++
 		case domain.DiffManaged:
 			fmt.Fprintf(w, "update: %s\n", cp.Dst)
@@ -393,7 +393,11 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, w io.
 			}
 		}
 	}
-	fmt.Fprintf(w, "plan: %d changes, %d identical\n", changes, skips)
+	source := counts.String()
+	if n := len(plan.Settings); n > 0 {
+		source += fmt.Sprintf(", %d settings", n)
+	}
+	fmt.Fprintf(w, "plan: %d file ops from %s, %d identical\n", changes, source, skips)
 }
 
 // classifyCopyKind aggregates per-file classifications for a CopyAction into a

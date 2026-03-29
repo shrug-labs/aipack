@@ -208,8 +208,8 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 		t.Fatalf("RunSync: %v", err)
 	}
 
-	if got := stdout.String(); got != "plan: 0 changes, 2 identical\n" {
-		t.Fatalf("stdout = %q, want %q", got, "plan: 0 changes, 2 identical\n")
+	if got := stdout.String(); got != "plan: 0 file ops from 0 content, 2 identical\n" {
+		t.Fatalf("stdout = %q, want %q", got, "plan: 0 file ops from 0 content, 2 identical\n")
 	}
 }
 
@@ -236,9 +236,9 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 		wantOut    string
 	}{
 		{
-			name:     "new skill reports copy",
+			name:     "new skill reports create",
 			setupDst: func(t *testing.T) { /* no destination */ },
-			wantOut:  "copy: " + skillDst + "\nplan: 1 changes, 0 identical\n",
+			wantOut:  "create: " + skillDst + "\nplan: 1 file ops from 1 skills, 0 identical\n",
 		},
 		{
 			name: "identical skill is silent",
@@ -257,7 +257,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 					filepath.Join(skillDst, "SKILL.md"): {SourcePack: "pack", Digest: domain.SingleFileDigest([]byte("v2 content"))},
 				})
 			},
-			wantOut: "plan: 0 changes, 1 identical\n",
+			wantOut: "plan: 0 file ops from 1 skills, 1 identical\n",
 		},
 		{
 			name: "changed skill reports update",
@@ -276,7 +276,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 					filepath.Join(skillDst, "SKILL.md"): {SourcePack: "pack", Digest: domain.SingleFileDigest([]byte("v1 content"))},
 				})
 			},
-			wantOut: "update: " + skillDst + "\nplan: 1 changes, 0 identical\n",
+			wantOut: "update: " + skillDst + "\nplan: 1 file ops from 1 skills, 0 identical\n",
 		},
 	}
 
@@ -314,7 +314,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 					Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
 					Home:       home,
 				},
-			}, reg, &buf)
+			}, reg, ContentCounts{Skills: 1}, &buf)
 
 			if got := buf.String(); got != tt.wantOut {
 				t.Errorf("output = %q, want %q", got, tt.wantOut)

@@ -321,7 +321,7 @@ func classifyWriteDiffText(fd engine.FileDiff, diffKind domain.DiffKind) string 
 
 // ContentCounts holds counts of content items by type for display.
 type ContentCounts struct {
-	Rules, Workflows, Agents, Skills int
+	Rules, Workflows, Agents, Skills, MCP int
 }
 
 // String returns a compact summary like "3 rules, 2 skills".
@@ -340,6 +340,9 @@ func (c ContentCounts) String() string {
 	if c.Skills > 0 {
 		parts = append(parts, fmt.Sprintf("%d skills", c.Skills))
 	}
+	if c.MCP > 0 {
+		parts = append(parts, fmt.Sprintf("%d mcp", c.MCP))
+	}
 	if len(parts) == 0 {
 		return "0 content"
 	}
@@ -348,7 +351,7 @@ func (c ContentCounts) String() string {
 
 // Total returns the sum of all content counts.
 func (c ContentCounts) Total() int {
-	return c.Rules + c.Workflows + c.Agents + c.Skills
+	return c.Rules + c.Workflows + c.Agents + c.Skills + c.MCP
 }
 
 // CountProfileContent tallies content items from the profile's typed
@@ -360,6 +363,7 @@ func CountProfileContent(p domain.Profile) ContentCounts {
 		Workflows: len(p.AllWorkflows()),
 		Agents:    len(p.AllAgents()),
 		Skills:    len(p.AllSkills()),
+		MCP:       len(p.MCPServers),
 	}
 }
 

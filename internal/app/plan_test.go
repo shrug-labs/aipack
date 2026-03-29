@@ -74,13 +74,13 @@ func TestCountProfileContent_StableAcrossHarnesses(t *testing.T) {
 		t.Errorf("Agents = %d, want 1", profileCounts.Agents)
 	}
 
-	// Bug 2: MCP count should reflect unique servers from the profile,
+	// MCP count should reflect unique servers from the profile,
 	// not the number of config files in the plan.
 	if len(mergedPlan.MCP) == len(profile.MCPServers) {
 		t.Fatal("plan.MCP count unexpectedly equals profile.MCPServers — test premise is wrong")
 	}
-	if len(profile.MCPServers) != 4 {
-		t.Errorf("MCPServers = %d, want 4", len(profile.MCPServers))
+	if profileCounts.MCP != 4 {
+		t.Errorf("MCP = %d, want 4", profileCounts.MCP)
 	}
 }
 

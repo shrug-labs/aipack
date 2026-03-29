@@ -53,11 +53,13 @@ Packs are portable, versioned bundles of AI agent configuration installed under 
 
 ### pack create
 
-Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `mcp/`, `configs/`).
+Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `mcp/`, `configs/`), then registers it so it is immediately available for profiles and sync.
+
+By default the pack is created in the current directory and symlinked into the packs directory. Use `--local` to create it directly inside the packs directory instead.
 
 ```bash
-aipack pack create ./my-new-pack
-aipack pack create ./path/to/dir --name custom-pack-name
+aipack pack create my-new-pack
+aipack pack create my-new-pack --local
 ```
 
 ### pack install

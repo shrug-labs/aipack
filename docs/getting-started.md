@@ -27,10 +27,10 @@ If you already have markdown files with instructions for AI agents — in a shar
 ### Starting fresh
 
 ```bash
-aipack pack create ./my-team-pack
+aipack pack create my-team-pack
 ```
 
-This scaffolds the directory structure and a minimal `pack.json`:
+This scaffolds the directory structure in the current directory, symlinks it into the packs directory, and generates a minimal `pack.json`:
 
 ```json
 {

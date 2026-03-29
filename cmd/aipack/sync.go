@@ -151,7 +151,6 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 		}
 		p := res.Plan
 		counts := app.CountProfileContent(loaded.profile)
-		mcpCount := len(loaded.profile.MCPServers)
 		if c.JSON {
 			jsonWarnings := make([]map[string]string, 0, len(allWarnings))
 			for _, w := range allWarnings {
@@ -171,19 +170,17 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 				"agents":    counts.Agents,
 				"skills":    counts.Skills,
 				"settings":  len(p.Settings),
-				"mcp":       mcpCount,
+				"mcp":       counts.MCP,
 				"warnings":  jsonWarnings,
 			})
 		}
-		verb := "sync OK"
 		if c.DryRun {
-			verb = "dry-run"
-		}
-		if c.DryRun && c.Verbose {
+			// Non-verbose dry-run: plan line already printed by printDryRun
+			// with source counts. Verbose dry-run: already returned above.
 			return watchDirs, nil
 		}
-		fmt.Fprintf(g.Stdout, "%s: %s, %d settings, %d mcp\n",
-			verb, counts.String(), len(p.Settings), mcpCount)
+		fmt.Fprintf(g.Stdout, "sync OK: %s, %d settings\n",
+			counts.String(), len(p.Settings))
 
 		return watchDirs, nil
 	}

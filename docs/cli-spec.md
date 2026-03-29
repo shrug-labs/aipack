@@ -78,12 +78,12 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 | Field | Type | Description |
 |-------|------|-------------|
 | `dry_run` | bool | Whether this was a dry run |
-| `rules` | int | Number of rule files in the plan |
-| `workflows` | int | Number of workflow files in the plan |
-| `agents` | int | Number of agent files in the plan |
-| `skills` | int | Number of skill directories in the plan |
+| `rules` | int | Number of rules in the resolved profile |
+| `workflows` | int | Number of workflows in the resolved profile |
+| `agents` | int | Number of agents in the resolved profile |
+| `skills` | int | Number of skills in the resolved profile |
 | `settings` | int | Number of settings file actions in the plan |
-| `mcp` | int | Number of MCP server actions in the plan |
+| `mcp` | int | Number of MCP servers in the resolved profile |
 | `warnings` | array | Non-fatal issues encountered during sync. Each entry has `message` (string, always present), `path` (string, optional), and `field` (string, optional). Empty array when no warnings. |
 
 ### `aipack restore`

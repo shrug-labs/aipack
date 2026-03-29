@@ -6,6 +6,20 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.13.1]
+
+### Changed
+
+- Dry-run output uses consistent `create:`/`update:` verbs instead of mixed `write:`/`copy:` for new files.
+- Dry-run plan summary now shows source content counts (e.g., `plan: 3 file ops from 2 rules, 1 skills, 2 identical`) instead of bare change counts.
+- MCP server count included in `ContentCounts` and the sync summary line, matching the JSON output.
+- Sync OK line drops the redundant `mcp` count (now included in the content summary).
+
+### Fixed
+
+- Docs: `pack create` examples updated from removed directory-path syntax to current name-based syntax.
+- Docs: `sync --json` field descriptions now correctly describe profile source counts, not plan file counts.
+
 ## [0.13.0]
 
 ### Changed
