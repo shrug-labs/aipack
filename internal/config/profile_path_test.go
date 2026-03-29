@@ -20,7 +20,6 @@ func TestNormalizeProfileName_Valid(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := NormalizeProfileName(tc.in)
@@ -48,7 +47,6 @@ func TestNormalizeProfileName_Invalid(t *testing.T) {
 	}
 
 	for _, in := range tests {
-		in := in
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
 			if _, err := NormalizeProfileName(in); err == nil {

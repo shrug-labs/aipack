@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -272,26 +271,12 @@ var isRegistryName = cmdutil.IsRegistryName
 // createPack scaffolds a new pack inside the packs directory and registers it.
 func createPack(configDir, name string) tea.Cmd {
 	return func() tea.Msg {
-		packDir := filepath.Join(configDir, "packs", name)
-		if err := app.PackCreate(app.PackCreateRequest{Dir: packDir, Name: name}); err != nil {
+		if err := app.PackCreate(app.PackCreateRequest{
+			Name:      name,
+			ConfigDir: configDir,
+			Local:     true,
+		}); err != nil {
 			return packCreatedMsg{name: name, err: err}
-		}
-		// Register in sync-config so it's immediately available for profiles and save.
-		scPath := config.SyncConfigPath(configDir)
-		sc, err := config.LoadSyncConfig(scPath)
-		if err != nil {
-			return packCreatedMsg{name: name, err: fmt.Errorf("register: %w", err)}
-		}
-		if sc.InstalledPacks == nil {
-			sc.InstalledPacks = map[string]config.InstalledPackMeta{}
-		}
-		sc.InstalledPacks[name] = config.InstalledPackMeta{
-			Origin:      packDir,
-			Method:      config.MethodLocal,
-			InstalledAt: time.Now().UTC().Format(time.RFC3339),
-		}
-		if err := config.SaveSyncConfig(scPath, sc); err != nil {
-			return packCreatedMsg{name: name, err: fmt.Errorf("register: %w", err)}
 		}
 		return packCreatedMsg{name: name}
 	}

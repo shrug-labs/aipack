@@ -66,7 +66,7 @@ func WalkParamRefs(s string, fn func(ref ParamRef) error) error {
 var paramRefPrefixesByLength = func() []string {
 	sorted := make([]string, len(ParamRefPrefixes))
 	copy(sorted, ParamRefPrefixes)
-	for i := 0; i < len(sorted); i++ {
+	for i := range len(sorted) {
 		for j := i + 1; j < len(sorted); j++ {
 			if len(sorted[j]) > len(sorted[i]) {
 				sorted[i], sorted[j] = sorted[j], sorted[i]

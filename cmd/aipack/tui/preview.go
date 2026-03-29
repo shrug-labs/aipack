@@ -56,10 +56,7 @@ func (m *previewModel) setContent(msg previewLoadedMsg) {
 
 // renderViewport rebuilds the viewport content from stored frontmatter + body.
 func (m *previewModel) renderViewport() {
-	maxW := m.width - 4 // border + padding
-	if maxW < 20 {
-		maxW = 20
-	}
+	maxW := max(m.width-4, 20) // border + padding
 
 	var sb strings.Builder
 
@@ -72,10 +69,7 @@ func (m *previewModel) renderViewport() {
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render(m.filePath))
 	sb.WriteString("\n")
-	ruleW := maxW
-	if ruleW > 80 {
-		ruleW = 80
-	}
+	ruleW := min(maxW, 80)
 	sb.WriteString(strings.Repeat("─", ruleW))
 	sb.WriteString("\n\n")
 
@@ -101,10 +95,7 @@ func (m *previewModel) renderViewport() {
 	}
 
 	// Build viewport.
-	vpH := m.height - 4 // border top/bottom + footer + help
-	if vpH < 5 {
-		vpH = 5
-	}
+	vpH := max(m.height-4, 5) // border top/bottom + footer + help
 	vp := viewport.New(maxW, vpH)
 	vp.SetContent(sb.String())
 	m.viewport = vp

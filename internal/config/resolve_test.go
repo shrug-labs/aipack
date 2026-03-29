@@ -672,6 +672,114 @@ func TestResolveProfile_ExactUnknown_StillErrors(t *testing.T) {
 	}
 }
 
+func TestResolveProfile_DisabledPackOverridesIgnored(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Two packs both provide rule "shared" and MCP server "tracker".
+	// The disabled pack declares overrides — these should be ignored.
+	installPackForResolveTest(t, root, "personal", PackManifest{
+		SchemaVersion: 1,
+		Name:          "personal",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+	}, map[string]string{
+		"rules/shared.md":  "---\nname: shared\n---\npersonal version\n",
+		"mcp/tracker.json": `{"name":"tracker"}`,
+	})
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1,
+		Name:          "team",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+	}, map[string]string{
+		"rules/shared.md":  "---\nname: shared\n---\nteam version\n",
+		"mcp/tracker.json": `{"name":"tracker"}`,
+	})
+
+	// personal is disabled but has overrides — should not cause errors
+	// and should not participate in conflict resolution.
+	// team declares overrides so the two enabled-pack collision is resolved.
+	_, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{
+				Name:      "personal",
+				Enabled:   BoolPtr(false),
+				Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"tracker"}},
+			},
+			{
+				Name: "team",
+			},
+		},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("disabled pack with overrides should not error, got: %v", err)
+	}
+}
+
+func TestResolveProfile_DisabledPackOverrideShouldNotResolveEnabledConflict(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Three packs: two enabled provide "shared", one disabled declares the override.
+	// The disabled pack's override must not silently resolve the conflict
+	// between the two enabled packs.
+	installPackForResolveTest(t, root, "alpha", PackManifest{
+		SchemaVersion: 1,
+		Name:          "alpha",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared"},
+	}, map[string]string{
+		"rules/shared.md": "---\nname: shared\n---\nalpha version\n",
+	})
+	installPackForResolveTest(t, root, "beta", PackManifest{
+		SchemaVersion: 1,
+		Name:          "beta",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared"},
+	}, map[string]string{
+		"rules/shared.md": "---\nname: shared\n---\nbeta version\n",
+	})
+	installPackForResolveTest(t, root, "disabled-resolver", PackManifest{
+		SchemaVersion: 1,
+		Name:          "disabled-resolver",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"shared"},
+	}, map[string]string{
+		"rules/shared.md": "---\nname: shared\n---\ndisabled version\n",
+	})
+
+	// disabled-resolver declares override for "shared" but is disabled.
+	// alpha and beta both provide "shared" without their own override.
+	// This should error — the disabled pack must not silently resolve the conflict.
+	_, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "alpha"},
+			{Name: "beta"},
+			{
+				Name:      "disabled-resolver",
+				Enabled:   BoolPtr(false),
+				Overrides: Overrides{Rules: []string{"shared"}},
+			},
+		},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err == nil {
+		t.Fatal("expected duplicate error when disabled pack's override should not resolve enabled-pack conflict")
+	}
+	if !strings.Contains(err.Error(), "appears in both") {
+		t.Fatalf("expected 'appears in both' error, got: %v", err)
+	}
+}
+
 func installPackForResolveTest(t *testing.T, configDir string, packName string, manifest PackManifest, files map[string]string) {
 	t.Helper()
 	packRoot := filepath.Join(configDir, "packs", packName)

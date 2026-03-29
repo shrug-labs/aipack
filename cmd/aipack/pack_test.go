@@ -28,7 +28,7 @@ func TestPackList_JSON_Empty(t *testing.T) {
 		t.Fatalf("pack list --json exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
 
-	var entries []interface{}
+	var entries []any
 	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
 		t.Fatalf("invalid JSON: %v\noutput=%s", err, stdout)
 	}
@@ -57,7 +57,7 @@ func TestPackList_JSON_WithPack(t *testing.T) {
 		t.Fatalf("pack list --json exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
 
-	var entries []map[string]interface{}
+	var entries []map[string]any
 	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
 		t.Fatalf("invalid JSON: %v\noutput=%s", err, stdout)
 	}
@@ -120,7 +120,7 @@ func TestPackShow_NotInstalled(t *testing.T) {
 
 func writePackManifestCmd(t *testing.T, dir string, name string) {
 	t.Helper()
-	m := map[string]interface{}{
+	m := map[string]any{
 		"schema_version": 1,
 		"name":           name,
 		"version":        "1.0.0",

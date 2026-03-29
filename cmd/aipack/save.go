@@ -313,7 +313,7 @@ func (c *SaveCmd) runToPack(ctx context.Context, g *Globals) error {
 
 func parseCategories(raw string) ([]domain.PackCategory, error) {
 	var cats []domain.PackCategory
-	for _, p := range strings.Split(raw, ",") {
+	for p := range strings.SplitSeq(raw, ",") {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue

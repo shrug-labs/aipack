@@ -114,8 +114,8 @@ func (d dialogModel) Update(msg tea.Msg) (dialogModel, tea.Cmd) {
 					d.textValue = d.textValue[:len(d.textValue)-1]
 				}
 			default:
-				if len(msg.String()) == 1 {
-					d.textValue += msg.String()
+				if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+					d.textValue += string(msg.Runes)
 				}
 			}
 

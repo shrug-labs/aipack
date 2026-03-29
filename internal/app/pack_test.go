@@ -2266,40 +2266,6 @@ func TestPackInstallMissing_PackAddError(t *testing.T) {
 	}
 }
 
-// writeRegistryCache writes a cached registry YAML into the config dir with a
-// single pack entry. The sync-config must have a matching registry source.
-func writeRegistryCache(t *testing.T, configDir, sourceName, packName string, entry config.RegistryEntry) {
-	t.Helper()
-	reg := config.Registry{
-		SchemaVersion: 1,
-		Packs:         map[string]config.RegistryEntry{packName: entry},
-	}
-	data, err := yaml.Marshal(&reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cacheDir := config.RegistriesCacheDir(configDir)
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(config.SourceCachePath(configDir, sourceName), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// writeSyncConfigWithSource writes a sync-config that includes a registry source.
-func writeSyncConfigWithSource(t *testing.T, configDir, sourceName, sourceURL string) {
-	t.Helper()
-	sc := config.SyncConfig{SchemaVersion: 1}
-	sc.Defaults.Profile = "default"
-	sc.RegistrySources = []config.RegistrySourceEntry{
-		{Name: sourceName, URL: sourceURL},
-	}
-	if err := config.SaveSyncConfig(config.SyncConfigPath(configDir), sc); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // setupSeedConflictTest creates a pack with a "team" profile and a configDir
 // with a stale version of that profile already in place. Returns packDir, configDir.
 func setupSeedConflictTest(t *testing.T, staleContent string) (string, string) {

@@ -69,7 +69,7 @@ func (r *Result) Newer() bool {
 		// rather than risk false positives from non-semver tags.
 		return false
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if lp[i] != cp[i] {
 			return lp[i] > cp[i]
 		}

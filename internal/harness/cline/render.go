@@ -2,6 +2,7 @@ package cline
 
 import (
 	"encoding/json"
+	"maps"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
@@ -65,9 +66,7 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 
 	merged := map[string]any{}
 	if existing, ok := root["mcpServers"].(map[string]any); ok {
-		for k, v := range existing {
-			merged[k] = v
-		}
+		maps.Copy(merged, existing)
 	}
 	for k, v := range mcp {
 		merged[k] = v

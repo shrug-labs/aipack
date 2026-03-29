@@ -103,8 +103,8 @@ func (m searchTabModel) updateInput(msg tea.KeyMsg) (searchTabModel, tea.Cmd) {
 		m.query = ""
 		return m, nil
 	default:
-		if len(msg.String()) == 1 {
-			m.query += msg.String()
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+			m.query += string(msg.Runes)
 		}
 		return m, nil
 	}
@@ -195,10 +195,7 @@ type requestSearchInstallMsg struct {
 }
 
 func (m *searchTabModel) ensureVisible() {
-	maxVisible := m.resultAreaHeight()
-	if maxVisible < 1 {
-		maxVisible = 1
-	}
+	maxVisible := max(m.resultAreaHeight(), 1)
 	if m.cursor < m.offset {
 		m.offset = m.cursor
 	}
@@ -209,10 +206,7 @@ func (m *searchTabModel) ensureVisible() {
 
 func (m searchTabModel) resultAreaHeight() int {
 	// Subtract: search line, blank, filter line, blank, footer line.
-	h := m.height - 5
-	if h < 1 {
-		h = 1
-	}
+	h := max(m.height-5, 1)
 	return h
 }
 
@@ -275,10 +269,7 @@ func (m searchTabModel) View() string {
 	}
 
 	maxVisible := m.resultAreaHeight()
-	end := m.offset + maxVisible
-	if end > len(m.results) {
-		end = len(m.results)
-	}
+	end := min(m.offset+maxVisible, len(m.results))
 
 	for i := m.offset; i < end; i++ {
 		r := m.results[i]

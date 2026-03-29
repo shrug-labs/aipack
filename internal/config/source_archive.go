@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/util"
@@ -82,10 +83,8 @@ func validateTarSymlink(entryName, linkname string) (string, error) {
 	if resolved == ".." || strings.HasPrefix(resolved, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("symlink escapes archive boundary in pack archive: %s -> %s (resolves to %s)", entryName, linkname, resolved)
 	}
-	for _, comp := range strings.Split(filepath.ToSlash(resolved), "/") {
-		if comp == ".git" {
-			return "", fmt.Errorf("symlink target traverses .git directory in pack archive: %s -> %s", entryName, linkname)
-		}
+	if slices.Contains(strings.Split(filepath.ToSlash(resolved), "/"), ".git") {
+		return "", fmt.Errorf("symlink target traverses .git directory in pack archive: %s -> %s", entryName, linkname)
 	}
 	return resolved, nil
 }

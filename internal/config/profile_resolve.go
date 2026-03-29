@@ -58,9 +58,13 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 	}
 
 	// Pre-scan: build override owner maps so the declaring pack wins
-	// regardless of pack ordering.
+	// regardless of pack ordering. Disabled packs are excluded — a
+	// disabled pack should not participate in conflict resolution.
 	overrideOwnerMCP := map[string]string{}
 	for _, pc := range cfg.Packs {
+		if !defaultTrue(pc.Enabled) {
+			continue
+		}
 		name := strings.TrimSpace(pc.Name)
 		for _, v := range vectors {
 			for _, id := range v.overrides(pc) {

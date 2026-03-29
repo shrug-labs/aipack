@@ -4,50 +4,84 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
 )
 
 // PackCreateRequest describes a pack scaffolding request.
 type PackCreateRequest struct {
-	Dir  string // directory to create
-	Name string // pack name (defaults to dir basename)
+	Name      string // pack name (required)
+	ConfigDir string // aipack config directory (required)
+	Local     bool   // when true, create inside packs dir; otherwise create in CWD and symlink
+	WorkDir   string // working directory for non-local creates (defaults to os.Getwd if empty)
 }
 
-// PackCreate scaffolds a new pack directory with all capability vector subdirs.
+// PackCreate scaffolds a new pack directory, installs it into the packs
+// directory, and registers it in sync-config. By default the pack is created
+// in the current working directory and symlinked into packs/ (--link).
+// With Local=true, it is created directly inside packs/.
 func PackCreate(req PackCreateRequest) error {
-	dir := req.Dir
-	if dir == "" {
-		return fmt.Errorf("pack directory is required")
+	if req.Name == "" {
+		return fmt.Errorf("pack name is required")
+	}
+	if err := validatePackName(req.Name); err != nil {
+		return err
+	}
+	if req.ConfigDir == "" {
+		return fmt.Errorf("config dir is required")
 	}
 
-	name := req.Name
-	if name == "" {
-		name = filepath.Base(dir)
+	packsDir := PacksDir(req.ConfigDir)
+	destDir := filepath.Join(packsDir, req.Name)
+
+	// Determine where the pack content lives on disk.
+	var contentDir string
+	var method string
+	if req.Local {
+		contentDir = destDir
+		method = config.MethodLocal
+	} else {
+		workDir := req.WorkDir
+		if workDir == "" {
+			var err error
+			workDir, err = os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getting working directory: %w", err)
+			}
+		}
+		contentDir = filepath.Join(workDir, req.Name)
+		method = config.MethodLink
 	}
 
-	// Error if pack.json already exists.
-	manifestPath := filepath.Join(dir, "pack.json")
+	// Error if pack.json already exists at the content location.
+	manifestPath := filepath.Join(contentDir, "pack.json")
 	if _, err := os.Stat(manifestPath); err == nil {
 		return fmt.Errorf("pack.json already exists: %s", manifestPath)
 	}
 
-	// Create all capability vector dirs.
+	// Error if the destination already exists in the packs directory.
+	if !req.Local {
+		if _, err := os.Stat(destDir); err == nil {
+			return fmt.Errorf("pack %q already exists in %s", req.Name, packsDir)
+		}
+	}
+
+	// Scaffold the pack directory.
 	dirs := []string{
-		filepath.Join(dir, "rules"),
-		filepath.Join(dir, "agents"),
-		filepath.Join(dir, "workflows"),
-		filepath.Join(dir, "skills"),
-		filepath.Join(dir, "prompts"),
-		filepath.Join(dir, "mcp"),
-		filepath.Join(dir, "configs"),
-		filepath.Join(dir, "profiles"),
+		filepath.Join(contentDir, "rules"),
+		filepath.Join(contentDir, "agents"),
+		filepath.Join(contentDir, "workflows"),
+		filepath.Join(contentDir, "skills"),
+		filepath.Join(contentDir, "prompts"),
+		filepath.Join(contentDir, "mcp"),
+		filepath.Join(contentDir, "configs"),
+		filepath.Join(contentDir, "profiles"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("create dir %s: %w", d, err)
 		}
-		// Create .gitkeep so empty dirs are tracked.
 		gitkeep := filepath.Join(d, ".gitkeep")
 		if _, err := os.Stat(gitkeep); os.IsNotExist(err) {
 			if err := os.WriteFile(gitkeep, nil, 0o644); err != nil {
@@ -57,16 +91,16 @@ func PackCreate(req PackCreateRequest) error {
 	}
 
 	// Write a seed profile that references this pack by name.
-	profileRel := "profiles/" + name + ".yaml"
-	profilePath := filepath.Join(dir, "profiles", name+".yaml")
-	profileContent := []byte("schema_version: 2\npacks:\n  - name: " + name + "\n")
+	profileRel := "profiles/" + req.Name + ".yaml"
+	profilePath := filepath.Join(contentDir, "profiles", req.Name+".yaml")
+	profileContent := []byte("schema_version: 2\npacks:\n  - name: " + req.Name + "\n")
 	if err := os.WriteFile(profilePath, profileContent, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", profilePath, err)
 	}
 
-	// Write a seed registry so authors can list related packs for discovery.
+	// Write a seed registry.
 	registryRel := "registry.yaml"
-	registryPath := filepath.Join(dir, registryRel)
+	registryPath := filepath.Join(contentDir, registryRel)
 	registryContent := []byte("schema_version: 1\npacks: {}\n")
 	if err := os.WriteFile(registryPath, registryContent, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", registryPath, err)
@@ -76,7 +110,7 @@ func PackCreate(req PackCreateRequest) error {
 	// auto-discovers them from the directory structure at sync time.
 	manifest := config.PackManifest{
 		SchemaVersion: 1,
-		Name:          name,
+		Name:          req.Name,
 		Version:       "0.1.0",
 		Root:          ".",
 		Profiles:      []string{profileRel},
@@ -85,5 +119,25 @@ func PackCreate(req PackCreateRequest) error {
 	if err := config.SavePackManifest(manifestPath, manifest); err != nil {
 		return fmt.Errorf("write %s: %w", manifestPath, err)
 	}
+
+	// Link into the packs directory when content lives elsewhere.
+	if !req.Local {
+		if err := os.MkdirAll(packsDir, 0o700); err != nil {
+			return fmt.Errorf("creating packs directory: %w", err)
+		}
+		if err := createLink(contentDir, destDir); err != nil {
+			return fmt.Errorf("creating symlink: %w", err)
+		}
+	}
+
+	// Register in sync-config.
+	if err := packRecordOrigin(req.ConfigDir, req.Name, config.InstalledPackMeta{
+		Origin:      contentDir,
+		Method:      method,
+		InstalledAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		return fmt.Errorf("registering pack: %w", err)
+	}
+
 	return nil
 }

@@ -31,7 +31,7 @@ func TestSyncTab_CursorNavigation(t *testing.T) {
 	fc := m.fieldCount()
 
 	// Navigate down through all fields.
-	for i := 0; i < fc; i++ {
+	for i := range fc {
 		if m.cursor != i {
 			t.Fatalf("expected cursor=%d, got %d", i, m.cursor)
 		}

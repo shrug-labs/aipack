@@ -32,9 +32,10 @@ fmt: ## Format Go source
 fmt-check: ## Fail if Go source is not formatted
 	@test -z "$$(gofmt -l . | grep -v '^dist/' )" || { gofmt -l . | grep -v '^dist/'; echo "Go files need formatting. Run: make fmt"; exit 1; }
 
-lint: ## Run static analysis (go vet + staticcheck if available)
+lint: ## Run static analysis (go vet + staticcheck + go fix)
 	go vet $(GO_TAGS) ./...
 	@if command -v staticcheck >/dev/null 2>&1; then staticcheck $(GO_TAGS) ./...; fi
+	go fix ./...
 
 release-tag-check: ## Validate TAG against VERSION (supports prereleases)
 	@test -n "$(TAG)" || { echo "usage: make release-tag-check TAG=vX.Y.Z[-suffix]"; exit 1; }

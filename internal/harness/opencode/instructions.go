@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"maps"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -178,9 +179,7 @@ func readSkills(root map[string]any) ([]string, map[string]any) {
 	if !ok {
 		return nil, rest
 	}
-	for k, v := range obj {
-		rest[k] = v
-	}
+	maps.Copy(rest, obj)
 	var paths []string
 	if p, ok := obj["paths"]; ok {
 		switch v := p.(type) {

@@ -262,7 +262,7 @@ func TestPlanView_CursorSkipsHeaders(t *testing.T) {
 	pv := newPlanViewModel(120, 40, "test", "/tmp", ops, false)
 
 	// Navigate through all items.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		pv, _ = pv.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 		if pv.items[pv.cursor].isHeader {
 			t.Fatalf("cursor landed on header at index %d after %d j presses", pv.cursor, i+1)

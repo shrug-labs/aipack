@@ -116,10 +116,7 @@ func (m *planViewModel) shortDst(dst string) string {
 
 func (m *planViewModel) viewportHeight() int {
 	// Account for header (title + rule + blank line) and border.
-	h := m.height - 8
-	if h < 5 {
-		h = 5
-	}
+	h := max(m.height-8, 5)
 	return h
 }
 
@@ -220,10 +217,7 @@ func (m planViewModel) View() string {
 			Render("\n  Loading...")
 	}
 
-	maxW := m.width - 4
-	if maxW < 20 {
-		maxW = 20
-	}
+	maxW := max(m.width-4, 20)
 
 	var sb strings.Builder
 
@@ -235,10 +229,7 @@ func (m planViewModel) View() string {
 	header := fmt.Sprintf("%s Plan: %s  (%d operations)", planLabel, m.profileName, len(m.ops))
 	sb.WriteString(previewTitleStyle.Render(header))
 	sb.WriteString("\n")
-	ruleW := maxW
-	if ruleW > 80 {
-		ruleW = 80
-	}
+	ruleW := min(maxW, 80)
 	sb.WriteString(strings.Repeat("─", ruleW))
 	sb.WriteString("\n\n")
 
@@ -246,10 +237,7 @@ func (m planViewModel) View() string {
 		sb.WriteString(dimStyle.Render("No pending operations — everything is up to date."))
 	} else {
 		vpH := m.viewportHeight()
-		end := m.scrollOffset + vpH
-		if end > len(m.items) {
-			end = len(m.items)
-		}
+		end := min(m.scrollOffset+vpH, len(m.items))
 		for i := m.scrollOffset; i < end; i++ {
 			item := m.items[i]
 			if item.isHeader {
@@ -401,10 +389,7 @@ func (m *diffViewModel) setContent(diffText string, isNew bool, newBody string, 
 
 	m.isNew = isNew
 
-	maxW := m.width - 4
-	if maxW < 20 {
-		maxW = 20
-	}
+	maxW := max(m.width-4, 20)
 
 	var sb strings.Builder
 
@@ -417,16 +402,13 @@ func (m *diffViewModel) setContent(diffText string, isNew bool, newBody string, 
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render(m.dst))
 	sb.WriteString("\n")
-	ruleW := maxW
-	if ruleW > 80 {
-		ruleW = 80
-	}
+	ruleW := min(maxW, 80)
 	sb.WriteString(strings.Repeat("─", ruleW))
 	sb.WriteString("\n\n")
 
 	if isNew {
 		// Show full content for new files.
-		for _, line := range strings.Split(newBody, "\n") {
+		for line := range strings.SplitSeq(newBody, "\n") {
 			sb.WriteString(diffAddStyle.Render("+ " + line))
 			sb.WriteString("\n")
 		}
@@ -434,7 +416,7 @@ func (m *diffViewModel) setContent(diffText string, isNew bool, newBody string, 
 		sb.WriteString(dimStyle.Render("(no changes — content is identical)"))
 	} else {
 		// Colorize diff lines.
-		for _, line := range strings.Split(diffText, "\n") {
+		for line := range strings.SplitSeq(diffText, "\n") {
 			if line == "" {
 				sb.WriteString("\n")
 				continue
@@ -455,10 +437,7 @@ func (m *diffViewModel) setContent(diffText string, isNew bool, newBody string, 
 		}
 	}
 
-	vpH := m.height - 4
-	if vpH < 5 {
-		vpH = 5
-	}
+	vpH := max(m.height-4, 5)
 	vp := viewport.New(maxW, vpH)
 	vp.SetContent(sb.String())
 	m.viewport = vp

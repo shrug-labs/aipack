@@ -6,6 +6,21 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.13.0]
+
+### Changed
+
+- **`pack create` redesigned.** Takes a pack name instead of a directory path. Packs are created in the current directory and symlinked into the packs directory by default (`--link` behavior). Use `--local` to create directly inside the packs directory. Registration in sync-config is now automatic.
+- Registry search and list output uses a structured multi-line format with labeled fields (Name, Description, Owner, Repo, Path, Ref, Contact).
+- `make lint` now runs `go fix ./...` alongside `go vet` and `staticcheck`.
+
+### Fixed
+
+- Disabled packs no longer participate in override conflict resolution during profile resolution. Previously, a disabled pack declaring overrides could incorrectly suppress duplicate-resource errors between enabled packs.
+- TUI text input handles multi-byte key events correctly, preventing phantom characters from special key presses.
+- TUI pack name input no longer leaks keypresses to global hotkeys. Previously, typing characters that matched global shortcuts (e, s, r, w, digits) while entering a new pack name would trigger tab switches, sync, or other actions instead of appending to the input.
+- TUI "Save to pack" action (`.` menu) now scopes to the cursor item instead of carrying forward all selected files.
+
 ## [0.12.1]
 
 ### Changed

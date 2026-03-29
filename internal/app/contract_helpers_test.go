@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"os"
@@ -65,42 +64,10 @@ func (e *contractEnv) sync(profile domain.Profile) SyncResult {
 	return result
 }
 
-// clean removes all managed content and wipes the ledger.
-func (e *contractEnv) clean() {
-	e.t.Helper()
-	var stderr bytes.Buffer
-	err := RunClean(context.Background(), CleanRequest{
-		TargetSpec: TargetSpec{
-			Scope:      domain.ScopeProject,
-			ProjectDir: e.projectDir,
-			Harnesses:  []domain.Harness{e.harness},
-			Home:       e.home,
-		},
-		WipeLedger: true,
-		Yes:        true,
-		Stderr:     &stderr,
-	}, e.registry)
-	if err != nil {
-		e.t.Fatalf("clean: %v", err)
-	}
-}
-
 // files returns all files under projectDir as relative-path -> content.
 func (e *contractEnv) files() map[string]string {
 	e.t.Helper()
 	return walkDir(e.t, e.projectDir)
-}
-
-// filesMatching returns relative paths under projectDir whose path contains substr.
-func (e *contractEnv) filesMatching(substr string) []string {
-	e.t.Helper()
-	var matches []string
-	for path := range e.files() {
-		if strings.Contains(path, substr) {
-			matches = append(matches, path)
-		}
-	}
-	return matches
 }
 
 // contentExists returns true if any file's path or content contains marker.

@@ -240,7 +240,7 @@ func TestRunWatch_StopsAfterInitialSyncCancellationBeforeWalkingDirs(t *testing.
 	t.Parallel()
 
 	root := t.TempDir()
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		dir := filepath.Join(root, "dir", strings.Repeat("x", i%8), strconv.Itoa(i))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)

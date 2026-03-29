@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,9 +88,7 @@ func InspectHarness(ctx context.Context, req InspectRequest, reg *harness.Regist
 		if lerr != nil {
 			continue
 		}
-		for k, v := range hLg.Managed {
-			lg.Managed[k] = v
-		}
+		maps.Copy(lg.Managed, hLg.Managed)
 	}
 	result.LedgerPath = firstLedgerPath
 	result.HasLedger = len(lg.Managed) > 0

@@ -456,23 +456,11 @@ func (m profilesModel) View() string {
 	}
 
 	// Three-column layout: profiles (20%) | packs (30%) | content tree (50%).
-	col1W := m.width * 20 / 100
-	if col1W < 20 {
-		col1W = 20
-	}
-	col2W := m.width * 30 / 100
-	if col2W < 25 {
-		col2W = 25
-	}
-	col3W := m.width - col1W - col2W - 8 // account for padding/borders
-	if col3W < 20 {
-		col3W = 20
-	}
+	col1W := max(m.width*20/100, 20)
+	col2W := max(m.width*30/100, 25)
+	col3W := max(m.width-col1W-col2W-8, 20) // account for padding/borders
 
-	colH := m.height - 4 // account for tab bar + help bar
-	if colH < 8 {
-		colH = 8
-	}
+	colH := max(m.height-4, 8) // account for tab bar + help bar
 
 	col1 := m.viewProfileList(col1W, colH)
 	sep := dimStyle.Render(" │ ")

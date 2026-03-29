@@ -251,12 +251,12 @@ func RunSavePipeline(req SavePipelineRequest, reg *harness.Registry) (SavePipeli
 
 	// Create pack scaffold if requested.
 	if req.CreatePack && !req.DryRun {
-		if err := PackCreate(PackCreateRequest{Dir: packRoot, Name: req.PackName}); err != nil {
+		if err := PackCreate(PackCreateRequest{
+			Name:      req.PackName,
+			ConfigDir: req.ConfigDir,
+			Local:     true,
+		}); err != nil {
 			return result, fmt.Errorf("creating pack: %w", err)
-		}
-		// Register in sync-config.
-		if err := registerNewPack(req.ConfigDir, req.PackName, packRoot); err != nil {
-			return result, err
 		}
 		result.PackCreated = true
 	}
@@ -590,24 +590,4 @@ func addSaveCandidateToManifest(m *config.PackManifest, harnessID domain.Harness
 	}
 	m.Configs.HarnessSettings[key] = append(m.Configs.HarnessSettings[key], relPath)
 	return true
-}
-
-// registerNewPack records a newly created pack in sync-config.
-func registerNewPack(configDir, packName, packRoot string) error {
-	syncCfgPath := config.SyncConfigPath(configDir)
-	syncCfg, err := config.LoadSyncConfig(syncCfgPath)
-	if err != nil {
-		return fmt.Errorf("loading sync-config: %w", err)
-	}
-	if syncCfg.InstalledPacks == nil {
-		syncCfg.InstalledPacks = map[string]config.InstalledPackMeta{}
-	}
-	syncCfg.InstalledPacks[packName] = config.InstalledPackMeta{
-		Origin: packRoot,
-		Method: config.MethodLocal,
-	}
-	if err := config.SaveSyncConfig(syncCfgPath, syncCfg); err != nil {
-		return fmt.Errorf("saving sync-config: %w", err)
-	}
-	return nil
 }

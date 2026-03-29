@@ -534,10 +534,7 @@ func (m packsModel) View() string {
 }
 
 func (m packsModel) viewListAndInfoPanel(width, height int) string {
-	listH := height * 52 / 100
-	if listH < 8 {
-		listH = 8
-	}
+	listH := max(height*52/100, 8)
 	if listH > height-6 {
 		listH = max(height-6, 4)
 	}
@@ -548,10 +545,7 @@ func (m packsModel) viewListAndInfoPanel(width, height int) string {
 	}
 
 	list := m.viewListPanel(width, listH)
-	sepW := width
-	if sepW > 80 {
-		sepW = 80
-	}
+	sepW := min(width, 80)
 	sep := dimStyle.Render(strings.Repeat("─", sepW))
 	info := m.viewPackInfoPanel(width, infoH)
 	return lipgloss.JoinVertical(lipgloss.Left, list, sep, info)
@@ -912,13 +906,7 @@ func (m packsModel) previewWidth() int {
 
 func buildInlinePreviewLines(msg previewLoadedMsg, width int) []string {
 	contentW := panelInnerWidth(width)
-	ruleW := contentW
-	if ruleW < 10 {
-		ruleW = 10
-	}
-	if ruleW > 80 {
-		ruleW = 80
-	}
+	ruleW := min(max(contentW, 10), 80)
 
 	lines := []string{
 		previewTitleStyle.Render(msg.category.SingularLabel() + "  " + msg.title),

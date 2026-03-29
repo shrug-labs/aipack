@@ -23,7 +23,7 @@ func TestInstall_HiddenFromTopLevelHelp(t *testing.T) {
 	}
 	// "install" (the hidden alias for "pack install") should not appear as a
 	// visible top-level command. "install-completions" is a separate, visible command.
-	for _, line := range strings.Split(stdout, "\n") {
+	for line := range strings.SplitSeq(stdout, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "install") && !strings.HasPrefix(trimmed, "install-completions") {
 			t.Fatalf("install should be hidden from top-level help, but found: %q", line)

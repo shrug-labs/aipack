@@ -254,26 +254,30 @@ func (c *RegistrySourcesCmd) Run(ctx context.Context, g *Globals) error {
 }
 
 func printRegistryResults(g *Globals, results []app.RegistrySearchResult) {
-	for _, r := range results {
-		installed := ""
+	for i, r := range results {
+		if i > 0 {
+			fmt.Fprintln(g.Stdout)
+		}
+		status := ""
 		if r.Installed {
-			installed = " [installed]"
+			status = " [installed]"
 		}
-		desc := ""
+		fmt.Fprintf(g.Stdout, "Name:        %s%s\n", r.Name, status)
 		if r.Description != "" {
-			desc = " — " + r.Description
-		}
-		fmt.Fprintf(g.Stdout, "  %s%s%s\n", r.Name, installed, desc)
-		details := []string{r.Repo}
-		if r.Path != "" {
-			details = append(details, "path: "+r.Path)
-		}
-		if r.Ref != "" {
-			details = append(details, "ref: "+r.Ref)
+			fmt.Fprintf(g.Stdout, "Description: %s\n", r.Description)
 		}
 		if r.Owner != "" {
-			details = append(details, "owner: "+r.Owner)
+			fmt.Fprintf(g.Stdout, "Owner:       %s\n", r.Owner)
 		}
-		fmt.Fprintf(g.Stdout, "    %s\n", strings.Join(details, ", "))
+		fmt.Fprintf(g.Stdout, "Repo:        %s\n", r.Repo)
+		if r.Path != "" {
+			fmt.Fprintf(g.Stdout, "Path:        %s\n", r.Path)
+		}
+		if r.Ref != "" {
+			fmt.Fprintf(g.Stdout, "Ref:         %s\n", r.Ref)
+		}
+		if r.Contact != "" {
+			fmt.Fprintf(g.Stdout, "Contact:     %s\n", r.Contact)
+		}
 	}
 }

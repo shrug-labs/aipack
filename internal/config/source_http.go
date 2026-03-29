@@ -383,14 +383,13 @@ func FetchFileHTTPTarball(ctx context.Context, tarballURL, filePath string) ([]b
 // For example "repo-main/dir/file.txt" becomes "dir/file.txt".
 // Returns "" if there is no second component (e.g. "repo-main/" or "repo-main").
 func stripFirstComponent(name string) string {
-	idx := strings.IndexByte(name, '/')
-	if idx < 0 {
+	_, after, ok := strings.Cut(name, "/")
+	if !ok {
 		return ""
 	}
-	rest := name[idx+1:]
 	// Trim trailing slash for directory entries that are just the prefix.
-	if rest == "" || rest == "/" {
+	if after == "" || after == "/" {
 		return ""
 	}
-	return rest
+	return after
 }

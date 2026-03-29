@@ -179,7 +179,7 @@ func fetchChecksum(ctx context.Context, url, asset string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(body)), "\n") {
 		parts := strings.Fields(line)
 		if len(parts) == 2 && parts[1] == asset {
 			return parts[0], nil

@@ -147,7 +147,10 @@ type MCPServer struct {
 	DisabledTools []string `json:"disabled_tools,omitempty"`
 	SourcePack    string   `json:"source_pack,omitempty"`
 
-	// Doc-only metadata from inventory files.
+	// Doc-only metadata from inventory files. Not rendered to harness configs.
+	// Links: URLs to source repos, setup docs, or reference pages for this server.
+	// Auth: one-line summary of the authentication method.
+	// Notes: anything specific to this server that doesn't fit elsewhere.
 	Links []string `json:"links,omitempty"`
 	Auth  string   `json:"auth,omitempty"`
 	Notes string   `json:"notes,omitempty"`

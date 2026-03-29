@@ -417,9 +417,7 @@ func TestWriteFileAtomic_Concurrent(t *testing.T) {
 	stop := make(chan struct{})
 
 	for w := range numWriters {
-		writers.Add(1)
-		go func() {
-			defer writers.Done()
+		writers.Go(func() {
 			content := makeContent(w)
 			for range numIterations {
 				if err := util.WriteFileAtomic(dst, content); err != nil {
@@ -427,7 +425,7 @@ func TestWriteFileAtomic_Concurrent(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	// Reader: continuously verify content integrity while writers are active.

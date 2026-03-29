@@ -29,7 +29,7 @@ Four harness adapters (`claudecode`, `opencode`, `codex`, `cline`) handle both f
 
 - Wrap errors with `%w` — always preserve context
 - Exit codes: `cmdutil.ExitOK` (0), `ExitFail` (1), `ExitUsage` (2)
-- Tests: `t.Parallel()` where safe, `t.TempDir()` for isolation, NEVER `t.Parallel()` with `t.Setenv()`
+- Tests: `t.Parallel()` where safe, `t.TempDir()` for isolation, NEVER `t.Parallel()` with `t.Setenv()` or `t.Chdir()`
 - Use `make fmt` (not raw `gofmt -w`) for formatting
 - `--skip-settings` skips settings only; MCP configs and plugins always sync
 - Version injected via ldflags at build time (`-X main.version`, `-X main.commit`)
@@ -56,8 +56,9 @@ Four harness adapters (`claudecode`, `opencode`, `codex`, `cline`) handle both f
 ## Workflow
 
 - Before editing: read nearby code and related tests
-- After editing: `go test ./...`, then `go vet ./...`
-- Before declaring done: `make build && make test && go vet ./...` must all pass
+- After editing: `go test ./...`, then `make lint`
+- Before declaring done: `make build && make test && make lint` must all pass
+- `make lint` runs `go vet`, `staticcheck` (if installed), and `go fix ./...` (applies Go modernization fixes in-place).
 - Pre-commit: `go build ./...` → `go test ./...` → `make fmt` → check `git diff` for fmt changes → stage any → commit
 - Feature work going to main: single atomic commit, not per-task intermediaries
 - Commits use `git commit --signoff`

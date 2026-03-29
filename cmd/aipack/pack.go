@@ -38,29 +38,48 @@ Packs are installed under ~/.config/aipack/packs/<name>/.`
 // --- pack create ---
 
 type PackCreateCmd struct {
-	Dir  string `arg:"" help:"Directory path to create the pack in"`
-	Name string `help:"Pack name for pack.json (default: directory basename)" name:"name"`
+	Name      string `arg:"" help:"Pack name"`
+	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	Local     bool   `help:"Create pack inside the packs directory instead of the current directory" name:"local"`
 }
 
 func (c *PackCreateCmd) Help() string {
 	return `Scaffolds a new pack directory with a pack.json manifest and standard
-subdirectories: rules/, agents/, workflows/, skills/, mcp/, configs/.
+subdirectories, then installs and registers it so it is immediately available
+for profiles, sync, and save.
+
+By default, the pack is created in the current directory and symlinked into
+the packs directory (--link behavior). Use --local to create the pack directly
+inside the packs directory instead.
 
 Examples:
-  # Create a new pack
-  aipack pack create ./my-new-pack
+  # Create a pack in CWD, symlink into packs dir (default)
+  aipack pack create my-new-pack
 
-  # Create with a custom name (overrides directory basename)
-  aipack pack create ./path/to/dir --name custom-pack-name
+  # Create a pack directly in the packs dir
+  aipack pack create my-new-pack --local
 
 See also: pack install, pack show`
 }
 
 func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
-	if err := app.PackCreate(app.PackCreateRequest{Dir: c.Dir, Name: c.Name}); err != nil {
+	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(g.Stdout, "Created pack at %s\n", c.Dir)
+
+	if err := app.PackCreate(app.PackCreateRequest{
+		Name:      c.Name,
+		ConfigDir: cfgDir,
+		Local:     c.Local,
+	}); err != nil {
+		return err
+	}
+	if c.Local {
+		fmt.Fprintf(g.Stdout, "Created pack %q in %s\n", c.Name, filepath.Join(cfgDir, "packs", c.Name))
+	} else {
+		fmt.Fprintf(g.Stdout, "Created pack %q in ./%s (linked)\n", c.Name, c.Name)
+	}
 	return nil
 }
 

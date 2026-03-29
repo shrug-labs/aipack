@@ -272,8 +272,20 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// When search tab input is focused, only handle navigation keys globally;
-		// delegate everything else so character input works.
+		// When a sub-model has a text input focused, delegate all keys
+		// except hard-exit so character input isn't swallowed by global
+		// hotkeys (tab-switch, edit, sync, refresh, etc.).
+		if m.activeTab == tabSave && m.saveTab.newPackInput {
+			switch msg.String() {
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			default:
+				var cmd tea.Cmd
+				m.saveTab, cmd = m.saveTab.handleNewPackInput(msg)
+				return m, cmd
+			}
+		}
 		if m.activeTab == tabSearch && m.search.focus == searchFocusInput {
 			switch msg.String() {
 			case "tab", "shift+tab", "ctrl+c", "1", "2", "3", "4", "5":
@@ -1100,7 +1112,14 @@ func (m rootModel) handleSaveActionResult(msg dialogResultMsg) (tea.Model, tea.C
 			return m, nil
 		}
 	case actSaveToPack:
-		if m.saveTab.selCount > 0 {
+		// Scope to cursor item only: deselect everything, select just this file.
+		for i := range m.saveTab.candidates {
+			m.saveTab.candidates[i].Selected = false
+		}
+		m.saveTab.selCount = 0
+		if c := m.saveTab.currentCandidate(); c != nil {
+			c.Selected = true
+			m.saveTab.selCount = 1
 			var cmd tea.Cmd
 			m.saveTab, cmd = m.saveTab.advanceToPack()
 			return m, cmd
@@ -1454,7 +1473,7 @@ const (
 	actMoveToPack = "Move to pack"
 	actPreview    = "Preview"
 	actViewDiff   = "View diff"
-	actSaveToPack = "Save selected to pack"
+	actSaveToPack = "Save to pack"
 	actDeleteFile = "Delete file"
 	// Edit actions (open in $EDITOR).
 	actEditFile       = "Edit file"
@@ -1637,10 +1656,7 @@ func (m rootModel) openSaveActions() (tea.Model, tea.Cmd) {
 		m.statusText = dimStyle.Render("no actions available")
 		return m, nil
 	}
-	actions := []string{actPreview, actViewDiff, actEditFile, actDeleteFile}
-	if m.saveTab.selCount > 0 {
-		actions = append(actions, actSaveToPack)
-	}
+	actions := []string{actPreview, actViewDiff, actEditFile, actDeleteFile, actSaveToPack}
 	d := newListSelectDialog(dialogActionSave,
 		fmt.Sprintf("Actions for %s:", filepath.Base(f.HarnessPath)), actions)
 	m.dialog = &d

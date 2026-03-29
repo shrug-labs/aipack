@@ -170,7 +170,7 @@ func TestUpdate_ChecksumMismatch(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/"+asset):
 			w.Write([]byte("binary content"))
 		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
-			w.Write([]byte(fmt.Sprintf("0000000000000000000000000000000000000000000000000000000000000000  %s\n", asset)))
+			w.Write(fmt.Appendf(nil, "0000000000000000000000000000000000000000000000000000000000000000  %s\n", asset))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

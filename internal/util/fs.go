@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -123,10 +124,8 @@ func ValidateSymlinkTarget(resolvedTarget, boundary string) error {
 	if err != nil {
 		return fmt.Errorf("computing relative path: %w", err)
 	}
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
-		if component == ".git" {
-			return fmt.Errorf("symlink target traverses .git directory: %s", resolvedTarget)
-		}
+	if slices.Contains(strings.Split(rel, string(filepath.Separator)), ".git") {
+		return fmt.Errorf("symlink target traverses .git directory: %s", resolvedTarget)
 	}
 	info, err := os.Lstat(resolvedTarget)
 	if err != nil {

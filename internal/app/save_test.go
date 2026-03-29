@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,13 +22,7 @@ func TestScanBytesForSecrets_SSHKey(t *testing.T) {
 	if len(findings) == 0 {
 		t.Fatal("expected findings for RSA private key, got none")
 	}
-	found := false
-	for _, f := range findings {
-		if f == "matches forbidden secret pattern: SSH key material" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(findings, "matches forbidden secret pattern: SSH key material")
 	if !found {
 		t.Errorf("expected SSH key material finding, got %v", findings)
 	}
@@ -41,13 +36,7 @@ func TestScanBytesForSecrets_AKIA(t *testing.T) {
 	if len(findings) == 0 {
 		t.Fatal("expected findings for AWS access key, got none")
 	}
-	found := false
-	for _, f := range findings {
-		if f == "matches forbidden secret pattern: AKIA[0-9A-Z]{16}" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(findings, "matches forbidden secret pattern: AKIA[0-9A-Z]{16}")
 	if !found {
 		t.Errorf("expected AKIA finding, got %v", findings)
 	}
@@ -60,13 +49,7 @@ func TestScanBytesForSecrets_CloudResourceID(t *testing.T) {
 	if len(findings) == 0 {
 		t.Fatal("expected findings for cloud resource ID, got none")
 	}
-	found := false
-	for _, f := range findings {
-		if f == "matches forbidden secret pattern: ocid1.*" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(findings, "matches forbidden secret pattern: ocid1.*")
 	if !found {
 		t.Errorf("expected ocid1 finding, got %v", findings)
 	}

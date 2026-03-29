@@ -20,7 +20,7 @@ func TestArchitecture_ServicePackagesDoNotImportCmd(t *testing.T) {
 	}
 
 	forbidden := "github.com/shrug-labs/aipack/cmd/"
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -60,7 +60,7 @@ func TestArchitecture_NoDeletedPackages(t *testing.T) {
 		"github.com/shrug-labs/aipack/internal/app/doctor",
 		"github.com/shrug-labs/aipack/internal/app/seed",
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -95,7 +95,7 @@ func TestArchitecture_HarnessAndRenderDoNotImportConfig(t *testing.T) {
 		if err != nil {
 			continue // package may have no Go files
 		}
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 			parts := strings.SplitN(line, " ", 2)
 			if len(parts) < 2 {
 				continue
@@ -114,7 +114,6 @@ func TestCLIExitCodes_HelpReturnsZero(t *testing.T) {
 
 	commands := []string{"doctor", "save", "init", "clean", "sync", "render", "version", "manage", "pack", "profile", "search", "query", "restore", "trace", "status", "install"}
 	for _, cmd := range commands {
-		cmd := cmd
 		t.Run(cmd, func(t *testing.T) {
 			t.Parallel()
 			_, _, code := runApp(t, cmd, "--help")

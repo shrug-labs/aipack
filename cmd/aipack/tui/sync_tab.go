@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -118,23 +119,12 @@ func cycleScope(cfg config.SyncConfig) config.SyncConfig {
 }
 
 func (m syncTabModel) harnessEnabled(name string) bool {
-	for _, h := range m.syncCfg.Defaults.Harnesses {
-		if h == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.syncCfg.Defaults.Harnesses, name)
 }
 
 func (m syncTabModel) View() string {
-	leftW := m.width * 40 / 100
-	if leftW < 30 {
-		leftW = 30
-	}
-	rightW := m.width - leftW - 6
-	if rightW < 20 {
-		rightW = 20
-	}
+	leftW := max(m.width*40/100, 30)
+	rightW := max(m.width-leftW-6, 20)
 
 	left := m.viewConfigPanel(leftW)
 	right := m.viewStatusPanel(rightW)

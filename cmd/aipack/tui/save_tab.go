@@ -341,8 +341,8 @@ func (m saveTabModel) handleNewPackInput(msg tea.KeyMsg) (saveTabModel, tea.Cmd)
 			m.newPackName = m.newPackName[:len(m.newPackName)-1]
 		}
 	default:
-		if len(msg.String()) == 1 {
-			m.newPackName += msg.String()
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+			m.newPackName += string(msg.Runes)
 		}
 	}
 	return m, nil
@@ -580,14 +580,8 @@ func (m saveTabModel) viewHarness() string {
 			dimStyle.Render("No harnesses with content found.")
 	}
 
-	col1W := m.width * 45 / 100
-	if col1W < 30 {
-		col1W = 30
-	}
-	col2W := m.width - col1W - 6
-	if col2W < 20 {
-		col2W = 20
-	}
+	col1W := max(m.width*45/100, 30)
+	col2W := max(m.width-col1W-6, 20)
 
 	// Left: harness list.
 	left := lipgloss.NewStyle().Width(col1W)
@@ -633,14 +627,8 @@ func (m saveTabModel) viewVectors() string {
 			dimStyle.Render("No content found for this harness.")
 	}
 
-	col1W := m.width * 45 / 100
-	if col1W < 30 {
-		col1W = 30
-	}
-	col2W := m.width - col1W - 6
-	if col2W < 20 {
-		col2W = 20
-	}
+	col1W := max(m.width*45/100, 30)
+	col2W := max(m.width-col1W-6, 20)
 
 	// Left: vector checklist.
 	left := lipgloss.NewStyle().Width(col1W)
@@ -686,14 +674,8 @@ func (m saveTabModel) viewVectors() string {
 }
 
 func (m saveTabModel) viewFiles() string {
-	col1W := m.width * 45 / 100
-	if col1W < 35 {
-		col1W = 35
-	}
-	col2W := m.width - col1W - 6
-	if col2W < 20 {
-		col2W = 20
-	}
+	col1W := max(m.width*45/100, 35)
+	col2W := max(m.width-col1W-6, 20)
 
 	left := m.viewFileList(col1W)
 	sep := dimStyle.Render(" │ ")
@@ -710,10 +692,7 @@ func (m saveTabModel) viewFileList(width int) string {
 	sb.WriteString(panelHeaderStyle.Render(fmt.Sprintf("Files (%d/%d selected)", selected, len(m.candidates))) + "\n")
 
 	// Compute available lines for file list (reserve header and group headers).
-	maxLines := m.height - 6
-	if maxLines < 5 {
-		maxLines = 5
-	}
+	maxLines := max(m.height-6, 5)
 
 	lines, cursorLine := m.buildFileListLines()
 	offset := clampOffset(cursorLine, m.fileOffset, maxLines)

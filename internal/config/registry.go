@@ -202,8 +202,7 @@ func DeriveSourceName(rawURL string) string {
 		// domain label. Skip labels that would produce "registry" (the
 		// string we're trying to avoid) — e.g. "registry.example.com".
 		if i == 0 && strings.Contains(name, ".") {
-			hostParts := strings.Split(name, ".")
-			for _, label := range hostParts {
+			for label := range strings.SplitSeq(name, ".") {
 				if label != "" && label != "registry" {
 					return label
 				}
