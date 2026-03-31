@@ -540,9 +540,9 @@ Four harnesses are supported. Each implements content vectors and MCP differentl
 | Vector | Claude Code | OpenCode | Codex | Cline |
 |--------|-------------|----------|-------|-------|
 | Rules | Individual files in `.claude/rules/` (frontmatter preserved, `paths:` scoping works natively) | Individual files in `.opencode/rules/` + referenced via `instructions` key in `opencode.json` | Flattened into `AGENTS.override.md` | Individual files in `.clinerules/` |
-| Agents | Individual files in `.claude/agents/` (frontmatter transformed to Claude Code subagent format) | Individual files in `.opencode/agents/` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) | Promoted to skill dirs in `.agents/skills/` (shared with Codex; enriched frontmatter preserves type + metadata for round-trip) |
+| Agents | Individual files in `.claude/agents/` (frontmatter transformed to Claude Code subagent format) | Individual files in `.opencode/agents/` | Native TOML files in `.codex/agents/` + registration in `config.toml` `[agents.<name>]` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) |
 | Workflows | Individual files in `.claude/commands/` | Individual files in `.opencode/commands/` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) | Individual files in `.clinerules/workflows/` |
-| Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.agents/skills/` | Per-skill dirs in `.agents/skills/` (shared with Codex) |
+| Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.agents/skills/` | Per-skill dirs in `.agents/skills/` |
 
 ### Scope support
 
@@ -627,7 +627,8 @@ Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identical
 | What | Project path | Global path |
 |------|-------------|------------|
 | Rules | `AGENTS.override.md` (flattened) | `~/.codex/AGENTS.override.md` |
-| Agents + workflows | `.agents/skills/<name>/SKILL.md` (promoted) | `~/.agents/skills/<name>/SKILL.md` |
+| Agents | `.codex/agents/<name>.toml` (native) + registered in `.codex/config.toml` | `~/.codex/agents/<name>.toml` + registered in `~/.codex/config.toml` |
+| Workflows | `.agents/skills/<name>/SKILL.md` (promoted) | `~/.agents/skills/<name>/SKILL.md` |
 | Skills | `.agents/skills/<dirname>/` | `~/.agents/skills/<dirname>/` |
 | Settings | `.codex/config.toml` | `~/.codex/config.toml` |
 
@@ -636,9 +637,9 @@ Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identical
 | What | Project path | Global path |
 |------|-------------|------------|
 | Rules | `.clinerules/<file>.md` | `~/Documents/Cline/Rules/<file>.md` |
-| Agents | `.agents/skills/<name>/SKILL.md` (promoted, shared with Codex) | `~/.agents/skills/<name>/SKILL.md` (promoted, shared with Codex) |
+| Agents | `.agents/skills/<name>/SKILL.md` (promoted) | `~/.agents/skills/<name>/SKILL.md` (promoted) |
 | Workflows | `.clinerules/workflows/<file>.md` | `~/Documents/Cline/Workflows/<file>.md` |
-| Skills | `.agents/skills/<dirname>/` (shared with Codex) | `~/.agents/skills/<dirname>/` (shared with Codex) |
+| Skills | `.agents/skills/<dirname>/` | `~/.agents/skills/<dirname>/` |
 | MCP | N/A | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS VS Code) + `~/.cline/data/settings/cline_mcp_settings.json` |
 
 ### Managed keys
@@ -649,7 +650,7 @@ Keys stripped on save round-trip:
 |---------|-------------|
 | Claude Code | `mcp__*` entries in `permissions.allow` and `permissions.deny` |
 | OpenCode | `mcp`, `tools`, `instructions`, `skills` |
-| Codex | `mcp_servers` |
+| Codex | `mcp_servers`, `agents` |
 | Cline | `mcpServers` |
 
 ### Harness-specific notes
@@ -670,14 +671,16 @@ Keys stripped on save round-trip:
 
 **Codex**
 - Rules are flattened into a single `AGENTS.override.md`. If an existing `AGENTS.md` exists, its content is preserved below a separator.
-- Agents and workflows are promoted to `.agents/skills/<name>/SKILL.md` with enriched YAML frontmatter that preserves the original type (`source_type: agent` or `source_type: workflow`) and metadata for round-trip capture. Skills are copied as directories under the same path.
+- Agents are rendered as native Codex TOML files in `.codex/agents/<name>.toml`, each containing `name`, `description`, `developer_instructions` (from the agent body), and any `harness.codex` overrides as top-level TOML keys. A registration entry (`[agents.<name>]` with `description` and `config_file`) is merged into `config.toml`. Referenced MCP servers are resolved from the profile and embedded in the agent TOML. Referenced skills become `skills.config` entries with paths to the rendered skill directories. The `harness` frontmatter block is stripped — it does not appear in the rendered TOML.
+- Workflows are promoted to `.agents/skills/<name>/SKILL.md` with enriched YAML frontmatter that preserves the original type (`source_type: workflow`) for round-trip capture. Skills are copied as directories under the same path.
+- Capture reads `.codex/agents/*.toml` to reconstruct pack agents: `developer_instructions` becomes the agent body, known Codex fields (`model`, `model_reasoning_effort`, etc.) populate `harness.codex` in frontmatter, and embedded MCP server names are extracted to `mcp_servers`.
 - Global config path is always `~/.codex/`.
 
 **Cline**
 - MCP is global-only — there is no project-level MCP settings path.
 - Sync writes Cline MCP settings to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`).
 - Save/capture prefers the canonical VS Code path, falls back to the standalone path when the canonical file is missing, and warns when another discovered file differs from the capture source.
-- Agents (but not workflows) are promoted to skill directories in `.agents/skills/` (project) or `~/.agents/skills/` (global), sharing the same canonical skills location as Codex. This avoids duplication since Cline natively reads both `.clinerules/` and `.agents/`. Enriched YAML frontmatter (`source_type: agent`) preserves agent metadata for round-trip capture. Workflows remain individual files in `.clinerules/workflows/`. The promotion mechanism uses the same enriched-frontmatter approach as Codex, but Codex also promotes workflows.
+- Agents (but not workflows) are promoted to skill directories in `.agents/skills/` (project) or `~/.agents/skills/` (global), since Cline natively reads both `.clinerules/` and `.agents/`. Enriched YAML frontmatter (`source_type: agent`) preserves agent metadata for round-trip capture. Workflows remain individual files in `.clinerules/workflows/`. Codex no longer shares this promotion path — Codex agents render as native TOML files in `.codex/agents/`.
 - The MCP settings file is generated fresh from inventory on every sync (no base template concept). Existing user-defined `mcpServers` entries are preserved during merge.
 - `alwaysAllow` is allow-only — there is no mechanism to deny specific tools.
 
@@ -685,7 +688,7 @@ Keys stripped on save round-trip:
 
 - Claude Code: `internal/harness/claudecode/harness.go`, `internal/harness/claudecode/render.go`
 - OpenCode: `internal/harness/opencode/harness.go`, `internal/harness/opencode/render.go`
-- Codex: `internal/harness/codex/harness.go`, `internal/harness/codex/render.go`
+- Codex: `internal/harness/codex/harness.go`, `internal/harness/codex/render.go`, `internal/harness/codex/agent_render.go`
 - Cline: `internal/harness/cline/harness.go`, `internal/harness/cline/render.go`
 - Sync engine: `internal/engine/`
 - Config resolution: `internal/config/profile_resolve.go`
@@ -695,6 +698,6 @@ If docs and code diverge, the code is authoritative.
 ### Upstream harness docs
 
 - OpenCode: [MCP](https://opencode.ai/docs/mcp-servers/#enable), [Config](https://opencode.ai/docs/config/#instructions), [Agents](https://opencode.ai/docs/agents/#markdown), [Commands](https://opencode.ai/docs/commands/#markdown)
-- Codex: [AGENTS.md](https://developers.openai.com/codex/guides/agents-md/), [Skills](https://developers.openai.com/codex/skills/), [MCP](https://developers.openai.com/codex/mcp)
+- Codex: [AGENTS.md](https://developers.openai.com/codex/guides/agents-md/), [Skills](https://developers.openai.com/codex/skills/), [Subagents](https://developers.openai.com/codex/subagents), [Config Reference](https://developers.openai.com/codex/config-reference/), [MCP](https://developers.openai.com/codex/mcp)
 - Claude Code: [Memory/Rules](https://code.claude.com/docs/en/memory), [Subagents](https://code.claude.com/docs/en/sub-agents), [Skills](https://code.claude.com/docs/en/skills)
 - Cline: [Storage](https://docs.cline.bot/customization/overview#storage-locations), [MCP Config](https://docs.cline.bot/mcp/adding-and-configuring-servers#editing-configuration-files)

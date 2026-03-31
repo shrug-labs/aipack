@@ -244,33 +244,38 @@ description: End-of-session retrospective capturing pack usage, learnings, and m
 | `disallowed_tools` | string[] | No | Tool blocklist (these tools are denied) |
 | `skills` | string[] | No | Skills loaded into the agent's context |
 | `mcp_servers` | string[] | No | MCP servers available to this agent |
+| `harness` | map[string]map[string]any | No | Per-harness configuration overrides (see below) |
 
 The body of an agent file serves as the agent's system prompt — it defines the agent's persona, domain knowledge, and output expectations.
+
+**Harness-specific overrides:** The `harness` field carries configuration that only applies to a specific harness. Each key is a harness ID (`codex`, `claude`, `cline`, `opencode`) and the value is a map of harness-native settings. Harness adapters read their own key during rendering and ignore the rest. When agents are rendered as markdown (for harnesses that promote agents to skill directories), the `harness` block is automatically stripped from the output.
 
 **Example:**
 
 ```markdown
 ---
-name: confluence-navigator
-description: Confluence domain specialist for navigating spaces, assessing page freshness, and mapping relationships
+name: explorer
+description: Reads codebase and context deeply before proposing changes
 tools:
-  - mcp__atlassian__confluence_search
-  - mcp__atlassian__confluence_get_page
-  - mcp__atlassian__confluence_get_page_children
   - Read
   - Grep
   - Glob
-disallowed_tools:
-  - Edit
-  - Write
-  - Bash
 mcp_servers:
   - atlassian
+harness:
+  codex:
+    model_reasoning_effort: xhigh
 ---
 
-You are a Confluence navigation specialist. Your job is to find, assess, and rank
-Confluence pages using CQL queries...
+You are the Explorer role.
+
+Mission:
+- Read the codebase heavily and build strong context before proposing changes.
+- Map entry points, core modules, ownership boundaries, and data/control flow.
+...
 ```
+
+For Codex, `harness.codex` values are rendered as top-level keys in the native agent TOML. Common Codex agent fields include `model`, `model_reasoning_effort`, `service_tier`, and `sandbox_mode`. Unknown keys pass through without requiring aipack code changes.
 
 ## 5. Environment References and Parameters
 
