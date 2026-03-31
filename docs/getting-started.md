@@ -1,16 +1,16 @@
 # Getting Started: Authoring and Sharing Packs
 
-This guide walks through turning your team's shared agent configuration into a pack and distributing it. By the end, your team installs your pack in three commands and gets rules, skills, and workflows synced to whatever coding assistant they use.
+This guide walks through creating a pack — from scratch or from existing content — and sharing it. By the end, anyone can install your pack in three commands and get rules, skills, workflows, and MCP configs synced to whatever coding assistant they use.
 
 **Contents:**
-[What's a pack?](#whats-a-pack) · [Create a pack](#create-a-pack) · [Write pack content](#write-pack-content) · [Validate](#validate-your-pack) · [Share with your team](#share-with-your-team) · [Profiles](#profiles) · [Multi-harness support](#multi-harness-support)
+[What's a pack?](#whats-a-pack) · [Create a pack](#create-a-pack) · [Write pack content](#write-pack-content) · [Validate](#validate-your-pack) · [Share your pack](#share-your-pack) · [Profiles](#profiles) · [Multi-harness support](#multi-harness-support)
 
 ## What's a pack?
 
 A pack is a directory with a manifest (`pack.json`) and markdown files organized by type. You write content once — aipack renders it into the native format for Claude Code, Codex, OpenCode, and Cline.
 
 ```
-my-team-pack/
+my-pack/
 ├── pack.json          # manifest (name + version)
 ├── rules/             # always-on behavioral constraints
 ├── skills/            # on-demand knowledge (subdirectories)
@@ -27,7 +27,7 @@ If you already have markdown files with instructions for AI agents — in a shar
 ### Starting fresh
 
 ```bash
-aipack pack create my-team-pack
+aipack pack create my-pack
 ```
 
 This scaffolds the directory structure in the current directory, symlinks it into the packs directory, and generates a minimal `pack.json`:
@@ -35,7 +35,7 @@ This scaffolds the directory structure in the current directory, symlinks it int
 ```json
 {
   "schema_version": 1,
-  "name": "my-team-pack",
+  "name": "my-pack",
   "version": "0.1.0",
   "root": "."
 }
@@ -45,7 +45,7 @@ Content vectors (rules, skills, etc.) are omitted from the manifest — aipack a
 
 ### From existing content
 
-If you have a repo with shared rules or instructions:
+If you have a repo with rules, skills, or instructions for AI agents — pack content uses standard conventions (YAML frontmatter + markdown), so existing content from other frameworks typically works without modification.
 
 1. Create the same minimal `pack.json` in the repo root (or a subdirectory).
 
@@ -56,7 +56,7 @@ If you have a repo with shared rules or instructions:
 ```markdown
 ---
 name: code-review-standards
-description: Team code review conventions and quality gates
+description: Code review conventions and quality gates
 ---
 
 Your existing content here...
@@ -75,7 +75,7 @@ Always-on constraints, loaded into every conversation. Keep them concise — the
 ```markdown
 ---
 name: code-review-standards
-description: Enforce team code review conventions on all changes
+description: Enforce code review conventions on all changes
 ---
 
 Before approving any PR:
@@ -182,25 +182,25 @@ The manifest can declare default tool approvals, and profiles can override them 
 ## Validate your pack
 
 ```bash
-aipack pack validate /path/to/my-team-pack
+aipack pack validate /path/to/my-pack
 ```
 
 Validate checks manifest structure, content inventory (declared files exist on disk, MCP server names match filenames), and content policy (frontmatter presence, no secrets, no hardcoded paths). It reports findings without modifying anything. JSON Schemas for `pack.json` and MCP server files are also available for [editor validation](./pack-format.md#appendix-c-json-schemas).
 
-## Share with your team
+## Share your pack
 
-Team members need aipack installed (see the [README](../README.md#install) for brew, script, and source options). On first use, `aipack init` bootstraps the config directory, default profile, and public registry. `pack install` also creates the config directory if it doesn't exist, so teams using the onboarding flow below can skip the explicit init.
+Anyone consuming your pack needs aipack installed (see the [README](../README.md#install) for brew, script, and source options). On first use, `aipack init` bootstraps the config directory, default profile, and public registry. `pack install` also creates the config directory if it doesn't exist, so the seeded install flow below can skip the explicit init.
 
 ### The simplest path
 
-Your pack lives in a git repo. Team members install it directly:
+Your pack lives in a git repo. Others install it directly:
 
 ```bash
 # From a git URL
-aipack pack install --url https://github.com/org/shared-repo.git --path my-team-pack
+aipack pack install --url https://github.com/org/shared-repo.git --path my-pack
 
 # From a local clone (symlinked by default, --copy for a full copy)
-aipack pack install /path/to/local/clone/my-team-pack
+aipack pack install /path/to/local/clone/my-pack
 
 # Then sync to their harness
 aipack sync
@@ -208,7 +208,7 @@ aipack sync
 
 ### Scalable distribution with profiles and registries
 
-For teams with multiple packs or complex configurations, bundle profiles and a registry with your pack. This turns onboarding into three commands.
+For packs with dependencies or multiple profiles, bundle profiles and a registry with the pack. This turns setup into three commands.
 
 **1. Add bundled profiles** — see [Profiles](#profiles) below for role-based examples. At minimum, a default:
 
@@ -218,7 +218,7 @@ schema_version: 2
 params:
   jira_url: "https://jira.example.com"
 packs:
-  - name: my-team-pack
+  - name: my-pack
 ```
 
 **2. Add a bundled registry** — `registries/registry.yaml`:
@@ -226,12 +226,12 @@ packs:
 ```yaml
 schema_version: 1
 packs:
-  my-team-pack:
+  my-pack:
     repo: "https://github.com/org/shared-repo.git"
-    path: "my-team-pack"
+    path: "my-pack"
     ref: "main"
-    description: "Team shared rules, skills, and workflows"
-    owner: "platform-team"
+    description: "Shared rules, skills, and workflows"
+    owner: "my-team"
 ```
 
 **3. Declare them in pack.json**:
@@ -239,28 +239,28 @@ packs:
 ```json
 {
   "schema_version": 1,
-  "name": "my-team-pack",
+  "name": "my-pack",
   "version": "0.1.0",
   "root": ".",
   "profiles": [
     "profiles/default.yaml",
-    "profiles/oncall.yaml",
-    "profiles/new-engineer.yaml"
+    "profiles/frontend-dev.yaml",
+    "profiles/backend-dev.yaml"
   ],
   "registries": ["registries/registry.yaml"]
 }
 ```
 
-**4. Team onboarding** — three commands:
+**4. Install with seeding** — three commands:
 
 ```bash
 aipack pack install --url https://github.com/org/shared-repo.git \
-  --path my-team-pack --seed
+  --path my-pack --seed
 aipack profile set default --install
 aipack sync
 ```
 
-`--seed` applies the bundled profiles and registry. `--install` fetches any dependency packs. After this, the team member's harness is fully configured.
+`--seed` applies the bundled profiles and registry. `--install` fetches any dependency packs. After this, the consumer's harness is fully configured.
 
 ## Profiles
 
@@ -272,7 +272,7 @@ Parameters make pack content portable. Define them in the profile; they expand i
 
 ### Role-based profiles
 
-One pack can serve an entire team. Different profiles scope content and MCP servers to what each role actually needs. Here's the pattern:
+A single pack can serve multiple contexts. Different profiles scope content and MCP servers to what each role or workflow actually needs. Here's the pattern:
 
 **`profiles/default.yaml`** — baseline, full access:
 
@@ -282,7 +282,7 @@ params:
   jira_url: "https://jira.example.com"
   confluence_url: "https://confluence.example.com"
 packs:
-  - name: my-team-pack
+  - name: my-pack
     settings:
       enabled: true
     mcp:
@@ -291,20 +291,21 @@ packs:
       build-system: { enabled: true }
 ```
 
-The oncall and new-engineer profiles start from the same structure but scope differently:
+The frontend-dev, backend-dev, and manager profiles start from the same structure but scope differently:
 
 | Profile | Workflows | Skills | MCP |
 |---------|-----------|--------|-----|
 | **default** | all | all | jira, confluence, build-system |
-| **oncall** | all except `onboard` | all | + monitoring |
-| **new-engineer** | only `onboard` | only `codebase-overview`, `dev-setup` | jira, confluence only |
+| **frontend-dev** | only `component-review`, `design-qa` | only `react-patterns`, `styling` | jira, confluence only |
+| **backend-dev** | only `api-review`, `db-migration` | only `api-patterns`, `testing` | all |
+| **manager** | only `pr-review`, `sprint-planning` | only `codebase-overview` | jira, confluence only |
 
-In practice, each profile is a full YAML file. The oncall profile adds a `monitoring` MCP server and excludes onboarding workflows. The new-engineer profile uses `include` lists to narrow skills and workflows to what's relevant for ramping up, and disables build-system and monitoring MCP servers.
+In practice, each profile is a full YAML file. The frontend-dev profile disables the build-system MCP server and narrows skills to what's relevant for component work. The manager profile uses `include` lists to scope down to review and planning workflows.
 
-Team members activate the profile that matches their role:
+Switch profiles to match your current context:
 
 ```bash
-aipack profile set oncall --install
+aipack profile set frontend-dev --install
 aipack sync
 ```
 
@@ -312,18 +313,18 @@ Bundle these profiles with the pack (list them in `pack.json`'s `profiles` field
 
 ### Layering multiple packs
 
-Profiles can compose packs from different sources — an org-wide base, a team pack, and personal preferences:
+Profiles can compose packs from different sources — a community library, a shared team pack, and personal preferences:
 
 ```yaml
 schema_version: 2
 params:
   jira_url: "https://jira.example.com"
 packs:
-  - name: org-base          # shared across all teams
-  - name: my-team-pack      # team-specific rules and skills
+  - name: community-skills   # public skill library
+  - name: my-pack        # domain-specific rules and skills
   - name: personal           # individual preferences
     overrides:
-      rules: ["anti-slop"]  # personal version replaces org/team version
+      rules: ["anti-slop"]  # personal version replaces shared version
 ```
 
 Packs are processed in order. Duplicate content IDs require explicit `overrides` or the sync engine raises a conflict. See the [Pack Format Specification](./pack-format.md#84-layering-and-precedence) for the full precedence rules.

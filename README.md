@@ -1,27 +1,29 @@
 # aipack
 
-A CLI tool for authoring, composing, and syncing AI agent configuration across coding assistants.
+A package manager for AI agent knowledge.
 
-Write your rules, skills, workflows, and MCP server configs once as portable **packs**, then sync them to every harness your team uses.
+Rules, skills, workflows, agent definitions, MCP server configs — authored once as portable **packs**, composed through **profiles**, and synced to whatever coding assistant you use.
 
 ## The Problem
 
-AI coding assistants (Claude Code, Cline, Codex, OpenCode) each store agent configuration differently — different file formats, different directory structures, different conventions. Teams using multiple assistants maintain duplicate configs that drift apart. Onboarding a new team member means manually copying dotfiles.
+Agent knowledge exists everywhere and composes nowhere. Community skill libraries publish hundreds of capabilities. Teams build shared workflows that actually work. Individuals refine their MCP server configs and agent rules over months. All of it lives in places where it can't be combined: git repos with per-harness static renderings, chat threads that scroll off in days, personal dotfiles that never leave one machine.
+
+The agent ecosystem has a content layer — growing fast — and no infrastructure layer to compose it. You can't install one team's deployment workflow alongside a community skill library and your personal rules, scoped to the right context, rendered for the harness you happen to use today.
 
 ## The Solution
 
-aipack introduces **packs** — portable, versioned bundles of agent configuration — and a **sync engine** that renders them into each harness's native format.
+aipack is the infrastructure layer. **Packs** are portable, versioned bundles of agent knowledge. **Profiles** compose packs and curate which content and tools are active for a given context. A **sync engine** renders the result into each harness's native format — so the same pack works whether you use Claude Code, Codex, OpenCode, or Cline.
 
 ```
 ┌─────────────┐     ┌──────────┐     ┌──────────────┐
 │  Pack A     │     │          │     │ Claude Code  │
-│  (team ops) │────▶│          │────▶│ .claude/     │
+│ (community) │────▶│          │────▶│ .claude/     │
 ├─────────────┤     │          │     ├──────────────┤
 │  Pack B     │────▶│  aipack  │────▶│ Codex        │
-│  (personal) │     │   sync   │     │ AGENTS.override.md │
+│  (team)     │     │   sync   │     │ .codex/      │
 ├─────────────┤     │          │     ├──────────────┤
 │  Pack C     │────▶│          │────▶│ OpenCode     │
-│  (org-wide) │     │          │     │ .opencode/   │
+│ (personal)  │     │          │     │ .opencode/   │
 └─────────────┘     └──────────┘     ├──────────────┤
                                      │ Cline        │
                                      │ .clinerules/ │
@@ -100,9 +102,9 @@ Building from source requires Go 1.24+.
 aipack init
 
 # Install a pack from a local directory, git URL, or registry name
-aipack pack install ./my-team-pack
-aipack pack install --url https://github.com/org/team-pack.git
-aipack pack install my-team-pack    # looks up name in registry
+aipack pack install ./my-pack
+aipack pack install --url https://github.com/org/my-pack.git
+aipack pack install my-pack    # looks up name in registry
 
 # Preview what would change
 aipack sync --dry-run
@@ -111,33 +113,30 @@ aipack sync --dry-run
 aipack sync
 ```
 
-### Team Onboarding (Recommended)
+### Full Setup (Recommended)
 
-When a team publishes a pack in a shared repo, the ideal install path bootstraps
-everything from the team pack itself — profiles, registry entries, and dependency
-packs:
+Packs can bundle profiles, registry entries, and dependency declarations. When
+a pack includes these, the install path bootstraps your entire agent environment:
 
 ```bash
-# 1. Install the team pack from the shared repo.
-#    --seed applies bundled profiles and registry entries from the pack.
-#    Auto-creates ~/.config/aipack/ if needed.
-aipack pack install --url https://github.com/org/shared-repo.git \
-  --path team-pack --ref main --seed
+# 1. Install a pack. --seed applies its bundled profiles and registry entries.
+aipack pack install --url https://github.com/org/my-pack.git --seed
 
-# 2. Activate the team profile and install its dependency packs.
-#    --install looks up missing packs in the seeded registry and installs them.
-aipack profile set my-team --install
+# 2. Activate a profile and install its dependency packs from the registry.
+aipack profile set frontend-dev --install
 
 # 3. Sync to your harness.
-aipack sync --harness claudecode --scope global
+aipack sync
 ```
 
-Three commands: install the team pack, activate the profile with dependencies,
-sync. New team members are fully configured.
+Three commands: install, compose, sync. The profile pulls in whatever
+dependency packs it needs — community skill libraries, shared MCP configs,
+project-specific workflows — and aipack renders the combined result for your
+harness.
 
 ## Documentation
 
-- **[Getting Started: Authoring and Sharing Packs](docs/getting-started.md)** — create a pack from scratch or existing content, share it with your team, compose multiple packs
+- **[Getting Started: Authoring and Sharing Packs](docs/getting-started.md)** — create a pack from scratch or existing content, share it, compose multiple packs
 - **[Pack Format Specification](docs/pack-format.md)** — full format reference including content vectors, MCP servers, profiles, distribution, and JSON Schemas
 - **[aipack Reference](docs/aipack.md)** — complete CLI reference, top-level command surface, per-harness behavior, and sync/save behavior
 - **[Configuration and State](docs/configuration.md)** — config directory layout, sync-config reference, ledger and state management
@@ -147,7 +146,7 @@ sync. New team members are fully configured.
 
 A **pack** is a directory of agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — with a `pack.json` manifest. Content is markdown with YAML frontmatter. Drop files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `mcp/`) and the sync engine discovers them automatically. Full format reference: [Pack Format Specification](docs/pack-format.md).
 
-**Profiles** control which packs to sync and how — content filtering, parameter expansion, MCP server overrides, role-based scoping. Teams bundle profiles with packs so onboarding is `pack install --seed` + `profile set` + `sync`. See [Getting Started](docs/getting-started.md#profiles) for worked examples.
+**Profiles** control which packs to sync and how — content filtering, parameter expansion, per-pack content overrides, context-based scoping. Packs can bundle profiles so setup is `pack install --seed` + `profile set` + `sync`. See [Getting Started](docs/getting-started.md#profiles) for worked examples.
 
 **Sync** resolves the active profile and writes to harness-native locations. Non-destructive by default — user modifications are detected via content digest and shown as diffs rather than overwritten.
 
