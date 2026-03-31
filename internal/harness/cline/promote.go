@@ -26,6 +26,9 @@ func addPromotedAgents(f *domain.Fragment, skillsDir string, agents []domain.Age
 		if desc == "" {
 			desc = fmt.Sprintf("Agent: %s", name)
 		}
+		if !strings.HasPrefix(desc, harness.DescPrefixAgent) {
+			desc = harness.DescPrefixAgent + desc
+		}
 		fm := harness.PromotedFrontmatter{
 			Name:            name,
 			Description:     desc,

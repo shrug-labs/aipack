@@ -72,20 +72,39 @@ func TestPlan_Project_AgentsOverride_WithRulesAndAgents(t *testing.T) {
 		t.Fatal("expected preserved existing AGENTS.md content")
 	}
 
-	// Agent should be promoted to a skill.
-	skillPath := filepath.Join(projectDir, ".agents", "skills", "reviewer", "SKILL.md")
-	var skillContent string
+	// Agent should be rendered as a native TOML, NOT promoted to a skill.
+	agentTOMLPath := filepath.Join(projectDir, ".codex", "agents", "reviewer.toml")
+	var agentContent string
 	for _, w := range f.Writes {
-		if w.Dst == skillPath {
-			skillContent = string(w.Content)
+		if w.Dst == agentTOMLPath {
+			agentContent = string(w.Content)
 		}
 	}
-	if skillContent == "" {
-		t.Fatalf("expected promoted agent skill at %q; got writes: %v", skillPath, writeDsts(f.Writes))
+	if agentContent == "" {
+		t.Fatalf("expected native agent TOML at %q; got writes: %v", agentTOMLPath, writeDsts(f.Writes))
 	}
-	if !strings.Contains(skillContent, "Reviews code") {
-		t.Fatal("expected agent body in promoted skill")
+	if !strings.Contains(agentContent, "Reviews code") {
+		t.Fatal("expected agent body in developer_instructions")
 	}
+	if !strings.Contains(agentContent, "name = 'reviewer'") {
+		t.Fatal("expected name field in agent TOML")
+	}
+
+	// Agent should NOT be promoted to a skill.
+	skillPath := filepath.Join(projectDir, ".agents", "skills", "reviewer", "SKILL.md")
+	for _, w := range f.Writes {
+		if w.Dst == skillPath {
+			t.Fatal("agent should NOT be promoted to skill — should be native TOML")
+		}
+	}
+
+	// Config.toml settings should contain agent registration.
+	for _, s := range f.Settings {
+		if strings.Contains(string(s.Desired), "reviewer") && strings.Contains(string(s.Desired), "config_file") {
+			return // found it
+		}
+	}
+	t.Fatal("expected agent registration in config.toml settings")
 }
 
 func TestPlan_Project_AgentsOverride_NoExistingAgents(t *testing.T) {
@@ -251,7 +270,7 @@ func TestRenderBytes_MergesBase(t *testing.T) {
 		{Name: "foo", Command: []string{"echo", "hi"}, Env: map[string]string{}, AllowedTools: []string{"get_issue"}},
 	}
 
-	out, _, err := RenderBytes(base, servers)
+	out, _, err := RenderBytes(base, servers, nil)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -279,7 +298,7 @@ func TestRenderBytes_EnvIncluded(t *testing.T) {
 		{Name: "srv", Command: []string{"node", "srv.js"}, Env: map[string]string{"API_KEY": "secret", "TOKEN": "abc"}},
 	}
 
-	out, _, err := RenderBytes(nil, servers)
+	out, _, err := RenderBytes(nil, servers, nil)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -309,7 +328,7 @@ func TestRenderBytes_OmitsEmptyEnv(t *testing.T) {
 		{Name: "plain", Command: []string{"echo", "hi"}, Env: map[string]string{}},
 	}
 
-	out, _, err := RenderBytes(nil, servers)
+	out, _, err := RenderBytes(nil, servers, nil)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -332,7 +351,7 @@ func TestRenderBytes_EnvRefsResolved(t *testing.T) {
 		{Name: "monitoring", Command: []string{"uvx", "--env-file", "{env:MON_ENV_FILE}", "monitoring_mcp@latest"}, Env: map[string]string{}},
 	}
 
-	out, _, err := RenderBytes(nil, servers)
+	out, _, err := RenderBytes(nil, servers, nil)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -364,7 +383,7 @@ func TestRenderBytes_DirectCommand(t *testing.T) {
 		{Name: "plain", Command: []string{"node", "server.js"}, Env: map[string]string{}},
 	}
 
-	out, _, err := RenderBytes(nil, servers)
+	out, _, err := RenderBytes(nil, servers, nil)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -389,7 +408,7 @@ func TestRenderBytes_NonStdioIncluded(t *testing.T) {
 		{Name: "sse-srv", Transport: domain.TransportSSE, URL: "https://example.com/sse"},
 	}
 
-	out, warnings, err := RenderBytes(nil, servers)
+	out, warnings, err := RenderBytes(nil, servers, nil)
 	if err != nil {
 		t.Fatalf("RenderBytes: %v", err)
 	}
@@ -457,7 +476,7 @@ func TestBuildManagedContent_Empty(t *testing.T) {
 
 // --- Strip via Layout tests ---
 
-func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
+func TestLayout_StripManaged_RemovesMCPServersAndAgents(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 	h := Harness{}
@@ -465,7 +484,7 @@ func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
 	if len(layout.OwnedFiles) == 0 {
 		t.Fatal("expected at least one owned file")
 	}
-	input := []byte("foo = 'bar'\n\n[mcp_servers.test]\nenabled = true\ncommand = 'echo'\n")
+	input := []byte("foo = 'bar'\n\n[mcp_servers.test]\nenabled = true\ncommand = 'echo'\n\n[agents.reviewer]\ndescription = 'Reviews code'\nconfig_file = './agents/reviewer.toml'\n")
 	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
@@ -478,8 +497,11 @@ func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
 	if _, ok := root["mcp_servers"]; ok {
 		t.Fatal("mcp_servers should be stripped")
 	}
+	if _, ok := root["agents"]; ok {
+		t.Fatal("agents should be stripped")
+	}
 	if root["foo"] != "bar" {
-		t.Fatal("non-MCP keys should be preserved")
+		t.Fatal("non-managed keys should be preserved")
 	}
 }
 
@@ -577,6 +599,7 @@ func TestLayout_Project(t *testing.T) {
 
 	want := map[string]bool{
 		filepath.Join("/proj", ".agents", "skills"):     false,
+		filepath.Join("/proj", ".codex", "agents"):      false,
 		filepath.Join("/proj", "AGENTS.override.md"):    false,
 		filepath.Join("/proj", ".codex", "config.toml"): false,
 	}
@@ -594,6 +617,7 @@ func TestLayout_Project(t *testing.T) {
 	}
 	wantRemove := map[string]bool{
 		filepath.Join("/proj", ".agents", "skills"):  false,
+		filepath.Join("/proj", ".codex", "agents"):   false,
 		filepath.Join("/proj", "AGENTS.override.md"): false,
 	}
 	for _, p := range layout.RemovePaths {
@@ -621,6 +645,7 @@ func TestLayout_Global(t *testing.T) {
 
 	want := map[string]bool{
 		filepath.Join("/home", ".agents", "skills"):            false,
+		filepath.Join("/home", ".codex", "agents"):             false,
 		filepath.Join("/home", ".codex", "AGENTS.override.md"): false,
 		filepath.Join("/home", ".codex", "config.toml"):        false,
 	}
@@ -638,6 +663,7 @@ func TestLayout_Global(t *testing.T) {
 	}
 	wantRemove := map[string]bool{
 		filepath.Join("/home", ".agents", "skills"):            false,
+		filepath.Join("/home", ".codex", "agents"):             false,
 		filepath.Join("/home", ".codex", "AGENTS.override.md"): false,
 	}
 	for _, p := range layout.RemovePaths {
@@ -661,11 +687,11 @@ func TestPromoteWorkflows_GeneratesSkillMD(t *testing.T) {
 	var f domain.Fragment
 	workflows := []domain.Workflow{
 		{
-			Name:        "starfix",
-			Frontmatter: domain.WorkflowFrontmatter{Name: "starfix", Description: "StarFix remediation workflow"},
-			Body:        []byte("## Steps\n\n1. Run starfix\n2. Verify"),
+			Name:        "remediate",
+			Frontmatter: domain.WorkflowFrontmatter{Name: "remediate", Description: "Automated issue remediation workflow"},
+			Body:        []byte("## Steps\n\n1. Run remediate\n2. Verify"),
 			SourcePack:  "pack-a",
-			SourcePath:  "/packs/pack-a/workflows/starfix.md",
+			SourcePath:  "/packs/pack-a/workflows/remediate.md",
 		},
 	}
 
@@ -675,16 +701,16 @@ func TestPromoteWorkflows_GeneratesSkillMD(t *testing.T) {
 		t.Fatalf("expected 1 write, got %d", len(f.Writes))
 	}
 	w := f.Writes[0]
-	wantDst := filepath.Join("/project", ".agents", "skills", "starfix", "SKILL.md")
+	wantDst := filepath.Join("/project", ".agents", "skills", "remediate", "SKILL.md")
 	if w.Dst != wantDst {
 		t.Fatalf("dst: got %q want %q", w.Dst, wantDst)
 	}
 	content := string(w.Content)
-	if !strings.Contains(content, "name: starfix") {
+	if !strings.Contains(content, "name: remediate") {
 		t.Fatal("expected name in frontmatter")
 	}
-	if !strings.Contains(content, "StarFix remediation workflow") {
-		t.Fatal("expected description in frontmatter")
+	if !strings.Contains(content, "[Workflow] Automated issue remediation workflow") {
+		t.Fatal("expected [Workflow] prefixed description in frontmatter")
 	}
 	if !strings.Contains(content, "source_type: workflow") {
 		t.Fatal("expected source_type: workflow in frontmatter")
@@ -693,26 +719,27 @@ func TestPromoteWorkflows_GeneratesSkillMD(t *testing.T) {
 		t.Fatal("expected body content")
 	}
 	// Desired should include both the skill directory and the SKILL.md file.
-	wantDir := filepath.Join("/project", ".agents", "skills", "starfix")
+	wantDir := filepath.Join("/project", ".agents", "skills", "remediate")
 	wantFile := filepath.Join(wantDir, "SKILL.md")
 	if len(f.Desired) != 2 || f.Desired[0] != wantDir || f.Desired[1] != wantFile {
 		t.Fatalf("desired: got %v want [%s %s]", f.Desired, wantDir, wantFile)
 	}
 }
 
-func TestPromoteAgents_GeneratesSkillMD(t *testing.T) {
+func TestNativeAgents_GeneratesToml(t *testing.T) {
 	t.Parallel()
 	var f domain.Fragment
 	agents := []domain.Agent{
 		{
 			Name: "reviewer",
 			Frontmatter: domain.AgentFrontmatter{
-				Name:            "reviewer",
-				Description:     "Code review specialist",
-				Tools:           []string{"read", "grep"},
-				DisallowedTools: []string{"bash"},
-				Skills:          []string{"code-review"},
-				MCPServers:      []string{"atlassian"},
+				Name:        "reviewer",
+				Description: "Code review specialist",
+				Tools:       []string{"read", "grep"},
+				Skills:      []string{"code-review"},
+				Harness: map[string]map[string]any{
+					"codex": {"model": "o3", "model_reasoning_effort": "high"},
+				},
 			},
 			Body:       []byte("You are a code reviewer."),
 			SourcePack: "pack-a",
@@ -720,40 +747,34 @@ func TestPromoteAgents_GeneratesSkillMD(t *testing.T) {
 		},
 	}
 
-	addPromotedAgents(&f, "/project", filepath.Join(".agents", "skills"), agents)
+	regs, _ := addNativeAgents(&f, "/project/.codex/agents", agents, nil, "/project", filepath.Join(".agents", "skills"))
 
 	if len(f.Writes) != 1 {
 		t.Fatalf("expected 1 write, got %d", len(f.Writes))
 	}
 	w := f.Writes[0]
-	wantDst := filepath.Join("/project", ".agents", "skills", "reviewer", "SKILL.md")
+	wantDst := filepath.Join("/project", ".codex", "agents", "reviewer.toml")
 	if w.Dst != wantDst {
 		t.Fatalf("dst: got %q want %q", w.Dst, wantDst)
 	}
 	content := string(w.Content)
-	if !strings.Contains(content, "name: reviewer") {
-		t.Fatal("expected name in frontmatter")
-	}
-	if !strings.Contains(content, "Code review specialist") {
-		t.Fatal("expected description in frontmatter")
-	}
-	if !strings.Contains(content, "source_type: agent") {
-		t.Fatal("expected source_type: agent in frontmatter")
-	}
-	if !strings.Contains(content, "- read") || !strings.Contains(content, "- grep") {
-		t.Fatal("expected tools in frontmatter")
-	}
-	if !strings.Contains(content, "- bash") {
-		t.Fatal("expected disallowed_tools in frontmatter")
-	}
-	if !strings.Contains(content, "- code-review") {
-		t.Fatal("expected skills in frontmatter")
-	}
-	if !strings.Contains(content, "- atlassian") {
-		t.Fatal("expected mcp_servers in frontmatter")
-	}
 	if !strings.Contains(content, "You are a code reviewer.") {
-		t.Fatal("expected body content")
+		t.Fatal("expected body in developer_instructions")
+	}
+	if !strings.Contains(content, "name = 'reviewer'") {
+		t.Fatal("expected name in TOML")
+	}
+	if !strings.Contains(content, "model = 'o3'") {
+		t.Fatal("expected model from harness.codex")
+	}
+
+	// Verify registration entry was produced.
+	reg, ok := regs["reviewer"]
+	if !ok {
+		t.Fatal("expected registration entry for reviewer")
+	}
+	if reg["config_file"] != "./agents/reviewer.toml" {
+		t.Fatalf("config_file = %v", reg["config_file"])
 	}
 }
 
@@ -781,8 +802,31 @@ func TestPromoteWorkflow_FallbackDescription(t *testing.T) {
 	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), workflows)
 
 	content := string(f.Writes[0].Content)
-	if !strings.Contains(content, "Workflow: deploy") {
-		t.Fatalf("expected fallback description, got:\n%s", content)
+	if !strings.Contains(content, "[Workflow] Workflow: deploy") {
+		t.Fatalf("expected prefixed fallback description, got:\n%s", content)
+	}
+}
+
+func TestPromoteWorkflow_DescriptionPrefix_NotDuplicated(t *testing.T) {
+	t.Parallel()
+	var f domain.Fragment
+	workflows := []domain.Workflow{
+		{
+			Name:        "check",
+			Frontmatter: domain.WorkflowFrontmatter{Name: "check", Description: "[Workflow] already prefixed"},
+			Body:        []byte("steps here"),
+			SourcePack:  "pack-a",
+		},
+	}
+
+	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), workflows)
+
+	content := string(f.Writes[0].Content)
+	if strings.Contains(content, "[Workflow] [Workflow]") {
+		t.Fatal("description prefix was doubled")
+	}
+	if !strings.Contains(content, "[Workflow] already prefixed") {
+		t.Fatalf("expected single prefix, got:\n%s", content)
 	}
 }
 
@@ -907,11 +951,11 @@ func TestCapturePromoted_Workflow(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 
-	skillDir := filepath.Join(projectDir, ".agents", "skills", "starfix")
+	skillDir := filepath.Join(projectDir, ".agents", "skills", "remediate")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	content := "---\nname: starfix\ndescription: StarFix remediation\nsource_type: workflow\n---\n\n## Steps\n\n1. Run starfix\n"
+	content := "---\nname: remediate\ndescription: StarFix remediation\nsource_type: workflow\n---\n\n## Steps\n\n1. Run remediate\n"
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -932,7 +976,7 @@ func TestCapturePromoted_Workflow(t *testing.T) {
 	}
 
 	wf := res.Workflows[0]
-	if wf.Name != "starfix" {
+	if wf.Name != "remediate" {
 		t.Fatalf("workflow name: got %q", wf.Name)
 	}
 	if wf.Frontmatter.Description != "StarFix remediation" {
@@ -941,7 +985,7 @@ func TestCapturePromoted_Workflow(t *testing.T) {
 
 	found := false
 	for _, w := range res.Writes {
-		if w.Dst == filepath.Join("workflows", "starfix.md") {
+		if w.Dst == filepath.Join("workflows", "remediate.md") {
 			found = true
 			if !w.IsContent {
 				t.Error("promoted workflow WriteAction should have IsContent=true")
@@ -952,7 +996,7 @@ func TestCapturePromoted_Workflow(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected WriteAction for workflows/starfix.md; got writes: %v", writeDsts(res.Writes))
+		t.Fatalf("expected WriteAction for workflows/remediate.md; got writes: %v", writeDsts(res.Writes))
 	}
 }
 
@@ -991,18 +1035,19 @@ func TestCapturePromoted_PlainSkill(t *testing.T) {
 	}
 }
 
-func TestCapturePromoted_RoundTrip(t *testing.T) {
+func TestNativeAgent_RoundTrip(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 
-	// Promote an agent via Plan, write the output, then Capture and verify.
+	// Render an agent via Plan, write the output, then Capture and verify.
 	agent := domain.Agent{
 		Name: "tester",
 		Frontmatter: domain.AgentFrontmatter{
 			Name:        "tester",
 			Description: "Test runner agent",
-			Tools:       []string{"bash", "read"},
-			MCPServers:  []string{"ci"},
+			Harness: map[string]map[string]any{
+				"codex": {"model": "o3", "model_reasoning_effort": "medium"},
+			},
 		},
 		Body:       []byte("You run tests."),
 		SourcePack: "pack-a",
@@ -1022,7 +1067,7 @@ func TestCapturePromoted_RoundTrip(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// Write promoted SKILL.md to disk.
+	// Write native agent TOML to disk.
 	for _, w := range f.Writes {
 		dir := filepath.Dir(w.Dst)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1052,11 +1097,257 @@ func TestCapturePromoted_RoundTrip(t *testing.T) {
 	if a.Frontmatter.Description != "Test runner agent" {
 		t.Fatalf("round-trip agent description: got %q", a.Frontmatter.Description)
 	}
-	if len(a.Frontmatter.Tools) != 2 {
-		t.Fatalf("round-trip agent tools: got %v", a.Frontmatter.Tools)
+	if string(a.Body) != "You run tests." {
+		t.Fatalf("round-trip agent body: got %q", string(a.Body))
 	}
-	if len(a.Frontmatter.MCPServers) != 1 || a.Frontmatter.MCPServers[0] != "ci" {
-		t.Fatalf("round-trip agent mcp_servers: got %v", a.Frontmatter.MCPServers)
+	// Harness-specific fields should round-trip via the harness.codex map.
+	codex, ok := a.Frontmatter.Harness["codex"]
+	if !ok {
+		t.Fatal("round-trip: expected harness.codex config")
+	}
+	if codex["model"] != "o3" {
+		t.Fatalf("round-trip model: got %v", codex["model"])
+	}
+}
+
+func TestCapture_NativeAgent_WithMCPServers(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	agentsDir := filepath.Join(projectDir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentTOML := `name = "investigator"
+description = "Investigates issues"
+developer_instructions = "You investigate."
+model = "o3"
+
+[mcp_servers.deploy-tool]
+enabled = true
+command = "deploy-tool"
+args = ["serve"]
+startup_timeout_sec = 10
+`
+	if err := os.WriteFile(filepath.Join(agentsDir, "investigator.toml"), []byte(agentTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if len(res.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(res.Agents))
+	}
+	a := res.Agents[0]
+	if a.Name != "investigator" {
+		t.Fatalf("name = %q", a.Name)
+	}
+	// MCP server names should be extracted.
+	if len(a.Frontmatter.MCPServers) != 1 || a.Frontmatter.MCPServers[0] != "deploy-tool" {
+		t.Fatalf("mcp_servers = %v", a.Frontmatter.MCPServers)
+	}
+	// model should be in harness.codex.
+	codex := a.Frontmatter.Harness["codex"]
+	if codex["model"] != "o3" {
+		t.Fatalf("model = %v", codex["model"])
+	}
+}
+
+func TestCapture_NativeAgent_MalformedTOML_WarnsDoesNotCrash(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	agentsDir := filepath.Join(projectDir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write malformed TOML.
+	if err := os.WriteFile(filepath.Join(agentsDir, "broken.toml"), []byte("this is not valid toml [[["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Also write a valid one to verify partial capture.
+	validTOML := `name = "valid"
+description = "Valid agent"
+developer_instructions = "Valid body."
+`
+	if err := os.WriteFile(filepath.Join(agentsDir, "valid.toml"), []byte(validTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("Capture should not error on malformed agent: %v", err)
+	}
+
+	// Should have captured the valid agent.
+	if len(res.Agents) != 1 {
+		t.Fatalf("expected 1 valid agent, got %d", len(res.Agents))
+	}
+	if res.Agents[0].Name != "valid" {
+		t.Fatalf("expected valid agent, got %q", res.Agents[0].Name)
+	}
+	// Should have a warning about the broken one.
+	foundWarning := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w.Message, "parse native agent TOML") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatal("expected warning about malformed agent TOML")
+	}
+}
+
+func TestCapture_NativeAgent_IgnoresNonTOMLFiles(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	agentsDir := filepath.Join(projectDir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a .md file and a subdirectory — both should be ignored.
+	if err := os.WriteFile(filepath.Join(agentsDir, "readme.md"), []byte("# Ignore me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(agentsDir, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if len(res.Agents) != 0 {
+		t.Fatalf("expected 0 agents from non-TOML files, got %d", len(res.Agents))
+	}
+}
+
+func TestCapture_NativeAgent_MinimalTOML_NoNameOrDescription(t *testing.T) {
+	// Real-world Codex agent TOMLs often contain only model_reasoning_effort
+	// and developer_instructions — no name or description (those live in the
+	// config.toml registration). Capture should handle this gracefully,
+	// deriving the name from the filename.
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	agentsDir := filepath.Join(projectDir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Minimal TOML matching real-world agent_roles format.
+	minimalTOML := "model_reasoning_effort = \"xhigh\"\n\ndeveloper_instructions = \"\"\"\nYou are the Explorer role.\n\nMission:\n- Read the codebase heavily and build strong context.\n\"\"\"\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "explorer.toml"), []byte(minimalTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if len(res.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(res.Agents))
+	}
+	a := res.Agents[0]
+	// Name should be derived from filename when missing.
+	if a.Name != "explorer" {
+		t.Fatalf("name = %q, want explorer (from filename)", a.Name)
+	}
+	// Description should be empty (not present in TOML).
+	if a.Frontmatter.Description != "" {
+		t.Fatalf("description should be empty, got %q", a.Frontmatter.Description)
+	}
+	// Body should contain the developer_instructions.
+	if !strings.Contains(string(a.Body), "Explorer role") {
+		t.Fatalf("body = %q, expected Explorer role content", string(a.Body))
+	}
+	// model_reasoning_effort should be in harness.codex.
+	codex, ok := a.Frontmatter.Harness["codex"]
+	if !ok {
+		t.Fatal("expected harness.codex config")
+	}
+	if codex["model_reasoning_effort"] != "xhigh" {
+		t.Fatalf("reasoning_effort = %v", codex["model_reasoning_effort"])
+	}
+}
+
+func TestCapture_NativeAgent_MultipleRealWorldAgents(t *testing.T) {
+	// Simulate a real multi-agent setup with different reasoning efforts.
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	agentsDir := filepath.Join(projectDir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := map[string]string{
+		"explorer.toml":    "model_reasoning_effort = \"xhigh\"\ndeveloper_instructions = \"You are the Explorer.\"\n",
+		"code_writer.toml": "model_reasoning_effort = \"high\"\ndeveloper_instructions = \"You write code.\"\n",
+		"reviewer.toml":    "model_reasoning_effort = \"xhigh\"\ndeveloper_instructions = \"You review PRs.\"\n",
+	}
+	for name, content := range agents {
+		if err := os.WriteFile(filepath.Join(agentsDir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if len(res.Agents) != 3 {
+		t.Fatalf("expected 3 agents, got %d", len(res.Agents))
+	}
+
+	// Verify each agent was captured with correct reasoning effort.
+	byName := map[string]domain.Agent{}
+	for _, a := range res.Agents {
+		byName[a.Name] = a
+	}
+
+	explorer, ok := byName["explorer"]
+	if !ok {
+		t.Fatal("missing explorer")
+	}
+	if explorer.Frontmatter.Harness["codex"]["model_reasoning_effort"] != "xhigh" {
+		t.Fatal("explorer should have xhigh reasoning")
+	}
+
+	writer, ok := byName["code_writer"]
+	if !ok {
+		t.Fatal("missing code_writer")
+	}
+	if writer.Frontmatter.Harness["codex"]["model_reasoning_effort"] != "high" {
+		t.Fatal("code_writer should have high reasoning")
+	}
+
+	reviewer, ok := byName["reviewer"]
+	if !ok {
+		t.Fatal("missing reviewer")
+	}
+	if string(reviewer.Body) != "You review PRs." {
+		t.Fatalf("reviewer body = %q", string(reviewer.Body))
 	}
 }
 

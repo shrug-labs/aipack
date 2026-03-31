@@ -26,6 +26,9 @@ func addPromotedWorkflows(f *domain.Fragment, baseDir, subDir string, workflows 
 		if desc == "" {
 			desc = fmt.Sprintf("Workflow: %s", name)
 		}
+		if !strings.HasPrefix(desc, harness.DescPrefixWorkflow) {
+			desc = harness.DescPrefixWorkflow + desc
+		}
 		fm := harness.PromotedFrontmatter{
 			Name:        name,
 			Description: desc,
@@ -45,10 +48,35 @@ func addPromotedWorkflows(f *domain.Fragment, baseDir, subDir string, workflows 
 	}
 }
 
-// addPromotedAgents converts agents to SKILL.md WriteActions under the given
-// subDir. Each agent becomes a skill directory with a generated SKILL.md
-// containing enriched frontmatter that preserves agent metadata.
-func addPromotedAgents(f *domain.Fragment, baseDir, subDir string, agents []domain.Agent) {
+// addNativeAgents renders agents as native Codex TOML files under agentsDir
+// and returns a map of registration entries for config.toml [agents.<name>].
+// Each agent becomes a self-contained .toml file with developer_instructions,
+// harness-specific config, resolved MCP servers, and skill references.
+func addNativeAgents(
+	f *domain.Fragment,
+	agentsDir string,
+	agents []domain.Agent,
+	allMCPServers []domain.MCPServer,
+	skillsBase, skillsSubDir string,
+) (map[string]map[string]any, []domain.Warning) {
+	if len(agents) == 0 {
+		return nil, nil
+	}
+
+	// Build a lookup of skill name → rendered path for skill resolution.
+	// Skills are rendered under skillsBase/skillsSubDir/<name>.
+	skillPaths := map[string]string{}
+	// We don't have the full skill list here, but agents reference skills by
+	// name and the paths are deterministic.
+	for _, a := range agents {
+		for _, s := range a.Frontmatter.Skills {
+			skillPaths[s] = filepath.Join(skillsBase, skillsSubDir, s)
+		}
+	}
+
+	regs := map[string]map[string]any{}
+	var warnings []domain.Warning
+	f.Desired = append(f.Desired, agentsDir)
 	for _, a := range agents {
 		body := strings.TrimSpace(string(a.Body))
 		if body == "" {
@@ -62,24 +90,29 @@ func addPromotedAgents(f *domain.Fragment, baseDir, subDir string, agents []doma
 		if desc == "" {
 			desc = fmt.Sprintf("Agent: %s", name)
 		}
-		fm := harness.PromotedFrontmatter{
-			Name:            name,
-			Description:     desc,
-			SourceType:      harness.SourceTypeAgent,
-			Tools:           a.Frontmatter.Tools,
-			DisallowedTools: a.Frontmatter.DisallowedTools,
-			Skills:          a.Frontmatter.Skills,
-			MCPServers:      a.Frontmatter.MCPServers,
+
+		tomlBytes, renderWarnings, err := RenderAgentTOML(a, allMCPServers, skillPaths, desc)
+		warnings = append(warnings, renderWarnings...)
+		if err != nil {
+			warnings = append(warnings, domain.Warning{
+				Path:    a.SourcePath,
+				Message: fmt.Sprintf("render native agent %s: %v", name, err),
+			})
+			continue
 		}
-		content := harness.BuildPromotedMD(fm, body)
-		skillDir := filepath.Join(baseDir, subDir, name)
-		dst := filepath.Join(skillDir, "SKILL.md")
+
+		dst := filepath.Join(agentsDir, name+".toml")
 		f.Writes = append(f.Writes, domain.WriteAction{
 			Dst:        dst,
-			Content:    []byte(content),
+			Content:    tomlBytes,
 			SourcePack: a.SourcePack,
 			Src:        a.SourcePath,
 		})
-		f.Desired = append(f.Desired, skillDir, dst)
+		f.Desired = append(f.Desired, dst)
+
+		// Registration entry for config.toml — config_file is relative to config.toml.
+		configFile := "./agents/" + name + ".toml"
+		regs[name] = BuildAgentRegistration(name, desc, configFile)
 	}
+	return regs, warnings
 }

@@ -370,6 +370,69 @@ func TestRenderAgentBytes_NeutralSchema(t *testing.T) {
 	}
 }
 
+func TestRenderAgentBytes_StripsHarness(t *testing.T) {
+	t.Parallel()
+	agent := domain.Agent{
+		Frontmatter: domain.AgentFrontmatter{
+			Name:        "explorer",
+			Description: "Fast exploration",
+			Tools:       []string{"Read"},
+			Harness: map[string]map[string]any{
+				"codex": {"model": "o3", "model_reasoning_effort": "high"},
+			},
+		},
+		Body: []byte("You explore.\n"),
+	}
+	out, err := RenderAgentBytes(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, "harness") {
+		t.Fatalf("rendered markdown should not contain harness block:\n%s", s)
+	}
+	if strings.Contains(s, "codex") {
+		t.Fatalf("rendered markdown should not contain harness-specific keys:\n%s", s)
+	}
+	if !strings.Contains(s, "explorer") {
+		t.Fatal("should preserve name")
+	}
+	if !strings.Contains(s, "You explore.") {
+		t.Fatal("should preserve body")
+	}
+}
+
+func TestRenderAgentBytes_RoundTripsWithHarness(t *testing.T) {
+	t.Parallel()
+	agent := domain.Agent{
+		Frontmatter: domain.AgentFrontmatter{
+			Name:        "reviewer",
+			Description: "Reviews changes",
+			Tools:       []string{"bash", "read"},
+			Harness: map[string]map[string]any{
+				"codex": {"model": "o3"},
+			},
+		},
+		Body: []byte("Review\n"),
+	}
+	raw, err := RenderAgentBytes(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Parse should succeed — harness is stripped, so no round-trip of that field.
+	parsed, err := ParseAgentBytes(raw, "reviewer", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Frontmatter.Description != "Reviews changes" {
+		t.Fatalf("Description = %q", parsed.Frontmatter.Description)
+	}
+	// Harness should NOT round-trip through markdown rendering.
+	if parsed.Frontmatter.Harness != nil {
+		t.Fatalf("Harness should be nil after round-trip, got %v", parsed.Frontmatter.Harness)
+	}
+}
+
 func TestParseRules_MissingFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -278,15 +278,15 @@ func parseOpenCodeSettings(servers map[string]domain.MCPServer, allowed map[stri
 	// server names containing underscores (e.g. "foo_bar") against tool keys
 	// like "foo_bar_baz" without splitting at the wrong underscore.
 	normalizedNames := make([]string, 0, len(cfg.MCP))
+	normalizedToOriginal := make(map[string]string, len(cfg.MCP))
 	for name := range cfg.MCP {
-		normalizedNames = append(normalizedNames, engine.NormalizeServerName(name))
+		norm := engine.NormalizeServerName(name)
+		normalizedNames = append(normalizedNames, norm)
+		normalizedToOriginal[norm] = name
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(normalizedNames))) // longest first
 
 	for tool, enabled := range cfg.Tools {
-		if !enabled {
-			continue
-		}
 		if strings.HasSuffix(tool, "_*") {
 			continue
 		}
@@ -294,10 +294,23 @@ func parseOpenCodeSettings(servers map[string]domain.MCPServer, allowed map[stri
 		if prefix == "" || toolName == "" {
 			continue
 		}
-		allowed[prefix] = append(allowed[prefix], toolName)
+		if enabled {
+			allowed[prefix] = append(allowed[prefix], toolName)
+		} else if origName, ok := normalizedToOriginal[prefix]; ok {
+			if srv, ok := servers[origName]; ok {
+				srv.DisabledTools = append(srv.DisabledTools, toolName)
+				servers[origName] = srv
+			}
+		}
 	}
 	for k := range allowed {
 		sort.Strings(allowed[k])
+	}
+	for name, srv := range servers {
+		if len(srv.DisabledTools) > 0 {
+			sort.Strings(srv.DisabledTools)
+			servers[name] = srv
+		}
 	}
 	return nil
 }

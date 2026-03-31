@@ -23,6 +23,58 @@ const (
 	SourceTypeWorkflow SourceType = "workflow"
 )
 
+// Prefixes injected into promoted descriptions so users can distinguish
+// content types in harnesses that flatten everything to skill directories.
+const (
+	DescPrefixWorkflow = "[Workflow] "
+	DescPrefixAgent    = "[Agent] "
+)
+
+// StripDescPrefix removes a promotion-injected type prefix from a description
+// during capture round-trip, preventing accumulation across sync cycles.
+func StripDescPrefix(desc string) string {
+	desc = strings.TrimPrefix(desc, DescPrefixWorkflow)
+	desc = strings.TrimPrefix(desc, DescPrefixAgent)
+	return desc
+}
+
+// CheckPromotionCollisions detects name collisions between content types that
+// will be promoted to the same skill directory. Returns an error describing the
+// first collision found, or nil if names are unique.
+func CheckPromotionCollisions(skills []domain.Skill, workflows []domain.Workflow, agents []domain.Agent) error {
+	names := map[string]string{} // name → content type
+	for _, s := range skills {
+		names[s.Name] = "skill"
+	}
+	for _, w := range workflows {
+		name := w.Name
+		if name == "" {
+			name = strings.TrimSuffix(filepath.Base(w.SourcePath), ".md")
+		}
+		if existing, ok := names[name]; ok {
+			return fmt.Errorf(
+				"name collision: %s %q and workflow %q would both be promoted to the same skill directory; rename one to avoid silent overwrite",
+				existing, name, name,
+			)
+		}
+		names[name] = "workflow"
+	}
+	for _, a := range agents {
+		name := a.Name
+		if name == "" {
+			name = strings.TrimSuffix(filepath.Base(a.SourcePath), ".md")
+		}
+		if existing, ok := names[name]; ok {
+			return fmt.Errorf(
+				"name collision: %s %q and agent %q would both be promoted to the same skill directory; rename one to avoid silent overwrite",
+				existing, name, name,
+			)
+		}
+		names[name] = "agent"
+	}
+	return nil
+}
+
 // PromotedFrontmatter is the enriched SKILL.md frontmatter written during
 // promotion. It carries the original content type and metadata so that
 // capture can reconstruct the correct domain type on round-trip.
@@ -134,7 +186,7 @@ func CaptureAsAgent(res *CaptureResult, fm PromotedFrontmatter, body []byte, nam
 		Name: name,
 		Frontmatter: domain.AgentFrontmatter{
 			Name:            fm.Name,
-			Description:     fm.Description,
+			Description:     StripDescPrefix(fm.Description),
 			Tools:           fm.Tools,
 			DisallowedTools: fm.DisallowedTools,
 			Skills:          fm.Skills,
@@ -176,7 +228,7 @@ func CaptureAsWorkflow(res *CaptureResult, fm PromotedFrontmatter, body []byte, 
 		Name: name,
 		Frontmatter: domain.WorkflowFrontmatter{
 			Name:        fm.Name,
-			Description: fm.Description,
+			Description: StripDescPrefix(fm.Description),
 			Metadata:    fm.Metadata,
 		},
 		Body: body,

@@ -162,7 +162,14 @@ func RenderRuleBytes(rule domain.Rule) ([]byte, error) {
 }
 
 func RenderAgentBytes(agent domain.Agent) ([]byte, error) {
-	return renderTypedContent(agent.Frontmatter, agent.Body)
+	// Strip harness-specific keys before rendering to markdown — they are
+	// only meaningful to native harness adapters (e.g. Codex), not to models
+	// consuming the rendered markdown.
+	fm, err := StripFrontmatterKeys(agent.Frontmatter, "harness")
+	if err != nil {
+		return nil, err
+	}
+	return renderFrontmatterBytes(fm, agent.Body)
 }
 
 func RenderWorkflowBytes(workflow domain.Workflow) ([]byte, error) {
@@ -177,7 +184,16 @@ func renderTypedContent(frontmatter any, body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return renderFrontmatterBytes(fm, body)
+}
+
+// renderFrontmatterBytes combines pre-marshaled YAML frontmatter bytes with a
+// markdown body into a complete frontmatter document.
+func renderFrontmatterBytes(fm []byte, body []byte) ([]byte, error) {
 	fm = bytes.TrimRight(fm, "\n")
+	if len(fm) == 0 {
+		return append([]byte(nil), body...), nil
+	}
 	var out bytes.Buffer
 	out.WriteString("---\n")
 	out.Write(fm)

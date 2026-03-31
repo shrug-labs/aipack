@@ -6,6 +6,23 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.14.0]
+
+### Added
+
+- Native Codex agent rendering. Pack agents with `harness.codex` frontmatter overrides now render as self-contained TOML files in `.codex/agents/` with registration entries in `config.toml`, matching Codex's native multi-agent format. Agents can declare per-harness config (model, reasoning effort, service tier) under a `harness:` namespace in frontmatter.
+- General frontmatter stripping for cross-harness rendering. Harness-specific frontmatter fields (e.g., `harness:` on agents, `paths:` on rules) are automatically stripped when content is rendered as markdown for harnesses that don't support them.
+- Promotion collision detection for Cline harness. Skills, workflows, and agents that would collide in the same skill directory are now caught during sync with a descriptive error.
+
+### Changed
+
+- Codex Layout now manages `.codex/agents/` alongside `.agents/skills/` for validation, cleanup, and stale-file detection.
+- Codex `config.toml` Strip/Reset functions now handle both `mcp_servers` and `agents` managed keys.
+
+### Fixed
+
+- OpenCode capture now correctly parses disabled tools from settings, populating `DisabledTools` on captured MCP servers instead of silently dropping them.
+
 ## [0.13.1]
 
 ### Changed

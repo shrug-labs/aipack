@@ -95,10 +95,17 @@ func planProject(f *domain.Fragment, ctx engine.SyncContext) error {
 	rulesDir := filepath.Join(pd, paths.RulesDir)
 	skillsDir := filepath.Join(pd, paths.SkillsDir)
 
+	skills := ctx.Profile.AllSkills()
+	agents := ctx.Profile.AllAgents()
+
+	if err := harness.CheckPromotionCollisions(skills, nil, agents); err != nil {
+		return fmt.Errorf("cline: %w", err)
+	}
+
 	f.AddRuleWrites(rulesDir, "", ctx.Profile.AllRules())
 	f.AddWorkflowWrites(filepath.Join(pd, paths.WorkflowsDir), "", ctx.Profile.AllWorkflows())
-	f.AddSkillCopies(skillsDir, "", ctx.Profile.AllSkills())
-	addPromotedAgents(f, skillsDir, ctx.Profile.AllAgents())
+	f.AddSkillCopies(skillsDir, "", skills)
+	addPromotedAgents(f, skillsDir, agents)
 
 	// Cline MCP settings are always global — sync them even in project scope.
 	return planGlobalMCP(f, ctx)
@@ -107,10 +114,17 @@ func planProject(f *domain.Fragment, ctx engine.SyncContext) error {
 func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 	paths := GlobalPathsFor(ctx.TargetDir)
 
+	skills := ctx.Profile.AllSkills()
+	agents := ctx.Profile.AllAgents()
+
+	if err := harness.CheckPromotionCollisions(skills, nil, agents); err != nil {
+		return fmt.Errorf("cline: %w", err)
+	}
+
 	f.AddRuleWrites(paths.RulesDir, "", ctx.Profile.AllRules())
 	f.AddWorkflowWrites(paths.WorkflowsDir, "", ctx.Profile.AllWorkflows())
-	f.AddSkillCopies(paths.SkillsDir, "", ctx.Profile.AllSkills())
-	addPromotedAgents(f, paths.SkillsDir, ctx.Profile.AllAgents())
+	f.AddSkillCopies(paths.SkillsDir, "", skills)
+	addPromotedAgents(f, paths.SkillsDir, agents)
 
 	return planGlobalMCP(f, ctx)
 }

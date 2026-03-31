@@ -58,6 +58,13 @@ func buildToolsMap(servers []domain.MCPServer) map[string]bool {
 			tools[name+"_"+t] = true
 			prefixSet[name] = struct{}{}
 		}
+		for _, t := range s.DisabledTools {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			tools[name+"_"+t] = false
+		}
 	}
 	for p := range prefixSet {
 		tools[p+"_*"] = false

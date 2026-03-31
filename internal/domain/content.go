@@ -9,13 +9,18 @@ type RuleFrontmatter struct {
 }
 
 // AgentFrontmatter is the harness-neutral agent frontmatter schema.
+// The Harness field carries per-harness configuration overrides (e.g. model,
+// reasoning_effort) keyed by harness ID. Harness adapters read their own key
+// during native rendering and the field is stripped when agents are rendered
+// as markdown for model consumption.
 type AgentFrontmatter struct {
-	Name            string   `yaml:"name,omitempty"`
-	Description     string   `yaml:"description,omitempty"`
-	Tools           []string `yaml:"tools,omitempty"`
-	DisallowedTools []string `yaml:"disallowed_tools,omitempty"`
-	Skills          []string `yaml:"skills,omitempty"`
-	MCPServers      []string `yaml:"mcp_servers,omitempty"`
+	Name            string                    `yaml:"name,omitempty"`
+	Description     string                    `yaml:"description,omitempty"`
+	Tools           []string                  `yaml:"tools,omitempty"`
+	DisallowedTools []string                  `yaml:"disallowed_tools,omitempty"`
+	Skills          []string                  `yaml:"skills,omitempty"`
+	MCPServers      []string                  `yaml:"mcp_servers,omitempty"`
+	Harness         map[string]map[string]any `yaml:"harness,omitempty"`
 }
 
 // WorkflowFrontmatter is the harness-neutral workflow frontmatter schema.

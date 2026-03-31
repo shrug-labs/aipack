@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"maps"
+
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -58,8 +60,9 @@ func buildMCPEntries(servers []domain.MCPServer) (map[string]codexMCPServer, []d
 	return mcp, warnings
 }
 
-// RenderBytes produces the full config.toml content.
-func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
+// RenderBytes produces the full config.toml content including MCP servers and
+// agent registrations.
+func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
 		if err := toml.Unmarshal(base, &root); err != nil {
@@ -69,6 +72,20 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 
 	entries, warnings := buildMCPEntries(servers)
 	root["mcp_servers"] = entries
+
+	// Merge agent registrations into the [agents] table.
+	if len(agentRegs) > 0 {
+		agents := map[string]any{}
+		// Preserve existing global agent settings (max_threads, max_depth, etc.).
+		if existing, ok := root["agents"].(map[string]any); ok {
+			maps.Copy(agents, existing)
+		}
+		for name, reg := range agentRegs {
+			agents[name] = reg
+		}
+		root["agents"] = agents
+	}
+
 	out, err := toml.Marshal(root)
 	if err != nil {
 		return nil, warnings, err
@@ -78,5 +95,5 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 
 // RenderMCPOnly produces a TOML document containing ONLY the mcp_servers table.
 func RenderMCPOnly(servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
-	return RenderBytes(nil, servers)
+	return RenderBytes(nil, servers, nil)
 }

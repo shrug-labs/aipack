@@ -817,6 +817,144 @@ func TestCapture_Project_MultiSegmentServerName(t *testing.T) {
 	}
 }
 
+func TestRenderBytes_ToolFiltering(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		servers    []domain.MCPServer
+		wantTrue   []string
+		wantFalse  []string
+		wantAbsent []string
+	}{
+		{
+			name: "disabled only",
+			servers: []domain.MCPServer{
+				{Name: "srv", Command: []string{"run"}, DisabledTools: []string{"tool_a", "tool_b"}},
+			},
+			wantFalse:  []string{"srv_tool_a", "srv_tool_b"},
+			wantAbsent: []string{"srv_*"},
+		},
+		{
+			name: "mixed allowed and disabled",
+			servers: []domain.MCPServer{
+				{Name: "srv", Command: []string{"run"}, AllowedTools: []string{"read", "list"}, DisabledTools: []string{"delete"}},
+			},
+			wantTrue:  []string{"srv_read", "srv_list"},
+			wantFalse: []string{"srv_delete", "srv_*"},
+		},
+		{
+			name: "allowed only",
+			servers: []domain.MCPServer{
+				{Name: "foo", Command: []string{"echo"}, AllowedTools: []string{"bar"}},
+			},
+			wantTrue:  []string{"foo_bar"},
+			wantFalse: []string{"foo_*"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, _, err := RenderBytes(nil, tc.servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false})
+			if err != nil {
+				t.Fatalf("RenderBytes: %v", err)
+			}
+			var root map[string]any
+			if err := json.Unmarshal(out, &root); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			tools, ok := root["tools"].(map[string]any)
+			if !ok {
+				t.Fatal("tools key missing or wrong type")
+			}
+			for _, key := range tc.wantTrue {
+				if tools[key] != true {
+					t.Errorf("tools[%s]: got %v want true", key, tools[key])
+				}
+			}
+			for _, key := range tc.wantFalse {
+				if tools[key] != false {
+					t.Errorf("tools[%s]: got %v want false", key, tools[key])
+				}
+			}
+			for _, key := range tc.wantAbsent {
+				if _, ok := tools[key]; ok {
+					t.Errorf("tools[%s]: should be absent, got %v", key, tools[key])
+				}
+			}
+		})
+	}
+}
+
+func TestCapture_Project_DisabledTools(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		settings     string
+		serverName   string
+		wantAllowed  []string
+		wantDisabled []string
+	}{
+		{
+			name:       "mixed allowed and disabled",
+			serverName: "srv",
+			settings: `{
+			  "mcp": {"srv": {"enabled": true, "type": "local", "command": ["run"]}},
+			  "tools": {"srv_read": true, "srv_list": true, "srv_delete": false, "srv_create": false, "srv_*": false}
+			}`,
+			wantAllowed:  []string{"list", "read"},
+			wantDisabled: []string{"create", "delete"},
+		},
+		{
+			name:       "disabled only no allowed",
+			serverName: "srv",
+			settings: `{
+			  "mcp": {"srv": {"enabled": true, "type": "local", "command": ["run"]}},
+			  "tools": {"srv_delete": false}
+			}`,
+			wantAllowed:  nil,
+			wantDisabled: []string{"delete"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			opencodeDir := filepath.Join(projectDir, ".opencode")
+			if err := os.MkdirAll(opencodeDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(opencodeDir, "opencode.json"), []byte(tc.settings), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir})
+			if err != nil {
+				t.Fatalf("Capture: %v", err)
+			}
+
+			allowed := res.AllowedTools[tc.serverName]
+			if len(allowed) != len(tc.wantAllowed) {
+				t.Fatalf("AllowedTools[%s] = %v, want %v", tc.serverName, allowed, tc.wantAllowed)
+			}
+			for i, want := range tc.wantAllowed {
+				if allowed[i] != want {
+					t.Fatalf("AllowedTools[%s][%d] = %s, want %s", tc.serverName, i, allowed[i], want)
+				}
+			}
+
+			srv := res.MCPServers[tc.serverName]
+			if len(srv.DisabledTools) != len(tc.wantDisabled) {
+				t.Fatalf("DisabledTools = %v, want %v", srv.DisabledTools, tc.wantDisabled)
+			}
+			for i, want := range tc.wantDisabled {
+				if srv.DisabledTools[i] != want {
+					t.Fatalf("DisabledTools[%d] = %s, want %s", i, srv.DisabledTools[i], want)
+				}
+			}
+		})
+	}
+}
+
 // --- Strip via Layout tests ---
 
 func TestLayout_StripManaged_RemovesMCPAndTools(t *testing.T) {

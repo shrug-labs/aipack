@@ -6,6 +6,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestSplitFrontmatter_WithFrontmatter(t *testing.T) {
@@ -516,6 +518,48 @@ func TestLedger_PrevManagedOverlay_CleanedPath(t *testing.T) {
 	lg.Record("/a/b/c", []byte("content"), "pack1", []byte("overlay"), time.Now())
 	if got := lg.PrevManagedOverlay("/a/b/../b/c"); got == nil {
 		t.Error("PrevManagedOverlay should find entry via un-cleaned path")
+	}
+}
+
+func TestAgentFrontmatter_HarnessMapParsed(t *testing.T) {
+	t.Parallel()
+	raw := []byte("---\nname: explorer\ndescription: Fast exploration\nharness:\n  codex:\n    model: o3\n    model_reasoning_effort: high\n---\n\nYou explore code.\n")
+	fmBytes, _, err := SplitFrontmatter(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fm AgentFrontmatter
+	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		t.Fatal(err)
+	}
+	codex, ok := fm.Harness["codex"]
+	if !ok {
+		t.Fatal("expected harness.codex key")
+	}
+	if codex["model"] != "o3" {
+		t.Fatalf("model = %v, want o3", codex["model"])
+	}
+	if codex["model_reasoning_effort"] != "high" {
+		t.Fatalf("reasoning = %v, want high", codex["model_reasoning_effort"])
+	}
+}
+
+func TestAgentFrontmatter_HarnessOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	fm := AgentFrontmatter{
+		Name:        "simple",
+		Description: "No harness config",
+	}
+	out, err := yaml.Marshal(fm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := yaml.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["harness"]; ok {
+		t.Fatal("harness key should be omitted when nil")
 	}
 }
 
