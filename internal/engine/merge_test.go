@@ -96,21 +96,47 @@ func TestMergeSettingsKeys_JSON_ArrayMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	items := m["items"].([]any)
-	// user_item should be preserved, old_managed dropped, new_managed added.
-	found := map[string]bool{}
-	for _, v := range items {
-		found[v.(string)] = true
+	// Managed items first (new_managed), then user items (user_item).
+	// old_managed removed because it was in prev but not next.
+	want := []string{"new_managed", "user_item"}
+	if len(items) != len(want) {
+		t.Fatalf("items = %v, want %v", items, want)
 	}
-	if !found["user_item"] {
-		t.Error("user_item should be preserved")
-	}
-	if found["old_managed"] {
-		t.Error("old_managed should be removed")
-	}
-	if !found["new_managed"] {
-		t.Error("new_managed should be added")
+	for i, w := range want {
+		if items[i].(string) != w {
+			t.Errorf("items[%d] = %q, want %q", i, items[i], w)
+		}
 	}
 	assertOp(t, ops, "items", MergeUpdate)
+}
+
+func TestMergeSettingsKeys_JSON_ArrayPreservesManagedOrder(t *testing.T) {
+	t.Parallel()
+	// Simulates the args swap bug: disk has args in wrong order,
+	// managed has the correct order. The merge must restore managed order.
+	existing := []byte(`{"args": ["--index", "url", "--env-file", "pkg@latest", "/path/.env"]}`)
+	prev := []byte(`{"args": ["--index", "url", "--env-file", "/path/.env", "pkg@latest"]}`)
+	next := []byte(`{"args": ["--index", "url", "--env-file", "/path/.env", "pkg@latest"]}`)
+
+	result, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(result, &m); err != nil {
+		t.Fatal(err)
+	}
+	args := m["args"].([]any)
+	want := []string{"--index", "url", "--env-file", "/path/.env", "pkg@latest"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i, w := range want {
+		if args[i].(string) != w {
+			t.Errorf("args[%d] = %q, want %q (managed order not restored)", i, args[i], w)
+		}
+	}
 }
 
 func TestMergeSettingsKeys_FirstSync(t *testing.T) {

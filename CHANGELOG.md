@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.15.1]
+
+### Fixed
+
+- Three-way settings merge preserved disk array order instead of managed order, causing positional arrays like MCP server `args` to retain a wrong element order indefinitely — even across `--force` re-syncs. The merge now emits managed items in managed order first, appending user-only items afterward.
+
 ## [0.15.0]
 
 ### Changed

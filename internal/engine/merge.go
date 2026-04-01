@@ -35,8 +35,9 @@ type MergeOp struct {
 // Three-way merge semantics:
 //   - Objects: recurse by key. Keys removed from managed are deleted. Keys
 //     added to managed are inserted. Keys only on disk are preserved (user-added).
-//   - Arrays of strings: items removed from the managed set are deleted. Items
-//     added are appended. Items only on disk are preserved. Duplicates are removed.
+//   - Arrays of strings: managed items appear first in managed order. Items
+//     removed from the managed set are deleted. User-only items from disk are
+//     appended. Duplicates are removed.
 //   - Scalars / other values: managed value wins.
 //   - First sync (prevManaged is nil): all on-disk items are treated as user-added
 //     and preserved. All managed items are added. Equivalent to additive deep merge.
@@ -185,7 +186,12 @@ func sameStringSet(a, b []any) bool {
 	return true
 }
 
-// threeWayMergeArray merges managed string arrays using set semantics.
+// threeWayMergeArray merges managed string arrays with managed-order-first
+// semantics. Managed items appear first in the managed (next) order; user-only
+// items from disk are appended afterward. This ensures positional arrays like
+// command args always reflect the managed order, while still preserving
+// user-added items. For set-like arrays (e.g. enabled_tools) the reorder is
+// harmless because item order has no semantic meaning.
 func threeWayMergeArray(disk, prev, next []any) []any {
 	prevSet := toStringSet(prev)
 	nextSet := toStringSet(next)
@@ -193,22 +199,7 @@ func threeWayMergeArray(disk, prev, next []any) []any {
 	seen := map[string]bool{}
 	var result []any
 
-	for _, v := range disk {
-		s, ok := v.(string)
-		if !ok {
-			result = append(result, v)
-			continue
-		}
-		if prevSet[s] && !nextSet[s] {
-			continue // removed from managed set
-		}
-		if seen[s] {
-			continue
-		}
-		seen[s] = true
-		result = append(result, v)
-	}
-
+	// Pass 1: managed items in managed order.
 	for _, v := range next {
 		s, ok := v.(string)
 		if !ok {
@@ -217,6 +208,23 @@ func threeWayMergeArray(disk, prev, next []any) []any {
 		}
 		if seen[s] {
 			continue
+		}
+		seen[s] = true
+		result = append(result, v)
+	}
+
+	// Pass 2: user-only items from disk (not in prev or next), preserving
+	// their relative disk order.
+	for _, v := range disk {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if seen[s] {
+			continue
+		}
+		if prevSet[s] && !nextSet[s] {
+			continue // removed from managed set
 		}
 		seen[s] = true
 		result = append(result, v)
