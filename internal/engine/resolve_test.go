@@ -70,6 +70,7 @@ func createTestPack(t *testing.T, configDir string) string {
 
 func TestResolve_TypedContent(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	configDir := createTestPack(t, dir)
 
@@ -85,7 +86,7 @@ func TestResolve_TypedContent(t *testing.T) {
 
 	profilePath := filepath.Join(dir, "profile.yaml")
 
-	profile, warnings, err := Resolve(profileCfg, profilePath, configDir)
+	profile, warnings, err := eng.Resolve(profileCfg, profilePath, configDir)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -177,6 +178,7 @@ func TestResolve_TypedContent(t *testing.T) {
 
 func TestResolve_MultiPack(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	configDir := filepath.Join(dir, "config")
 
@@ -220,7 +222,7 @@ func TestResolve_MultiPack(t *testing.T) {
 		},
 	}
 
-	profile, _, err := Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir)
+	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -256,6 +258,7 @@ func TestResolve_MultiPack(t *testing.T) {
 
 func TestResolve_WithMCPServers(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	configDir := filepath.Join(dir, "config")
 	packDir := filepath.Join(configDir, "packs", "pack-mcp")
@@ -292,7 +295,7 @@ func TestResolve_WithMCPServers(t *testing.T) {
 		},
 	}
 
-	profile, _, err := Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir)
+	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -318,6 +321,7 @@ func TestResolve_WithMCPServers(t *testing.T) {
 
 func TestResolve_HasContent(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	configDir := createTestPack(t, dir)
 
@@ -326,7 +330,7 @@ func TestResolve_HasContent(t *testing.T) {
 		Packs:         []config.PackEntry{{Name: "test-pack"}},
 	}
 
-	profile, _, err := Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir)
+	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir)
 	if err != nil {
 		t.Fatal(err)
 	}

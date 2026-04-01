@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shrug-labs/aipack/internal/source"
 	"gopkg.in/yaml.v3"
 )
 
@@ -104,14 +105,14 @@ func FetchRegistryFromURL(ctx context.Context, rawURL string) ([]byte, error) {
 
 // FetchFileViaGit fetches a single file from a remote git repo via shallow clone.
 func FetchFileViaGit(ctx context.Context, repoURL, ref, filePath string) ([]byte, error) {
-	return FetchFileViaGitWith(ctx, repoURL, ref, filePath, RunGit)
+	return FetchFileViaGitWith(ctx, repoURL, ref, filePath, source.RunGit)
 }
 
 // FetchFileViaGitWith is like FetchFileViaGit but accepts a custom git runner for testing.
 func FetchFileViaGitWith(ctx context.Context, repoURL, ref, filePath string,
 	runGitFn func(ctx context.Context, args ...string) error,
 ) ([]byte, error) {
-	if err := CheckGit(); err != nil {
+	if err := source.CheckGit(); err != nil {
 		return nil, err
 	}
 

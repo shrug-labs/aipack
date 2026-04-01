@@ -29,9 +29,9 @@ type FileDiff struct {
 
 // classifyFileKind classifies a file without computing a diff string.
 // Use when only the DiffKind is needed (e.g., non-verbose dry-run).
-func classifyFileKind(dst string, desired []byte, lg domain.Ledger) (domain.DiffKind, error) {
+func (e *Engine) classifyFileKind(dst string, desired []byte, lg domain.Ledger) (domain.DiffKind, error) {
 	dst = filepath.Clean(dst)
-	onDisk, err := os.ReadFile(dst)
+	onDisk, err := e.FS.ReadFile(dst)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return domain.DiffCreate, nil
@@ -51,10 +51,10 @@ func classifyFileKind(dst string, desired []byte, lg domain.Ledger) (domain.Diff
 }
 
 // ClassifyFile classifies a single file against on-disk state and the ledger.
-func ClassifyFile(dst string, desired []byte, label, sourcePack string, lg domain.Ledger) (FileDiff, error) {
+func (e *Engine) ClassifyFile(dst string, desired []byte, label, sourcePack string, lg domain.Ledger) (FileDiff, error) {
 	dst = filepath.Clean(dst)
 
-	onDisk, err := os.ReadFile(dst)
+	onDisk, err := e.FS.ReadFile(dst)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return FileDiff{Dst: dst, Desired: desired, Label: label, SourcePack: sourcePack, Kind: domain.DiffCreate}, nil
@@ -94,9 +94,9 @@ func classifyFilePreRead(dst string, desired []byte, label, sourcePack string, l
 }
 
 // ClassifyCopy walks a source directory and classifies each file against on-disk state.
-func ClassifyCopy(src, dst, sourcePack string, lg domain.Ledger) ([]FileDiff, error) {
+func (e *Engine) ClassifyCopy(src, dst, sourcePack string, lg domain.Ledger) ([]FileDiff, error) {
 	var out []FileDiff
-	err := filepath.WalkDir(src, func(p string, d os.DirEntry, werr error) error {
+	err := e.FS.WalkDir(src, func(p string, d os.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
@@ -114,11 +114,11 @@ func ClassifyCopy(src, dst, sourcePack string, lg domain.Ledger) ([]FileDiff, er
 			return err
 		}
 		target := filepath.Join(dst, rel)
-		content, err := os.ReadFile(p)
+		content, err := e.FS.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		fd, err := ClassifyFile(target, content, filepath.Join(filepath.Base(dst), rel), sourcePack, lg)
+		fd, err := e.ClassifyFile(target, content, filepath.Join(filepath.Base(dst), rel), sourcePack, lg)
 		if err != nil {
 			return err
 		}
@@ -130,11 +130,11 @@ func ClassifyCopy(src, dst, sourcePack string, lg domain.Ledger) ([]FileDiff, er
 
 // ComputeSettingsDiffs classifies each settings action against on-disk state and the ledger.
 // When MergeMode is set, performs three-way merge using the previous managed overlay.
-func ComputeSettingsDiffs(settings []domain.SettingsAction, lg domain.Ledger) ([]FileDiff, error) {
+func (e *Engine) ComputeSettingsDiffs(settings []domain.SettingsAction, lg domain.Ledger) ([]FileDiff, error) {
 	var out []FileDiff
 	for _, s := range settings {
 		if s.MergeMode {
-			existing, err := os.ReadFile(s.Dst)
+			existing, err := e.FS.ReadFile(s.Dst)
 			fileExists := true
 			if err != nil {
 				if !os.IsNotExist(err) {
@@ -179,7 +179,7 @@ func ComputeSettingsDiffs(settings []domain.SettingsAction, lg domain.Ledger) ([
 			out = append(out, fd)
 			continue
 		}
-		d, err := ClassifyFile(s.Dst, s.Desired, s.Label, s.SourcePack, lg)
+		d, err := e.ClassifyFile(s.Dst, s.Desired, s.Label, s.SourcePack, lg)
 		if err != nil {
 			return nil, err
 		}
@@ -194,8 +194,8 @@ func ComputeSettingsDiffs(settings []domain.SettingsAction, lg domain.Ledger) ([
 // different format ("rel:sha256\n" + ContentDigest). The two never cross-compare:
 // pathDigest is used for ledger entries during sync, while dirDigest is used
 // only for save's source-change detection.
-func pathDigest(path string) (string, error) {
-	m, err := collectFiles(path)
+func (e *Engine) pathDigest(path string) (string, error) {
+	m, err := e.collectFiles(path)
 	if err != nil {
 		return "", err
 	}
@@ -214,9 +214,9 @@ func pathDigest(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func collectFiles(root string) (map[string]string, error) {
+func (e *Engine) collectFiles(root string) (map[string]string, error) {
 	out := map[string]string{}
-	st, err := os.Stat(root)
+	st, err := e.FS.Stat(root)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
@@ -224,14 +224,14 @@ func collectFiles(root string) (map[string]string, error) {
 		return nil, err
 	}
 	if !st.IsDir() {
-		d, err := util.FileDigest(root)
+		b, err := e.FS.ReadFile(root)
 		if err != nil {
 			return nil, err
 		}
-		out["."] = d
+		out["."] = util.ContentDigest(b)
 		return out, nil
 	}
-	err = filepath.WalkDir(root, func(p string, d os.DirEntry, werr error) error {
+	err = e.FS.WalkDir(root, func(p string, d os.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
@@ -249,11 +249,11 @@ func collectFiles(root string) (map[string]string, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		dig, err := util.FileDigest(p)
+		b, err := e.FS.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		out[rel] = dig
+		out[rel] = util.ContentDigest(b)
 		return nil
 	})
 	if err != nil {

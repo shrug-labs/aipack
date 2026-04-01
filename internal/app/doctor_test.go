@@ -299,7 +299,7 @@ func TestDoctorCheckPackDrift_CopySameVersion(t *testing.T) {
 func TestDoctorCheckLedgerHealth_NoLedger(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cr := doctorCheckLedgerHealth(dir, nil, false)
+	cr := doctorCheckLedgerHealth(engine.New(nil, nil), dir, nil, false)
 	if !cr.OK {
 		t.Errorf("OK = false, want true (no ledger dir)")
 	}
@@ -313,6 +313,7 @@ func TestDoctorCheckLedgerHealth_OrphanedEntries(t *testing.T) {
 	dir := t.TempDir()
 	ledgerDir := filepath.Join(dir, "ledger")
 	os.MkdirAll(ledgerDir, 0o755)
+	eng := engine.New(nil, nil)
 
 	// Create a real file for one entry, leave the other orphaned.
 	realFile := filepath.Join(dir, "exists.md")
@@ -321,10 +322,10 @@ func TestDoctorCheckLedgerHealth_OrphanedEntries(t *testing.T) {
 	lg := domain.NewLedger()
 	lg.Managed[realFile] = domain.Entry{SourcePack: "mypack", Digest: "abc"}
 	lg.Managed["/nonexistent/path/rule.md"] = domain.Entry{SourcePack: "mypack", Digest: "def"}
-	engine.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
+	eng.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
 
 	// Without fix: reports but doesn't change.
-	cr := doctorCheckLedgerHealth(dir, nil, false)
+	cr := doctorCheckLedgerHealth(engine.New(nil, nil), dir, nil, false)
 	if cr.OK {
 		t.Errorf("OK = true, want false (has orphans)")
 	}
@@ -333,7 +334,7 @@ func TestDoctorCheckLedgerHealth_OrphanedEntries(t *testing.T) {
 	}
 
 	// With fix: removes orphan.
-	cr = doctorCheckLedgerHealth(dir, nil, true)
+	cr = doctorCheckLedgerHealth(engine.New(nil, nil), dir, nil, true)
 	if !cr.OK {
 		t.Errorf("OK = false, want true after fix")
 	}
@@ -342,7 +343,7 @@ func TestDoctorCheckLedgerHealth_OrphanedEntries(t *testing.T) {
 	}
 
 	// Verify ledger was actually modified.
-	lg2, _, _ := engine.LoadLedger(filepath.Join(ledgerDir, "test.json"))
+	lg2, _, _ := eng.LoadLedger(filepath.Join(ledgerDir, "test.json"))
 	if _, ok := lg2.Managed["/nonexistent/path/rule.md"]; ok {
 		t.Error("orphaned entry still in ledger after fix")
 	}
@@ -356,18 +357,19 @@ func TestDoctorCheckLedgerHealth_MissingSourcePack(t *testing.T) {
 	dir := t.TempDir()
 	ledgerDir := filepath.Join(dir, "ledger")
 	os.MkdirAll(ledgerDir, 0o755)
+	eng := engine.New(nil, nil)
 
 	realFile := filepath.Join(dir, "rule.md")
 	os.WriteFile(realFile, []byte("x"), 0o600)
 
 	lg := domain.NewLedger()
 	lg.Managed[realFile] = domain.Entry{SourcePack: "", Digest: "abc"}
-	engine.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
+	eng.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
 
 	singlePack := []config.ResolvedPack{{Name: "only-pack"}}
 
 	// Without fix: reports.
-	cr := doctorCheckLedgerHealth(dir, singlePack, false)
+	cr := doctorCheckLedgerHealth(engine.New(nil, nil), dir, singlePack, false)
 	if cr.OK {
 		t.Errorf("OK = true, want false")
 	}
@@ -376,12 +378,12 @@ func TestDoctorCheckLedgerHealth_MissingSourcePack(t *testing.T) {
 	}
 
 	// With fix and single pack: fills it in.
-	cr = doctorCheckLedgerHealth(dir, singlePack, true)
+	cr = doctorCheckLedgerHealth(engine.New(nil, nil), dir, singlePack, true)
 	if !cr.Fixed {
 		t.Error("Fixed = false, want true")
 	}
 
-	lg2, _, _ := engine.LoadLedger(filepath.Join(ledgerDir, "test.json"))
+	lg2, _, _ := eng.LoadLedger(filepath.Join(ledgerDir, "test.json"))
 	if lg2.Managed[realFile].SourcePack != "only-pack" {
 		t.Errorf("SourcePack = %q, want only-pack", lg2.Managed[realFile].SourcePack)
 	}
@@ -392,18 +394,19 @@ func TestDoctorCheckLedgerHealth_MissingSourcePackMultiplePacks(t *testing.T) {
 	dir := t.TempDir()
 	ledgerDir := filepath.Join(dir, "ledger")
 	os.MkdirAll(ledgerDir, 0o755)
+	eng := engine.New(nil, nil)
 
 	realFile := filepath.Join(dir, "rule.md")
 	os.WriteFile(realFile, []byte("x"), 0o600)
 
 	lg := domain.NewLedger()
 	lg.Managed[realFile] = domain.Entry{SourcePack: "", Digest: "abc"}
-	engine.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
+	eng.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false)
 
 	multiplePacks := []config.ResolvedPack{{Name: "a"}, {Name: "b"}}
 
 	// With fix and multiple packs: can't auto-fill, reports but doesn't fix.
-	cr := doctorCheckLedgerHealth(dir, multiplePacks, true)
+	cr := doctorCheckLedgerHealth(engine.New(nil, nil), dir, multiplePacks, true)
 	if cr.Fixed {
 		t.Error("Fixed = true, want false (ambiguous)")
 	}
@@ -527,6 +530,7 @@ func TestDoctorCheckManifestDrift_FixAddsUndeclaredAndRemovesMissing(t *testing.
 func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	configDir, _ := config.DefaultConfigDir(home)
 	projectDir := filepath.Join(home, "project")
 	trackedFile := filepath.Join(projectDir, ".claude", "settings.local.json")
@@ -539,7 +543,7 @@ func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
 	}
 
 	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
-	if err := engine.SaveLedger(ledgerPath, domain.Ledger{
+	if err := eng.SaveLedger(ledgerPath, domain.Ledger{
 		Managed: map[string]domain.Entry{
 			trackedFile: {Digest: domain.SingleFileDigest([]byte(`{"ok":true}`))},
 		},
@@ -547,12 +551,12 @@ func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cr := doctorCheckLedgerHealth(configDir, []config.ResolvedPack{{Name: "alpha"}}, true)
+	cr := doctorCheckLedgerHealth(engine.New(nil, nil), configDir, []config.ResolvedPack{{Name: "alpha"}}, true)
 	if !cr.Fixed {
 		t.Fatalf("Fixed = false, want true")
 	}
 
-	lg, _, err := engine.LoadLedger(ledgerPath)
+	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,11 +568,12 @@ func TestDoctorCheckLedgerHealth_FixesNestedProjectLedgerEntries(t *testing.T) {
 func TestDoctorCheckStaleLedgers_FindsNestedProjectLedgerDirs(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	configDir, _ := config.DefaultConfigDir(home)
 	projectDir := filepath.Join(home, "project")
 	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 
-	if err := engine.SaveLedger(ledgerPath, domain.Ledger{Managed: map[string]domain.Entry{}}, false); err != nil {
+	if err := eng.SaveLedger(ledgerPath, domain.Ledger{Managed: map[string]domain.Entry{}}, false); err != nil {
 		t.Fatal(err)
 	}
 

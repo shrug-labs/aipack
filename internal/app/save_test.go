@@ -331,7 +331,7 @@ func TestRunRoundTrip_PackSideConflict_Errors(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	_, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	_, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -394,7 +394,7 @@ func TestRunRoundTrip_PackSideConflict_Force(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -473,7 +473,7 @@ func TestRunRoundTrip_AgentPackAlreadyNeutral_DoesNotConflict(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -542,7 +542,7 @@ func TestRunRoundTrip_DirSave_PropagatesDeletions(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -581,6 +581,7 @@ func TestRunRoundTrip_DirSave_PropagatesDeletions(t *testing.T) {
 func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	projectDir := filepath.Join(home, "project")
 	packRoot := filepath.Join(home, "pack")
 
@@ -620,7 +621,7 @@ func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -651,7 +652,7 @@ func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 
 	// Reload ledger — once the forced save writes the pack-side file, the
 	// harness digest should advance so the next round-trip is clean.
-	lg, _, lErr := engine.LoadLedger(ledgerPath)
+	lg, _, lErr := eng.LoadLedger(ledgerPath)
 	if lErr != nil {
 		t.Fatal(lErr)
 	}
@@ -664,7 +665,7 @@ func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 	}
 
 	// A second round-trip with the same content should now be clean.
-	result2, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result2, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -746,7 +747,7 @@ func TestRunRoundTrip_SkillDir_NoFalseConflict_AfterSync(t *testing.T) {
 	reg := harness.NewRegistry(stub)
 
 	// Round-trip should save cleanly without --force.
-	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -782,6 +783,7 @@ func TestRunRoundTrip_SkillDir_NoFalseConflict_AfterSync(t *testing.T) {
 func TestRunRoundTrip_ContentWrite_SavedDirectly(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	projectDir := filepath.Join(home, "project")
 	packRoot := filepath.Join(home, "pack")
 
@@ -833,7 +835,7 @@ func TestRunRoundTrip_ContentWrite_SavedDirectly(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,
@@ -865,7 +867,7 @@ func TestRunRoundTrip_ContentWrite_SavedDirectly(t *testing.T) {
 
 	// Ledger should be updated with the SourceDigest (promoted SKILL.md hash),
 	// not the re-rendered content hash.
-	lg, _, err := engine.LoadLedger(ledgerPath)
+	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -917,7 +919,7 @@ func TestRunRoundTrip_ContentWrite_UnchangedSkipped(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunRoundTrip(context.Background(), RoundTripRequest{
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
 		TargetSpec: TargetSpec{
 			Scope:      "project",
 			ProjectDir: projectDir,

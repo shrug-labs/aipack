@@ -14,6 +14,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/update"
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -98,7 +99,7 @@ type DoctorRequest struct {
 }
 
 // RunDoctor executes all doctor diagnostic checks and returns a report.
-func RunDoctor(ctx context.Context, req DoctorRequest) (rep DoctorReport) {
+func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep DoctorReport) {
 	rep = DoctorReport{SchemaVersion: DoctorSchemaVersion, OK: false, Status: "fail", Checks: []CheckResult{}}
 	add := func(cr CheckResult) {
 		rep.Checks = append(rep.Checks, cr)
@@ -206,7 +207,7 @@ func RunDoctor(ctx context.Context, req DoctorRequest) (rep DoctorReport) {
 		add(doctorSkippedCheck("mcp_server_paths_exist", "packs not resolved"))
 		return rep
 	}
-	inventories, invErr := engine.LoadMCPInventoryForPacks(resolvedPacks)
+	inventories, invErr := eng.LoadMCPInventoryForPacks(resolvedPacks)
 	if invErr != nil {
 		packsCheck.Message = invErr.Error()
 		packsCheck.Remediation = "Fix profile sources/packs and ensure all referenced pack.json and mcp inventory files exist locally (URL sources must already be cached)"
@@ -267,7 +268,7 @@ func RunDoctor(ctx context.Context, req DoctorRequest) (rep DoctorReport) {
 	add(pathsCheck)
 
 	// Ledger health checks (warning-level, fixable).
-	add(doctorCheckLedgerHealth(configDir, resolvedPacks, req.Fix))
+	add(doctorCheckLedgerHealth(eng, configDir, resolvedPacks, req.Fix))
 
 	// Stale ledger check: warn about ledger files for the other scope.
 	add(doctorCheckStaleLedgers(configDir, syncCfg))
@@ -310,7 +311,7 @@ func doctorCheckUpdate(ctx context.Context, currentVersion, configDir string) Ch
 // require git for cloning, and on macOS git requires Xcode Command Line Tools.
 func doctorCheckGit() CheckResult {
 	check := CheckResult{Name: "git_available", Severity: "warning", Status: "pass", OK: true}
-	if err := config.CheckGit(); err != nil {
+	if err := source.CheckGit(); err != nil {
 		check.Status = "warn"
 		check.OK = false
 		check.Message = err.Error()
@@ -777,7 +778,7 @@ func ledgerFilesUnder(configDir string) ([]string, error) {
 // doctorCheckLedgerHealth scans all ledger files for orphaned entries (paths
 // that no longer exist on disk) and entries with missing SourcePack. With fix=true,
 // removes orphans and fills SourcePack when a single pack is resolved.
-func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix bool) CheckResult {
+func doctorCheckLedgerHealth(eng *engine.Engine, configDir string, packs []config.ResolvedPack, fix bool) CheckResult {
 	check := CheckResult{Name: "ledger_health", Severity: "warning", Status: "pass", OK: true}
 
 	files, err := ledgerFilesUnder(configDir)
@@ -803,8 +804,8 @@ func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix 
 	totalFixed := 0
 
 	for _, path := range files {
-		lg, warn, lerr := engine.LoadLedger(path)
-		if lerr != nil || warn != "" {
+		lg, _, lerr := eng.LoadLedger(path)
+		if lerr != nil {
 			continue
 		}
 
@@ -833,7 +834,7 @@ func doctorCheckLedgerHealth(configDir string, packs []config.ResolvedPack, fix 
 			}
 		}
 		if fix && modified {
-			if serr := engine.SaveLedger(path, lg, false); serr != nil {
+			if serr := eng.SaveLedger(path, lg, false); serr != nil {
 				fileFixes = 0 // save failed: none of this file's fixes persisted
 			}
 		}

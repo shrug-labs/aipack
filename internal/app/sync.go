@@ -39,8 +39,8 @@ type ResolveResult struct {
 
 // ResolveProfile resolves a profile config into a fully-typed profile with
 // targeting information (scope, harnesses, project dir) from sync-config defaults.
-func ResolveProfile(req ResolveRequest) (ResolveResult, []domain.Warning, error) {
-	profile, warnings, err := engine.Resolve(req.ProfileCfg, req.ProfilePath, req.ConfigDir)
+func ResolveProfile(eng *engine.Engine, req ResolveRequest) (ResolveResult, []domain.Warning, error) {
+	profile, warnings, err := eng.Resolve(req.ProfileCfg, req.ProfilePath, req.ConfigDir)
 	if err != nil {
 		return ResolveResult{}, warnings, err
 	}
@@ -72,7 +72,7 @@ func ResolveProfile(req ResolveRequest) (ResolveResult, []domain.Warning, error)
 // and resolves it into a fully-typed profile with targeting information.
 // This is the I/O boundary: it resolves ProjectDir and Home from the
 // environment so that ResolveProfile (and everything below it) stays I/O-free.
-func ResolveActiveProfile(configDir string) (ResolveResult, []domain.Warning, error) {
+func ResolveActiveProfile(eng *engine.Engine, configDir string) (ResolveResult, []domain.Warning, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ResolveResult{}, nil, fmt.Errorf("resolving working directory: %w", err)
@@ -92,7 +92,7 @@ func ResolveActiveProfile(configDir string) (ResolveResult, []domain.Warning, er
 	if err != nil {
 		return ResolveResult{}, nil, err
 	}
-	return ResolveProfile(ResolveRequest{
+	return ResolveProfile(eng, ResolveRequest{
 		ConfigDir:   configDir,
 		ProfilePath: profilePath,
 		ProfileCfg:  profileCfg,
@@ -140,7 +140,7 @@ type SyncResult struct {
 //
 // Error policy: loading/reading failures that degrade gracefully are returned
 // as warnings. Writing failures that leave inconsistent state are fatal errors.
-func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
+func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
 	var warnings []domain.Warning
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
@@ -155,8 +155,8 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 				managedRootsMap[hid] = h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
 			}
 		}
-		if n, merr := engine.MigrateOldLedgers(req.Scope, req.ProjectDir, req.Home, req.Harnesses, managedRootsMap); merr != nil {
-			warnings = append(warnings, domain.Warning{Field: "ledger-migration", Message: merr.Error()})
+		if n, merr := eng.MigrateOldLedgers(req.Scope, req.ProjectDir, req.Home, req.Harnesses, managedRootsMap); merr != nil {
+			warnings = append(warnings, warningf("ledger-migration", "%v", merr))
 		} else if n > 0 {
 			fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
 		}
@@ -167,7 +167,7 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 	for _, hid := range req.Harnesses {
 		planners, err := reg.AsPlanners([]domain.Harness{hid})
 		if err != nil {
-			return SyncResult{}, warnings, err
+			return SyncResult{}, warnings, wrapFatalSync("lookup harness planners", err)
 		}
 
 		planReq := engine.PlanRequest{
@@ -180,7 +180,7 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 
 		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
-			return SyncResult{}, warnings, err
+			return SyncResult{}, warnings, wrapFatalSync("plan sync", err)
 		}
 
 		if req.DryRun {
@@ -200,10 +200,10 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 			Req:    planReq,
 		}
 
-		applyWarnings, err := engine.ApplyPlan(ctx, plan, applyReq, managedRoots)
+		applyWarnings, err := eng.ApplyPlan(ctx, plan, applyReq, managedRoots)
 		warnings = append(warnings, applyWarnings...)
 		if err != nil {
-			return SyncResult{}, warnings, err
+			return SyncResult{}, warnings, wrapFatalSync("apply plan", err)
 		}
 
 		// Reconcile per-server MCP ledger entries with actual on-disk state.
@@ -212,7 +212,7 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 		// additions). Re-capture from the now-updated file and record the
 		// actual digests so that save/inspect classify correctly.
 		if len(plan.MCPServers) > 0 {
-			reconWarnings := reconcileMCPLedger(ctx, plan, h, req, req.NowFn)
+			reconWarnings := reconcileMCPLedger(ctx, eng, plan, h, req, req.NowFn)
 			warnings = append(warnings, reconWarnings...)
 		}
 
@@ -221,20 +221,20 @@ func RunSync(ctx context.Context, profile domain.Profile, req SyncRequest, reg *
 
 	if req.DryRun {
 		if req.Verbose {
-			summary, err := PlanWithDiffs(ctx, profile, req, reg)
+			summary, err := PlanWithDiffs(ctx, eng, profile, req, reg)
 			if err != nil {
-				return SyncResult{}, warnings, err
+				return SyncResult{}, warnings, wrapFatalSync("compute verbose dry-run diffs", err)
 			}
 			printDryRunVerbose(summary, stdout)
 		} else {
-			printDryRun(aggregatePlan, req, reg, CountProfileContent(profile), stdout)
+			printDryRun(eng, aggregatePlan, req, reg, CountProfileContent(profile), stdout)
 		}
 		return SyncResult{Plan: aggregatePlan}, warnings, nil
 	}
 
 	// Post-sync tasks — run once.
 	if idxErr := updateIndex(profile, req.Home); idxErr != nil {
-		warnings = append(warnings, domain.Warning{Field: "index", Message: fmt.Sprintf("index update failed: %v", idxErr)})
+		warnings = append(warnings, warningf("index", "index update failed: %v", idxErr))
 	}
 	regWarnings := processEmbeddedRegistries(profile, req.Home, stderr)
 	warnings = append(warnings, regWarnings...)
@@ -263,7 +263,7 @@ func mergePlans(dst *domain.Plan, src domain.Plan) {
 // config and overwrites the per-server ledger entries with actual (post-merge)
 // digests. This corrects the planned-vs-merged divergence that occurs when
 // three-way merge preserves user additions in the config file.
-func reconcileMCPLedger(ctx context.Context, plan domain.Plan, h harness.Harness, req SyncRequest, nowFn func() time.Time) []domain.Warning {
+func reconcileMCPLedger(ctx context.Context, eng *engine.Engine, plan domain.Plan, h harness.Harness, req SyncRequest, nowFn func() time.Time) []domain.Warning {
 	if plan.Ledger == "" {
 		return nil
 	}
@@ -274,16 +274,16 @@ func reconcileMCPLedger(ctx context.Context, plan domain.Plan, h harness.Harness
 		Home:       req.Home,
 	})
 	if err != nil {
-		return []domain.Warning{{Field: "mcp-reconcile", Message: fmt.Sprintf("re-capture failed: %v", err)}}
+		return []domain.Warning{warningf("mcp-reconcile", "re-capture failed: %v", err)}
 	}
 
 	if len(res.MCP) == 0 && len(res.MCPServers) > 0 {
 		res.MaterializeCapturedMCP(sourcePathForMCP(res))
 	}
 
-	lg, _, err := engine.LoadLedger(plan.Ledger)
+	lg, _, err := eng.LoadLedger(plan.Ledger)
 	if err != nil {
-		return []domain.Warning{{Field: "mcp-reconcile", Message: fmt.Sprintf("load ledger: %v", err)}}
+		return []domain.Warning{warningf("mcp-reconcile", "load ledger: %v", err)}
 	}
 
 	if nowFn == nil {
@@ -309,14 +309,14 @@ func reconcileMCPLedger(ctx context.Context, plan domain.Plan, h harness.Harness
 	}
 
 	if updated {
-		if serr := engine.SaveLedger(plan.Ledger, lg, false); serr != nil {
-			return []domain.Warning{{Field: "mcp-reconcile", Message: fmt.Sprintf("save ledger: %v", serr)}}
+		if serr := eng.SaveLedger(plan.Ledger, lg, false); serr != nil {
+			return []domain.Warning{warningf("mcp-reconcile", "save ledger: %v", serr)}
 		}
 	}
 	return nil
 }
 
-func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, w io.Writer) {
+func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, w io.Writer) {
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
@@ -325,7 +325,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, count
 	ledgers := map[domain.Harness]domain.Ledger{}
 	for _, hid := range req.Harnesses {
 		path := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, hid)
-		if lg, _, err := engine.LoadLedger(path); err == nil {
+		if lg, _, err := eng.LoadLedger(path); err == nil {
 			ledgers[hid] = lg
 		}
 	}
@@ -337,7 +337,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, count
 			return lg
 		}
 		if plan.Ledger != "" {
-			if lg, _, err := engine.LoadLedger(plan.Ledger); err == nil {
+			if lg, _, err := eng.LoadLedger(plan.Ledger); err == nil {
 				return lg
 			}
 		}
@@ -346,7 +346,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, count
 
 	var changes, skips int
 	for _, wr := range plan.Writes {
-		kind, err := classifyWriteKind(wr, ledgerForPath(wr.Dst))
+		kind, err := classifyWriteKind(eng, wr, ledgerForPath(wr.Dst))
 		if err != nil {
 			fmt.Fprintf(w, "create: %s\n", wr.Dst)
 			changes++
@@ -373,7 +373,7 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, count
 	}
 	for _, cp := range plan.Copies {
 		lg := ledgerForPath(cp.Dst)
-		dirKind := classifyCopyKind(cp, lg)
+		dirKind := classifyCopyKind(eng, cp, lg)
 		switch dirKind {
 		case domain.DiffIdentical:
 			skips++
@@ -405,10 +405,10 @@ func printDryRun(plan domain.Plan, req SyncRequest, reg *harness.Registry, count
 // file; for file copies it classifies the single file. The worst per-file kind
 // wins: any conflict makes the whole copy a conflict; any non-identical file
 // without conflict makes it managed; all identical means identical.
-func classifyCopyKind(cp domain.CopyAction, lg domain.Ledger) domain.DiffKind {
+func classifyCopyKind(eng *engine.Engine, cp domain.CopyAction, lg domain.Ledger) domain.DiffKind {
 	switch cp.Kind {
 	case domain.CopyKindDir:
-		fds, err := engine.ClassifyCopy(cp.Src, cp.Dst, cp.SourcePack, lg)
+		fds, err := eng.ClassifyCopy(cp.Src, cp.Dst, cp.SourcePack, lg)
 		if err != nil {
 			// Can't classify — treat as new copy so it shows up.
 			return domain.DiffCreate
@@ -428,11 +428,11 @@ func classifyCopyKind(cp domain.CopyAction, lg domain.Ledger) domain.DiffKind {
 		}
 		return worst
 	case domain.CopyKindFile:
-		content, err := os.ReadFile(cp.Src)
+		content, err := eng.FS.ReadFile(cp.Src)
 		if err != nil {
 			return domain.DiffCreate
 		}
-		fd, err := engine.ClassifyFile(cp.Dst, content, filepath.Base(cp.Dst), cp.SourcePack, lg)
+		fd, err := eng.ClassifyFile(cp.Dst, content, filepath.Base(cp.Dst), cp.SourcePack, lg)
 		if err != nil {
 			return domain.DiffCreate
 		}
@@ -472,11 +472,7 @@ func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Wr
 			absPath := filepath.Join(pack.Root, regPath)
 			reg, err := config.LoadRegistry(absPath)
 			if err != nil {
-				warnings = append(warnings, domain.Warning{
-					Path:    absPath,
-					Field:   "registry",
-					Message: fmt.Sprintf("loading embedded registry %s from pack %s: %v", regPath, pack.Name, err),
-				})
+				warnings = append(warnings, warningPathf(absPath, "registry", "loading embedded registry %s from pack %s: %v", regPath, pack.Name, err))
 				continue
 			}
 			allEntries = append(allEntries, reg)
@@ -488,7 +484,7 @@ func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Wr
 
 	cfgDir, err := config.DefaultConfigDir(home)
 	if err != nil {
-		return append(warnings, domain.Warning{Field: "registry", Message: fmt.Sprintf("resolving config dir: %v", err)})
+		return append(warnings, warningf("registry", "resolving config dir: %v", err))
 	}
 
 	merged := config.Registry{
@@ -507,10 +503,10 @@ func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Wr
 	}
 
 	if err := saveEmbeddedRegistry(cfgDir, merged); err != nil {
-		return append(warnings, domain.Warning{Field: "registry", Message: fmt.Sprintf("saving embedded registry cache: %v", err)})
+		return append(warnings, warningf("registry", "saving embedded registry cache: %v", err))
 	}
 	if err := indexRegistryEntries(merged, cfgDir); err != nil {
-		return append(warnings, domain.Warning{Field: "registry", Message: fmt.Sprintf("indexing embedded registry entries: %v", err)})
+		return append(warnings, warningf("registry", "indexing embedded registry entries: %v", err))
 	}
 
 	fmt.Fprintf(stderr, "Merged and indexed %d pack(s) from embedded registries\n", len(merged.Packs))

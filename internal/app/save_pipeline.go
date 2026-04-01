@@ -126,11 +126,11 @@ func DiscoverContentVectors(ctx context.Context, harnessID domain.Harness, scope
 //
 // The warnings return collects non-fatal issues (e.g. profile resolution
 // failures) that callers should surface to the user.
-func DiscoverSaveFiles(ctx context.Context, req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
+func DiscoverSaveFiles(ctx context.Context, eng *engine.Engine, req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
 	var warnings []string
 
 	// Resolve pack roots from active profile for classification.
-	res, _, err := ResolveActiveProfile(req.ConfigDir)
+	res, _, err := ResolveActiveProfile(eng, req.ConfigDir)
 	if err != nil {
 		// Non-fatal: proceed without pack roots (all files will be untracked).
 		warnings = append(warnings, fmt.Sprintf("profile resolution failed (all files will appear untracked): %v", err))
@@ -153,7 +153,7 @@ func DiscoverSaveFiles(ctx context.Context, req DiscoverSaveRequest, reg *harnes
 
 	packRoots := resolvePackRoots(res.Profile)
 
-	inspResult, err := InspectHarness(ctx, InspectRequest{
+	inspResult, err := InspectHarness(ctx, eng, InspectRequest{
 		TargetSpec: ts,
 		PackRoots:  packRoots,
 	}, reg)
@@ -182,7 +182,7 @@ func DiscoverSaveFiles(ctx context.Context, req DiscoverSaveRequest, reg *harnes
 
 // DiscoverSaveFilesAllScopes runs discovery for both project and global scopes,
 // merging and deduplicating results. Each candidate carries its source Scope.
-func DiscoverSaveFilesAllScopes(ctx context.Context, req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
+func DiscoverSaveFilesAllScopes(ctx context.Context, eng *engine.Engine, req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
 	var allCandidates []SaveCandidate
 	var allWarnings []string
 
@@ -192,7 +192,7 @@ func DiscoverSaveFilesAllScopes(ctx context.Context, req DiscoverSaveRequest, re
 		}
 		scopeReq := req
 		scopeReq.Scope = scope
-		candidates, warnings, err := DiscoverSaveFiles(ctx, scopeReq, reg)
+		candidates, warnings, err := DiscoverSaveFiles(ctx, eng, scopeReq, reg)
 		if err != nil {
 			allWarnings = append(allWarnings, fmt.Sprintf("%s scope: %v", scope, err))
 			continue
@@ -245,7 +245,7 @@ func DiscoverContentVectorsAllScopes(ctx context.Context, harnessID domain.Harne
 // RunSavePipeline copies selected candidates to the destination pack,
 // updates the ledger, and scans for secrets. With DryRun, reports what
 // would change without writing anything.
-func RunSavePipeline(req SavePipelineRequest, reg *harness.Registry) (SavePipelineResult, error) {
+func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.Registry) (SavePipelineResult, error) {
 	var result SavePipelineResult
 	packRoot := filepath.Join(req.ConfigDir, "packs", req.PackName)
 
@@ -308,7 +308,7 @@ func RunSavePipeline(req SavePipelineRequest, reg *harness.Registry) (SavePipeli
 			return sl
 		}
 		lp := engine.LedgerPathForScope(scope, req.ProjectDir, req.Home, req.HarnessID)
-		lg, _, lerr := engine.LoadLedger(lp)
+		lg, _, lerr := eng.LoadLedger(lp)
 		if lerr != nil {
 			lg = domain.NewLedger()
 		}
@@ -529,7 +529,7 @@ func RunSavePipeline(req SavePipelineRequest, reg *harness.Registry) (SavePipeli
 
 	// Save ledgers for all touched scopes.
 	for scope, sl := range ledgers {
-		if err := engine.SaveLedger(sl.path, sl.ledger, false); err != nil {
+		if err := eng.SaveLedger(sl.path, sl.ledger, false); err != nil {
 			return result, fmt.Errorf("saving ledger for scope %s: %w", scope, err)
 		}
 	}

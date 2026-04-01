@@ -10,6 +10,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 type TraceCmd struct {
@@ -87,7 +88,8 @@ func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	result, err := app.RunTrace(ctx, loaded.profile, app.TraceRequest{
+	eng := engine.New(nil, nil)
+	result, err := app.RunTrace(ctx, eng, loaded.profile, app.TraceRequest{
 		TargetSpec: app.TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectDir,

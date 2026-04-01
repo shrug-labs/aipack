@@ -10,35 +10,37 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
-	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // LoadLedger reads a ledger from disk; returns an empty ledger if the file does not exist.
-// Returns a warning string (non-empty) if the file exists but contains invalid JSON.
-func LoadLedger(path string) (domain.Ledger, string, error) {
-	b, err := os.ReadFile(path)
+// Returns a warning if the file exists but contains invalid JSON.
+func (e *Engine) LoadLedger(path string) (domain.Ledger, []domain.Warning, error) {
+	b, err := e.FS.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return domain.NewLedger(), "", nil
+			return domain.NewLedger(), nil, nil
 		}
-		return domain.Ledger{}, "", err
+		return domain.Ledger{}, nil, err
 	}
 	var raw struct {
 		Managed         map[string]domain.Entry `json:"managed"`
 		UpdatedAtEpochS int64                   `json:"updated_at_epoch_s"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return domain.NewLedger(), fmt.Sprintf("corrupt ledger %s (resetting): %v", path, err), nil
+		return domain.NewLedger(), []domain.Warning{{
+			Field:   "ledger",
+			Message: fmt.Sprintf("corrupt ledger %s (resetting): %v", path, err),
+		}}, nil
 	}
 	if raw.Managed == nil {
 		raw.Managed = map[string]domain.Entry{}
 	}
-	return domain.Ledger{Managed: raw.Managed, UpdatedAt: raw.UpdatedAtEpochS}, "", nil
+	return domain.Ledger{Managed: raw.Managed, UpdatedAt: raw.UpdatedAtEpochS}, nil, nil
 }
 
 // SaveLedger persists a ledger to disk.
 // When dryRun is true the file is not actually written.
-func SaveLedger(path string, l domain.Ledger, dryRun bool) error {
+func (e *Engine) SaveLedger(path string, l domain.Ledger, dryRun bool) error {
 	payload := map[string]any{
 		"schema_version":     1,
 		"updated_at_epoch_s": time.Now().Unix(),
@@ -53,7 +55,10 @@ func SaveLedger(path string, l domain.Ledger, dryRun bool) error {
 	if dryRun {
 		return nil
 	}
-	return util.WriteFileAtomicWithPerms(path, b, 0o700, 0o600)
+	if err := e.FS.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return e.FS.WriteFile(path, b, 0o600)
 }
 
 // EncodeProjectPath encodes an absolute project directory as a directory name
@@ -76,13 +81,13 @@ func EncodeProjectPath(projectDir string) string {
 //   - Project local:   <projectDir>/.aipack/ledger.json
 //
 // Entries are routed by path prefix matching against harness managed roots.
-func MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
+func (e *Engine) MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
 	migrated := 0
 
 	// Check for old project-local ledger.
 	if scope == domain.ScopeProject {
 		oldPath := filepath.Join(projectDir, ".aipack", "ledger.json")
-		n, err := migrateOneLedger(oldPath, scope, projectDir, home, harnesses, managedRoots)
+		n, err := e.migrateOneLedger(oldPath, scope, projectDir, home, harnesses, managedRoots)
 		if err != nil {
 			return 0, err
 		}
@@ -92,23 +97,23 @@ func MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []
 	// Check for old combined-harness ledgers in global ledger dir.
 	cfgDir, _ := config.DefaultConfigDir(home)
 	ledgerDir := filepath.Join(cfgDir, "ledger")
-	entries, err := os.ReadDir(ledgerDir)
+	entries, err := e.FS.ReadDir(ledgerDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return migrated, nil
 		}
 		return 0, err
 	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") {
 			continue
 		}
 		// Combined ledgers contain "+" in the filename.
-		if !strings.Contains(e.Name(), "+") {
+		if !strings.Contains(ent.Name(), "+") {
 			continue
 		}
-		oldPath := filepath.Join(ledgerDir, e.Name())
-		n, err := migrateOneLedger(oldPath, scope, projectDir, home, harnesses, managedRoots)
+		oldPath := filepath.Join(ledgerDir, ent.Name())
+		n, err := e.migrateOneLedger(oldPath, scope, projectDir, home, harnesses, managedRoots)
 		if err != nil {
 			return migrated, err
 		}
@@ -118,8 +123,8 @@ func MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []
 	return migrated, nil
 }
 
-func migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
-	old, _, err := LoadLedger(oldPath)
+func (e *Engine) migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
+	old, _, err := e.LoadLedger(oldPath)
 	if err != nil || len(old.Managed) == 0 {
 		return 0, err
 	}
@@ -128,7 +133,7 @@ func migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home strin
 	perHarness := map[domain.Harness]*domain.Ledger{}
 	for _, h := range harnesses {
 		lp := LedgerPathForScope(scope, projectDir, home, h)
-		lg, _, lerr := LoadLedger(lp)
+		lg, _, lerr := e.LoadLedger(lp)
 		if lerr != nil {
 			return 0, lerr
 		}
@@ -157,7 +162,7 @@ func migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home strin
 	// Save per-harness ledgers.
 	for h, lg := range perHarness {
 		lp := LedgerPathForScope(scope, projectDir, home, h)
-		if err := SaveLedger(lp, *lg, false); err != nil {
+		if err := e.SaveLedger(lp, *lg, false); err != nil {
 			return migrated, err
 		}
 	}

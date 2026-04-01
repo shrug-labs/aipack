@@ -15,6 +15,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
 )
 
@@ -90,6 +91,7 @@ const (
 type rootModel struct {
 	ctx       context.Context
 	cfg       RunConfig
+	eng       *engine.Engine
 	activeTab tabID
 
 	profiles profilesModel
@@ -130,12 +132,14 @@ type rootModel struct {
 }
 
 func newRootModel(ctx context.Context, cfg RunConfig) rootModel {
+	eng := engine.New(nil, nil)
 	return rootModel{
 		ctx:      ctx,
 		cfg:      cfg,
-		profiles: newProfilesModel(ctx, cfg.ConfigDir),
+		eng:      eng,
+		profiles: newProfilesModel(ctx, eng, cfg.ConfigDir),
 		packs:    newPacksModel(cfg.ConfigDir),
-		saveTab:  newSaveTabModel(ctx, cfg.ConfigDir, cfg.Registry),
+		saveTab:  newSaveTabModel(ctx, eng, cfg.ConfigDir, cfg.Registry),
 		syncTab:  newSyncTabModel(cfg.ConfigDir),
 		search:   newSearchTabModel(cfg.ConfigDir),
 	}
@@ -747,7 +751,7 @@ func (m rootModel) updatePlanView(msg tea.Msg) (tea.Model, tea.Cmd) {
 				spc := m.savePlanCtx
 				m.planView = nil
 				m.statusText = dimStyle.Render("saving...")
-				return m, runSave(m.ctx, m.cfg.ConfigDir, spc.profileName, m.cfg.Registry)
+				return m, runSave(m.ctx, m.eng, m.cfg.ConfigDir, spc.profileName, m.cfg.Registry)
 			}
 		}
 	}
@@ -1198,7 +1202,7 @@ func (m rootModel) startSave() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.statusText = dimStyle.Render("checking for changes...")
-	return m, runSavePlan(m.ctx, m.cfg.ConfigDir, item.name, m.cfg.Registry)
+	return m, runSavePlan(m.ctx, m.eng, m.cfg.ConfigDir, item.name, m.cfg.Registry)
 }
 
 // startSync initiates the sync flow: auto-save if dirty, then prompt sync.
@@ -1242,7 +1246,7 @@ func (m rootModel) doSync(scope, harness string) (tea.Model, tea.Cmd) {
 	m.statusText = dimStyle.Render("syncing...")
 	m.pendingExit = false
 
-	return m, runSync(m.ctx, m.cfg.ConfigDir, item.name, item.path, scope, harness, m.cfg.SyncCfg, m.cfg.Registry)
+	return m, runSync(m.ctx, m.eng, m.cfg.ConfigDir, item.name, item.path, scope, harness, m.cfg.SyncCfg, m.cfg.Registry)
 }
 
 // promptSync shows the sync options dialog for the target profile.
@@ -1637,7 +1641,7 @@ func (m rootModel) handleContentMoveTo(msg dialogResultMsg) (tea.Model, tea.Cmd)
 	fromPack := pi.entry.Name
 
 	m.statusText = dimStyle.Render(fmt.Sprintf("moving %s/%s to %s...", ci.category, ci.id, toPack))
-	return m, moveContentToPack(m.cfg.ConfigDir, ci.id, ci.category, fromPack, toPack)
+	return m, moveContentToPack(m.eng, m.cfg.ConfigDir, ci.id, ci.category, fromPack, toPack)
 }
 
 func (m rootModel) openSyncActions() (tea.Model, tea.Cmd) {

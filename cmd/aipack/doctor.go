@@ -9,6 +9,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 type DoctorCmd struct {
@@ -46,7 +47,8 @@ See also: init, sync, status`
 }
 
 func (c *DoctorCmd) Run(ctx context.Context, g *Globals) error {
-	rep := app.RunDoctor(ctx, app.DoctorRequest{
+	eng := engine.New(nil, nil)
+	rep := app.RunDoctor(ctx, eng, app.DoctorRequest{
 		ConfigDir:   c.ConfigDir,
 		ProfilePath: c.ProfilePath,
 		ProfileName: c.Profile,

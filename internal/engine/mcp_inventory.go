@@ -3,7 +3,6 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 
@@ -13,8 +12,8 @@ import (
 
 // loadMCPInventoryDir loads all .json files from a directory into an MCP server map.
 // Server names are normalized to lowercase.
-func loadMCPInventoryDir(dir string) (map[string]domain.MCPServer, error) {
-	entries, err := os.ReadDir(dir)
+func (e *Engine) loadMCPInventoryDir(dir string) (map[string]domain.MCPServer, error) {
+	entries, err := e.FS.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +30,7 @@ func loadMCPInventoryDir(dir string) (map[string]domain.MCPServer, error) {
 
 	out := map[string]domain.MCPServer{}
 	for _, p := range paths {
-		b, err := os.ReadFile(p)
+		b, err := e.FS.ReadFile(p)
 		if err != nil {
 			return nil, err
 		}
@@ -53,13 +52,13 @@ func loadMCPInventoryDir(dir string) (map[string]domain.MCPServer, error) {
 
 // LoadMCPInventoryForPacks loads MCP server inventories from each pack's mcp directory,
 // filtering to only servers referenced by the pack's MCP map.
-func LoadMCPInventoryForPacks(packs []config.ResolvedPack) (map[string]domain.MCPServer, error) {
+func (e *Engine) LoadMCPInventoryForPacks(packs []config.ResolvedPack) (map[string]domain.MCPServer, error) {
 	inventory := map[string]domain.MCPServer{}
 	for _, pack := range packs {
 		if len(pack.MCP) == 0 {
 			continue
 		}
-		inv, err := loadMCPInventoryDir(filepath.Join(pack.Root, "mcp"))
+		inv, err := e.loadMCPInventoryDir(filepath.Join(pack.Root, "mcp"))
 		if err != nil {
 			return nil, err
 		}

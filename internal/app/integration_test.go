@@ -93,7 +93,7 @@ func reducedProfile(t *testing.T, packRoot string) domain.Profile {
 // harness and returns the result. Fails the test on error.
 func syncAndApply(t *testing.T, profile domain.Profile, scope domain.Scope, projectDir, home string, hid domain.Harness, reg *harness.Registry) SyncResult {
 	t.Helper()
-	result, warnings, err := RunSync(context.Background(), profile, SyncRequest{
+	result, warnings, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectDir,
@@ -246,7 +246,7 @@ func TestSyncThenClean_ReturnsToBaseline(t *testing.T) {
 
 			// Clean.
 			var stderr bytes.Buffer
-			err := RunClean(context.Background(), CleanRequest{
+			err := RunClean(context.Background(), engine.New(nil, nil), CleanRequest{
 				TargetSpec: TargetSpec{
 					Scope:      domain.ScopeProject,
 					ProjectDir: projectDir,
@@ -714,7 +714,7 @@ func TestConvergence_CorruptedOwnedFiles(t *testing.T) {
 			}
 
 			// Re-sync with force — should recover, not fail.
-			_, _, err := RunSync(context.Background(), profile, SyncRequest{
+			_, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
 				TargetSpec: TargetSpec{
 					Scope:      domain.ScopeProject,
 					ProjectDir: projectDir,

@@ -14,14 +14,15 @@ import (
 func TestLoadLedger_NonExistent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	eng := New(nil, nil)
 	path := filepath.Join(dir, "missing.json")
 
-	lg, warn, err := LoadLedger(path)
+	lg, warnings, err := eng.LoadLedger(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if warn != "" {
-		t.Errorf("unexpected warning: %s", warn)
+	if len(warnings) > 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
 	}
 	if lg.Managed == nil {
 		t.Error("Managed should be initialized")
@@ -34,17 +35,18 @@ func TestLoadLedger_NonExistent(t *testing.T) {
 func TestSaveLedger_RoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	eng := New(nil, nil)
 	path := filepath.Join(dir, "ledger.json")
 
 	testFile := filepath.Join(dir, "test-file")
 	lg := domain.NewLedger()
 	lg.Record(testFile, []byte("hello"), "pack1", nil, time.Now())
 
-	if err := SaveLedger(path, lg, false); err != nil {
+	if err := eng.SaveLedger(path, lg, false); err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, _, err := LoadLedger(path)
+	loaded, _, err := eng.LoadLedger(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +69,13 @@ func TestSaveLedger_RoundTrip(t *testing.T) {
 func TestSaveLedger_DryRun(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	eng := New(nil, nil)
 	path := filepath.Join(dir, "ledger.json")
 
 	lg := domain.NewLedger()
 	lg.Record("/tmp/test-file", []byte("hello"), "pack1", nil, time.Now())
 
-	if err := SaveLedger(path, lg, true); err != nil {
+	if err := eng.SaveLedger(path, lg, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,6 +88,7 @@ func TestSaveLedger_DryRun(t *testing.T) {
 func TestSaveLedger_SortedKeys(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	eng := New(nil, nil)
 	path := filepath.Join(dir, "ledger.json")
 
 	lg := domain.NewLedger()
@@ -92,7 +96,7 @@ func TestSaveLedger_SortedKeys(t *testing.T) {
 	lg.Record("/a/file", []byte("a"), "pack1", nil, time.Now())
 	lg.Record("/m/file", []byte("m"), "pack1", nil, time.Now())
 
-	if err := SaveLedger(path, lg, false); err != nil {
+	if err := eng.SaveLedger(path, lg, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,6 +124,7 @@ func TestSaveLedger_V1Compat(t *testing.T) {
 	t.Parallel()
 	// Simulate a v1 ledger JSON and verify v2 can read it.
 	dir := t.TempDir()
+	eng := New(nil, nil)
 	path := filepath.Join(dir, "ledger.json")
 
 	v1JSON := `{
@@ -139,7 +144,7 @@ func TestSaveLedger_V1Compat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lg, _, err := LoadLedger(path)
+	lg, _, err := eng.LoadLedger(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,17 +163,18 @@ func TestSaveLedger_V1Compat(t *testing.T) {
 func TestLoadLedger_CorruptJSON(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	eng := New(nil, nil)
 	path := filepath.Join(dir, "bad.json")
 	if err := os.WriteFile(path, []byte("not json at all {{{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	lg, warn, err := LoadLedger(path)
+	lg, warnings, err := eng.LoadLedger(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if warn == "" {
-		t.Error("expected warning for corrupt JSON, got empty")
+	if len(warnings) == 0 {
+		t.Error("expected warning for corrupt JSON, got none")
 	}
 	if lg.Managed == nil {
 		t.Error("Managed should be initialized even for corrupt ledger")
@@ -220,6 +226,7 @@ func TestEncodeProjectPath(t *testing.T) {
 func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := New(nil, nil)
 	cfgDir, _ := config.DefaultConfigDir(home) // uses home-relative path on all platforms
 	ledgerDir := filepath.Join(cfgDir, "ledger")
 	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
@@ -230,7 +237,7 @@ func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 	combined := domain.NewLedger()
 	combined.Managed[filepath.Join(home, ".claude", "rules", "a.md")] = domain.Entry{Digest: "aaa", SourcePack: "p1"}
 	combined.Managed[filepath.Join(home, ".opencode", "rules", "b.md")] = domain.Entry{Digest: "bbb", SourcePack: "p1"}
-	if err := SaveLedger(filepath.Join(ledgerDir, "claudecode+opencode.json"), combined, false); err != nil {
+	if err := eng.SaveLedger(filepath.Join(ledgerDir, "claudecode+opencode.json"), combined, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -239,7 +246,7 @@ func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 		domain.HarnessOpenCode:   {filepath.Join(home, ".opencode")},
 	}
 
-	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode}, roots)
+	n, err := eng.MigrateOldLedgers(domain.ScopeGlobal, "", home, []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode}, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,11 +255,11 @@ func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 	}
 
 	// Verify per-harness ledgers.
-	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, domain.HarnessClaudeCode))
+	cc, _, _ := eng.LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, domain.HarnessClaudeCode))
 	if len(cc.Managed) != 1 {
 		t.Errorf("claudecode entries = %d, want 1", len(cc.Managed))
 	}
-	oc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, domain.HarnessOpenCode))
+	oc, _, _ := eng.LoadLedger(LedgerPathForScope(domain.ScopeGlobal, "", home, domain.HarnessOpenCode))
 	if len(oc.Managed) != 1 {
 		t.Errorf("opencode entries = %d, want 1", len(oc.Managed))
 	}
@@ -261,6 +268,7 @@ func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := New(nil, nil)
 	projectDir := filepath.Join(home, "myproject")
 
 	// Write an old project-local ledger.
@@ -270,7 +278,7 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 	}
 	old := domain.NewLedger()
 	old.Managed[filepath.Join(projectDir, ".claude", "rules", "x.md")] = domain.Entry{Digest: "xxx", SourcePack: "p1"}
-	if err := SaveLedger(oldPath, old, false); err != nil {
+	if err := eng.SaveLedger(oldPath, old, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -278,7 +286,7 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 		domain.HarnessClaudeCode: {filepath.Join(projectDir, ".claude")},
 	}
 
-	n, err := MigrateOldLedgers(domain.ScopeProject, projectDir, home, []domain.Harness{domain.HarnessClaudeCode}, roots)
+	n, err := eng.MigrateOldLedgers(domain.ScopeProject, projectDir, home, []domain.Harness{domain.HarnessClaudeCode}, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +294,7 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 		t.Errorf("migrated = %d, want 1", n)
 	}
 
-	cc, _, _ := LoadLedger(LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode))
+	cc, _, _ := eng.LoadLedger(LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode))
 	if len(cc.Managed) != 1 {
 		t.Errorf("claudecode entries = %d, want 1", len(cc.Managed))
 	}
@@ -295,11 +303,12 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 func TestMigrateOldLedgers_NoOldFiles(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := New(nil, nil)
 	roots := map[domain.Harness][]string{
 		domain.HarnessClaudeCode: {filepath.Join(home, ".claude")},
 	}
 
-	n, err := MigrateOldLedgers(domain.ScopeGlobal, "", home, []domain.Harness{domain.HarnessClaudeCode}, roots)
+	n, err := eng.MigrateOldLedgers(domain.ScopeGlobal, "", home, []domain.Harness{domain.HarnessClaudeCode}, roots)
 	if err != nil {
 		t.Fatal(err)
 	}

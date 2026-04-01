@@ -6,6 +6,25 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.15.0]
+
+### Changed
+
+- Engine apply pipeline decomposed into focused units: file application (`apply.go`), stale-file reconciliation (`stale.go`), and interactive I/O (`interact.go`). Interactive prompting is now injectable via the `Interactor` interface on `ApplyRequest`, enabling tests for previously uncoverable deletion paths.
+- `shouldDelete` returns a `DeleteDecision` type (`DeleteYes`, `DeleteNo`, `DeleteSkippedNonInteractive`) instead of `(bool, error)`, distinguishing user-declined from non-interactive-skipped from I/O failure. Non-interactive skips produce an actionable summary warning with count.
+- Stale-file reconciliation no longer tracks stat/remove failure counts or emits per-file or aggregate warnings for filesystem errors on managed files. These files are created by aipack in directories it controls, so permission-based failures are not a realistic scenario.
+- `LoadLedger` and `SnapshotSettingsFiles` now return `[]domain.Warning` instead of ad-hoc warning strings, making the warning pipeline consistent across the engine.
+- Engine package introduces an `Engine` struct with injectable `FS` and `Interactor` dependencies. All filesystem-touching functions (14 exported, plus internal helpers) are now methods on `*Engine`, replacing direct `os.*` calls with the `FS` interface. This makes the sync/apply/diff/ledger/cache pipeline testable without touching the real filesystem. A `MemFS` in-memory implementation is exported for test use. The `Interactor` (previously on `ApplyRequest`) moves to the Engine, giving callers a single construction site for all I/O dependencies.
+- Pack source acquisition (git clone, HTTP tarball, archive extraction, URL probing) extracted from `internal/config` to `internal/source`. The config package drops from 19 files / 7k lines to 15 / 4.5k.
+- `OSFS.WriteFile` fallback directory permission changed from `0o755` to `0o700`, matching aipack's convention for user-private config directories.
+- TUI threads a single `*Engine` instance through the model hierarchy instead of creating separate instances per async operation.
+
+### Security
+
+- Pack URL probing rejects URLs containing embedded credentials.
+- `urlOK` validates URL scheme before making requests, rejects non-HTTP(S) schemes.
+- `urlOK` uses HEAD instead of GET for URL probing (falls back to GET on 405 for servers that don't support HEAD), draining response bodies for connection reuse.
+
 ## [0.14.0]
 
 ### Added

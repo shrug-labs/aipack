@@ -13,6 +13,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/util"
 
 	"gopkg.in/yaml.v3"
@@ -56,10 +57,10 @@ type PackAddRequest struct {
 
 	// Test injection points:
 	RunGitFn      func(ctx context.Context, args ...string) error
-	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts config.ArchiveOpts) error
+	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
 	URLOKFn       func(ctx context.Context, raw string) (bool, error)
 	NowFn         func() time.Time
-	GitHashFn     func(ctx context.Context, dir string) (string, error) // nil = config.GitHeadHash
+	GitHashFn     func(ctx context.Context, dir string) (string, error) // nil = source.GitHeadHash
 }
 
 // PacksDir returns the canonical pack installation directory.
@@ -246,19 +247,19 @@ func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
 func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) error {
 	// Resolve URL info: for SSH/git URLs or when SubPath/Ref is pre-set,
 	// skip the HTTP probe (ProbePackURL) and go directly to git operations.
-	var info config.PackURLInfo
+	var info source.PackURLInfo
 	if req.SubPath != "" || req.Ref != "" || config.IsGitURL(req.URL, "") {
-		info = config.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
+		info = source.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
 	} else {
 		var err error
-		info, err = config.ProbePackURL(req.URL)
+		info, err = source.ProbePackURL(req.URL)
 		if err != nil {
 			return fmt.Errorf("probing URL: %w", err)
 		}
 
 		// Validate pack.json is accessible if we have a direct URL for it.
 		if info.PackURL != "" {
-			urlOKFn := config.URLOK
+			urlOKFn := source.URLOK
 			if req.URLOKFn != nil {
 				urlOKFn = req.URLOKFn
 			}
@@ -283,17 +284,17 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 	}
 
 	// Select fetch strategy based on the repository URL.
-	strategy := config.SelectFetchStrategy(info.RepoURL)
+	strategy := source.SelectFetchStrategy(info.RepoURL)
 	// Existing tests inject RunGitFn to control clone behavior. Without this
 	// guard they'd be routed through HTTP tarball for GitHub URLs and call the
 	// real network. RunGitFn without HTTPTarballFn means "test wants git path".
-	if strategy == config.StrategyHTTPTarball && req.RunGitFn != nil && req.HTTPTarballFn == nil {
-		strategy = config.StrategyShallowClone
+	if strategy == source.StrategyHTTPTarball && req.RunGitFn != nil && req.HTTPTarballFn == nil {
+		strategy = source.StrategyShallowClone
 	}
 	var result packInstallResult
 	var err error
 	switch strategy {
-	case config.StrategyHTTPTarball:
+	case source.StrategyHTTPTarball:
 		result, err = packFetchHTTPTarball(ctx, req, info, packsDir, stdout)
 	default:
 		result, err = packShallowClone(ctx, req, info, packsDir, stdout)
@@ -348,8 +349,8 @@ type packInstallResult struct {
 }
 
 // packFetchHTTPTarball installs a pack by downloading a GitHub HTTP tarball.
-func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info config.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
-	tarballURL, err := config.GitHubTarballURL(info.RepoURL, info.Ref)
+func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
+	tarballURL, err := source.GitHubTarballURL(info.RepoURL, info.Ref)
 	if err != nil {
 		return packInstallResult{}, fmt.Errorf("building tarball URL: %w", err)
 	}
@@ -364,9 +365,9 @@ func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info config.P
 
 	fetchFn := req.HTTPTarballFn
 	if fetchFn == nil {
-		fetchFn = config.FetchHTTPTarball
+		fetchFn = source.FetchHTTPTarball
 	}
-	if err := fetchFn(ctx, tarballURL, tmpDir, info.SubPath, config.ArchiveOpts{}); err != nil {
+	if err := fetchFn(ctx, tarballURL, tmpDir, info.SubPath, source.ArchiveOpts{}); err != nil {
 		return packInstallResult{}, fmt.Errorf("fetching tarball from %s: %w", tarballURL, err)
 	}
 
@@ -396,7 +397,7 @@ func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info config.P
 }
 
 // packShallowClone installs a pack via shallow git clone.
-func packShallowClone(ctx context.Context, req PackAddRequest, info config.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
+func packShallowClone(ctx context.Context, req PackAddRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
 	subPath := info.SubPath
 	cloneDir, err := makePackTempDir(req.ConfigDir, "clone-*")
 	if err != nil {
@@ -409,11 +410,11 @@ func packShallowClone(ctx context.Context, req PackAddRequest, info config.PackU
 	defer os.RemoveAll(cloneDir)
 
 	if req.RunGitFn != nil {
-		if err := config.EnsureCloneWith(ctx, info.RepoURL, cloneDir, info.Ref, req.RunGitFn); err != nil {
+		if err := source.EnsureCloneWith(ctx, info.RepoURL, cloneDir, info.Ref, req.RunGitFn); err != nil {
 			return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
 		}
 	} else {
-		if err := config.EnsureClone(ctx, info.RepoURL, cloneDir, info.Ref); err != nil {
+		if err := source.EnsureClone(ctx, info.RepoURL, cloneDir, info.Ref); err != nil {
 			return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
 		}
 	}
@@ -685,7 +686,7 @@ func packDeregister(profilePath, packName string) bool {
 
 // PackRename renames a pack across all config: directory, manifest, sync-config,
 // profiles, and ledger files. Rolls back the directory rename on failure.
-func PackRename(configDir, oldName, newName string, stdout io.Writer) error {
+func PackRename(eng *engine.Engine, configDir, oldName, newName string, stdout io.Writer) error {
 	oldName = strings.TrimSpace(oldName)
 	newName = strings.TrimSpace(newName)
 	if oldName == "" || newName == "" {
@@ -738,7 +739,7 @@ func PackRename(configDir, oldName, newName string, stdout io.Writer) error {
 	packRenameInAllProfiles(configDir, oldName, newName, stdout)
 
 	// 5. Update all ledger files.
-	packRenameInAllLedgers(configDir, oldName, newName, stdout)
+	packRenameInAllLedgers(eng, configDir, oldName, newName, stdout)
 
 	fmt.Fprintf(stdout, "Renamed pack %q → %q\n", oldName, newName)
 	return nil
@@ -799,7 +800,7 @@ func packRenameInProfile(profilePath, oldName, newName string) bool {
 	return true
 }
 
-func packRenameInAllLedgers(configDir, oldName, newName string, stdout io.Writer) {
+func packRenameInAllLedgers(eng *engine.Engine, configDir, oldName, newName string, stdout io.Writer) {
 	ledgerDir := filepath.Join(configDir, "ledger")
 	entries, err := os.ReadDir(ledgerDir)
 	if err != nil {
@@ -810,7 +811,7 @@ func packRenameInAllLedgers(configDir, oldName, newName string, stdout io.Writer
 			continue
 		}
 		path := filepath.Join(ledgerDir, e.Name())
-		updated, lerr := packRenameInLedger(path, oldName, newName)
+		updated, lerr := packRenameInLedger(eng, path, oldName, newName)
 		if lerr != nil {
 			fmt.Fprintf(stdout, "Warning: ledger %s: %s\n", e.Name(), lerr)
 		} else if updated {
@@ -819,13 +820,13 @@ func packRenameInAllLedgers(configDir, oldName, newName string, stdout io.Writer
 	}
 }
 
-func packRenameInLedger(path, oldName, newName string) (bool, error) {
-	lg, warn, err := engine.LoadLedger(path)
+func packRenameInLedger(eng *engine.Engine, path, oldName, newName string) (bool, error) {
+	lg, warnings, err := eng.LoadLedger(path)
 	if err != nil {
 		return false, fmt.Errorf("load: %w", err)
 	}
-	if warn != "" {
-		return false, fmt.Errorf("load warning: %s", warn)
+	if len(warnings) > 0 {
+		return false, fmt.Errorf("load warning: %s", warnings[0])
 	}
 	modified := false
 	for k, entry := range lg.Managed {
@@ -838,7 +839,7 @@ func packRenameInLedger(path, oldName, newName string) (bool, error) {
 	if !modified {
 		return false, nil
 	}
-	if err := engine.SaveLedger(path, lg, false); err != nil {
+	if err := eng.SaveLedger(path, lg, false); err != nil {
 		return false, fmt.Errorf("save: %w", err)
 	}
 	return true, nil
@@ -1013,10 +1014,11 @@ type PackUpdateRequest struct {
 	ConfigDir     string
 	Name          string // empty when All=true
 	All           bool
+	Seed          bool                                                  // re-seed bundled profiles from updated packs
 	RunGitFn      func(ctx context.Context, args ...string) error       // test injection; nil = real git
 	NowFn         func() time.Time                                      // test injection; nil = time.Now
-	GitHashFn     func(ctx context.Context, dir string) (string, error) // test injection; nil = config.GitHeadHash
-	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts config.ArchiveOpts) error
+	GitHashFn     func(ctx context.Context, dir string) (string, error) // test injection; nil = source.GitHeadHash
+	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
 }
 
 // PackUpdateResult describes the outcome of updating a single pack.
@@ -1074,7 +1076,7 @@ type packUpdateContext struct {
 	runGitFn      func(ctx context.Context, args ...string) error
 	nowFn         func() time.Time
 	gitHashFn     func(ctx context.Context, dir string) (string, error)
-	httpTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts config.ArchiveOpts) error
+	httpTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
 	stdout        io.Writer
 }
 
@@ -1083,7 +1085,7 @@ type packUpdateContext struct {
 func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io.Writer) packUpdateContext {
 	runGitFn := req.RunGitFn
 	if runGitFn == nil {
-		runGitFn = config.RunGit
+		runGitFn = source.RunGit
 	}
 
 	nowFn := req.NowFn
@@ -1140,6 +1142,13 @@ func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer) ([
 	var results []PackUpdateResult
 	for _, name := range names {
 		r := packUpdateOne(ctx, name, uctx)
+		if req.Seed && (r.Status == "updated" || r.Status == "up-to-date") {
+			packDir := filepath.Join(uctx.packsDir, name)
+			manifestPath := filepath.Join(packDir, "pack.json")
+			if m, err := config.LoadPackManifest(manifestPath); err == nil && len(m.Profiles) > 0 {
+				packSeedProfiles(uctx.configDir, packDir, m.Profiles, true, nil, stdout)
+			}
+		}
 		results = append(results, r)
 	}
 	return results, nil
@@ -1172,7 +1181,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
 			defer os.RemoveAll(tmpDir)
-			if err := config.EnsureCloneWith(ctx, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
+			if err := source.EnsureCloneWith(ctx, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
 				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 			}
 			hashDir = tmpDir // capture hash from full clone before subtree extraction
@@ -1274,7 +1283,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 			Name:          name,
 			HTTPTarballFn: uctx.httpTarballFn,
 		}
-		addInfo := config.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
+		addInfo := source.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
 		var result packInstallResult
 		var err error
 		if method == config.MethodHTTPTarball {
@@ -1447,11 +1456,11 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 }
 
 // resolveGitHash returns the HEAD commit hash for dir, or "" if unavailable.
-// Uses gitHashFn if non-nil, otherwise falls back to config.GitHeadHash.
+// Uses gitHashFn if non-nil, otherwise falls back to source.GitHeadHash.
 func resolveGitHash(ctx context.Context, dir string, gitHashFn func(context.Context, string) (string, error)) string {
 	fn := gitHashFn
 	if fn == nil {
-		fn = config.GitHeadHash
+		fn = source.GitHeadHash
 	}
 	h, err := fn(ctx, dir)
 	if err != nil {

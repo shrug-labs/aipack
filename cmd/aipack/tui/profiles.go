@@ -10,6 +10,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
 )
 
@@ -23,6 +24,7 @@ const (
 
 type profilesModel struct {
 	ctx        context.Context
+	eng        *engine.Engine
 	items      []profileItem
 	cursor     int
 	focus      panelFocus
@@ -49,8 +51,9 @@ func (m *profilesModel) clampProfileOffset() {
 	m.profileOffset = clampOffset(m.cursor, m.profileOffset, visH)
 }
 
-func newProfilesModel(ctx context.Context, configDir string) profilesModel {
+func newProfilesModel(ctx context.Context, eng *engine.Engine, configDir string) profilesModel {
 	return profilesModel{
+		eng:       eng,
 		ctx:       ctx,
 		configDir: configDir,
 	}
@@ -340,7 +343,7 @@ func (m profilesModel) checkSyncCmd(syncCfg config.SyncConfig, reg *harness.Regi
 		return nil
 	}
 	item.syncState = syncLoading
-	return checkSyncStatus(m.ctx, m.configDir, item.name, item.path, item.cfg, syncCfg, reg)
+	return checkSyncStatus(m.ctx, m.eng, m.configDir, item.name, item.path, item.cfg, syncCfg, reg)
 }
 
 func (m profilesModel) currentItem() *profileItem {

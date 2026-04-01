@@ -68,7 +68,7 @@ func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
 	reg := harness.NewRegistry(claudeHarness, codexHarness)
 
 	var stdout, stderr bytes.Buffer
-	result, _, err := RunSync(context.Background(), domain.Profile{}, SyncRequest{
+	result, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -97,12 +97,13 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 	managedRoot := filepath.Join(projectDir, ".claude")
 	oldLedgerPath := filepath.Join(projectDir, ".aipack", "ledger.json")
 
+	eng := engine.New(nil, nil)
 	oldLedger := domain.NewLedger()
 	oldLedger.Managed[filepath.Join(managedRoot, "rules", "sample.md")] = domain.Entry{
 		Digest:     "abc123",
 		SourcePack: "demo",
 	}
-	if err := engine.SaveLedger(oldLedgerPath, oldLedger, false); err != nil {
+	if err := eng.SaveLedger(oldLedgerPath, oldLedger, false); err != nil {
 		t.Fatalf("SaveLedger(old): %v", err)
 	}
 
@@ -112,7 +113,7 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	_, _, err := RunSync(context.Background(), domain.Profile{}, SyncRequest{
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -195,7 +196,7 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 	)
 
 	var stdout, stderr bytes.Buffer
-	_, _, err := RunSync(context.Background(), domain.Profile{}, SyncRequest{
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -307,7 +308,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 			})
 
 			var buf bytes.Buffer
-			printDryRun(plan, SyncRequest{
+			printDryRun(engine.New(nil, nil), plan, SyncRequest{
 				TargetSpec: TargetSpec{
 					Scope:      domain.ScopeProject,
 					ProjectDir: projectDir,

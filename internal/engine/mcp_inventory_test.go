@@ -18,6 +18,7 @@ func writeTestFile(t *testing.T, path string, content string) {
 }
 
 func TestLoadMCPInventoryDir_IgnoresMarkdownFiles(t *testing.T) {
+	eng := New(nil, nil)
 	dir := t.TempDir()
 
 	writeTestFile(t, filepath.Join(dir, "foo.json"), `{
@@ -33,7 +34,7 @@ func TestLoadMCPInventoryDir_IgnoresMarkdownFiles(t *testing.T) {
 	}`)
 	writeTestFile(t, filepath.Join(dir, "foo.md"), "# doc\ninitial\n")
 
-	inv1, err := loadMCPInventoryDir(dir)
+	inv1, err := eng.loadMCPInventoryDir(dir)
 	if err != nil {
 		t.Fatalf("loadMCPInventoryDir: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestLoadMCPInventoryDir_IgnoresMarkdownFiles(t *testing.T) {
 	}
 
 	writeTestFile(t, filepath.Join(dir, "foo.md"), "# doc\nchanged\n")
-	inv2, err := loadMCPInventoryDir(dir)
+	inv2, err := eng.loadMCPInventoryDir(dir)
 	if err != nil {
 		t.Fatalf("loadMCPInventoryDir after md change: %v", err)
 	}
@@ -55,6 +56,7 @@ func TestLoadMCPInventoryDir_IgnoresMarkdownFiles(t *testing.T) {
 }
 
 func TestLoadMCPInventoryDir_AcceptsDocMetadataAndUnknownFields(t *testing.T) {
+	eng := New(nil, nil)
 	dir := t.TempDir()
 
 	writeTestFile(t, filepath.Join(dir, "foo.json"), `{
@@ -68,7 +70,7 @@ func TestLoadMCPInventoryDir_AcceptsDocMetadataAndUnknownFields(t *testing.T) {
 		"unknown_extra_field": {"k": "v"}
 	}`)
 
-	inv, err := loadMCPInventoryDir(dir)
+	inv, err := eng.loadMCPInventoryDir(dir)
 	if err != nil {
 		t.Fatalf("loadMCPInventoryDir: %v", err)
 	}
@@ -85,6 +87,7 @@ func TestLoadMCPInventoryDir_AcceptsDocMetadataAndUnknownFields(t *testing.T) {
 }
 
 func TestLoadMCPInventoryForPacks_FiltersToPackMCPMap(t *testing.T) {
+	eng := New(nil, nil)
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "mcp"), 0o755); err != nil {
 		t.Fatalf("mkdir mcp: %v", err)
@@ -113,7 +116,7 @@ func TestLoadMCPInventoryForPacks_FiltersToPackMCPMap(t *testing.T) {
 		},
 	}
 
-	inv, err := LoadMCPInventoryForPacks(packs)
+	inv, err := eng.LoadMCPInventoryForPacks(packs)
 	if err != nil {
 		t.Fatalf("LoadMCPInventoryForPacks: %v", err)
 	}
@@ -129,6 +132,7 @@ func TestLoadMCPInventoryForPacks_FiltersToPackMCPMap(t *testing.T) {
 }
 
 func TestLoadMCPInventoryForPacks_ErrorsOnUnresolvedDuplicate(t *testing.T) {
+	eng := New(nil, nil)
 	root1 := t.TempDir()
 	root2 := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root1, "mcp"), 0o755); err != nil {
@@ -168,7 +172,7 @@ func TestLoadMCPInventoryForPacks_ErrorsOnUnresolvedDuplicate(t *testing.T) {
 		},
 	}
 
-	_, err := LoadMCPInventoryForPacks(packs)
+	_, err := eng.LoadMCPInventoryForPacks(packs)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -178,6 +182,7 @@ func TestLoadMCPInventoryForPacks_ErrorsOnUnresolvedDuplicate(t *testing.T) {
 }
 
 func TestLoadMCPInventoryForPacks_NoDuplicateAfterResolverStrip(t *testing.T) {
+	eng := New(nil, nil)
 	// Simulates what happens after the profile resolver strips the
 	// overridden server from the earlier pack. Only the overriding
 	// pack should have the server in its MCP map.
@@ -220,7 +225,7 @@ func TestLoadMCPInventoryForPacks_NoDuplicateAfterResolverStrip(t *testing.T) {
 		},
 	}
 
-	inv, err := LoadMCPInventoryForPacks(packs)
+	inv, err := eng.LoadMCPInventoryForPacks(packs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -299,6 +304,7 @@ func TestBuildMCPServers_ExpandsParams(t *testing.T) {
 }
 
 func TestLoadMCPInventoryDir_LoadsSSEServer(t *testing.T) {
+	eng := New(nil, nil)
 	dir := t.TempDir()
 
 	writeTestFile(t, filepath.Join(dir, "remote.json"), `{
@@ -309,7 +315,7 @@ func TestLoadMCPInventoryDir_LoadsSSEServer(t *testing.T) {
 		"available_tools": ["search"]
 	}`)
 
-	inv, err := loadMCPInventoryDir(dir)
+	inv, err := eng.loadMCPInventoryDir(dir)
 	if err != nil {
 		t.Fatalf("loadMCPInventoryDir: %v", err)
 	}

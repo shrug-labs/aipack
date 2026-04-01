@@ -29,14 +29,15 @@ func TestRunRestore_RestoresAllHarnesses(t *testing.T) {
 		}
 	}
 
-	if _, err := engine.SnapshotSettingsFiles([]domain.SettingsAction{{
+	eng := engine.New(nil, nil)
+	if _, err := eng.SnapshotSettingsFiles([]domain.SettingsAction{{
 		Dst:     claudePath,
 		Desired: []byte("managed"),
 		Harness: domain.HarnessClaudeCode,
 	}}, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.SnapshotSettingsFiles([]domain.SettingsAction{{
+	if _, err := eng.SnapshotSettingsFiles([]domain.SettingsAction{{
 		Dst:     codexPath,
 		Desired: []byte("managed"),
 		Harness: domain.HarnessCodex,
@@ -50,7 +51,7 @@ func TestRunRestore_RestoresAllHarnesses(t *testing.T) {
 		}
 	}
 
-	result, err := RunRestore(RestoreRequest{
+	result, err := RunRestore(engine.New(nil, nil), RestoreRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,

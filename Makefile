@@ -30,7 +30,7 @@ fmt: ## Format Go source
 	go fmt ./...
 
 fmt-check: ## Fail if Go source is not formatted
-	@test -z "$$(gofmt -l . | grep -v '^dist/' )" || { gofmt -l . | grep -v '^dist/'; echo "Go files need formatting. Run: make fmt"; exit 1; }
+	@test -z "$$(gofmt -l . | grep -v '^dist/\|^vendor/' )" || { gofmt -l . | grep -v '^dist/\|^vendor/'; echo "Go files need formatting. Run: make fmt"; exit 1; }
 
 lint: ## Run static analysis (go vet + staticcheck + go fix)
 	go vet $(GO_TAGS) ./...

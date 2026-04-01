@@ -57,13 +57,13 @@ type InspectResult struct {
 
 // InspectActive inspects harness file state using the active profile from
 // sync-config defaults, resolving all context from configDir.
-func InspectActive(ctx context.Context, configDir string, reg *harness.Registry) (InspectResult, []domain.Warning, error) {
-	res, warnings, err := ResolveActiveProfile(configDir)
+func InspectActive(ctx context.Context, eng *engine.Engine, configDir string, reg *harness.Registry) (InspectResult, []domain.Warning, error) {
+	res, warnings, err := ResolveActiveProfile(eng, configDir)
 	if err != nil {
 		return InspectResult{}, warnings, err
 	}
 	packRoots := resolvePackRoots(res.Profile)
-	result, err := InspectHarness(ctx, InspectRequest{
+	result, err := InspectHarness(ctx, eng, InspectRequest{
 		TargetSpec: res.TargetSpec,
 		PackRoots:  packRoots,
 	}, reg)
@@ -72,7 +72,7 @@ func InspectActive(ctx context.Context, configDir string, reg *harness.Registry)
 
 // InspectHarness captures all harness content and classifies every file
 // against the ledger, returning a complete file inventory.
-func InspectHarness(ctx context.Context, req InspectRequest, reg *harness.Registry) (InspectResult, error) {
+func InspectHarness(ctx context.Context, eng *engine.Engine, req InspectRequest, reg *harness.Registry) (InspectResult, error) {
 	home := req.Home
 	var result InspectResult
 
@@ -84,7 +84,7 @@ func InspectHarness(ctx context.Context, req InspectRequest, reg *harness.Regist
 		if firstLedgerPath == "" {
 			firstLedgerPath = lp
 		}
-		hLg, _, lerr := engine.LoadLedger(lp)
+		hLg, _, lerr := eng.LoadLedger(lp)
 		if lerr != nil {
 			continue
 		}

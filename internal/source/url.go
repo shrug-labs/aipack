@@ -1,8 +1,9 @@
-package config
+package source
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	pathpkg "path"
@@ -36,6 +37,9 @@ func probePackURL(raw string) (PackURLInfo, error) {
 	}
 	if u.Scheme == "" || u.Host == "" {
 		return PackURLInfo{}, fmt.Errorf("unsupported url format: %s", raw)
+	}
+	if u.User != nil {
+		return PackURLInfo{}, fmt.Errorf("credentials in URL are not supported")
 	}
 	host := strings.ToLower(u.Host)
 	path := strings.Trim(u.Path, "/")
@@ -342,9 +346,18 @@ func SelectFetchStrategy(rawURL string) FetchStrategy {
 }
 
 func urlOK(ctx context.Context, raw string) (bool, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false, err
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false, fmt.Errorf("unsupported URL scheme %q", u.Scheme)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, raw, nil)
 	if err != nil {
 		return false, err
 	}
@@ -353,6 +366,23 @@ func urlOK(ctx context.Context, raw string) (bool, error) {
 		return false, err
 	}
 	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body) // drain for connection reuse
+
+	// Fall back to GET when the server doesn't support HEAD (e.g. some
+	// Bitbucket Server raw-content endpoints return 405).
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+		if err != nil {
+			return false, err
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return false, err
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+	}
+
 	if resp.StatusCode == http.StatusNotFound {
 		return false, nil
 	}

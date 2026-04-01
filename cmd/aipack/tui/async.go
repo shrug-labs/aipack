@@ -14,6 +14,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
 )
 
@@ -112,13 +113,13 @@ func loadPacks(configDir string) tea.Cmd {
 // checkSyncStatus runs a dry-run sync plan for a profile to check if it's synced.
 // It accepts the in-memory ProfileConfig so that unsaved toggles are reflected
 // immediately. It delegates to app.PlanWithDiffs for all classify+filter logic.
-func checkSyncStatus(ctx context.Context, configDir, profileName, profilePath string, profileCfg config.ProfileConfig, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
+func checkSyncStatus(ctx context.Context, eng *engine.Engine, configDir, profileName, profilePath string, profileCfg config.ProfileConfig, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return syncStatusMsg{profileName: profileName, err: fmt.Errorf("resolving working directory: %w", err)}
 		}
-		resolved, warnings, err := app.ResolveProfile(app.ResolveRequest{
+		resolved, warnings, err := app.ResolveProfile(eng, app.ResolveRequest{
 			ConfigDir:   configDir,
 			ProfilePath: profilePath,
 			ProfileCfg:  profileCfg,
@@ -130,7 +131,7 @@ func checkSyncStatus(ctx context.Context, configDir, profileName, profilePath st
 			return syncStatusMsg{profileName: profileName, warnings: warnings, err: err}
 		}
 
-		summary, err := app.PlanWithDiffs(ctx, resolved.Profile, app.SyncRequest{
+		summary, err := app.PlanWithDiffs(ctx, eng, resolved.Profile, app.SyncRequest{
 			TargetSpec: resolved.TargetSpec,
 		}, reg)
 		if err != nil {
@@ -161,7 +162,7 @@ func planSummaryToTarget(ctx app.ResolveResult, ps app.PlanSummary) syncTargetIn
 
 // runSync executes a full sync (plan + apply) for a profile.
 // It delegates to app.RunSync — the single source of truth for sync orchestration.
-func runSync(ctx context.Context, configDir, profileName, profilePath, scope, harnessFlag string, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
+func runSync(ctx context.Context, eng *engine.Engine, configDir, profileName, profilePath, scope, harnessFlag string, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
 		profileCfg, err := config.LoadProfile(profilePath)
 		if err != nil {
@@ -172,7 +173,7 @@ func runSync(ctx context.Context, configDir, profileName, profilePath, scope, ha
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, err: fmt.Errorf("resolving working directory: %w", err)}
 		}
-		resolved, warnings, err := app.ResolveProfile(app.ResolveRequest{
+		resolved, warnings, err := app.ResolveProfile(eng, app.ResolveRequest{
 			ConfigDir:   configDir,
 			ProfilePath: profilePath,
 			ProfileCfg:  profileCfg,
@@ -204,7 +205,7 @@ func runSync(ctx context.Context, configDir, profileName, profilePath, scope, ha
 		ts := resolved.TargetSpec
 		ts.ProjectDir = projectDir
 
-		result, syncWarnings, err := app.RunSync(ctx, resolved.Profile, app.SyncRequest{
+		result, syncWarnings, err := app.RunSync(ctx, eng, resolved.Profile, app.SyncRequest{
 			TargetSpec: ts,
 			Force:      true,
 			Yes:        true,
@@ -357,9 +358,9 @@ func computePackSizes(entry app.PackShowEntry) tea.Cmd {
 }
 
 // runSavePlan runs a dry-run round-trip save and returns plan entries for preview.
-func runSavePlan(ctx context.Context, configDir, profileName string, reg *harness.Registry) tea.Cmd {
+func runSavePlan(ctx context.Context, eng *engine.Engine, configDir, profileName string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		result, warnings, err := app.SaveRoundTripPlan(ctx, configDir, reg)
+		result, warnings, err := app.SaveRoundTripPlan(ctx, eng, configDir, reg)
 		if err != nil {
 			return savePlanMsg{profileName: profileName, warnings: warnings, err: err}
 		}
@@ -393,9 +394,9 @@ func runSavePlan(ctx context.Context, configDir, profileName string, reg *harnes
 }
 
 // runSave executes a round-trip save (harness → source packs) for a profile.
-func runSave(ctx context.Context, configDir, profileName string, reg *harness.Registry) tea.Cmd {
+func runSave(ctx context.Context, eng *engine.Engine, configDir, profileName string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		result, warnings, err := app.SaveRoundTrip(ctx, configDir, true, reg)
+		result, warnings, err := app.SaveRoundTrip(ctx, eng, configDir, true, reg)
 		if err != nil {
 			return saveDoneMsg{profileName: profileName, warnings: warnings, err: err}
 		}
@@ -410,9 +411,9 @@ func runSave(ctx context.Context, configDir, profileName string, reg *harness.Re
 }
 
 // moveContentToPack moves a content item from one pack to another.
-func moveContentToPack(configDir, id string, category domain.PackCategory, fromPack, toPack string) tea.Cmd {
+func moveContentToPack(eng *engine.Engine, configDir, id string, category domain.PackCategory, fromPack, toPack string) tea.Cmd {
 	return func() tea.Msg {
-		err := app.MoveContent(app.MoveContentRequest{
+		err := app.MoveContent(eng, app.MoveContentRequest{
 			ConfigDir: configDir,
 			ID:        id,
 			Category:  category,
@@ -501,9 +502,9 @@ func detectHarnesses(reg *harness.Registry) tea.Cmd {
 
 // discoverVectors runs capture on one harness and returns available content vectors.
 // Merges results from both project and global scopes.
-func discoverVectors(ctx context.Context, harnessID domain.Harness, configDir string, reg *harness.Registry) tea.Cmd {
+func discoverVectors(ctx context.Context, eng *engine.Engine, harnessID domain.Harness, configDir string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		res, _, err := app.ResolveActiveProfile(configDir)
+		res, _, err := app.ResolveActiveProfile(eng, configDir)
 		if err != nil {
 			return vectorsDiscoveredMsg{err: err}
 		}
@@ -514,9 +515,9 @@ func discoverVectors(ctx context.Context, harnessID domain.Harness, configDir st
 
 // discoverSaveFiles runs capture + classification for one harness filtered to categories.
 // Merges results from both project and global scopes.
-func discoverSaveFiles(ctx context.Context, req app.DiscoverSaveRequest, reg *harness.Registry) tea.Cmd {
+func discoverSaveFiles(ctx context.Context, eng *engine.Engine, req app.DiscoverSaveRequest, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		candidates, warnings, err := app.DiscoverSaveFilesAllScopes(ctx, req, reg)
+		candidates, warnings, err := app.DiscoverSaveFilesAllScopes(ctx, eng, req, reg)
 		return saveFilesDiscoveredMsg{candidates: candidates, warnings: warnings, err: err}
 	}
 }
@@ -530,9 +531,9 @@ func deleteSaveFile(path string) tea.Cmd {
 }
 
 // executeSavePipeline runs the pipeline to copy selected files to a pack.
-func executeSavePipeline(req app.SavePipelineRequest, reg *harness.Registry) tea.Cmd {
+func executeSavePipeline(eng *engine.Engine, req app.SavePipelineRequest, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		result, err := app.RunSavePipeline(req, reg)
+		result, err := app.RunSavePipeline(eng, req, reg)
 		return savePipelineDoneMsg{result: &result, err: err}
 	}
 }

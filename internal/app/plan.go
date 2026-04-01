@@ -76,14 +76,13 @@ func (ps PlanSummary) TotalChanges() int {
 // PlanWithDiffs plans a sync and classifies each action against on-disk state,
 // filtering out identical (already-synced) entries. This is the "dry-run with
 // details" entry point used by the TUI and potentially CLI --dry-run.
-func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest, reg *harness.Registry) (PlanSummary, error) {
+func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry) (PlanSummary, error) {
 	var summary PlanSummary
 
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
 	}
-
 	for _, hid := range req.Harnesses {
 		planners, err := reg.AsPlanners([]domain.Harness{hid})
 		if err != nil {
@@ -120,19 +119,15 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 		// Load per-harness ledger.
 		var lg domain.Ledger
 		if plan.Ledger != "" {
-			if l, ledgerWarn, lerr := engine.LoadLedger(plan.Ledger); lerr == nil {
+			if l, ledgerWarnings, lerr := eng.LoadLedger(plan.Ledger); lerr == nil {
 				lg = l
-				if ledgerWarn != "" {
-					summary.Warnings = append(summary.Warnings, domain.Warning{
-						Field: "ledger", Message: ledgerWarn,
-					})
-				}
+				summary.Warnings = append(summary.Warnings, ledgerWarnings...)
 			}
 		}
 
 		// Classify writes.
 		for _, w := range plan.Writes {
-			diffKind, werr := classifyWriteKind(w, lg)
+			diffKind, werr := classifyWriteKind(eng, w, lg)
 			if werr != nil {
 				summary.Warnings = append(summary.Warnings, domain.Warning{
 					Path: w.Dst, Message: fmt.Sprintf("classify: %v", werr),
@@ -142,7 +137,7 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 			if diffKind == domain.DiffIdentical {
 				continue
 			}
-			fd, werr := engine.ClassifyFile(w.Dst, w.Content, filepath.Base(w.Dst), w.SourcePack, lg)
+			fd, werr := eng.ClassifyFile(w.Dst, w.Content, filepath.Base(w.Dst), w.SourcePack, lg)
 			if werr != nil && diffKind != domain.DiffCreate {
 				summary.Warnings = append(summary.Warnings, domain.Warning{
 					Path: w.Dst, Message: fmt.Sprintf("classify diff: %v", werr),
@@ -165,7 +160,7 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 		for _, c := range plan.Copies {
 			switch c.Kind {
 			case domain.CopyKindDir:
-				fds, cerr := engine.ClassifyCopy(c.Src, c.Dst, c.SourcePack, lg)
+				fds, cerr := eng.ClassifyCopy(c.Src, c.Dst, c.SourcePack, lg)
 				if cerr != nil {
 					summary.Warnings = append(summary.Warnings, domain.Warning{
 						Path: c.Src, Message: fmt.Sprintf("classify dir: %v", cerr),
@@ -183,14 +178,14 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 					continue
 				}
 			case domain.CopyKindFile:
-				content, cerr := os.ReadFile(c.Src)
+				content, cerr := eng.FS.ReadFile(c.Src)
 				if cerr != nil {
 					summary.Warnings = append(summary.Warnings, domain.Warning{
 						Path: c.Src, Message: fmt.Sprintf("read: %v", cerr),
 					})
 					continue
 				}
-				fd, cerr := engine.ClassifyFile(c.Dst, content, filepath.Base(c.Dst), c.SourcePack, lg)
+				fd, cerr := eng.ClassifyFile(c.Dst, content, filepath.Base(c.Dst), c.SourcePack, lg)
 				if cerr != nil {
 					summary.Warnings = append(summary.Warnings, domain.Warning{
 						Path: c.Dst, Message: fmt.Sprintf("classify: %v", cerr),
@@ -212,7 +207,7 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 		}
 
 		// Classify settings and MCP.
-		sOps, sCount, sErr := classifySettingsOps(plan.Settings, lg, PlanOpSettings)
+		sOps, sCount, sErr := classifySettingsOps(eng, plan.Settings, lg, PlanOpSettings)
 		if sErr != nil {
 			return summary, fmt.Errorf("classify settings: %w", sErr)
 		}
@@ -222,7 +217,7 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 		// MCP config actions (plan.MCP) are file-level MergeMode settings
 		// that are never gated by SkipSettings. Process them through the
 		// same three-way merge classification as plan.Settings.
-		mcpCfgOps, mcpCfgCount, mcpCfgErr := classifySettingsOps(plan.MCP, lg, PlanOpMCP)
+		mcpCfgOps, mcpCfgCount, mcpCfgErr := classifySettingsOps(eng, plan.MCP, lg, PlanOpMCP)
 		if mcpCfgErr != nil {
 			return summary, fmt.Errorf("classify mcp config: %w", mcpCfgErr)
 		}
@@ -231,7 +226,7 @@ func PlanWithDiffs(ctx context.Context, profile domain.Profile, req SyncRequest,
 
 		// Detect stale files per harness.
 		managedRoots := h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
-		if candidates, perr := engine.StaleCandidatesWithLedger(plan, managedRoots, lg); perr == nil {
+		if candidates, perr := eng.StaleCandidatesWithLedger(plan, managedRoots, lg); perr == nil {
 			for _, p := range candidates {
 				summary.NumStale++
 				summary.Ops = append(summary.Ops, PlanOp{
@@ -292,9 +287,9 @@ func incrContentCount(s *PlanSummary, kind PlanOpKind) {
 	}
 }
 
-func classifyWriteKind(w domain.WriteAction, lg domain.Ledger) (domain.DiffKind, error) {
+func classifyWriteKind(eng *engine.Engine, w domain.WriteAction, lg domain.Ledger) (domain.DiffKind, error) {
 	dst := filepath.Clean(w.Dst)
-	onDisk, err := os.ReadFile(dst)
+	onDisk, err := eng.FS.ReadFile(dst)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return domain.DiffCreate, nil
@@ -368,11 +363,11 @@ func CountProfileContent(p domain.Profile) ContentCounts {
 }
 
 // classifySettingsOps computes diffs for settings/plugin actions and returns plan ops.
-func classifySettingsOps(actions []domain.SettingsAction, lg domain.Ledger, kind PlanOpKind) ([]PlanOp, int, error) {
+func classifySettingsOps(eng *engine.Engine, actions []domain.SettingsAction, lg domain.Ledger, kind PlanOpKind) ([]PlanOp, int, error) {
 	if len(actions) == 0 {
 		return nil, 0, nil
 	}
-	diffs, err := engine.ComputeSettingsDiffs(actions, lg)
+	diffs, err := eng.ComputeSettingsDiffs(actions, lg)
 	if err != nil {
 		return nil, 0, err
 	}

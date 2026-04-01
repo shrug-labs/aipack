@@ -46,7 +46,7 @@ type TraceResult struct {
 
 // RunTrace traces a resource through the sync pipeline, showing where it comes
 // from and where it would land in each harness location.
-func RunTrace(ctx context.Context, profile domain.Profile, req TraceRequest, reg *harness.Registry) (TraceResult, error) {
+func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, req TraceRequest, reg *harness.Registry) (TraceResult, error) {
 	result := TraceResult{
 		ResourceType: req.ResourceType,
 		ResourceName: req.ResourceName,
@@ -88,7 +88,7 @@ func RunTrace(ctx context.Context, profile domain.Profile, req TraceRequest, reg
 		}
 		var lg domain.Ledger
 		if plan.Ledger != "" {
-			if l, _, lerr := engine.LoadLedger(plan.Ledger); lerr == nil {
+			if l, _, lerr := eng.LoadLedger(plan.Ledger); lerr == nil {
 				lg = l
 			}
 		}
@@ -108,7 +108,7 @@ func RunTrace(ctx context.Context, profile domain.Profile, req TraceRequest, reg
 		if err != nil {
 			continue
 		}
-		dests := matchDestinations(plan, source, lg, currentMCP, req.ResourceType, req.ResourceName, identifyHarness)
+		dests := matchDestinations(eng, plan, source, lg, currentMCP, req.ResourceType, req.ResourceName, identifyHarness)
 		result.Destinations = append(result.Destinations, dests...)
 	}
 
@@ -178,7 +178,7 @@ func findResource(profile domain.Profile, resType, name string) *TraceSource {
 
 // matchDestinations finds plan actions that correspond to the traced resource
 // and classifies each destination's on-disk state.
-func matchDestinations(plan domain.Plan, source *TraceSource, lg domain.Ledger, currentMCP map[string]string, resType, resName string, harnessForPath func(string) string) []TraceDestination {
+func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource, lg domain.Ledger, currentMCP map[string]string, resType, resName string, harnessForPath func(string) string) []TraceDestination {
 	var dests []TraceDestination
 
 	cat, _ := domain.ParseSingularLabel(resType)
@@ -216,7 +216,7 @@ func matchDestinations(plan domain.Plan, source *TraceSource, lg domain.Ledger, 
 					Path:     wr.Dst,
 					Embedded: embedded,
 				}
-				dest.State, dest.DiffKind = classifyWriteState(wr, lg)
+				dest.State, dest.DiffKind = classifyWriteState(eng, wr, lg)
 				dests = append(dests, dest)
 			}
 		}
@@ -265,8 +265,8 @@ func matchesCopy(cp domain.CopyAction, source *TraceSource) bool {
 }
 
 // classifyWriteState determines the on-disk state of a write destination.
-func classifyWriteState(wr domain.WriteAction, lg domain.Ledger) (string, domain.DiffKind) {
-	kind, err := classifyWriteKind(wr, lg)
+func classifyWriteState(eng *engine.Engine, wr domain.WriteAction, lg domain.Ledger) (string, domain.DiffKind) {
+	kind, err := classifyWriteKind(eng, wr, lg)
 	if err != nil {
 		return string(domain.DiffError), domain.DiffError
 	}

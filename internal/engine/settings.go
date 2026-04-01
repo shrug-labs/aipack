@@ -3,7 +3,6 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -13,8 +12,8 @@ import (
 // loadHarnessSettings loads all harness config files (both settings templates
 // and drop-in configs) from packs. Files from harness_settings and
 // harness_plugins are merged into a single bundle.
-func loadHarnessSettings(packs []config.ResolvedPack, settingsPack string, harnesses []domain.Harness) (domain.SettingsBundle, []domain.Warning, error) {
-	return loadHarnessFileBundle(packs, settingsPack, harnesses, func(m config.PackManifest, h string) []string {
+func (e *Engine) loadHarnessSettings(packs []config.ResolvedPack, settingsPack string, harnesses []domain.Harness) (domain.SettingsBundle, []domain.Warning, error) {
+	return e.loadHarnessFileBundle(packs, settingsPack, harnesses, func(m config.PackManifest, h string) []string {
 		files := append([]string{}, m.Configs.HarnessSettings[h]...)
 		files = append(files, m.Configs.HarnessPlugins[h]...)
 		return files
@@ -45,7 +44,7 @@ func ClassifySettings(hasMCP, hasManagedContent, skipSettings bool) SettingsDeci
 	return SettingsDecision{}
 }
 
-func loadHarnessFileBundle(
+func (e *Engine) loadHarnessFileBundle(
 	packs []config.ResolvedPack,
 	settingsPack string,
 	harnesses []domain.Harness,
@@ -72,7 +71,7 @@ func loadHarnessFileBundle(
 		}
 		configs := make([]domain.ConfigFile, 0, len(files))
 		for _, f := range files {
-			b, err := os.ReadFile(filepath.Join(p.Root, "configs", string(h), f))
+			b, err := e.FS.ReadFile(filepath.Join(p.Root, "configs", string(h), f))
 			if err != nil {
 				return nil, warnings, fmt.Errorf("loading harness %s %s/%s: %w", label, h, f, err)
 			}

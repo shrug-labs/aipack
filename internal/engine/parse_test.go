@@ -11,6 +11,7 @@ import (
 
 func TestParseRules_Basic(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	rulesDir := filepath.Join(dir, "rules")
 	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
@@ -22,7 +23,7 @@ func TestParseRules_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rules, warnings, err := parseRules(dir, []string{"alpha"}, "testpack")
+	rules, warnings, err := eng.parseRules(dir, []string{"alpha"}, "testpack")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +53,7 @@ func TestParseRules_Basic(t *testing.T) {
 
 func TestParseRules_NoFrontmatter(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	rulesDir := filepath.Join(dir, "rules")
 	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
@@ -63,7 +65,7 @@ func TestParseRules_NoFrontmatter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rules, _, err := parseRules(dir, []string{"simple"}, "pack1")
+	rules, _, err := eng.parseRules(dir, []string{"simple"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +82,7 @@ func TestParseRules_NoFrontmatter(t *testing.T) {
 
 func TestParseAgents_NameFromFrontmatter(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	agentsDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
@@ -91,7 +94,7 @@ func TestParseAgents_NameFromFrontmatter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agents, _, err := parseAgents(dir, []string{"myagent"}, "pack1")
+	agents, _, err := eng.parseAgents(dir, []string{"myagent"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +115,7 @@ func TestParseAgents_NameFromFrontmatter(t *testing.T) {
 
 func TestParseAgents_FallbackToFilename(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	agentsDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
@@ -123,7 +127,7 @@ func TestParseAgents_FallbackToFilename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agents, _, err := parseAgents(dir, []string{"bot"}, "pack1")
+	agents, _, err := eng.parseAgents(dir, []string{"bot"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +138,7 @@ func TestParseAgents_FallbackToFilename(t *testing.T) {
 
 func TestParseWorkflows_Basic(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	wfDir := filepath.Join(dir, "workflows")
 	if err := os.MkdirAll(wfDir, 0o755); err != nil {
@@ -145,7 +150,7 @@ func TestParseWorkflows_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workflows, _, err := parseWorkflows(dir, []string{"deploy"}, "pack1")
+	workflows, _, err := eng.parseWorkflows(dir, []string{"deploy"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +167,7 @@ func TestParseWorkflows_Basic(t *testing.T) {
 
 func TestParseSkills_Basic(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills", "onboard")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -173,7 +179,7 @@ func TestParseSkills_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	skills, _, err := parseSkills(dir, []string{"onboard"}, "pack1")
+	skills, _, err := eng.parseSkills(dir, []string{"onboard"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,11 +441,12 @@ func TestRenderAgentBytes_RoundTripsWithHarness(t *testing.T) {
 
 func TestParseRules_MissingFile(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "rules"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := parseRules(dir, []string{"nonexistent"}, "pack1")
+	_, _, err := eng.parseRules(dir, []string{"nonexistent"}, "pack1")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -450,11 +457,12 @@ func TestParseRules_MissingFile(t *testing.T) {
 
 func TestParseAgents_MissingFile(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "agents"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := parseAgents(dir, []string{"nonexistent"}, "pack1")
+	_, _, err := eng.parseAgents(dir, []string{"nonexistent"}, "pack1")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -465,11 +473,12 @@ func TestParseAgents_MissingFile(t *testing.T) {
 
 func TestParseWorkflows_MissingFile(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "workflows"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := parseWorkflows(dir, []string{"nonexistent"}, "pack1")
+	_, _, err := eng.parseWorkflows(dir, []string{"nonexistent"}, "pack1")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -480,11 +489,12 @@ func TestParseWorkflows_MissingFile(t *testing.T) {
 
 func TestParseSkills_MissingFile(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "skills", "nonexistent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := parseSkills(dir, []string{"nonexistent"}, "pack1")
+	_, _, err := eng.parseSkills(dir, []string{"nonexistent"}, "pack1")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -495,6 +505,7 @@ func TestParseSkills_MissingFile(t *testing.T) {
 
 func TestParseRules_InvalidFrontmatter(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	rulesDir := filepath.Join(dir, "rules")
 	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
@@ -506,7 +517,7 @@ func TestParseRules_InvalidFrontmatter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rules, warnings, err := parseRules(dir, []string{"bad"}, "pack1")
+	rules, warnings, err := eng.parseRules(dir, []string{"bad"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,6 +534,7 @@ func TestParseRules_InvalidFrontmatter(t *testing.T) {
 
 func TestParseAgents_InvalidFrontmatter(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	agentsDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
@@ -532,7 +544,7 @@ func TestParseAgents_InvalidFrontmatter(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(agentsDir, "bad.md"), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	agents, warnings, err := parseAgents(dir, []string{"bad"}, "pack1")
+	agents, warnings, err := eng.parseAgents(dir, []string{"bad"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,6 +561,7 @@ func TestParseAgents_InvalidFrontmatter(t *testing.T) {
 
 func TestParseWorkflows_InvalidFrontmatter(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	wfDir := filepath.Join(dir, "workflows")
 	if err := os.MkdirAll(wfDir, 0o755); err != nil {
@@ -558,7 +571,7 @@ func TestParseWorkflows_InvalidFrontmatter(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wfDir, "bad.md"), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	workflows, warnings, err := parseWorkflows(dir, []string{"bad"}, "pack1")
+	workflows, warnings, err := eng.parseWorkflows(dir, []string{"bad"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,6 +588,7 @@ func TestParseWorkflows_InvalidFrontmatter(t *testing.T) {
 
 func TestParseSkills_InvalidFrontmatter(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills", "bad")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -584,7 +598,7 @@ func TestParseSkills_InvalidFrontmatter(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	skills, warnings, err := parseSkills(dir, []string{"bad"}, "pack1")
+	skills, warnings, err := eng.parseSkills(dir, []string{"bad"}, "pack1")
 	if err != nil {
 		t.Fatal(err)
 	}

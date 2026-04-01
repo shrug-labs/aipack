@@ -137,7 +137,7 @@ func TestPlanWithDiffs_PerServerMCPActionsProduceNoOps(t *testing.T) {
 		roots: []string{filepath.Dir(configPath)},
 	})
 
-	summary, err := PlanWithDiffs(context.Background(), domain.Profile{}, SyncRequest{
+	summary, err := PlanWithDiffs(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			Harnesses:  []domain.Harness{"codex"},
@@ -198,7 +198,7 @@ func TestPlanWithDiffs_SkipsCleanPromotedContentUsingSourceDigest(t *testing.T) 
 		roots: []string{filepath.Dir(dstPath)},
 	})
 
-	summary, err := PlanWithDiffs(context.Background(), domain.Profile{}, SyncRequest{
+	summary, err := PlanWithDiffs(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			Harnesses:  []domain.Harness{"codex"},

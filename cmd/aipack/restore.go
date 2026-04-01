@@ -10,6 +10,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 type RestoreCmd struct {
@@ -123,7 +124,8 @@ func (c *RestoreCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	}
 
-	res, err := app.RunRestore(app.RestoreRequest{
+	eng := engine.New(nil, nil)
+	res, err := app.RunRestore(eng, app.RestoreRequest{
 		TargetSpec: app.TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectAbs,

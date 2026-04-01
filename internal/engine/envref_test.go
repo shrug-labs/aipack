@@ -175,6 +175,28 @@ func TestExpandMCPServers_SSETransport_SkipsOnUnresolvedHeader(t *testing.T) {
 	}
 }
 
+func TestExpandMCPServers_SkipsOnUnresolvedParamRef(t *testing.T) {
+	t.Parallel()
+	servers := []domain.MCPServer{
+		{
+			Name:      "param-missing",
+			Transport: domain.TransportStdio,
+			Command:   []string{"run", "{params.unknown}"},
+		},
+	}
+
+	result, warnings := ExpandMCPServers(servers)
+	if len(result) != 0 {
+		t.Fatalf("expected server to be skipped, got %d", len(result))
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	if warnings[0].Field != "mcp.param-missing" {
+		t.Fatalf("warning field = %q", warnings[0].Field)
+	}
+}
+
 func TestNormalizeServerName(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ input, want string }{

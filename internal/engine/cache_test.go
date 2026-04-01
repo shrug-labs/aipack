@@ -30,6 +30,7 @@ func TestPresyncDirUsesLedgerSpecificNamespace(t *testing.T) {
 
 func TestSnapshotSettingsFiles(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
 
@@ -51,7 +52,7 @@ func TestSnapshotSettingsFiles(t *testing.T) {
 		Label:   "settings.local.json",
 	}}
 
-	if _, err := SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
+	if _, err := eng.SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,7 +67,7 @@ func TestSnapshotSettingsFiles(t *testing.T) {
 	}
 
 	// Verify index written.
-	idx, _, err := loadPresyncIndex(cacheDir)
+	idx, _, err := eng.loadPresyncIndex(cacheDir)
 	if err != nil {
 		t.Fatalf("loading index: %v", err)
 	}
@@ -81,6 +82,7 @@ func TestSnapshotSettingsFiles(t *testing.T) {
 
 func TestSnapshotSettingsFiles_DryRunNoWrite(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
 
@@ -96,7 +98,7 @@ func TestSnapshotSettingsFiles_DryRunNoWrite(t *testing.T) {
 		Label:   "settings.json",
 	}}
 
-	if _, err := SnapshotSettingsFiles(settings, ledgerPath, true); err != nil {
+	if _, err := eng.SnapshotSettingsFiles(settings, ledgerPath, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,6 +109,7 @@ func TestSnapshotSettingsFiles_DryRunNoWrite(t *testing.T) {
 
 func TestSnapshotSettingsFiles_NoFileOnDisk(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
 
@@ -117,13 +120,14 @@ func TestSnapshotSettingsFiles_NoFileOnDisk(t *testing.T) {
 		Label:   "nonexistent.json",
 	}}
 
-	if _, err := SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
+	if _, err := eng.SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestRestoreFromCache(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
 
@@ -140,7 +144,7 @@ func TestRestoreFromCache(t *testing.T) {
 		Harness: domain.HarnessClaudeCode,
 		Label:   "settings.json",
 	}}
-	if _, err := SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
+	if _, err := eng.SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,7 +154,7 @@ func TestRestoreFromCache(t *testing.T) {
 	}
 
 	// Restore from presync cache.
-	restored, err := RestoreFromCache(ledgerPath, "", false)
+	restored, err := eng.RestoreFromCache(ledgerPath, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +173,7 @@ func TestRestoreFromCache(t *testing.T) {
 
 func TestRestoreFromCache_DryRunNoWrite(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
 
@@ -183,7 +188,7 @@ func TestRestoreFromCache_DryRunNoWrite(t *testing.T) {
 		Harness: domain.HarnessClaudeCode,
 		Label:   "settings.json",
 	}}
-	if _, err := SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
+	if _, err := eng.SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,7 +198,7 @@ func TestRestoreFromCache_DryRunNoWrite(t *testing.T) {
 	}
 
 	// Dry-run restore should NOT change the file.
-	restored, err := RestoreFromCache(ledgerPath, "", true)
+	restored, err := eng.RestoreFromCache(ledgerPath, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,10 +213,11 @@ func TestRestoreFromCache_DryRunNoWrite(t *testing.T) {
 
 func TestRestoreFromCache_EmptyCache(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
 
-	restored, err := RestoreFromCache(ledgerPath, "", false)
+	restored, err := eng.RestoreFromCache(ledgerPath, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +228,7 @@ func TestRestoreFromCache_EmptyCache(t *testing.T) {
 
 func TestSettingsCache_EndToEnd(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 
 	settingsPath := filepath.Join(dir, "settings.json")
@@ -239,7 +246,7 @@ func TestSettingsCache_EndToEnd(t *testing.T) {
 	}}
 
 	// Snapshot original, then simulate sync overwrite.
-	if _, err := SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
+	if _, err := eng.SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(settingsPath, settings[0].Desired, 0o644); err != nil {
@@ -253,7 +260,7 @@ func TestSettingsCache_EndToEnd(t *testing.T) {
 	}
 
 	// Restore gets back pre-sync state.
-	restored, err := RestoreFromCache(ledgerPath, "", false)
+	restored, err := eng.RestoreFromCache(ledgerPath, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,6 +275,7 @@ func TestSettingsCache_EndToEnd(t *testing.T) {
 
 func TestRestoreFromCache_HarnessFilter(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
 
@@ -285,7 +293,7 @@ func TestRestoreFromCache_HarnessFilter(t *testing.T) {
 		{Dst: ccPath, Desired: []byte("{}"), Harness: domain.HarnessClaudeCode, Label: "cc-settings.json"},
 		{Dst: ocPath, Desired: []byte("{}"), Harness: domain.HarnessOpenCode, Label: "oc-settings.json"},
 	}
-	if _, err := SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
+	if _, err := eng.SnapshotSettingsFiles(settings, ledgerPath, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -298,7 +306,7 @@ func TestRestoreFromCache_HarnessFilter(t *testing.T) {
 	}
 
 	// Restore only claudecode.
-	restored, err := RestoreFromCache(ledgerPath, "claudecode", false)
+	restored, err := eng.RestoreFromCache(ledgerPath, "claudecode", false)
 	if err != nil {
 		t.Fatal(err)
 	}

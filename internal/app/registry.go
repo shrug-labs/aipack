@@ -12,6 +12,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/index"
+	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/util"
 
 	"gopkg.in/yaml.v3"
@@ -293,13 +294,13 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	if isGit {
 		gitFetchFn := req.GitFetchFn
 		if gitFetchFn == nil {
-			if config.SelectFetchStrategy(url) == config.StrategyHTTPTarball {
+			if source.SelectFetchStrategy(url) == source.StrategyHTTPTarball {
 				gitFetchFn = func(repo, gitRef, path string) ([]byte, error) {
-					tarballURL, urlErr := config.GitHubTarballURL(repo, gitRef)
+					tarballURL, urlErr := source.GitHubTarballURL(repo, gitRef)
 					if urlErr != nil {
 						return nil, urlErr
 					}
-					return config.FetchFileHTTPTarball(ctx, tarballURL, path)
+					return source.FetchFileHTTPTarball(ctx, tarballURL, path)
 				}
 			} else {
 				gitFetchFn = func(repo, gitRef, path string) ([]byte, error) {
@@ -463,7 +464,7 @@ type RegistryDeepIndexRequest struct {
 	RegistryPath string
 
 	// Test injection points.
-	GitCloneFn func(repoURL, dir, ref string) error // nil = config.EnsureClone
+	GitCloneFn func(repoURL, dir, ref string) error // nil = source.EnsureClone
 }
 
 // RegistryDeepIndex clones each uninstalled registry pack and indexes its
@@ -487,7 +488,7 @@ func RegistryDeepIndex(ctx context.Context, req RegistryDeepIndexRequest, stdout
 	cloneFn := req.GitCloneFn
 	if cloneFn == nil {
 		cloneFn = func(repoURL, dir, ref string) error {
-			return config.EnsureClone(ctx, repoURL, dir, ref)
+			return source.EnsureClone(ctx, repoURL, dir, ref)
 		}
 	}
 

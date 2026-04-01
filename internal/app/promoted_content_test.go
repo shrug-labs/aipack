@@ -36,7 +36,7 @@ func TestInspectHarness_ClassifiesPromotedContentWritesAsAgents(t *testing.T) {
 		},
 	})
 
-	result, err := InspectHarness(context.Background(), InspectRequest{
+	result, err := InspectHarness(context.Background(), engine.New(nil, nil), InspectRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,

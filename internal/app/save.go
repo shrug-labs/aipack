@@ -222,20 +222,18 @@ type PendingSettingsChange struct {
 // RunRoundTrip captures current harness content and saves changed files
 // back to their source packs using ledger provenance.
 // Each harness is processed independently with its own per-harness ledger.
-func RunRoundTrip(ctx context.Context, req RoundTripRequest, reg *harness.Registry) (RoundTripResult, error) {
+func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest, reg *harness.Registry) (RoundTripResult, error) {
 	home := req.Home
 	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
 	var result RoundTripResult
 
 	for _, hid := range req.Harnesses {
 		ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, home, hid)
-		lg, ledgerWarn, err := engine.LoadLedger(ledgerPath)
+		lg, ledgerWarnings, err := eng.LoadLedger(ledgerPath)
 		if err != nil {
 			return RoundTripResult{}, fmt.Errorf("loading ledger for %s: %w", hid, err)
 		}
-		if ledgerWarn != "" {
-			result.CaptureWarnings = append(result.CaptureWarnings, domain.Warning{Field: "ledger", Message: ledgerWarn})
-		}
+		result.CaptureWarnings = append(result.CaptureWarnings, ledgerWarnings...)
 		if len(lg.Managed) == 0 {
 			result.CaptureWarnings = append(result.CaptureWarnings, domain.Warning{
 				Field:   "ledger",
@@ -496,7 +494,7 @@ func RunRoundTrip(ctx context.Context, req RoundTripRequest, reg *harness.Regist
 
 		// Persist updated ledger digests for this harness.
 		if !req.DryRun && savedCount > 0 {
-			if err := engine.SaveLedger(ledgerPath, lg, false); err != nil {
+			if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
 				return result, fmt.Errorf("saving ledger for %s: %w", hid, err)
 			}
 		}
@@ -699,23 +697,23 @@ func scanBytesForSecrets(b []byte) []string {
 
 // SaveRoundTrip executes a round-trip save (harness → source packs) using
 // the active profile from sync-config defaults.
-func SaveRoundTrip(ctx context.Context, configDir string, force bool, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
-	return saveRoundTripActive(ctx, configDir, false, force, reg)
+func SaveRoundTrip(ctx context.Context, eng *engine.Engine, configDir string, force bool, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
+	return saveRoundTripActive(ctx, eng, configDir, false, force, reg)
 }
 
 // SaveRoundTripPlan runs a dry-run round-trip save using the active profile,
 // returning what would change without writing.
-func SaveRoundTripPlan(ctx context.Context, configDir string, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
-	return saveRoundTripActive(ctx, configDir, true, false, reg)
+func SaveRoundTripPlan(ctx context.Context, eng *engine.Engine, configDir string, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
+	return saveRoundTripActive(ctx, eng, configDir, true, false, reg)
 }
 
-func saveRoundTripActive(ctx context.Context, configDir string, dryRun, force bool, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
-	res, warnings, err := ResolveActiveProfile(configDir)
+func saveRoundTripActive(ctx context.Context, eng *engine.Engine, configDir string, dryRun, force bool, reg *harness.Registry) (RoundTripResult, []domain.Warning, error) {
+	res, warnings, err := ResolveActiveProfile(eng, configDir)
 	if err != nil {
 		return RoundTripResult{}, warnings, err
 	}
 	packRoots := resolvePackRoots(res.Profile)
-	result, err := RunRoundTrip(ctx, RoundTripRequest{
+	result, err := RunRoundTrip(ctx, eng, RoundTripRequest{
 		TargetSpec: res.TargetSpec,
 		PackRoots:  packRoots,
 		DryRun:     dryRun,

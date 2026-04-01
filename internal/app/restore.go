@@ -21,16 +21,15 @@ type RestoreResult struct {
 }
 
 // RunRestore restores settings files from the presync cache.
-func RunRestore(req RestoreRequest) (RestoreResult, error) {
+func RunRestore(eng *engine.Engine, req RestoreRequest) (RestoreResult, error) {
 	stderr := req.Stderr
 	if stderr == nil {
 		stderr = io.Discard
 	}
-
 	var result RestoreResult
 	for _, harnessID := range req.Harnesses {
 		ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, harnessID)
-		restored, err := engine.RestoreFromCache(ledgerPath, req.FilterHarness, req.DryRun)
+		restored, err := eng.RestoreFromCache(ledgerPath, req.FilterHarness, req.DryRun)
 		if err != nil {
 			return RestoreResult{}, err
 		}

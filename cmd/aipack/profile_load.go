@@ -52,7 +52,8 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail
 	}
-	prof, warnings, err := engine.Resolve(profileCfg, path, configDir)
+	eng := engine.New(nil, nil)
+	prof, warnings, err := eng.Resolve(profileCfg, path, configDir)
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail

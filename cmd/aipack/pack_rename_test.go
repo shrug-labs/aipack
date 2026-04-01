@@ -38,9 +38,10 @@ func TestPackRename_FullLifecycle(t *testing.T) {
 	if err := os.MkdirAll(ledgerDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	eng := engine.New(nil, nil)
 	lg := domain.NewLedger()
 	lg.Managed["/some/path/rule.md"] = domain.Entry{SourcePack: "old-name", Digest: "abc"}
-	if err := engine.SaveLedger(filepath.Join(ledgerDir, "claudecode.json"), lg, false); err != nil {
+	if err := eng.SaveLedger(filepath.Join(ledgerDir, "claudecode.json"), lg, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +101,7 @@ func TestPackRename_FullLifecycle(t *testing.T) {
 	}
 
 	// Verify ledger updated.
-	lg2, _, err := engine.LoadLedger(filepath.Join(ledgerDir, "claudecode.json"))
+	lg2, _, err := eng.LoadLedger(filepath.Join(ledgerDir, "claudecode.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

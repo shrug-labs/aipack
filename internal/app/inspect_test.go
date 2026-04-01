@@ -52,7 +52,7 @@ func TestInspectHarness_UsesPerServerMCPPath(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := InspectHarness(context.Background(), InspectRequest{
+	result, err := InspectHarness(context.Background(), engine.New(nil, nil), InspectRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -141,7 +141,7 @@ func TestInspectHarness_MCPMetadataDoesNotCauseConflictAfterSync(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	result, err := InspectHarness(context.Background(), InspectRequest{
+	result, err := InspectHarness(context.Background(), engine.New(nil, nil), InspectRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,

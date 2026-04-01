@@ -12,6 +12,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/update"
 )
 
@@ -131,7 +132,8 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 			syncStdout = io.Discard
 		}
 
-		res, syncWarnings, err := app.RunSync(ctx, loaded.profile, app.SyncRequest{
+		eng := engine.NewWithStderr(g.Stderr)
+		res, syncWarnings, err := app.RunSync(ctx, eng, loaded.profile, app.SyncRequest{
 			TargetSpec: app.TargetSpec{
 				Scope:      scope,
 				ProjectDir: projectDirValue,

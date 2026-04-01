@@ -3,7 +3,6 @@ package engine
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -27,13 +26,13 @@ type parseSpec[T any, FM any] struct {
 
 // parseContent reads and parses pack content files, returning typed structs.
 // SourcePack is set at parse time — no retroactive attribution needed.
-func parseContent[T any, FM any](spec parseSpec[T, FM], packRoot string, ids []string, sourcePack string) ([]T, []domain.Warning, error) {
+func parseContent[T any, FM any](spec parseSpec[T, FM], readFile func(string) ([]byte, error), packRoot string, ids []string, sourcePack string) ([]T, []domain.Warning, error) {
 	var items []T
 	var warnings []domain.Warning
 
 	for _, id := range ids {
 		path := filepath.Join(packRoot, filepath.FromSlash(spec.kind.PrimaryRelPath(id)))
-		raw, err := os.ReadFile(path)
+		raw, err := readFile(path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading %s %s: %w", spec.label, path, err)
 		}
@@ -118,20 +117,20 @@ var skillSpec = parseSpec[domain.Skill, domain.SkillFrontmatter]{
 // File-based parse wrappers (used by profile resolution)
 // ---------------------------------------------------------------------------
 
-func parseRules(packRoot string, ids []string, sourcePack string) ([]domain.Rule, []domain.Warning, error) {
-	return parseContent(ruleSpec, packRoot, ids, sourcePack)
+func (e *Engine) parseRules(packRoot string, ids []string, sourcePack string) ([]domain.Rule, []domain.Warning, error) {
+	return parseContent(ruleSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
 }
 
-func parseAgents(packRoot string, ids []string, sourcePack string) ([]domain.Agent, []domain.Warning, error) {
-	return parseContent(agentSpec, packRoot, ids, sourcePack)
+func (e *Engine) parseAgents(packRoot string, ids []string, sourcePack string) ([]domain.Agent, []domain.Warning, error) {
+	return parseContent(agentSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
 }
 
-func parseWorkflows(packRoot string, ids []string, sourcePack string) ([]domain.Workflow, []domain.Warning, error) {
-	return parseContent(workflowSpec, packRoot, ids, sourcePack)
+func (e *Engine) parseWorkflows(packRoot string, ids []string, sourcePack string) ([]domain.Workflow, []domain.Warning, error) {
+	return parseContent(workflowSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
 }
 
-func parseSkills(packRoot string, ids []string, sourcePack string) ([]domain.Skill, []domain.Warning, error) {
-	return parseContent(skillSpec, packRoot, ids, sourcePack)
+func (e *Engine) parseSkills(packRoot string, ids []string, sourcePack string) ([]domain.Skill, []domain.Warning, error) {
+	return parseContent(skillSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
 }
 
 // ---------------------------------------------------------------------------

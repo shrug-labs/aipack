@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
-	"github.com/shrug-labs/aipack/internal/util"
 )
 
 const cacheSubdirName = "presync"
@@ -40,44 +39,51 @@ func legacyPresyncDir(ledgerPath string) string {
 type presyncIndex map[string]string
 
 // loadPresyncIndex loads the presync cache index. If the index is corrupt,
-// it returns an empty index and a warning string (non-fatal).
-func loadPresyncIndex(dir string) (presyncIndex, string, error) {
-	b, err := os.ReadFile(filepath.Join(dir, "index.json"))
+// it returns an empty index and a warning (non-fatal).
+func (e *Engine) loadPresyncIndex(dir string) (presyncIndex, []domain.Warning, error) {
+	b, err := e.FS.ReadFile(filepath.Join(dir, "index.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return presyncIndex{}, "", nil
+			return presyncIndex{}, nil, nil
 		}
-		return nil, "", err
+		return nil, nil, err
 	}
 	var idx presyncIndex
 	if err := json.Unmarshal(b, &idx); err != nil {
-		return presyncIndex{}, fmt.Sprintf("warning: presync index corrupt, starting fresh: %v", err), nil
+		return presyncIndex{}, []domain.Warning{{
+			Field:   "settings-cache",
+			Message: fmt.Sprintf("presync index corrupt, starting fresh: %v", err),
+		}}, nil
 	}
-	return idx, "", nil
+	return idx, nil, nil
 }
 
-func savePresyncIndex(dir string, idx presyncIndex) error {
+func (e *Engine) savePresyncIndex(dir string, idx presyncIndex) error {
 	b, err := json.MarshalIndent(idx, "", "  ")
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	return util.WriteFileAtomicWithPerms(filepath.Join(dir, "index.json"), b, 0o700, 0o600)
+	path := filepath.Join(dir, "index.json")
+	if err := e.FS.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return e.FS.WriteFile(path, b, 0o600)
 }
 
 // SnapshotSettingsFiles copies current on-disk settings files into the
 // presync cache before sync overwrites them. Stale entries from previous
 // syncs (e.g. for removed harnesses) are purged. Only one level of undo
 // is available — each sync replaces the previous cache.
-func SnapshotSettingsFiles(settings []domain.SettingsAction, ledgerPath string, dryRun bool) (string, error) {
+func (e *Engine) SnapshotSettingsFiles(settings []domain.SettingsAction, ledgerPath string, dryRun bool) ([]domain.Warning, error) {
 	if dryRun || len(settings) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	dir := presyncDir(ledgerPath)
-	idx, warn, err := loadPresyncIndex(dir)
+	idx, warnings, err := e.loadPresyncIndex(dir)
 	if err != nil {
-		return "", fmt.Errorf("loading presync index: %w", err)
+		return nil, fmt.Errorf("loading presync index: %w", err)
 	}
 
 	// Build set of keys we expect this sync to produce.
@@ -87,54 +93,51 @@ func SnapshotSettingsFiles(settings []domain.SettingsAction, ledgerPath string, 
 	}
 	// Purge stale entries from previous syncs that targeted different harnesses/files.
 	purged := false
-	var purgeWarnings []string
 	for key := range idx {
 		if _, ok := currentKeys[key]; !ok {
-			if err := os.Remove(filepath.Join(dir, key)); err != nil && !os.IsNotExist(err) {
-				// File could not be removed (permissions, etc.) — keep the index
-				// entry so we don't lose track of it.
-				purgeWarnings = append(purgeWarnings, fmt.Sprintf("could not purge stale cache entry %s: %v", key, err))
+			if err := e.FS.Remove(filepath.Join(dir, key)); err != nil && !os.IsNotExist(err) {
+				warnings = append(warnings, domain.Warning{
+					Field:   "settings-cache",
+					Message: fmt.Sprintf("could not purge stale cache entry %s: %v", key, err),
+				})
 				continue
 			}
 			delete(idx, key)
 			purged = true
 		}
 	}
-	if len(purgeWarnings) > 0 && warn == "" {
-		warn = "warning: " + strings.Join(purgeWarnings, "; ")
-	}
 
 	dirCreated := false
 	dirty := purged
 	for _, s := range settings {
 		dst := filepath.Clean(s.Dst)
-		content, err := os.ReadFile(dst)
+		content, err := e.FS.ReadFile(dst)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return "", err
+			return nil, err
 		}
 
 		if !dirCreated {
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				return "", err
+			if err := e.FS.MkdirAll(dir, 0o700); err != nil {
+				return nil, err
 			}
 			dirCreated = true
 		}
 
 		key := settingsCacheKey(s.Harness, dst)
-		if err := util.WriteFileAtomicWithPerms(filepath.Join(dir, key), content, 0o700, 0o600); err != nil {
-			return "", fmt.Errorf("caching %s: %w", key, err)
+		if err := e.FS.WriteFile(filepath.Join(dir, key), content, 0o600); err != nil {
+			return nil, fmt.Errorf("caching %s: %w", key, err)
 		}
 		idx[key] = dst
 		dirty = true
 	}
 
 	if dirty {
-		return warn, savePresyncIndex(dir, idx)
+		return warnings, e.savePresyncIndex(dir, idx)
 	}
-	return warn, nil
+	return warnings, nil
 }
 
 // RestoredFile records a file restored from cache.
@@ -147,7 +150,7 @@ type RestoredFile struct {
 // When filterHarness is non-empty, only files for that harness are restored.
 // After a successful non-dry-run restore, the restored entries are removed
 // from the cache so that a second restore is a no-op.
-func RestoreFromCache(ledgerPath, filterHarness string, dryRun bool) ([]RestoredFile, error) {
+func (e *Engine) RestoreFromCache(ledgerPath, filterHarness string, dryRun bool) ([]RestoredFile, error) {
 	var restored []RestoredFile
 	dirs := []string{presyncDir(ledgerPath)}
 	if legacy := legacyPresyncDir(ledgerPath); legacy != dirs[0] {
@@ -155,7 +158,7 @@ func RestoreFromCache(ledgerPath, filterHarness string, dryRun bool) ([]Restored
 	}
 
 	for _, dir := range dirs {
-		idx, _, err := loadPresyncIndex(dir)
+		idx, _, err := e.loadPresyncIndex(dir)
 		if err != nil {
 			return nil, fmt.Errorf("loading presync index: %w", err)
 		}
@@ -176,7 +179,7 @@ func RestoreFromCache(ledgerPath, filterHarness string, dryRun bool) ([]Restored
 				continue
 			}
 
-			cached, err := os.ReadFile(filepath.Join(dir, key))
+			cached, err := e.FS.ReadFile(filepath.Join(dir, key))
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -185,10 +188,10 @@ func RestoreFromCache(ledgerPath, filterHarness string, dryRun bool) ([]Restored
 			}
 
 			if !dryRun {
-				if err := os.MkdirAll(filepath.Dir(origPath), 0o700); err != nil {
+				if err := e.FS.MkdirAll(filepath.Dir(origPath), 0o700); err != nil {
 					return nil, err
 				}
-				if err := util.WriteFileAtomic(origPath, cached); err != nil {
+				if err := e.FS.WriteFile(origPath, cached, 0o644); err != nil {
 					return nil, err
 				}
 			}
@@ -197,13 +200,13 @@ func RestoreFromCache(ledgerPath, filterHarness string, dryRun bool) ([]Restored
 
 		if !dryRun && len(dirRestored) > 0 {
 			for _, r := range dirRestored {
-				_ = os.Remove(filepath.Join(dir, r.CacheKey))
+				_ = e.FS.Remove(filepath.Join(dir, r.CacheKey))
 				delete(idx, r.CacheKey)
 			}
 			if len(idx) == 0 {
-				_ = os.Remove(filepath.Join(dir, "index.json"))
-				_ = os.Remove(dir)
-			} else if err := savePresyncIndex(dir, idx); err != nil {
+				_ = e.FS.Remove(filepath.Join(dir, "index.json"))
+				_ = e.FS.Remove(dir)
+			} else if err := e.savePresyncIndex(dir, idx); err != nil {
 				return append(restored, dirRestored...), fmt.Errorf("updating presync index after restore: %w", err)
 			}
 		}

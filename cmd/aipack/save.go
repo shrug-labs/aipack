@@ -11,6 +11,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 type saveEnv struct {
@@ -147,7 +148,8 @@ func (c *SaveCmd) runRoundTrip(ctx context.Context, g *Globals) error {
 		packRoots[p.Name] = p.Root
 	}
 
-	result, err := app.RunRoundTrip(ctx, app.RoundTripRequest{
+	eng := engine.New(nil, nil)
+	result, err := app.RunRoundTrip(ctx, eng, app.RoundTripRequest{
 		TargetSpec: app.TargetSpec{
 			Scope:      env.scope,
 			ProjectDir: env.projectDir,
@@ -241,7 +243,8 @@ func (c *SaveCmd) runToPack(ctx context.Context, g *Globals) error {
 	var aggregated app.SavePipelineResult
 	foundCandidates := false
 	for _, harnessID := range env.harnesses {
-		candidates, discoverWarnings, err := app.DiscoverSaveFiles(ctx, app.DiscoverSaveRequest{
+		eng := engine.New(nil, nil)
+		candidates, discoverWarnings, err := app.DiscoverSaveFiles(ctx, eng, app.DiscoverSaveRequest{
 			HarnessID:  harnessID,
 			Categories: categories,
 			Scope:      env.scope,
@@ -260,7 +263,7 @@ func (c *SaveCmd) runToPack(ctx context.Context, g *Globals) error {
 		}
 		foundCandidates = true
 
-		result, err := app.RunSavePipeline(app.SavePipelineRequest{
+		result, err := app.RunSavePipeline(eng, app.SavePipelineRequest{
 			Candidates: candidates,
 			PackName:   c.ToPack,
 			ConfigDir:  configDir,

@@ -1,9 +1,10 @@
-package config
+package source
 
 import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -133,6 +134,17 @@ func TestProbePackURL_GenericRepositoryURL(t *testing.T) {
 	}
 	if info.PackURL != "" {
 		t.Fatalf("PackURL = %q, want empty", info.PackURL)
+	}
+}
+
+func TestProbePackURL_RejectsCredentials(t *testing.T) {
+	t.Parallel()
+	_, err := ProbePackURL("https://user:pass@example.com/repo.git")
+	if err == nil {
+		t.Fatal("expected error for URL with credentials")
+	}
+	if got := err.Error(); got != "credentials in URL are not supported" {
+		t.Fatalf("error = %q", got)
 	}
 }
 
@@ -449,5 +461,16 @@ func TestURLOK_ServerError(t *testing.T) {
 	_, err := urlOK(context.Background(), ts.URL)
 	if err == nil {
 		t.Fatal("expected error for 500")
+	}
+}
+
+func TestURLOK_RejectsUnsupportedScheme(t *testing.T) {
+	t.Parallel()
+	_, err := urlOK(context.Background(), "file:///tmp/pack.json")
+	if err == nil {
+		t.Fatal("expected error for unsupported scheme")
+	}
+	if !strings.Contains(err.Error(), "unsupported URL scheme") {
+		t.Fatalf("error = %q", err)
 	}
 }

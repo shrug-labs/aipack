@@ -33,6 +33,7 @@ const saveNewPackSentinel = "Create new pack..."
 
 type saveTabModel struct {
 	ctx       context.Context
+	eng       *engine.Engine
 	configDir string
 	registry  *harness.Registry
 	stage     saveStage
@@ -76,8 +77,8 @@ type saveTabModel struct {
 	width, height int
 }
 
-func newSaveTabModel(ctx context.Context, configDir string, reg *harness.Registry) saveTabModel {
-	return saveTabModel{ctx: ctx, configDir: configDir, registry: reg}
+func newSaveTabModel(ctx context.Context, eng *engine.Engine, configDir string, reg *harness.Registry) saveTabModel {
+	return saveTabModel{ctx: ctx, eng: eng, configDir: configDir, registry: reg}
 }
 
 func (m saveTabModel) Update(msg tea.Msg) (saveTabModel, tea.Cmd) {
@@ -202,7 +203,7 @@ func (m saveTabModel) handleHarnessKey(msg tea.KeyMsg) (saveTabModel, tea.Cmd) {
 			m.selectedHarness = m.availableHarnesses[m.harnessCursor]
 			m.loading = true
 			m.stage = saveStageVectors
-			return m, discoverVectors(m.ctx, m.selectedHarness, m.configDir, m.registry)
+			return m, discoverVectors(m.ctx, m.eng, m.selectedHarness, m.configDir, m.registry)
 		}
 	}
 	return m, nil
@@ -375,7 +376,7 @@ func (m saveTabModel) advanceToFiles() (saveTabModel, tea.Cmd) {
 	m.stage = saveStageFiles
 
 	// Resolve and cache profile context for reuse in executePipeline.
-	res, _, err := app.ResolveActiveProfile(m.configDir)
+	res, _, err := app.ResolveActiveProfile(m.eng, m.configDir)
 	if err != nil {
 		m.loadErr = fmt.Sprintf("resolve profile: %s", err)
 		m.loading = false
@@ -383,7 +384,7 @@ func (m saveTabModel) advanceToFiles() (saveTabModel, tea.Cmd) {
 	}
 	m.resolvedProfile = &res
 
-	return m, discoverSaveFiles(m.ctx, app.DiscoverSaveRequest{
+	return m, discoverSaveFiles(m.ctx, m.eng, app.DiscoverSaveRequest{
 		HarnessID:  m.selectedHarness,
 		Categories: categories,
 		Scope:      res.TargetSpec.Scope,
@@ -414,7 +415,7 @@ func (m saveTabModel) executePipeline(packName string, createPack bool) (saveTab
 		res = *m.resolvedProfile
 	} else {
 		var err error
-		res, _, err = app.ResolveActiveProfile(m.configDir)
+		res, _, err = app.ResolveActiveProfile(m.eng, m.configDir)
 		if err != nil {
 			m.loadErr = fmt.Sprintf("resolve profile: %s", err)
 			m.loading = false
@@ -430,7 +431,7 @@ func (m saveTabModel) executePipeline(packName string, createPack bool) (saveTab
 		}
 	}
 
-	return m, executeSavePipeline(app.SavePipelineRequest{
+	return m, executeSavePipeline(m.eng, app.SavePipelineRequest{
 		Candidates: selected,
 		PackName:   packName,
 		ConfigDir:  m.configDir,
@@ -1039,7 +1040,7 @@ func (m saveTabModel) rediscoverFiles() tea.Cmd {
 	if len(categories) == 0 || m.resolvedProfile == nil {
 		return nil
 	}
-	return discoverSaveFiles(m.ctx, app.DiscoverSaveRequest{
+	return discoverSaveFiles(m.ctx, m.eng, app.DiscoverSaveRequest{
 		HarnessID:  m.selectedHarness,
 		Categories: categories,
 		Scope:      m.resolvedProfile.TargetSpec.Scope,

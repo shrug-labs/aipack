@@ -11,6 +11,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -439,7 +440,8 @@ func (c *PackRenameCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	return app.PackRename(cfgDir, c.OldName, c.NewName, g.Stdout)
+	eng := engine.New(nil, nil)
+	return app.PackRename(eng, cfgDir, c.OldName, c.NewName, g.Stdout)
 }
 
 // --- pack enable (profile) ---
@@ -523,6 +525,7 @@ type PackUpdateCmd struct {
 	Name      string `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	All       bool   `help:"Update all installed packs" name:"all"`
+	Seed      bool   `help:"Re-seed bundled profiles from updated packs" name:"seed"`
 }
 
 func (c *PackUpdateCmd) Help() string {
@@ -539,6 +542,9 @@ Examples:
 
   # Update all installed packs
   aipack pack update --all
+
+  # Update and re-seed bundled profiles
+  aipack pack update my-pack --seed
 
 See also: pack install, pack show`
 }
@@ -563,6 +569,7 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 		All:       c.All,
+		Seed:      c.Seed,
 	}, g.Stdout)
 	if err != nil {
 		return err

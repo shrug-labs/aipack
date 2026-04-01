@@ -16,11 +16,12 @@ import (
 
 func Test_classifyFileKind_Create(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "missing.md")
 	lg := domain.NewLedger()
 
-	kind, err := classifyFileKind(dst, []byte("content"), lg)
+	kind, err := eng.classifyFileKind(dst, []byte("content"), lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +32,7 @@ func Test_classifyFileKind_Create(t *testing.T) {
 
 func Test_classifyFileKind_Identical(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "same.md")
 	content := []byte("hello\n")
@@ -39,7 +41,7 @@ func Test_classifyFileKind_Identical(t *testing.T) {
 	}
 	lg := domain.NewLedger()
 
-	kind, err := classifyFileKind(dst, content, lg)
+	kind, err := eng.classifyFileKind(dst, content, lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +52,7 @@ func Test_classifyFileKind_Identical(t *testing.T) {
 
 func Test_classifyFileKind_Managed(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "managed.md")
 	oldContent := []byte("old\n")
@@ -60,7 +63,7 @@ func Test_classifyFileKind_Managed(t *testing.T) {
 	lg := domain.NewLedger()
 	lg.Record(dst, oldContent, "pack1", nil, time.Now())
 
-	kind, err := classifyFileKind(dst, newContent, lg)
+	kind, err := eng.classifyFileKind(dst, newContent, lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +74,7 @@ func Test_classifyFileKind_Managed(t *testing.T) {
 
 func Test_classifyFileKind_Conflict(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "conflict.md")
 	origContent := []byte("original\n")
@@ -85,7 +89,7 @@ func Test_classifyFileKind_Conflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	kind, err := classifyFileKind(dst, newContent, lg)
+	kind, err := eng.classifyFileKind(dst, newContent, lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,11 +104,12 @@ func Test_classifyFileKind_Conflict(t *testing.T) {
 
 func TestClassifyFile_Create(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "new.md")
 	lg := domain.NewLedger()
 
-	fd, err := ClassifyFile(dst, []byte("content"), "new.md", "pack1", lg)
+	fd, err := eng.ClassifyFile(dst, []byte("content"), "new.md", "pack1", lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +123,7 @@ func TestClassifyFile_Create(t *testing.T) {
 
 func TestClassifyFile_Identical(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "same.md")
 	content := []byte("hello world\n")
@@ -126,7 +132,7 @@ func TestClassifyFile_Identical(t *testing.T) {
 	}
 	lg := domain.NewLedger()
 
-	fd, err := ClassifyFile(dst, content, "same.md", "pack1", lg)
+	fd, err := eng.ClassifyFile(dst, content, "same.md", "pack1", lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +143,7 @@ func TestClassifyFile_Identical(t *testing.T) {
 
 func TestClassifyFile_Managed(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "managed.md")
 	oldContent := []byte("old content\n")
@@ -150,7 +157,7 @@ func TestClassifyFile_Managed(t *testing.T) {
 	lg := domain.NewLedger()
 	lg.Record(dst, oldContent, "pack1", nil, time.Now())
 
-	fd, err := ClassifyFile(dst, newContent, "managed.md", "pack1", lg)
+	fd, err := eng.ClassifyFile(dst, newContent, "managed.md", "pack1", lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +171,7 @@ func TestClassifyFile_Managed(t *testing.T) {
 
 func TestClassifyFile_Conflict(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "conflict.md")
 	origContent := []byte("original\n")
@@ -182,7 +190,7 @@ func TestClassifyFile_Conflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fd, err := ClassifyFile(dst, newContent, "conflict.md", "pack1", lg)
+	fd, err := eng.ClassifyFile(dst, newContent, "conflict.md", "pack1", lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +201,7 @@ func TestClassifyFile_Conflict(t *testing.T) {
 
 func TestClassifyCopy_Dir(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	src := t.TempDir()
 	dst := t.TempDir()
 
@@ -208,7 +217,7 @@ func TestClassifyCopy_Dir(t *testing.T) {
 	}
 
 	lg := domain.NewLedger()
-	diffs, err := ClassifyCopy(src, dst, "pack1", lg)
+	diffs, err := eng.ClassifyCopy(src, dst, "pack1", lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +257,7 @@ func TestUnifiedDiff_Identical(t *testing.T) {
 
 func TestComputeSettingsDiffs_MergeMode_NonExistentFile(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "nonexistent-settings.json")
 	lg := domain.NewLedger()
@@ -261,7 +271,7 @@ func TestComputeSettingsDiffs_MergeMode_NonExistentFile(t *testing.T) {
 			MergeMode: true,
 		},
 	}
-	diffs, err := ComputeSettingsDiffs(settings, lg)
+	diffs, err := eng.ComputeSettingsDiffs(settings, lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,6 +285,7 @@ func TestComputeSettingsDiffs_MergeMode_NonExistentFile(t *testing.T) {
 
 func TestComputeSettingsDiffs_MergeMode_EmptyDesired_NonExistent(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "nonexistent.json")
 	lg := domain.NewLedger()
@@ -288,7 +299,7 @@ func TestComputeSettingsDiffs_MergeMode_EmptyDesired_NonExistent(t *testing.T) {
 			MergeMode: true,
 		},
 	}
-	diffs, err := ComputeSettingsDiffs(settings, lg)
+	diffs, err := eng.ComputeSettingsDiffs(settings, lg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,6 +314,7 @@ func TestComputeSettingsDiffs_MergeMode_EmptyDesired_NonExistent(t *testing.T) {
 
 func TestComputeSettingsDiffs_MergeMode_NoOpsIsIdentical(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "settings.json")
 
@@ -337,7 +349,7 @@ func TestComputeSettingsDiffs_MergeMode_NoOpsIsIdentical(t *testing.T) {
 	// Simulate previous sync having recorded this file with the managed overlay.
 	lg.Record(dst, onDisk, "test", managed, time.Now())
 
-	diffs, err := ComputeSettingsDiffs([]domain.SettingsAction{
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{
 		{Dst: dst, Desired: managed, Harness: domain.HarnessClaudeCode, Label: "test", MergeMode: true},
 	}, lg)
 	if err != nil {
@@ -357,6 +369,7 @@ func TestComputeSettingsDiffs_MergeMode_NoOpsIsIdentical(t *testing.T) {
 
 func TestComputeSettingsDiffs_MergeMode_ReformattedFileIsIdentical(t *testing.T) {
 	t.Parallel()
+	eng := New(nil, nil)
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "settings.json")
 
@@ -401,7 +414,7 @@ func TestComputeSettingsDiffs_MergeMode_ReformattedFileIsIdentical(t *testing.T)
 	lg := domain.NewLedger()
 	lg.Record(dst, prevContent, "test", managed, time.Now())
 
-	diffs, err := ComputeSettingsDiffs([]domain.SettingsAction{
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{
 		{Dst: dst, Desired: managed, Harness: domain.HarnessClaudeCode, Label: "test", MergeMode: true},
 	}, lg)
 	if err != nil {

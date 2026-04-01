@@ -166,7 +166,7 @@ func TestDiscoverSaveFiles_NoLedger(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), engine.New(nil, nil), DiscoverSaveRequest{
 		HarnessID:  "claudecode",
 		Categories: []domain.PackCategory{domain.CategoryRules},
 		Scope:      domain.ScopeProject,
@@ -230,7 +230,7 @@ func TestDiscoverSaveFiles_WithLedger(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), engine.New(nil, nil), DiscoverSaveRequest{
 		HarnessID:  "claudecode",
 		Categories: []domain.PackCategory{domain.CategoryRules},
 		Scope:      domain.ScopeProject,
@@ -304,7 +304,7 @@ func TestDiscoverSaveFiles_SelectsTrackedSettings(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), engine.New(nil, nil), DiscoverSaveRequest{
 		HarnessID:  "claudecode",
 		Categories: []domain.PackCategory{domain.CategorySettings},
 		Scope:      domain.ScopeProject,
@@ -364,7 +364,7 @@ func TestDiscoverSaveFiles_MCPCandidates(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	candidates, _, err := DiscoverSaveFiles(context.Background(), DiscoverSaveRequest{
+	candidates, _, err := DiscoverSaveFiles(context.Background(), engine.New(nil, nil), DiscoverSaveRequest{
 		HarnessID:  "codex",
 		Categories: []domain.PackCategory{domain.CategoryMCP},
 		Scope:      domain.ScopeProject,
@@ -409,7 +409,7 @@ func TestRunSavePipeline_NewPack(t *testing.T) {
 	stub := pipelineStub{id: "claudecode"}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: harnessFile,
@@ -475,6 +475,7 @@ func TestRunSavePipeline_NewPack(t *testing.T) {
 func TestRunSavePipeline_ExistingPack(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	configDir := filepath.Join(home, ".config", "aipack")
 	projectDir := filepath.Join(home, "project")
 	packRoot := filepath.Join(configDir, "packs", "test-pack")
@@ -492,7 +493,7 @@ func TestRunSavePipeline_ExistingPack(t *testing.T) {
 	stub := pipelineStub{id: "claudecode"}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: harnessFile,
@@ -533,7 +534,7 @@ func TestRunSavePipeline_ExistingPack(t *testing.T) {
 
 	// Verify ledger updated.
 	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
-	lg, _, err := engine.LoadLedger(ledgerPath)
+	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +573,7 @@ func TestRunSavePipeline_PrefersNormalizedContentForFiles(t *testing.T) {
 	normalized := []byte("---\nname: demo\ndescription: canonical\nmetadata:\n  owner: test\n  last_updated: 2026-03-14\n---\npack-native\n")
 	reg := harness.NewRegistry(pipelineStub{id: "claudecode"})
 
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: harnessFile,
@@ -614,6 +615,7 @@ func TestRunSavePipeline_LedgerDigestUsesRawBytes(t *testing.T) {
 	// ledger must match to avoid phantom "modified" state after save.
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	configDir := filepath.Join(home, ".config", "aipack")
 	projectDir := filepath.Join(home, "project")
 	packRoot := filepath.Join(configDir, "packs", "test-pack")
@@ -630,7 +632,7 @@ func TestRunSavePipeline_LedgerDigestUsesRawBytes(t *testing.T) {
 	os.WriteFile(harnessFile, rawContent, 0o644)
 
 	reg := harness.NewRegistry(pipelineStub{id: "claudecode"})
-	_, err := RunSavePipeline(SavePipelineRequest{
+	_, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: harnessFile,
@@ -665,7 +667,7 @@ func TestRunSavePipeline_LedgerDigestUsesRawBytes(t *testing.T) {
 
 	// Ledger digest should match the raw harness bytes, not normalized.
 	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
-	lg, _, err := engine.LoadLedger(ledgerPath)
+	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,6 +696,7 @@ func TestRunSavePipeline_LedgerDigestUsesRawBytes(t *testing.T) {
 func TestRunSavePipeline_SkipsFilesTrackedToDifferentPack(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	configDir := filepath.Join(home, ".config", "aipack")
 	projectDir := filepath.Join(home, "project")
 	targetPackRoot := filepath.Join(configDir, "packs", "target-pack")
@@ -720,7 +723,7 @@ func TestRunSavePipeline_SkipsFilesTrackedToDifferentPack(t *testing.T) {
 	})
 
 	reg := harness.NewRegistry(pipelineStub{id: "claudecode"})
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: harnessFile,
@@ -750,7 +753,7 @@ func TestRunSavePipeline_SkipsFilesTrackedToDifferentPack(t *testing.T) {
 		t.Fatalf("expected target pack file to remain absent, stat err=%v", err)
 	}
 
-	lg, _, err := engine.LoadLedger(ledgerPath)
+	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +786,7 @@ func TestRunSavePipeline_SavesSettingsToConfigsAndManifest(t *testing.T) {
 	}
 
 	reg := harness.NewRegistry(pipelineStub{id: "claudecode"})
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: settingsPath,
@@ -850,7 +853,7 @@ func TestRunSavePipeline_SecretScan(t *testing.T) {
 	stub := pipelineStub{id: "claudecode"}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: harnessFile,
@@ -878,6 +881,7 @@ func TestRunSavePipeline_SecretScan(t *testing.T) {
 func TestRunSavePipeline_MCPServer(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	eng := engine.New(nil, nil)
 	configDir := filepath.Join(home, ".config", "aipack")
 	projectDir := filepath.Join(home, "project")
 	packRoot := filepath.Join(configDir, "packs", "test-pack")
@@ -905,7 +909,7 @@ func TestRunSavePipeline_MCPServer(t *testing.T) {
 	stub := pipelineStub{id: "codex"}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath:  settingsPath,
@@ -963,7 +967,7 @@ func TestRunSavePipeline_MCPServer(t *testing.T) {
 	}
 
 	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
-	lg, _, err := engine.LoadLedger(ledgerPath)
+	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -999,7 +1003,7 @@ func TestRunSavePipeline_Conflict(t *testing.T) {
 	stub := pipelineStub{id: "claudecode"}
 	reg := harness.NewRegistry(stub)
 
-	result, err := RunSavePipeline(SavePipelineRequest{
+	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
 				HarnessPath: harnessFile,

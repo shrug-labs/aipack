@@ -9,6 +9,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 type CleanCmd struct {
@@ -87,7 +88,8 @@ func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	if err := app.RunClean(ctx, app.CleanRequest{
+	eng := engine.New(nil, nil)
+	if err := app.RunClean(ctx, eng, app.CleanRequest{
 		TargetSpec: app.TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectAbs,

@@ -148,6 +148,25 @@ func TestExpandEnvRefs_Unset(t *testing.T) {
 	}
 }
 
+func TestExpandEnvRefs_TrimmedName(t *testing.T) {
+	t.Setenv("AIPACK_TEST_TRIM", "ok")
+	out, err := ExpandEnvRefs("{env: AIPACK_TEST_TRIM }")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("expected ok, got %q", out)
+	}
+}
+
+func TestExpandEnvRefs_InvalidNameErrors(t *testing.T) {
+	t.Parallel()
+	_, err := ExpandEnvRefs("{env:../../etc/passwd}")
+	if err == nil {
+		t.Fatal("expected error for unresolved invalid env name")
+	}
+}
+
 func TestExpandEnvRefs_NoRefs(t *testing.T) {
 	t.Parallel()
 	out, err := ExpandEnvRefs("no refs")

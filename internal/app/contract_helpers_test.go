@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
 	ccharness "github.com/shrug-labs/aipack/internal/harness/claudecode"
 	clharness "github.com/shrug-labs/aipack/internal/harness/cline"
@@ -44,7 +45,7 @@ func newContractEnv(t *testing.T, hid domain.Harness) *contractEnv {
 // sync applies a profile with force and auto-confirm.
 func (e *contractEnv) sync(profile domain.Profile) SyncResult {
 	e.t.Helper()
-	result, warnings, err := RunSync(context.Background(), profile, SyncRequest{
+	result, warnings, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: e.projectDir,

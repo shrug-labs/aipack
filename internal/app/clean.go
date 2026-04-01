@@ -31,7 +31,7 @@ type CleanRequest struct {
 }
 
 // RunClean resets harness capability vectors without bricking the harness.
-func RunClean(ctx context.Context, req CleanRequest, reg *harness.Registry) error {
+func RunClean(ctx context.Context, eng *engine.Engine, req CleanRequest, reg *harness.Registry) error {
 	home := req.Home
 	if req.Scope == domain.ScopeGlobal && strings.TrimSpace(home) == "" {
 		return fmt.Errorf("HOME is not set (required for global scope)")
@@ -71,7 +71,7 @@ func RunClean(ctx context.Context, req CleanRequest, reg *harness.Registry) erro
 	}
 
 	if req.DryRun {
-		ops := buildCleanOps(req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
+		ops := buildCleanOps(eng, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
 		for _, op := range ops {
 			fmt.Fprintf(stderr, "  would remove: %s\n", op.path())
 		}
@@ -82,7 +82,7 @@ func RunClean(ctx context.Context, req CleanRequest, reg *harness.Registry) erro
 		return fmt.Errorf("refusing to clean without --yes (non-interactive)")
 	}
 
-	ops := buildCleanOps(req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
+	ops := buildCleanOps(eng, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
 
 	rctx := cleanRunContext{Yes: req.Yes, Stdin: stdin, Stderr: stderr}
 	for _, op := range ops {
@@ -167,7 +167,7 @@ func (o editFileOp) run(ctx context.Context, rctx cleanRunContext) error {
 	return util.WriteFileAtomic(o.FilePath, out)
 }
 
-func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool, reg *harness.Registry) []cleanOp {
+func buildCleanOps(eng *engine.Engine, scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool, reg *harness.Registry) []cleanOp {
 	var ops []cleanOp
 	seenRemovePaths := map[string]struct{}{}
 
@@ -205,7 +205,7 @@ func buildCleanOps(scope domain.Scope, home string, projectDir string, hs []doma
 		// validation roots that are not partially-owned files and not already
 		// covered by an explicit RemovePath.
 		ledgerPath := engine.LedgerPathForScope(scope, projectDir, home, hid)
-		lg, _, err := engine.LoadLedger(ledgerPath)
+		lg, _, err := eng.LoadLedger(ledgerPath)
 		if err != nil {
 			continue
 		}

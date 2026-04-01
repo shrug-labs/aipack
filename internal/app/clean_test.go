@@ -89,7 +89,7 @@ func TestBuildCleanOps_ProjectScope(t *testing.T) {
 	home := t.TempDir()
 
 	harnesses := domain.AllHarnesses()
-	ops := buildCleanOps(domain.ScopeProject, home, dir, harnesses, false, testRegistry())
+	ops := buildCleanOps(engine.New(nil, nil), domain.ScopeProject, home, dir, harnesses, false, testRegistry())
 
 	if len(ops) == 0 {
 		t.Fatal("expected non-empty ops for project scope with all harnesses")
@@ -172,7 +172,7 @@ func TestCleanCline_GlobalScope_RemovesManagedPaths(t *testing.T) {
 func TestRunClean_InvalidHarness(t *testing.T) {
 	t.Parallel()
 
-	err := RunClean(context.Background(), CleanRequest{
+	err := RunClean(context.Background(), engine.New(nil, nil), CleanRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: t.TempDir(),
@@ -193,7 +193,7 @@ func TestBuildCleanOps_OpenCodeDoesNotRemoveConfigParentDir(t *testing.T) {
 	projectDir := t.TempDir()
 	home := t.TempDir()
 
-	ops := buildCleanOps(domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
+	ops := buildCleanOps(engine.New(nil, nil), domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
 
 	configBase := filepath.Join(projectDir, ".opencode")
 	for _, op := range ops {
@@ -228,13 +228,14 @@ func TestBuildCleanOps_OpenCodeRemovesLedgerTrackedDropInFile(t *testing.T) {
 
 	dropIn := filepath.Join(projectDir, ".opencode", "oh-my-opencode.json")
 	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessOpenCode)
+	eng := engine.New(nil, nil)
 	ledger := domain.NewLedger()
 	ledger.Managed[dropIn] = domain.Entry{Digest: "abc123", SourcePack: "test-pack"}
-	if err := engine.SaveLedger(ledgerPath, ledger, false); err != nil {
+	if err := eng.SaveLedger(ledgerPath, ledger, false); err != nil {
 		t.Fatalf("SaveLedger: %v", err)
 	}
 
-	ops := buildCleanOps(domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
+	ops := buildCleanOps(engine.New(nil, nil), domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
 	found := false
 	for _, op := range ops {
 		if op.path() == dropIn {
@@ -253,7 +254,7 @@ func TestBuildCleanOps_ProjectLedgerWipeIncludesLegacyAndPerHarnessLedgers(t *te
 	projectDir := t.TempDir()
 	home := t.TempDir()
 
-	ops := buildCleanOps(domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessClaudeCode}, true, testRegistry())
+	ops := buildCleanOps(engine.New(nil, nil), domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessClaudeCode}, true, testRegistry())
 	paths := map[string]bool{}
 	for _, op := range ops {
 		paths[op.path()] = true

@@ -16,7 +16,7 @@ import (
 //   - resolvePackContent (rule/agent/workflow/skill parsing)
 //   - buildMCPServers (MCP resolution + param expansion)
 //   - loadHarnessSettings (settings + drop-in config loading)
-func Resolve(
+func (e *Engine) Resolve(
 	profileCfg config.ProfileConfig,
 	profilePath string,
 	configDir string,
@@ -43,14 +43,14 @@ func Resolve(
 	}
 
 	// Step 2: Parse content per pack into typed domain structs.
-	packs, contentWarnings, err := resolvePackContent(resolvedPacks)
+	packs, contentWarnings, err := e.resolvePackContent(resolvedPacks)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
 	warnings = append(warnings, contentWarnings...)
 
 	// Step 3: Build MCP servers (load inventory, expand params, apply permissions).
-	mcpServers, mcpWarnings, err := resolveMCPServers(resolvedPacks, profileCfg.Params)
+	mcpServers, mcpWarnings, err := e.resolveMCPServers(resolvedPacks, profileCfg.Params)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
@@ -58,7 +58,7 @@ func Resolve(
 
 	// Step 4: Load harness settings for all harnesses.
 	allH := domain.AllHarnesses()
-	settings, settingsWarnings, err := loadHarnessSettings(resolvedPacks, settingsPack, allH)
+	settings, settingsWarnings, err := e.loadHarnessSettings(resolvedPacks, settingsPack, allH)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
@@ -74,30 +74,30 @@ func Resolve(
 }
 
 // resolvePackContent parses all content from resolved packs into typed Pack structs.
-func resolvePackContent(resolvedPacks []config.ResolvedPack) ([]domain.Pack, []domain.Warning, error) {
+func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]domain.Pack, []domain.Warning, error) {
 	var packs []domain.Pack
 	var warnings []domain.Warning
 
 	for _, rp := range resolvedPacks {
-		rules, w, err := parseRules(rp.Root, rp.Rules, rp.Name)
+		rules, w, err := e.parseRules(rp.Root, rp.Rules, rp.Name)
 		if err != nil {
 			return nil, warnings, err
 		}
 		warnings = append(warnings, w...)
 
-		agents, w, err := parseAgents(rp.Root, rp.Agents, rp.Name)
+		agents, w, err := e.parseAgents(rp.Root, rp.Agents, rp.Name)
 		if err != nil {
 			return nil, warnings, err
 		}
 		warnings = append(warnings, w...)
 
-		workflows, w, err := parseWorkflows(rp.Root, rp.Workflows, rp.Name)
+		workflows, w, err := e.parseWorkflows(rp.Root, rp.Workflows, rp.Name)
 		if err != nil {
 			return nil, warnings, err
 		}
 		warnings = append(warnings, w...)
 
-		skills, w, err := parseSkills(rp.Root, rp.Skills, rp.Name)
+		skills, w, err := e.parseSkills(rp.Root, rp.Skills, rp.Name)
 		if err != nil {
 			return nil, warnings, err
 		}
@@ -119,8 +119,8 @@ func resolvePackContent(resolvedPacks []config.ResolvedPack) ([]domain.Pack, []d
 }
 
 // resolveMCPServers loads MCP inventory from packs and builds typed servers.
-func resolveMCPServers(packs []config.ResolvedPack, params map[string]string) ([]domain.MCPServer, []domain.Warning, error) {
-	inv, err := LoadMCPInventoryForPacks(packs)
+func (e *Engine) resolveMCPServers(packs []config.ResolvedPack, params map[string]string) ([]domain.MCPServer, []domain.Warning, error) {
+	inv, err := e.LoadMCPInventoryForPacks(packs)
 	if err != nil {
 		return nil, nil, err
 	}

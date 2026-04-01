@@ -33,7 +33,7 @@ func ResolvePackRootWithFallback(manifestPath string, manifest config.PackManife
 
 // AdoptFile copies a single untracked harness file into the named pack's
 // directory and updates the ledger so the file becomes tracked.
-func AdoptFile(req AdoptFileRequest) error {
+func AdoptFile(eng *engine.Engine, req AdoptFileRequest) error {
 	packRoot := filepath.Join(req.ConfigDir, "packs", req.PackName)
 	manifestPath := filepath.Join(packRoot, "pack.json")
 
@@ -74,7 +74,7 @@ func AdoptFile(req AdoptFileRequest) error {
 
 	// Update ledger so this file is now tracked.
 	ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses[0])
-	lg, _, err := engine.LoadLedger(ledgerPath)
+	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("loading ledger: %w", err)
 	}
@@ -85,7 +85,7 @@ func AdoptFile(req AdoptFileRequest) error {
 		SourcePack: req.PackName,
 		Digest:     domain.SingleFileDigest(content),
 	}
-	if err := engine.SaveLedger(ledgerPath, lg, false); err != nil {
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
 		return fmt.Errorf("saving ledger: %w", err)
 	}
 
@@ -100,9 +100,9 @@ type MoveFileRequest struct {
 
 // MoveFile moves a harness file from one pack to another: writes to the
 // destination pack, removes from the source pack, and updates the ledger.
-func MoveFile(req MoveFileRequest) error {
+func MoveFile(eng *engine.Engine, req MoveFileRequest) error {
 	// Write to destination pack + update ledger.
-	if err := AdoptFile(req.AdoptFileRequest); err != nil {
+	if err := AdoptFile(eng, req.AdoptFileRequest); err != nil {
 		return fmt.Errorf("writing to destination pack: %w", err)
 	}
 
@@ -194,8 +194,8 @@ type MoveContentRequest struct {
 
 // MoveContent moves a content item from one pack to another, resolving all
 // internal state (active profile, manifests, paths) from configDir.
-func MoveContent(req MoveContentRequest) error {
-	res, _, err := ResolveActiveProfile(req.ConfigDir)
+func MoveContent(eng *engine.Engine, req MoveContentRequest) error {
+	res, _, err := ResolveActiveProfile(eng, req.ConfigDir)
 	if err != nil {
 		return fmt.Errorf("resolving active profile: %w", err)
 	}
@@ -209,7 +209,7 @@ func MoveContent(req MoveContentRequest) error {
 	resolvedRoot := ResolvePackRootWithFallback(srcManifestPath, srcManifest, srcPackRoot)
 	harnessPath := filepath.Join(resolvedRoot, req.Category.DirName(), req.ID+req.Category.Ext())
 
-	return MoveFile(MoveFileRequest{
+	return MoveFile(eng, MoveFileRequest{
 		AdoptFileRequest: AdoptFileRequest{
 			TargetSpec:  res.TargetSpec,
 			ConfigDir:   req.ConfigDir,
@@ -233,12 +233,12 @@ type AdoptContentRequest struct {
 
 // AdoptContent adopts an untracked harness file into a pack, resolving all
 // internal state (active profile targeting) from configDir.
-func AdoptContent(req AdoptContentRequest) error {
-	res, _, err := ResolveActiveProfile(req.ConfigDir)
+func AdoptContent(eng *engine.Engine, req AdoptContentRequest) error {
+	res, _, err := ResolveActiveProfile(eng, req.ConfigDir)
 	if err != nil {
 		return fmt.Errorf("resolving active profile: %w", err)
 	}
-	return AdoptFile(AdoptFileRequest{
+	return AdoptFile(eng, AdoptFileRequest{
 		TargetSpec:  res.TargetSpec,
 		ConfigDir:   req.ConfigDir,
 		PackName:    req.PackName,
