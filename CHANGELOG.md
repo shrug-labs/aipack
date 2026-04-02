@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.15.2]
+
+### Fixed
+
+- `aipack doctor` false positives on presync cache directories and MCP synthetic ledger keys.
+- Codex `AGENTS.override.md` now carries SourcePack attribution (`(composite)` for multi-pack profiles).
+
 ## [0.15.1]
 
 ### Fixed

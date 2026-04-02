@@ -141,6 +141,72 @@ func TestPlan_Project_AgentsOverride_NoExistingAgents(t *testing.T) {
 	}
 }
 
+func TestPlan_Project_AgentsOverride_SourcePackSingle(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Rules: []domain.Rule{
+					{Name: "r1", Raw: []byte("rule-1"), SourcePack: "alpha"},
+					{Name: "r2", Raw: []byte("rule-2"), SourcePack: "alpha"},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	overridePath := filepath.Join(projectDir, "AGENTS.override.md")
+	for _, w := range f.Writes {
+		if w.Dst == overridePath {
+			if w.SourcePack != "alpha" {
+				t.Fatalf("AGENTS.override.md SourcePack = %q, want %q", w.SourcePack, "alpha")
+			}
+			return
+		}
+	}
+	t.Fatal("expected write to AGENTS.override.md")
+}
+
+func TestPlan_Project_AgentsOverride_SourcePackComposite(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{
+				{Rules: []domain.Rule{{Name: "r1", Raw: []byte("rule-1"), SourcePack: "alpha"}}},
+				{Rules: []domain.Rule{{Name: "r2", Raw: []byte("rule-2"), SourcePack: "beta"}}},
+			},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	overridePath := filepath.Join(projectDir, "AGENTS.override.md")
+	for _, w := range f.Writes {
+		if w.Dst == overridePath {
+			if w.SourcePack != "(composite)" {
+				t.Fatalf("AGENTS.override.md SourcePack = %q, want %q", w.SourcePack, "(composite)")
+			}
+			return
+		}
+	}
+	t.Fatal("expected write to AGENTS.override.md")
+}
+
 func TestPlan_Project_WithWorkflows(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()

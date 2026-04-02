@@ -106,7 +106,11 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		}
 		override := buildAgentsOverride(rules, existing)
 		dst := filepath.Join(overrideBase, "AGENTS.override.md")
-		f.Writes = append(f.Writes, domain.WriteAction{Dst: dst, Content: []byte(override)})
+		f.Writes = append(f.Writes, domain.WriteAction{
+			Dst:        dst,
+			Content:    []byte(override),
+			SourcePack: compositeSourcePack(rules),
+		})
 		f.Desired = append(f.Desired, dst)
 	}
 	skills := ctx.Profile.AllSkills()
@@ -172,6 +176,22 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	}
 
 	return nil
+}
+
+// compositeSourcePack returns the SourcePack for a composite file built from
+// multiple rules. If all rules share the same pack, that name is returned;
+// otherwise "(composite)" signals multi-pack provenance.
+func compositeSourcePack(rules []domain.Rule) string {
+	if len(rules) == 0 {
+		return ""
+	}
+	first := rules[0].SourcePack
+	for _, r := range rules[1:] {
+		if r.SourcePack != first {
+			return "(composite)"
+		}
+	}
+	return first
 }
 
 func buildAgentsOverride(rules []domain.Rule, existingAgents string) string {

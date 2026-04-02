@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -412,6 +413,33 @@ func TestDoctorCheckLedgerHealth_MissingSourcePackMultiplePacks(t *testing.T) {
 	}
 }
 
+func TestDoctorCheckLedgerHealth_IgnoresSyntheticMCPKeys(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ledgerDir := filepath.Join(dir, "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	eng := engine.New(nil, nil)
+
+	realFile := filepath.Join(dir, "rule.md")
+	if err := os.WriteFile(realFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lg := domain.NewLedger()
+	lg.Managed[realFile] = domain.Entry{SourcePack: "mypack", Digest: "abc"}
+	lg.Managed[realFile+"#mcp:atlassian"] = domain.Entry{SourcePack: "mypack", Digest: "def"}
+	if err := eng.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false); err != nil {
+		t.Fatal(err)
+	}
+
+	cr := doctorCheckLedgerHealth(engine.New(nil, nil), dir, nil, false)
+	if !cr.OK {
+		t.Fatalf("OK = false, want true (synthetic mcp keys should be ignored), message=%q", cr.Message)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Manifest drift tests
 // ---------------------------------------------------------------------------
@@ -589,6 +617,35 @@ func TestDoctorCheckStaleLedgers_FindsNestedProjectLedgerDirs(t *testing.T) {
 	stale, ok := cr.Details["stale"].([]string)
 	if !ok || len(stale) == 0 {
 		t.Fatalf("stale details = %#v, want non-empty []string", cr.Details["stale"])
+	}
+}
+
+func TestDoctorCheckStaleLedgers_IgnoresPresyncCacheJSON(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	presyncDir := filepath.Join(configDir, "ledger", "claudecode-presync")
+	if err := os.MkdirAll(presyncDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(presyncDir, "index.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(presyncDir, "claudecode--.claude--settings.local.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var syncCfg config.SyncConfig
+	syncCfg.Defaults.Scope = string(domain.ScopeGlobal)
+	syncCfg.Defaults.Harnesses = []string{"claudecode"}
+	cr := doctorCheckStaleLedgers(configDir, syncCfg)
+	if !cr.OK {
+		t.Fatalf("OK = false, want true when only presync cache exists; details=%#v", cr.Details)
+	}
+	if cr.Status != "pass" {
+		t.Fatalf("Status = %q, want pass", cr.Status)
+	}
+	if strings.Contains(cr.Message, "not matching current harness config") {
+		t.Fatalf("unexpected stale warning message: %q", cr.Message)
 	}
 }
 

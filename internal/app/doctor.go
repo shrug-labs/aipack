@@ -761,6 +761,9 @@ func ledgerFilesUnder(configDir string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
+			if strings.HasSuffix(d.Name(), "-presync") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if strings.HasSuffix(d.Name(), ".json") {
@@ -812,6 +815,12 @@ func doctorCheckLedgerHealth(eng *engine.Engine, configDir string, packs []confi
 		modified := false
 		fileFixes := 0
 		for k, entry := range lg.Managed {
+			// MCP entries use synthetic keys (path#mcp:name) that aren't
+			// filesystem paths — orphan detection via Lstat is meaningless.
+			// TODO: add MCP-specific health checks (stale entries, missing SourcePack).
+			if domain.IsMCPLedgerKey(k) {
+				continue
+			}
 			// Check for orphaned entries.
 			if _, serr := os.Lstat(k); os.IsNotExist(serr) {
 				totalOrphaned++
