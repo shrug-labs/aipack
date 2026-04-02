@@ -1,362 +1,141 @@
-# Getting Started: Authoring and Sharing Packs
+# Getting Started
 
-This guide walks through creating a pack — from scratch or from existing content — and sharing it. By the end, anyone can install your pack in three commands and get rules, skills, workflows, and MCP configs synced to whatever coding assistant they use.
+Install aipack, set up your first pack, and sync it to your coding assistant. This takes about five minutes.
 
-**Contents:**
-[What's a pack?](#whats-a-pack) · [Create a pack](#create-a-pack) · [Write pack content](#write-pack-content) · [Validate](#validate-your-pack) · [Share your pack](#share-your-pack) · [Profiles](#profiles) · [Multi-harness support](#multi-harness-support)
+## Install
 
-## What's a pack?
-
-A pack is a directory with a manifest (`pack.json`) and markdown files organized by type. You write content once — aipack renders it into the native format for Claude Code, Codex, OpenCode, and Cline.
-
-```
-my-pack/
-├── pack.json          # manifest (name + version)
-├── rules/             # always-on behavioral constraints
-├── skills/            # on-demand knowledge (subdirectories)
-├── workflows/         # step-by-step procedures
-├── agents/            # tool-using sub-personas
-├── mcp/               # MCP server definitions
-└── configs/           # harness settings templates (advanced)
-```
-
-If you already have markdown files with instructions for AI agents — in a shared repo, an `agents.md`, a set of review guidelines — you have most of a pack already.
-
-## Create a pack
-
-### Starting fresh
+On macOS:
 
 ```bash
-aipack pack create my-pack
+brew install dfoster-oracle/tap/aipack
 ```
 
-This scaffolds the directory structure in the current directory, symlinks it into the packs directory, and generates a minimal `pack.json`:
-
-```json
-{
-  "schema_version": 1,
-  "name": "my-pack",
-  "version": "0.1.0",
-  "root": "."
-}
-```
-
-Content vectors (rules, skills, etc.) are omitted from the manifest — aipack auto-discovers them by scanning the directories at sync time. Drop markdown files into the right directory and they're picked up automatically.
-
-### From existing content
-
-If you have a repo with rules, skills, or instructions for AI agents — pack content uses standard conventions (YAML frontmatter + markdown), so existing content from other frameworks typically works without modification.
-
-1. Create the same minimal `pack.json` in the repo root (or a subdirectory).
-
-2. Organize your existing markdown files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`). Auto-discovery handles the rest.
-
-3. Add YAML frontmatter to each file. The `name` and `description` fields help with search indexing and harness rendering:
-
-```markdown
----
-name: code-review-standards
-description: Code review conventions and quality gates
----
-
-Your existing content here...
-```
-
-That's it. No need to enumerate files in the manifest — auto-discovery finds everything in the right directories. If you need to include only specific files, list their IDs explicitly in `pack.json` — the list acts as a filter. See the [Pack Format Specification](./pack-format.md#2-manifest-packjson) for details.
-
-## Write pack content
-
-All content is markdown with YAML frontmatter. The frontmatter carries metadata for the sync engine; the body is what the agent reads. Full field reference for each vector is in the [Pack Format Specification](./pack-format.md#4-content-vectors).
-
-### Rules
-
-Always-on constraints, loaded into every conversation. Keep them concise — they cost context in every session.
-
-```markdown
----
-name: code-review-standards
-description: Enforce code review conventions on all changes
----
-
-Before approving any PR:
-1. All public methods have tests
-2. No TODO comments without a linked ticket
-3. Error messages include enough context to debug without the source
-4. No secrets, credentials, or internal URLs in committed code
-```
-
-File: `rules/code-review-standards.md`
-
-### Skills
-
-On-demand knowledge, loaded when relevant. Each skill is a subdirectory with a `SKILL.md` entry point and optional supporting files.
-
-```
-skills/api-patterns/
-├── SKILL.md           # entry point
-├── error-handling.md  # supporting reference
-└── pagination.md      # supporting reference
-```
-
-```markdown
----
-name: api-patterns
-description: Use when implementing or reviewing API endpoints
----
-
-Invoke this skill when working on API endpoints in this codebase...
-```
-
-File: `skills/api-patterns/SKILL.md`
-
-### Workflows
-
-Repeatable multi-step procedures, invoked explicitly.
-
-```markdown
----
-name: pr-review
-description: Systematic PR review with security, testing, and style checks
----
-
-1. Read the PR description and linked tickets
-2. Review each changed file for correctness
-3. Check test coverage for new/changed behavior
-4. Flag security concerns (injection, auth, secrets)
-5. Summarize findings with severity ratings
-```
-
-File: `workflows/pr-review.md`
-
-### Agents
-
-Scoped sub-personas with constrained tools and domain knowledge.
-
-```markdown
----
-name: security-reviewer
-description: Focused security review of code changes
-tools:
-  - Read
-  - Grep
-  - Glob
-disallowed_tools:
-  - Edit
-  - Write
-  - Bash
----
-
-You are a security reviewer. Analyze code changes for injection
-vulnerabilities, auth gaps, secrets in source, and insecure defaults.
-Report findings with severity, location, and remediation.
-```
-
-File: `agents/security-reviewer.md`
-
-### MCP servers
-
-JSON definitions in `mcp/`, one file per server. The filename (minus `.json`) must match the `name` field.
-
-```json
-{
-  "name": "jira",
-  "transport": "stdio",
-  "command": ["{env:HOME}/.local/bin/jira-mcp-server"],
-  "env": {
-    "JIRA_URL": "{params.jira_url}",
-    "JIRA_TOKEN": "{env:JIRA_API_TOKEN}"
-  },
-  "available_tools": ["jira_search", "jira_get_issue", "jira_add_comment"]
-}
-```
-
-File: `mcp/jira.json`
-
-Two kinds of placeholders keep server definitions portable:
-
-- **`{params.KEY}`** — expanded from the active profile at sync time. Use for values that differ between teams or environments (URLs, project names).
-- **`{env:VAR}`** — resolved at sync time to the literal value from the process environment. If the variable is not set, the MCP server is skipped and a warning is emitted. Use for secrets and user-specific values that shouldn't be committed.
-
-The manifest can declare default tool approvals, and profiles can override them per server. See the [Pack Format Specification](./pack-format.md#6-mcp-servers) for the full field reference and the [JSON Schema](../schemas/mcp-server.schema.json) for editor validation.
-
-## Validate your pack
+On macOS and Linux:
 
 ```bash
-aipack pack validate /path/to/my-pack
+curl -fsSL https://raw.githubusercontent.com/shrug-labs/aipack/main/install.sh | sh
 ```
 
-Validate checks manifest structure, content inventory (declared files exist on disk, MCP server names match filenames), and content policy (frontmatter presence, no secrets, no hardcoded paths). It reports findings without modifying anything. JSON Schemas for `pack.json` and MCP server files are also available for [editor validation](./pack-format.md#appendix-c-json-schemas).
+On Windows (PowerShell):
 
-## Share your pack
+```powershell
+irm https://raw.githubusercontent.com/shrug-labs/aipack/main/install.ps1 | iex
+```
 
-Anyone consuming your pack needs aipack installed (see the [README](../README.md#install) for brew, script, and source options). On first use, `aipack init` bootstraps the config directory, default profile, and public registry. `pack install` also creates the config directory if it doesn't exist, so the seeded install flow below can skip the explicit init.
+See the [README](../README.md#install) for version pinning and other install options.
 
-### The simplest path
-
-Your pack lives in a git repo. Others install it directly:
+## Initialize
 
 ```bash
-# From a git URL
-aipack pack install --url https://github.com/org/shared-repo.git --path my-pack
+aipack init
+```
 
-# From a local clone (symlinked by default, --copy for a full copy)
-aipack pack install /path/to/local/clone/my-pack
+This creates the config directory (`~/.config/aipack/`), a default profile, and fetches the public pack registry so pack names are immediately discoverable.
 
-# Then sync to their harness
+## Install your first pack
+
+The `aipack-core` pack provides the foundation — rules for content quality, skills for agent configuration and pack authoring, and a pack review workflow:
+
+```bash
+aipack pack install aipack-core
+```
+
+This clones the pack from the public registry, installs it under `~/.config/aipack/packs/aipack-core/`, and registers it in your active profile. See what's in it:
+
+```bash
+aipack pack show aipack-core
+```
+
+This prints the content inventory: 7 rules, 3 skills, 1 workflow.
+
+## Preview and sync
+
+Before writing anything to your harness, preview:
+
+```bash
+aipack sync --dry-run
+```
+
+This shows exactly what files would be created or updated, and where. When it looks right:
+
+```bash
 aipack sync
 ```
 
-### Scalable distribution with profiles and registries
+aipack renders the pack content into your harness's native format. Rules become individual files in `.claude/rules/` (Claude Code), `.opencode/rules/` (OpenCode), or `.clinerules/` (Cline). Skills become skill directories. MCP server definitions become entries in the harness config file. The same pack, rendered for whichever harness you use.
 
-For packs with dependencies or multiple profiles, bundle profiles and a registry with the pack. This turns setup into three commands.
-
-**1. Add bundled profiles** — see [Profiles](#profiles) below for role-based examples. At minimum, a default:
-
-```yaml
-# profiles/default.yaml
-schema_version: 2
-params:
-  jira_url: "https://jira.example.com"
-packs:
-  - name: my-pack
-```
-
-**2. Add a bundled registry** — `registries/registry.yaml`:
-
-```yaml
-schema_version: 1
-packs:
-  my-pack:
-    repo: "https://github.com/org/shared-repo.git"
-    path: "my-pack"
-    ref: "main"
-    description: "Shared rules, skills, and workflows"
-    owner: "my-team"
-```
-
-**3. Declare them in pack.json**:
-
-```json
-{
-  "schema_version": 1,
-  "name": "my-pack",
-  "version": "0.1.0",
-  "root": ".",
-  "profiles": [
-    "profiles/default.yaml",
-    "profiles/frontend-dev.yaml",
-    "profiles/backend-dev.yaml"
-  ],
-  "registries": ["registries/registry.yaml"]
-}
-```
-
-**4. Install with seeding** — three commands:
+To target a specific harness or scope:
 
 ```bash
-aipack pack install --url https://github.com/org/shared-repo.git \
-  --path my-pack --seed
-aipack profile set default --install
+aipack sync --harness claudecode          # only Claude Code
+aipack sync --scope global                # user-level config (~/.claude/)
+aipack sync --scope global --dry-run      # preview global sync
+```
+
+## See the result
+
+After syncing, your harness picks up the new content. Some harnesses need a restart for always-on content (rules, settings, MCP config) to take effect — skills and workflows are typically discovered on demand.
+
+Explore what's installed:
+
+```bash
+aipack status              # profile, packs, content counts
+aipack search deploy       # full-text search across all pack content
+aipack trace anti-slop     # trace a rule from pack source to harness destination
+```
+
+## Add more packs
+
+Profiles compose multiple packs. The public registry includes two more packs worth considering:
+
+```bash
+# Developer discipline — debugging, TDD, planning, code review
+aipack pack install essentials
+
+# Persistent memory across sessions (optional)
+aipack pack install memory
+```
+
+After installing, re-sync to pick up the new content:
+
+```bash
 aipack sync
 ```
 
-`--seed` applies the bundled profiles and registry. `--install` fetches any dependency packs. After this, the consumer's harness is fully configured.
+All installed packs are now active. If two packs define the same content ID, aipack raises a conflict — resolve it with override declarations in your profile. See [Profiles](./profiles.md) for selectors, layering, and conflict resolution.
 
-## Profiles
+You can also install packs from git URLs, local directories, or team registries. See [Installing Packs](./installing-packs.md) for all installation methods.
 
-Profiles are YAML files (schema version 2) that control which packs to load, what parameters to expand, and what content each role needs. They live in `~/.config/aipack/profiles/` once installed (on Windows: `%APPDATA%\aipack\profiles\`).
+## Seeded setup
 
-### Parameters
-
-Parameters make pack content portable. Define them in the profile; they expand into MCP server definitions, harness settings, and any pack content using `{params.KEY}` placeholders. Two teams using the same pack with different Jira instances just need different parameter values.
-
-### Role-based profiles
-
-A single pack can serve multiple contexts. Different profiles scope content and MCP servers to what each role or workflow actually needs. Here's the pattern:
-
-**`profiles/default.yaml`** — baseline, full access:
-
-```yaml
-schema_version: 2
-params:
-  jira_url: "https://jira.example.com"
-  confluence_url: "https://confluence.example.com"
-packs:
-  - name: my-pack
-    settings:
-      enabled: true
-    mcp:
-      jira:        { enabled: true }
-      confluence:  { enabled: true }
-      build-system: { enabled: true }
-```
-
-The frontend-dev, backend-dev, and manager profiles start from the same structure but scope differently:
-
-| Profile | Workflows | Skills | MCP |
-|---------|-----------|--------|-----|
-| **default** | all | all | jira, confluence, build-system |
-| **frontend-dev** | only `component-review`, `design-qa` | only `react-patterns`, `styling` | jira, confluence only |
-| **backend-dev** | only `api-review`, `db-migration` | only `api-patterns`, `testing` | all |
-| **manager** | only `pr-review`, `sprint-planning` | only `codebase-overview` | jira, confluence only |
-
-In practice, each profile is a full YAML file. The frontend-dev profile disables the build-system MCP server and narrows skills to what's relevant for component work. The manager profile uses `include` lists to scope down to review and planning workflows.
-
-Switch profiles to match your current context:
+Packs can bundle profiles, registry entries, and dependency declarations. When a pack includes these, installation bootstraps your entire agent environment:
 
 ```bash
+aipack pack install --url https://github.com/org/team-pack.git --seed
 aipack profile set frontend-dev --install
 aipack sync
 ```
 
-Bundle these profiles with the pack (list them in `pack.json`'s `profiles` field) so they're installed automatically with `--seed`.
+`--seed` applies the pack's bundled profiles and registry. `--install` fetches any dependency packs referenced in the profile. Three commands to go from zero to a fully configured agent environment.
 
-### Layering multiple packs
+## Install from any repository
 
-Profiles can compose packs from different sources — a community library, a shared team pack, and personal preferences:
-
-```yaml
-schema_version: 2
-params:
-  jira_url: "https://jira.example.com"
-packs:
-  - name: community-skills   # public skill library
-  - name: my-pack        # domain-specific rules and skills
-  - name: personal           # individual preferences
-    overrides:
-      rules: ["anti-slop"]  # personal version replaces shared version
-```
-
-Packs are processed in order. Duplicate content IDs require explicit `overrides` or the sync engine raises a conflict. See the [Pack Format Specification](./pack-format.md#84-layering-and-precedence) for the full precedence rules.
-
-### Content selection
-
-Each content vector supports `include` and `exclude` for fine-grained control, with glob pattern support:
-
-```yaml
-packs:
-  - name: org-base
-    rules:
-      exclude: ["noisy-rule"]
-    skills:
-      include: ["api-*"]
-```
-
-## Multi-harness support
-
-aipack calls each coding assistant a "harness." The same pack works across all four supported harnesses — the content is identical, only the rendering differs:
+Not every repository with useful content is structured as a pack. aipack can consume content from any git repo by mapping its directories to content types:
 
 ```bash
-aipack sync --harness claudecode    # Claude Code
-aipack sync --harness codex         # Codex
-aipack sync --harness opencode      # OpenCode
-aipack sync --harness cline         # Cline
+aipack pack install \
+  --url https://github.com/org/their-repo.git \
+  --skills src/skills --rules docs/rules \
+  --name their-content -q
+aipack sync
 ```
 
-By default, `aipack sync` targets whichever harnesses are configured in `~/.config/aipack/sync-config.yaml`.
+The source repo doesn't need a `pack.json` or any restructuring. See [Installing Packs](./installing-packs.md) for the full guide on content flags, registry entries, and common repository layouts.
 
 ## What to read next
 
-- [Pack Format Specification](./pack-format.md) — full format reference including content vectors, MCP servers, harness settings, environment references, and JSON Schemas
-- [aipack Reference](./aipack.md) — complete CLI reference, per-harness behavior, sync contract, and save modes
-- [Configuration and State](./configuration.md) — config directory layout, sync-config reference, ledger and state management
+- [Installing Packs](./installing-packs.md) — all installation methods, content_paths, quiet packs, registry entries
+- [Creating Packs](./creating-packs.md) — author your own pack from scratch or existing content
+- [Profiles](./profiles.md) — compose packs, filter content, expand parameters, scope to roles
+- [Sync and Save](./sync.md) — the sync workflow, save round-trips, restore, and clean
+- [aipack Reference](./aipack.md) — complete CLI reference

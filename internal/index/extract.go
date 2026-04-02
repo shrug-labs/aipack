@@ -28,6 +28,20 @@ func ExtractFromPack(pack domain.Pack) (PackInfo, []Resource) {
 	return info, resources
 }
 
+// PromptResource builds a Resource from a prompt entry's fields.
+// Prompts bypass the domain.Pack pipeline, so they're indexed from the app
+// layer's PromptEntry rather than domain types.
+func PromptResource(name, description, path, category, body string) Resource {
+	return Resource{
+		Kind:        "prompt",
+		Name:        name,
+		Description: description,
+		Path:        path,
+		Body:        body,
+		Category:    category,
+	}
+}
+
 // ResourceFromMetadata builds a Resource from a kind, name, description, path,
 // raw frontmatter metadata map, and markdown body.
 func ResourceFromMetadata(kind, name, description, path string, meta map[string]any, body string) Resource {

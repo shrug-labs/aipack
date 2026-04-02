@@ -1,6 +1,6 @@
 # aipack reference
 
-Complete CLI reference for `aipack`. For pack authoring and team setup, start with the [Getting Started](./getting-started.md) guide. For the pack format specification, see [Pack Format](./pack-format.md). For the config directory layout, sync-config, and state management, see [Configuration and State](./configuration.md). For JSON output contracts, see the [CLI Specification](./cli-spec.md).
+Complete CLI reference for `aipack`. For first-time setup, see [Getting Started](./getting-started.md). For pack authoring, see [Creating Packs](./creating-packs.md). For installing content from any repository, see [Installing Packs](./installing-packs.md). For profiles and composition, see [Profiles](./profiles.md). For sync workflow and save round-trips, see [Sync and Save](./sync.md). For the pack format specification, see [Pack Format](./pack-format.md). For per-harness rendering, see the [Harness Reference](./harness-reference.md). For config layout, see [Configuration and State](./configuration.md). For JSON output contracts, see the [CLI Specification](./cli-spec.md).
 
 ## Command map
 
@@ -62,6 +62,15 @@ aipack pack create my-new-pack
 aipack pack create my-new-pack --local
 ```
 
+Content source flags create directory-level symlinks instead of empty scaffold directories:
+
+```bash
+aipack pack create my-pack --skills ./src/skills --rules ./docs/rules
+aipack pack create my-pack --local --agents ./agents --workflows ./workflows
+```
+
+Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`. Each takes a local directory path. The source directory must exist.
+
 ### pack install
 
 Installs a pack into `~/.config/aipack/packs/<name>/`. Supports three sources:
@@ -108,9 +117,21 @@ aipack pack install ./my-pack --no-register
 aipack pack install ./my-pack --profile production
 ```
 
+Content flags extract specific directories from a URL source into a standard pack layout. The source repo needs no `pack.json`:
+
+```bash
+# Extract skills and rules from specific directories
+aipack pack install --url https://github.com/org/repo.git \
+  --skills src/skills --rules docs/rules --name their-content -q
+```
+
+Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts` (directory paths within the repo). `--quiet` / `-q` registers the pack as quiet in the profile (omitted selectors include nothing). Content flags require `--url` and `--name`.
+
+For the full guide on installing from non-pack repositories, see [Installing Packs](./installing-packs.md).
+
 ### pack list
 
-Lists all installed packs with name, install method (link/copy/clone/http-tarball), version, origin, and broken-link status.
+Lists all installed packs with name, install method (link/copy/clone/http-tarball), version, origin, content summary, and broken-link status.
 
 ```bash
 aipack pack list
@@ -128,7 +149,7 @@ aipack pack show my-pack --json
 
 ### pack update
 
-Updates installed pack(s) to latest version from their origin. For cloned packs, runs `git pull`. For HTTP-tarball packs, re-downloads and shows a file-level diff. For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
+Updates installed pack(s) to latest version from their origin. For cloned packs, re-clones from origin and re-extracts content (content path mappings from the original install are preserved). For HTTP-tarball packs, re-downloads and re-extracts. For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
 
 ```bash
 aipack pack update my-pack
@@ -158,9 +179,12 @@ Enables or disables a pack in the active profile without installing or deleting 
 ```bash
 aipack pack enable my-pack
 aipack pack enable my-pack --profile production
+aipack pack enable my-pack -q           # register as quiet
 aipack pack disable my-pack
 aipack pack disable my-pack --profile production
 ```
+
+`--quiet` / `-q` sets `quiet: true` on the profile entry (omitted selectors include nothing). See [Profiles — Quiet packs](./profiles.md#quiet-packs).
 
 ### pack validate
 
@@ -175,7 +199,7 @@ aipack pack validate ./my-pack --json
 
 ## Profile management
 
-Profiles define which packs, content, and settings to sync. Stored as YAML under `~/.config/aipack/profiles/`. For the profile schema and composition model, see the [Pack Format Specification](./pack-format.md#8-composition).
+Profiles define which packs, content, and settings to sync. Stored as YAML under `~/.config/aipack/profiles/`. For the profile schema and composition model, see [Profiles](./profiles.md).
 
 Resolution order when multiple sources specify a profile:
 
@@ -286,154 +310,9 @@ Removes a registry source from sync-config and deletes its cache file.
 aipack registry remove my-tools
 ```
 
-## Sync
+## Sync, Save, Restore, Clean, Render
 
-Applies the resolved profile to the target harnesses and writes managed content to project or global destinations. For harness-specific rendering and file paths, see the [per-harness reference](#per-harness-reference).
-
-Resolution order:
-
-- Profile: `--profile-path` → `--profile` → `sync-config defaults.profile` → `default`
-- Scope: `--scope` → `sync-config defaults.scope` → `project`
-- Harness: `--harness` → `sync-config defaults.harnesses` → `AIPACK_DEFAULT_HARNESS`
-
-Key flags:
-
-- `--force` overrides file conflicts
-- `--skip-settings` skips harness settings files but still syncs MCP configs
-- `--dry-run` previews planned changes without writing
-- `--verbose` (`-v`) shows content diffs for changed files
-- `--watch` re-syncs automatically when pack sources or config files change
-- `--json` emits machine-readable output
-- `--yes` auto-confirms deletions and overwrites without prompting
-
-```bash
-# Sync the active/default profile to the current project directory
-aipack sync
-
-# Preview what would change without writing files
-aipack sync --dry-run
-
-# Preview with content diffs
-aipack sync --dry-run --verbose
-
-# Force-sync globally, overriding conflicts
-aipack sync --profile prod --scope global --force
-
-# Sync only one harness
-aipack sync --harness opencode
-
-# Watch pack sources and re-sync on every change
-aipack sync --watch
-```
-
-### Sync contract
-
-Exact sync semantics. If docs and code diverge, code is authoritative.
-
-All managed files — content (rules, agents, workflows, skills) and config (harness settings) — go through unified diff classification:
-
-- **Create**: no file on disk → written
-- **Identical**: desired matches on-disk → no action
-- **Managed**: on-disk matches ledger digest (unmodified since last sync) → updated silently
-- **Conflict**: on-disk modified by user since last sync → unified diff shown, skipped without `--force`
-
-`--force` controls conflict resolution. Stale managed files are always removed — sync converges to the profile's desired state. User-modified stale files prompt for confirmation (or require `--yes`).
-
-**Config sync** — config files are computed from pack base config via `RenderBytes()`. `--skip-settings` skips harness settings files. Plugins (e.g. oh-my-opencode.json) and generated MCP configs (e.g. Cline) still sync.
-
-**Content sync** — content files are copied from pack directories to harness-specific locations. Files no longer in the profile are removed automatically.
-
-**Provenance tracking** — the ledger records which pack contributed each managed file (`source_pack` field). This enables `save --to-pack` round-trips.
-
-**Determinism** — given identical inputs and profile, sync produces byte-identical outputs across runs.
-
-## Save
-
-Two modes: **round-trip** (default) and **to-pack** (`--to-pack`).
-
-- **Round-trip**: loads a profile, compares harness content against the ledger from the last sync, and saves changed files back to their source packs. Settings files require `--force`.
-- **To-pack**: captures harness content and writes it into the named installed pack. If the pack does not exist, it is scaffolded and registered automatically. Use `--types` and `--harness` to narrow capture.
-
-Harness resolution: `--harness` → `sync-config defaults.harnesses` → `AIPACK_DEFAULT_HARNESS`.
-
-Key flags:
-
-- `--to-pack <name>` switches to capture-to-pack mode
-- `--types rules,agents,...` filters saved categories in `--to-pack` mode
-- `--force` auto-approves settings saves and overwrites file conflicts
-- `--dry-run` previews changes without writing
-
-```bash
-# Round-trip: save changed files back to source packs
-aipack save --profile default
-
-# Round-trip: preview changes without writing
-aipack save --profile default --dry-run
-
-# Round-trip: include settings changes
-aipack save --profile default --force
-
-# To-pack: capture current harness content into an installed pack
-aipack save --to-pack my-pack
-
-# To-pack: save only rules and skills from one harness
-aipack save --to-pack my-pack --harness claudecode --types rules,skills
-
-# To-pack: create a new pack from current global harness state
-aipack save --to-pack new-pack --scope global
-```
-
-## Restore
-
-Restores settings files from the pre-sync cache. Each `aipack sync` snapshots existing settings files before overwriting them, stored alongside the ledger in a `presync/` directory. Restore copies them back.
-
-For details on cache layout and behavior, see [Configuration and State](./configuration.md#pre-sync-cache).
-
-```bash
-# Undo the last sync's settings changes
-aipack restore --yes
-
-# Preview what would be restored
-aipack restore --dry-run
-
-# Restore only claudecode settings
-aipack restore --harness claudecode --yes
-
-# Restore global-scope settings
-aipack restore --scope global --yes
-
-# Machine-readable JSON output
-aipack restore --json
-```
-
-## Clean
-
-Removes all sync-managed content from harness file locations: rules, agents, workflows, skills, MCP server configs, and tool allowlists. Preserves unrelated harness settings (model choice, provider config, etc.) by only targeting paths the harness adapter declares as managed. Prompts for confirmation unless `--yes` is set.
-
-```bash
-# Clean managed files from the current project (all harnesses)
-aipack clean --scope project
-
-# Preview what would be removed
-aipack clean --scope project --dry-run
-
-# Clean only the cline harness globally, skip confirmation
-aipack clean --scope global --harness cline --yes
-
-# Also remove the .aipack/ ledger directory
-aipack clean --scope project --ledger --yes
-```
-
-## Render
-
-Resolves the profile and renders all pack content (rules, agents, workflows, skills, MCP configs) into a self-contained output directory. The output is harness-independent — merged pack content without targeting any specific harness's file layout. Prints the output directory path to stdout.
-
-```bash
-aipack render --profile default
-aipack render --profile default --out-dir ./rendered-output
-aipack render --profile-path /path/to/profile.yaml --out-dir ./out
-aipack render --profile default --json
-```
+For the sync workflow, save round-trips, restore, clean, and render, see [Sync and Save](./sync.md).
 
 ## Discovery
 
@@ -533,171 +412,4 @@ aipack version
 
 ## Per-harness reference
 
-Four harnesses are supported. Each implements content vectors and MCP differently based on what the harness natively supports. This section is the authoritative reference for rendering behavior — all other docs should point here.
-
-### Content vector rendering
-
-| Vector | Claude Code | OpenCode | Codex | Cline |
-|--------|-------------|----------|-------|-------|
-| Rules | Individual files in `.claude/rules/` (frontmatter preserved, `paths:` scoping works natively) | Individual files in `.opencode/rules/` + referenced via `instructions` key in `opencode.json` | Flattened into `AGENTS.override.md` | Individual files in `.clinerules/` |
-| Agents | Individual files in `.claude/agents/` (frontmatter transformed to Claude Code subagent format) | Individual files in `.opencode/agents/` | Native TOML files in `.codex/agents/` + registration in `config.toml` `[agents.<name>]` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) |
-| Workflows | Individual files in `.claude/commands/` | Individual files in `.opencode/commands/` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) | Individual files in `.clinerules/workflows/` |
-| Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.agents/skills/` | Per-skill dirs in `.agents/skills/` |
-
-### Scope support
-
-| Vector | Claude Code | OpenCode | Codex | Cline |
-|--------|-------------|----------|-------|-------|
-| Content (rules, agents, workflows, skills) | Project + Global | Project + Global | Project + Global | Project + Global |
-| MCP servers | Project + Global | Project + Global | Project + Global | **Global only** |
-| Settings | Project + Global | Project + Global | Project + Global | N/A |
-
-### MCP server configuration
-
-| Harness | Config file | Format | Timeout |
-|---------|------------|--------|---------|
-| Claude Code | `.mcp.json` (project), `~/.claude.json` (global) | JSON `mcpServers` object | Global only via `MCP_TIMEOUT` env var, milliseconds (default 10000); no per-server timeout in config |
-| OpenCode | `opencode.json` | JSON `mcp` key | Milliseconds (default 10000) |
-| Codex | `.codex/config.toml` | TOML `[mcp_servers.<name>]` tables | Seconds (`startup_timeout_sec`, default 10) |
-| Cline | VS Code extension storage `cline_mcp_settings.json` + standalone `~/.cline/data/settings/cline_mcp_settings.json` (global only) | JSON `mcpServers` object | Seconds (default 10) |
-
-### MCP tool permissions
-
-Each harness controls MCP tool access differently. Some harnesses store permissions separately from the server connection config (Claude Code), while others co-locate them (Codex, OpenCode, Cline).
-
-| Harness | Permission location | Allow format | Deny format |
-|---------|-------------------|-------------|-------------|
-| Claude Code | `settings.local.json` `permissions.allow` / `permissions.deny` | `mcp__<server>__<tool>` patterns | `mcp__<server>__<tool>` patterns in `permissions.deny` |
-| OpenCode | `opencode.json` `tools` key | `server_tool: true` per-tool | `server_*: false` wildcard deny |
-| Codex | Per-server in TOML | `enabled_tools = [...]` | `disabled_tools = [...]` |
-| Cline | Per-server in MCP JSON | `alwaysAllow: [...]` | Not supported |
-
-**Allow semantics differ per harness.** Not all "allow" mechanisms restrict tool visibility:
-
-| Harness | `allow` means | `deny` means |
-|---------|--------------|-------------|
-| Claude Code | Auto-approve (tool still usable without it, just prompts) | Block entirely |
-| Cline | Auto-approve (`alwaysAllow`) | N/A |
-| OpenCode | Enable tool (boolean `true` in `tools` map) | Wildcard disable (`false`) |
-| Codex | Restrict to listed tools (`enabled_tools`) | Block listed tools (`disabled_tools`) |
-
-**Inventory policy:** when a server has a curated `AllowedTools` list, unspecified tools should be explicitly denied where the harness supports it. This requires the pack manifest to carry complete per-server tool inventories. Without complete inventories, only explicitly listed `disabled_tools` are denied; unlisted tools default to harness-specific behavior (ask/prompt for Claude Code and Cline, unrestricted for others).
-
-### Settings and merge behavior
-
-| Harness | Settings file | Plugin files | Format | Merge behavior |
-|---------|--------------|-------------|--------|----------------|
-| Claude Code | `.claude/settings.local.json` | `.mcp.json` | JSON | **Always three-way merge** — user permissions preserved, only `mcp__*` entries managed |
-| OpenCode | `.opencode/opencode.json` | `.opencode/oh-my-opencode.json` | JSON | Template + managed keys overlay. With `--skip-settings`: MergeMode (managed keys only) |
-| Codex | `.codex/config.toml` | None | TOML | Template + MCP table merge. With `--skip-settings`: MergeMode (`mcp_servers` only) |
-| Cline | None | `cline_mcp_settings.json` (written to VS Code + standalone Cline global paths) | JSON | Generated from inventory (no base template). Always synced |
-
-`--skip-settings` skips settings files but **plugins always sync** regardless.
-
-### Environment variable expansion
-
-Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identically at sync time: the placeholder is replaced with the literal value from the process environment. If the variable is not set, the MCP server is skipped entirely and a warning is emitted.
-
-### Write targets
-
-**Claude Code** (project + global)
-
-| What | Project path | Global path |
-|------|-------------|------------|
-| Rules | `.claude/rules/<file>.md` | `~/.claude/rules/<file>.md` |
-| Agents | `.claude/agents/<file>.md` | `~/.claude/agents/<file>.md` |
-| Workflows | `.claude/commands/<file>.md` | `~/.claude/commands/<file>.md` |
-| Skills | `.claude/skills/<dirname>/` | `~/.claude/skills/<dirname>/` |
-| MCP servers | `.mcp.json` | `~/.claude.json` |
-| Settings | `.claude/settings.local.json` | `~/.claude/settings.local.json` |
-
-**OpenCode** (project + global)
-
-| What | Project path | Global path |
-|------|-------------|------------|
-| Rules | `.opencode/rules/<file>.md` | `~/.config/opencode/rules/<file>.md` |
-| Agents | `.opencode/agents/<file>.md` | `~/.config/opencode/agents/<file>.md` |
-| Workflows | `.opencode/commands/<file>.md` | `~/.config/opencode/commands/<file>.md` |
-| Skills | `.opencode/skills/<dirname>/` | `~/.config/opencode/skills/<dirname>/` |
-| Settings | `.opencode/opencode.json` | `~/.config/opencode/opencode.json` |
-| Plugin | `.opencode/oh-my-opencode.json` | `~/.config/opencode/oh-my-opencode.json` |
-
-**Codex** (project + global)
-
-| What | Project path | Global path |
-|------|-------------|------------|
-| Rules | `AGENTS.override.md` (flattened) | `~/.codex/AGENTS.override.md` |
-| Agents | `.codex/agents/<name>.toml` (native) + registered in `.codex/config.toml` | `~/.codex/agents/<name>.toml` + registered in `~/.codex/config.toml` |
-| Workflows | `.agents/skills/<name>/SKILL.md` (promoted) | `~/.agents/skills/<name>/SKILL.md` |
-| Skills | `.agents/skills/<dirname>/` | `~/.agents/skills/<dirname>/` |
-| Settings | `.codex/config.toml` | `~/.codex/config.toml` |
-
-**Cline** (content: project + global; MCP: global only)
-
-| What | Project path | Global path |
-|------|-------------|------------|
-| Rules | `.clinerules/<file>.md` | `~/Documents/Cline/Rules/<file>.md` |
-| Agents | `.agents/skills/<name>/SKILL.md` (promoted) | `~/.agents/skills/<name>/SKILL.md` (promoted) |
-| Workflows | `.clinerules/workflows/<file>.md` | `~/Documents/Cline/Workflows/<file>.md` |
-| Skills | `.agents/skills/<dirname>/` | `~/.agents/skills/<dirname>/` |
-| MCP | N/A | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS VS Code) + `~/.cline/data/settings/cline_mcp_settings.json` |
-
-### Managed keys
-
-Keys stripped on save round-trip:
-
-| Harness | Keys stripped |
-|---------|-------------|
-| Claude Code | `mcp__*` entries in `permissions.allow` and `permissions.deny` |
-| OpenCode | `mcp`, `tools`, `instructions`, `skills` |
-| Codex | `mcp_servers`, `agents` |
-| Cline | `mcpServers` |
-
-### Harness-specific notes
-
-**Claude Code**
-- Rules: copied as individual files to `.claude/rules/`. `paths:` frontmatter scoping works natively in Claude Code; unknown frontmatter fields (`title`, `audience`, `last_updated`) are ignored.
-- Agents: frontmatter transformed to Claude Code native subagent format — `name` from pack frontmatter (or derived from filename), `description`/`skills`/`mcpServers` passed through. `tools` and `disallowed_tools` are mapped to PascalCase (`read` → `Read`, `bash` → `Bash`) and converted from YAML lists to comma-separated strings. When `mcpServers` is present, MCP-prefixed tools are filtered out of `tools:` (Claude Code's tools field creates a hard allowlist that would block MCP server access). Pack `disallowed_tools` → `disallowedTools`, pack `mcp_servers` → `mcpServers`. Non-portable fields (`mode`, `temperature`) are dropped.
-- Workflows: individual command files in `.claude/commands/` only (no dual materialization).
-- `CLAUDE.managed.md` is no longer written. On first sync after upgrade, it is automatically removed as a stale managed file. `CLAUDE.md` is no longer touched.
-- Global scope syncs to `~/.claude/{rules,agents,skills,commands}/`.
-- `settings.local.json` always uses three-way merge, even without `--skip-settings`. User-controlled permissions (non-`mcp__` prefix) are always preserved in both `allow` and `deny` arrays.
-- `permissions.deny` blocks tools entirely (deny > ask > allow precedence). Unlike OpenCode's `server_*: false` wildcard, Claude Code cannot use wildcard deny patterns because deny always takes precedence over allow regardless of specificity. Only explicit per-tool deny entries are rendered from `disabled_tools` in the profile config.
-
-**OpenCode**
-- Rules are both copied as individual files AND referenced via `instructions` globs in `opencode.json`. Skills are both copied AND referenced via `skills.paths`. These JSON references are only managed when the respective vector has `Manage: true` in the profile.
-- `oh-my-opencode.json` is a plugin (pure copy from pack), always synced regardless of `--skip-settings`.
-- `tools` key (MCP tool boolean map) is distinct from `permission` key (OpenCode's native harness tool access). Do not conflate them.
-
-**Codex**
-- Rules are flattened into a single `AGENTS.override.md`. If an existing `AGENTS.md` exists, its content is preserved below a separator.
-- Agents are rendered as native Codex TOML files in `.codex/agents/<name>.toml`, each containing `name`, `description`, `developer_instructions` (from the agent body), and any `harness.codex` overrides as top-level TOML keys. A registration entry (`[agents.<name>]` with `description` and `config_file`) is merged into `config.toml`. Referenced MCP servers are resolved from the profile and embedded in the agent TOML. Referenced skills become `skills.config` entries with paths to the rendered skill directories. The `harness` frontmatter block is stripped — it does not appear in the rendered TOML.
-- Workflows are promoted to `.agents/skills/<name>/SKILL.md` with enriched YAML frontmatter that preserves the original type (`source_type: workflow`) for round-trip capture. Skills are copied as directories under the same path.
-- Capture reads `.codex/agents/*.toml` to reconstruct pack agents: `developer_instructions` becomes the agent body, known Codex fields (`model`, `model_reasoning_effort`, etc.) populate `harness.codex` in frontmatter, and embedded MCP server names are extracted to `mcp_servers`.
-- Global config path is always `~/.codex/`.
-
-**Cline**
-- MCP is global-only — there is no project-level MCP settings path.
-- Sync writes Cline MCP settings to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`).
-- Save/capture prefers the canonical VS Code path, falls back to the standalone path when the canonical file is missing, and warns when another discovered file differs from the capture source.
-- Agents (but not workflows) are promoted to skill directories in `.agents/skills/` (project) or `~/.agents/skills/` (global), since Cline natively reads both `.clinerules/` and `.agents/`. Enriched YAML frontmatter (`source_type: agent`) preserves agent metadata for round-trip capture. Workflows remain individual files in `.clinerules/workflows/`. Codex no longer shares this promotion path — Codex agents render as native TOML files in `.codex/agents/`.
-- The MCP settings file is generated fresh from inventory on every sync (no base template concept). Existing user-defined `mcpServers` entries are preserved during merge.
-- `alwaysAllow` is allow-only — there is no mechanism to deny specific tools.
-
-## Implementation references
-
-- Claude Code: `internal/harness/claudecode/harness.go`, `internal/harness/claudecode/render.go`
-- OpenCode: `internal/harness/opencode/harness.go`, `internal/harness/opencode/render.go`
-- Codex: `internal/harness/codex/harness.go`, `internal/harness/codex/render.go`, `internal/harness/codex/agent_render.go`
-- Cline: `internal/harness/cline/harness.go`, `internal/harness/cline/render.go`
-- Sync engine: `internal/engine/`
-- Config resolution: `internal/config/profile_resolve.go`
-
-If docs and code diverge, the code is authoritative.
-
-### Upstream harness docs
-
-- OpenCode: [MCP](https://opencode.ai/docs/mcp-servers/#enable), [Config](https://opencode.ai/docs/config/#instructions), [Agents](https://opencode.ai/docs/agents/#markdown), [Commands](https://opencode.ai/docs/commands/#markdown)
-- Codex: [AGENTS.md](https://developers.openai.com/codex/guides/agents-md/), [Skills](https://developers.openai.com/codex/skills/), [Subagents](https://developers.openai.com/codex/subagents), [Config Reference](https://developers.openai.com/codex/config-reference/), [MCP](https://developers.openai.com/codex/mcp)
-- Claude Code: [Memory/Rules](https://code.claude.com/docs/en/memory), [Subagents](https://code.claude.com/docs/en/sub-agents), [Skills](https://code.claude.com/docs/en/skills)
-- Cline: [Storage](https://docs.cline.bot/customization/overview#storage-locations), [MCP Config](https://docs.cline.bot/mcp/adding-and-configuring-servers#editing-configuration-files)
+For rendering behavior, write targets, MCP configuration differences, and harness-specific notes, see the [Harness Reference](./harness-reference.md).

@@ -78,11 +78,11 @@ func (c *ProfileListCmd) Run(ctx context.Context, g *Globals) error {
 		return nil
 	}
 	for _, name := range names {
-		marker := " "
 		if name == defaultProfile {
-			marker = "*"
+			fmt.Fprintf(g.Stdout, "  %s (active)\n", name)
+		} else {
+			fmt.Fprintf(g.Stdout, "  %s\n", name)
 		}
-		fmt.Fprintf(g.Stdout, "  %s %s\n", name, marker)
 	}
 	return nil
 }

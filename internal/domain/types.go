@@ -75,6 +75,7 @@ const (
 	CategoryWorkflows PackCategory = "workflows"
 	CategorySkills    PackCategory = "skills"
 	CategoryMCP       PackCategory = "mcp"
+	CategoryPrompts   PackCategory = "prompts"
 	CategorySettings  PackCategory = "settings"
 )
 
@@ -95,6 +96,13 @@ func AuthoredCategories() []PackCategory {
 func (c PackCategory) IsAuthored() bool {
 	return c == CategoryRules || c == CategoryAgents ||
 		c == CategoryWorkflows || c == CategorySkills
+}
+
+// IsContentPathTarget returns true for categories that can be used as
+// content_paths keys (CLI flags or registry entries). This is the authored
+// set plus prompts — everything a user can remap into a pack.
+func (c PackCategory) IsContentPathTarget() bool {
+	return c.IsAuthored() || c == CategoryPrompts
 }
 
 // DirName returns the directory name for this category within a pack.
@@ -132,6 +140,8 @@ func (c PackCategory) Label() string {
 		return "Skills"
 	case CategoryMCP:
 		return "MCP Servers"
+	case CategoryPrompts:
+		return "Prompts"
 	case CategorySettings:
 		return "Settings"
 	}
@@ -151,6 +161,8 @@ func (c PackCategory) SingularLabel() string {
 		return "Skill"
 	case CategoryMCP:
 		return "MCP Server"
+	case CategoryPrompts:
+		return "Prompt"
 	case CategorySettings:
 		return "Setting"
 	}
@@ -172,6 +184,8 @@ func ParseSingularLabel(s string) (PackCategory, bool) {
 		return CategorySkills, true
 	case "mcp":
 		return CategoryMCP, true
+	case "prompt":
+		return CategoryPrompts, true
 	case "setting":
 		return CategorySettings, true
 	}

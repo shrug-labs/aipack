@@ -3,9 +3,11 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
@@ -209,6 +211,97 @@ func TestPackCreate_ErrorOnEmptyConfigDir(t *testing.T) {
 	err := PackCreate(PackCreateRequest{Name: "test", ConfigDir: ""})
 	if err == nil {
 		t.Fatal("expected error for empty config dir")
+	}
+}
+
+func TestPackCreate_ContentFlags_SymlinksDirectories(t *testing.T) {
+	t.Parallel()
+	cfgDir := t.TempDir()
+	setupMinimalConfig(t, cfgDir)
+
+	rulesDir := filepath.Join(t.TempDir(), "my-rules")
+	os.MkdirAll(rulesDir, 0o755)
+	os.WriteFile(filepath.Join(rulesDir, "style.md"),
+		[]byte("---\nname: style\n---\nbody\n"), 0o644)
+
+	skillsDir := filepath.Join(t.TempDir(), "my-skills")
+	os.MkdirAll(filepath.Join(skillsDir, "deploy"), 0o755)
+	os.WriteFile(filepath.Join(skillsDir, "deploy", "SKILL.md"),
+		[]byte("---\nname: deploy\ndescription: d\n---\nbody\n"), 0o644)
+
+	err := PackCreate(PackCreateRequest{
+		Name:      "composed",
+		ConfigDir: cfgDir,
+		Local:     true,
+		ContentSources: map[domain.PackCategory]string{
+			domain.CategoryRules:  rulesDir,
+			domain.CategorySkills: skillsDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("PackCreate: %v", err)
+	}
+
+	packDir := filepath.Join(cfgDir, "packs", "composed")
+
+	// rules/ should be a symlink to the source.
+	link, err := os.Readlink(filepath.Join(packDir, "rules"))
+	if err != nil {
+		t.Fatalf("rules/ is not a symlink: %v", err)
+	}
+	if link != rulesDir {
+		t.Fatalf("rules/ target = %q, want %q", link, rulesDir)
+	}
+
+	// skills/ should be a symlink.
+	link, err = os.Readlink(filepath.Join(packDir, "skills"))
+	if err != nil {
+		t.Fatalf("skills/ is not a symlink: %v", err)
+	}
+	if link != skillsDir {
+		t.Fatalf("skills/ target = %q, want %q", link, skillsDir)
+	}
+
+	// pack.json discovers content through symlinks.
+	manifest, err := config.LoadPackManifest(filepath.Join(packDir, "pack.json"))
+	if err != nil {
+		t.Fatalf("LoadPackManifest: %v", err)
+	}
+	if len(manifest.Rules) != 1 || manifest.Rules[0] != "style" {
+		t.Fatalf("rules = %v, want [style]", manifest.Rules)
+	}
+	if len(manifest.Skills) != 1 || manifest.Skills[0] != "deploy" {
+		t.Fatalf("skills = %v, want [deploy]", manifest.Skills)
+	}
+
+	// Unmapped types should have scaffold dirs (not symlinks).
+	agentsInfo, err := os.Lstat(filepath.Join(packDir, "agents"))
+	if err != nil {
+		t.Fatalf("agents/ missing: %v", err)
+	}
+	if agentsInfo.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("agents/ should be a regular dir, not a symlink")
+	}
+}
+
+func TestPackCreate_ContentFlags_NonexistentSourceErrors(t *testing.T) {
+	t.Parallel()
+	cfgDir := t.TempDir()
+	setupMinimalConfig(t, cfgDir)
+
+	err := PackCreate(PackCreateRequest{
+		Name:      "bad-source",
+		ConfigDir: cfgDir,
+		Local:     true,
+		ContentSources: map[domain.PackCategory]string{
+			domain.CategoryRules: "/no/such/path",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent content source path")
+	}
+	if !strings.Contains(err.Error(), "/no/such/path") {
+		t.Fatalf("error should reference the bad path, got: %v", err)
 	}
 }
 

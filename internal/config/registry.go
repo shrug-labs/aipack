@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/source"
 	"gopkg.in/yaml.v3"
 )
@@ -34,12 +35,14 @@ type Registry struct {
 
 // RegistryEntry describes a pack available in the registry.
 type RegistryEntry struct {
-	Repo        string `yaml:"repo" json:"repo"`
-	Path        string `yaml:"path,omitempty" json:"path,omitempty"`
-	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-	Ref         string `yaml:"ref,omitempty" json:"ref,omitempty"`
-	Owner       string `yaml:"owner,omitempty" json:"owner,omitempty"`
-	Contact     string `yaml:"contact,omitempty" json:"contact,omitempty"`
+	Repo         string                         `yaml:"repo" json:"repo"`
+	Path         string                         `yaml:"path,omitempty" json:"path,omitempty"`
+	Description  string                         `yaml:"description,omitempty" json:"description,omitempty"`
+	Ref          string                         `yaml:"ref,omitempty" json:"ref,omitempty"`
+	Owner        string                         `yaml:"owner,omitempty" json:"owner,omitempty"`
+	Contact      string                         `yaml:"contact,omitempty" json:"contact,omitempty"`
+	Quiet        bool                           `yaml:"quiet,omitempty" json:"quiet,omitempty"`
+	ContentPaths map[domain.PackCategory]string `yaml:"content_paths,omitempty" json:"content_paths,omitempty"`
 }
 
 // LoadRegistry loads a registry from a local YAML file.

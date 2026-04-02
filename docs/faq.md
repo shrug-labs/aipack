@@ -85,7 +85,7 @@ A closed loop: use pack-loaded agents for real work, review what worked and what
 
 ### Can I create my own pack?
 
-Yes. A pack is a directory with a `pack.json` manifest and content files (rules, skills, workflows). `aipack pack create` scaffolds one. Publish it to a git repo and register it so others can install it by name. The [Getting Started guide](./getting-started.md) walks through the full authoring flow.
+Yes. A pack is a directory with a `pack.json` manifest and content files (rules, skills, workflows). `aipack pack create` scaffolds one. Publish it to a git repo and register it so others can install it by name. The [Creating Packs](./creating-packs.md) guide walks through the full authoring flow.
 
 ### How do packs get updated?
 

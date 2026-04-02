@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestResolveProfile_InstalledPack(t *testing.T) {
@@ -801,5 +803,446 @@ func installPackForResolveTest(t *testing.T, configDir string, packName string, 
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestResolveProfile_EmptyIncludeIncludesAll(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "test-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "test-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta"},
+		Skills:        []string{"skill-one", "skill-two"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
+		"skills/skill-one/SKILL.md": "---\nname: skill-one\n---\nbody\n",
+		"skills/skill-two/SKILL.md": "---\nname: skill-two\n---\nbody\n",
+	})
+
+	empty := []string{}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "test-pack",
+			Enabled: BoolPtr(true),
+			Rules:   VectorSelector{Include: &empty},
+			Skills:  VectorSelector{Include: &empty},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	// include: [] = include all (backward compat, same as nil)
+	if len(packs[0].Rules) != 2 {
+		t.Fatalf("expected 2 rules with empty include, got %d", len(packs[0].Rules))
+	}
+	if len(packs[0].Skills) != 2 {
+		t.Fatalf("expected 2 skills with empty include, got %d", len(packs[0].Skills))
+	}
+}
+
+func TestResolveProfile_QuietPackOmittedSelectorsExcludeAll(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "quiet-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta"},
+		Skills:        []string{"skill-one", "skill-two"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
+		"skills/skill-one/SKILL.md": "---\nname: skill-one\n---\nbody\n",
+		"skills/skill-two/SKILL.md": "---\nname: skill-two\n---\nbody\n",
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-pack",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			// No selectors — quiet means nothing included by default.
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	if len(packs[0].Rules) != 0 {
+		t.Fatalf("expected 0 rules for quiet pack with no selectors, got %d", len(packs[0].Rules))
+	}
+	if len(packs[0].Skills) != 0 {
+		t.Fatalf("expected 0 skills for quiet pack with no selectors, got %d", len(packs[0].Skills))
+	}
+}
+
+func TestResolveProfile_QuietPackWithExplicitInclude(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "quiet-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta"},
+		Skills:        []string{"skill-one", "skill-two"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
+		"skills/skill-one/SKILL.md": "---\nname: skill-one\n---\nbody\n",
+		"skills/skill-two/SKILL.md": "---\nname: skill-two\n---\nbody\n",
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-pack",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			Rules:   VectorSelector{Include: &[]string{"alpha"}},
+			Skills:  VectorSelector{Include: &[]string{"skill-two"}},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	if len(packs[0].Rules) != 1 || packs[0].Rules[0] != "alpha" {
+		t.Fatalf("expected [alpha], got %v", packs[0].Rules)
+	}
+	if len(packs[0].Skills) != 1 || packs[0].Skills[0] != "skill-two" {
+		t.Fatalf("expected [skill-two], got %v", packs[0].Skills)
+	}
+}
+
+func TestResolveProfile_QuietPackEmptyIncludeExcludesAll(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "quiet-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":  "---\nname: beta\n---\nbody\n",
+	})
+
+	empty := []string{}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-pack",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			Rules:   VectorSelector{Include: &empty},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	// quiet + include: [] = nothing (quiet overrides backward-compat empty-means-all)
+	if len(packs[0].Rules) != 0 {
+		t.Fatalf("expected 0 rules for quiet pack with empty include, got %d", len(packs[0].Rules))
+	}
+}
+
+func TestResolveProfile_ExtractedContentPathsPack(t *testing.T) {
+	// After install-time extraction, a content_paths pack looks like a
+	// standard pack: pack.json + content at standard paths. Verify the
+	// standard resolution path handles it.
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "ext-lib", PackManifest{
+		SchemaVersion: 1,
+		Name:          "ext-lib",
+		Version:       "0.1.0",
+		Root:          ".",
+		Skills:        []string{"skill-alpha", "skill-beta"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"skills/skill-alpha/SKILL.md": "---\nname: skill-alpha\ndescription: test\n---\nbody\n",
+		"skills/skill-beta/SKILL.md":  "---\nname: skill-beta\ndescription: test\n---\nbody\n",
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "ext-lib", Enabled: BoolPtr(true)}},
+	}
+	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	if len(packs[0].Skills) != 2 {
+		t.Fatalf("expected 2 skills, got %v", packs[0].Skills)
+	}
+}
+
+func TestResolveProfile_QuietPackExcludeReturnsNothing(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "quiet-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta", "gamma"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":  "---\nname: beta\n---\nbody\n",
+		"rules/gamma.md": "---\nname: gamma\n---\nbody\n",
+	})
+
+	// Quiet means opt-in only. Exclude on a quiet pack returns nothing —
+	// you can't subtract from an empty default. Use include instead.
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-pack",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			Rules:   VectorSelector{Exclude: &[]string{"beta"}},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	if len(packs[0].Rules) != 0 {
+		t.Fatalf("expected 0 rules (exclude on quiet = nothing), got %v", packs[0].Rules)
+	}
+}
+
+func TestResolveProfile_NonQuietOmittedSelectorsIncludeAll(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "normal-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "normal-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta"},
+		Skills:        []string{"skill-one"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
+		"skills/skill-one/SKILL.md": "---\nname: skill-one\n---\nbody\n",
+	})
+
+	// No selectors at all on a non-quiet pack → everything included.
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "normal-pack",
+			Enabled: BoolPtr(true),
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	if len(packs[0].Rules) != 2 {
+		t.Fatalf("expected 2 rules with omitted selectors, got %d", len(packs[0].Rules))
+	}
+	if len(packs[0].Skills) != 1 {
+		t.Fatalf("expected 1 skill with omitted selectors, got %d", len(packs[0].Skills))
+	}
+}
+
+func TestResolveProfile_QuietPackMCPStillDelivered(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-mcp", PackManifest{
+		SchemaVersion: 1,
+		Name:          "quiet-mcp",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"some-rule"},
+		MCP: MCPPack{Servers: map[string]MCPDefaults{
+			"my-server": {DefaultAllowedTools: []string{"tool-a"}},
+		}},
+	}, map[string]string{
+		"rules/some-rule.md": "---\nname: some-rule\n---\nbody\n",
+		"mcp/my-server.json": `{"name":"my-server","command":["echo","hi"]}`,
+	})
+
+	// Quiet suppresses content vectors but MCP is controlled by its own
+	// mcp: map in the profile, not by quiet. A quiet pack with an MCP
+	// server explicitly enabled should still deliver it.
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-mcp",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			MCP: map[string]MCPServerConfig{
+				"my-server": {Enabled: BoolPtr(true)},
+			},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	// Content vectors: quiet + omitted = nothing.
+	if len(packs[0].Rules) != 0 {
+		t.Fatalf("expected 0 rules for quiet pack, got %d", len(packs[0].Rules))
+	}
+	// MCP: explicitly enabled, should be delivered.
+	srv, ok := packs[0].MCP["my-server"]
+	if !ok {
+		t.Fatal("expected my-server in MCP map")
+	}
+	if len(srv.AllowedTools) != 1 || srv.AllowedTools[0] != "tool-a" {
+		t.Fatalf("expected [tool-a], got %v", srv.AllowedTools)
+	}
+}
+
+// TestResolveProfile_QuietPackEmptyExcludeExcludesAll verifies that quiet packs
+// treat empty exclude: [] the same as omitted exclude (nothing included).
+// Quiet packs only respond to explicit include — exclude is ignored.
+func TestResolveProfile_QuietPackEmptyExcludeExcludesAll(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "quiet-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta", "gamma"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
+		"rules/beta.md":  "---\nname: beta\n---\nbody\n",
+		"rules/gamma.md": "---\nname: gamma\n---\nbody\n",
+	})
+
+	empty := []string{}
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-pack",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			Rules:   VectorSelector{Exclude: &empty},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	// quiet + exclude: [] should behave like quiet + exclude: nil → nothing.
+	// The empty exclude list says "exclude nothing" — but on a quiet pack the
+	// default is already "include nothing", so there's nothing to exclude from.
+	// If this returns 3, the quiet semantics are broken for empty exclude.
+	if len(packs[0].Rules) != 0 {
+		t.Fatalf("expected 0 rules for quiet pack with empty exclude, got %d — "+
+			"empty exclude bypasses quiet default and returns full inventory",
+			len(packs[0].Rules))
+	}
+}
+
+// TestResolveProfile_ContentPathsPackYAMLRoundTrip verifies that a pack
+// installed with content_paths has its metadata survive a sync-config
+// save/load cycle. The map[PackCategory]string type must serialize and
+// deserialize correctly through YAML.
+func TestResolveProfile_ContentPathsPackYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	scPath := filepath.Join(dir, "sync-config.yaml")
+
+	original := SyncConfig{
+		SchemaVersion: SyncConfigSchemaVersion,
+		Defaults: struct {
+			Profile     string   `yaml:"profile"`
+			Harnesses   []string `yaml:"harnesses"`
+			Scope       string   `yaml:"scope"`
+			Registry    string   `yaml:"registry,omitempty"`
+			RegistryURL string   `yaml:"registry_url,omitempty"`
+		}{Profile: "default", Harnesses: []string{"claudecode"}, Scope: "global"},
+		InstalledPacks: map[string]InstalledPackMeta{
+			"ext-skills": {
+				Origin:      "https://github.com/example/mono.git",
+				Method:      MethodClone,
+				InstalledAt: "2026-04-02T00:00:00Z",
+				ContentPaths: map[domain.PackCategory]string{
+					domain.CategorySkills: "tools/agent/skills",
+					domain.CategoryRules:  "config/rules",
+				},
+			},
+		},
+	}
+
+	if err := SaveSyncConfig(scPath, original); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+
+	loaded, err := LoadSyncConfig(scPath)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+
+	meta, ok := loaded.InstalledPacks["ext-skills"]
+	if !ok {
+		t.Fatal("ext-skills missing from round-tripped InstalledPacks")
+	}
+	if meta.ContentPaths[domain.CategorySkills] != "tools/agent/skills" {
+		t.Fatalf("skills content path = %q, want tools/agent/skills",
+			meta.ContentPaths[domain.CategorySkills])
+	}
+	if meta.ContentPaths[domain.CategoryRules] != "config/rules" {
+		t.Fatalf("rules content path = %q, want config/rules",
+			meta.ContentPaths[domain.CategoryRules])
 	}
 }

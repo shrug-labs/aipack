@@ -316,27 +316,20 @@ func classifyWriteDiffText(fd engine.FileDiff, diffKind domain.DiffKind) string 
 
 // ContentCounts holds counts of content items by type for display.
 type ContentCounts struct {
-	Rules, Workflows, Agents, Skills, MCP int
+	Rules, Skills, Workflows, Agents, Prompts, MCP int
 }
 
-// String returns a compact summary like "3 rules, 2 skills".
-// Zero-count types are omitted.
+// String returns a compact summary like "3 rules, 2 skills, 1 agent".
 func (c ContentCounts) String() string {
 	var parts []string
-	if c.Rules > 0 {
-		parts = append(parts, fmt.Sprintf("%d rules", c.Rules))
-	}
-	if c.Workflows > 0 {
-		parts = append(parts, fmt.Sprintf("%d workflows", c.Workflows))
-	}
-	if c.Agents > 0 {
-		parts = append(parts, fmt.Sprintf("%d agents", c.Agents))
-	}
-	if c.Skills > 0 {
-		parts = append(parts, fmt.Sprintf("%d skills", c.Skills))
-	}
-	if c.MCP > 0 {
-		parts = append(parts, fmt.Sprintf("%d mcp", c.MCP))
+	for _, pair := range c.pairs() {
+		if pair.n > 0 {
+			if pair.n == 1 {
+				parts = append(parts, fmt.Sprintf("1 %s", pair.label))
+			} else {
+				parts = append(parts, fmt.Sprintf("%d %ss", pair.n, pair.label))
+			}
+		}
 	}
 	if len(parts) == 0 {
 		return "0 content"
@@ -344,9 +337,30 @@ func (c ContentCounts) String() string {
 	return strings.Join(parts, ", ")
 }
 
-// Total returns the sum of all content counts.
+// IsZero returns true when all counts are zero.
+func (c ContentCounts) IsZero() bool {
+	return c.Total() == 0
+}
+
 func (c ContentCounts) Total() int {
-	return c.Rules + c.Workflows + c.Agents + c.Skills + c.MCP
+	return c.Rules + c.Skills + c.Workflows + c.Agents + c.Prompts + c.MCP
+}
+
+func (c ContentCounts) pairs() [6]struct {
+	n     int
+	label string
+} {
+	return [6]struct {
+		n     int
+		label string
+	}{
+		{c.Rules, "rule"},
+		{c.Skills, "skill"},
+		{c.Workflows, "workflow"},
+		{c.Agents, "agent"},
+		{c.Prompts, "prompt"},
+		{c.MCP, "mcp-server"},
+	}
 }
 
 // CountProfileContent tallies content items from the profile's typed

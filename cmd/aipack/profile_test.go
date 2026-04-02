@@ -54,8 +54,8 @@ func TestProfileList_WithDefault(t *testing.T) {
 		t.Fatalf("profile list exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
 	output := stdout
-	if !strings.Contains(output, "default *") {
-		t.Fatalf("expected 'default *' in output, got: %s", output)
+	if !strings.Contains(output, "default (active)") {
+		t.Fatalf("expected 'default (active)' in output, got: %s", output)
 	}
 	if !strings.Contains(output, "dev") {
 		t.Fatalf("expected 'dev' in output, got: %s", output)

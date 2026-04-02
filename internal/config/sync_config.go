@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/util"
 
 	"gopkg.in/yaml.v3"
@@ -35,12 +36,13 @@ const (
 
 // InstalledPackMeta records the origin and install method for a pack.
 type InstalledPackMeta struct {
-	Origin      string `yaml:"origin"`                // abs path or URL
-	Method      string `yaml:"method"`                // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodLocal
-	InstalledAt string `yaml:"installed_at"`          // RFC3339
-	Ref         string `yaml:"ref,omitempty"`         // git ref (URL only)
-	SubPath     string `yaml:"sub_path,omitempty"`    // subdirectory within cloned repo
-	CommitHash  string `yaml:"commit_hash,omitempty"` // git HEAD SHA at install/update time
+	Origin       string                         `yaml:"origin"`                  // abs path or URL
+	Method       string                         `yaml:"method"`                  // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodLocal
+	InstalledAt  string                         `yaml:"installed_at"`            // RFC3339
+	Ref          string                         `yaml:"ref,omitempty"`           // git ref (URL only)
+	SubPath      string                         `yaml:"sub_path,omitempty"`      // subdirectory within cloned repo
+	CommitHash   string                         `yaml:"commit_hash,omitempty"`   // git HEAD SHA at install/update time
+	ContentPaths map[domain.PackCategory]string `yaml:"content_paths,omitempty"` // content type -> directory path within clone (nil = standard layout)
 }
 
 // SyncConfig is user-level configuration (one level above profiles).

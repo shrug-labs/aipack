@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -14,7 +15,7 @@ type SearchCmd struct {
 	Terms     []string `arg:"" optional:"" help:"Search terms (FTS5 full-text search on name, description, and body)"`
 	Tags      []string `help:"Filter by tags (comma-separated or repeated)" name:"tags" sep:","`
 	Role      string   `help:"Filter by role" name:"role"`
-	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, pack)" name:"kind" predictor:"kind"`
+	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, prompt, pack)" name:"kind" predictor:"kind"`
 	Pack      string   `help:"Filter by pack name" name:"pack" predictor:"pack"`
 	Category  string   `help:"Filter by category (ops, dev, infra, governance, meta)" name:"category" predictor:"category"`
 	Installed bool     `help:"Show only installed resources" name:"installed"`
@@ -88,7 +89,45 @@ func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 		fmt.Fprintln(g.Stdout, "No matching resources.")
 		return nil
 	}
+
+	hasTerms := strings.TrimSpace(strings.Join(c.Terms, " ")) != ""
+	printSearchResults(g.Stdout, results, hasTerms)
+	return nil
+}
+
+// printSearchResults formats search output with a summary header and
+// truncated descriptions for readability.
+func printSearchResults(w io.Writer, results []app.SearchResult, hasTerms bool) {
+	// Summary header: count by kind, grouped if single pack.
+	kindCounts := map[string]int{}
+	packs := map[string]bool{}
 	for _, r := range results {
+		kindCounts[r.Kind]++
+		packs[r.Pack] = true
+	}
+	var parts []string
+	for _, kind := range []string{"rule", "skill", "workflow", "agent", "prompt", "pack"} {
+		if n, ok := kindCounts[kind]; ok {
+			label := kind + "s"
+			if n == 1 {
+				label = kind
+			}
+			parts = append(parts, fmt.Sprintf("%d %s", n, label))
+		}
+	}
+	summary := strings.Join(parts, ", ")
+	if len(packs) == 1 {
+		for pack := range packs {
+			fmt.Fprintf(w, "%s (%s)\n\n", pack, summary)
+		}
+	} else {
+		fmt.Fprintf(w, "%s\n\n", summary)
+	}
+
+	for i, r := range results {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
 		status := ""
 		if !r.Installed {
 			status = " (available)"
@@ -97,15 +136,60 @@ func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 		if r.Category != "" {
 			cat = fmt.Sprintf(" [%s]", r.Category)
 		}
-		fmt.Fprintf(g.Stdout, "  [%s] %s/%s%s%s\n", r.Kind, r.Pack, r.Name, cat, status)
-		if r.Description != "" {
-			fmt.Fprintf(g.Stdout, "    %s\n", r.Description)
+		if len(packs) == 1 {
+			fmt.Fprintf(w, "  [%s] %s%s%s\n", r.Kind, r.Name, cat, status)
+		} else {
+			fmt.Fprintf(w, "  [%s] %s/%s%s%s\n", r.Kind, r.Pack, r.Name, cat, status)
 		}
-		if r.Snippet != "" {
-			fmt.Fprintf(g.Stdout, "    %s\n", r.Snippet)
+		if r.Description != "" {
+			fmt.Fprintf(w, "    %s\n", truncateDescription(r.Description))
+		}
+		// Only show body snippets when searching with terms — browsing
+		// mode (no terms) shows descriptions only for a cleaner catalog view.
+		if hasTerms && r.Snippet != "" {
+			fmt.Fprintf(w, "    %s\n", r.Snippet)
 		}
 	}
-	return nil
+}
+
+// truncateDescription returns a readable excerpt of a description, keeping
+// complete sentences up to ~200 characters. Agent trigger instructions
+// ("ALWAYS trigger when...", "Do NOT trigger for...") are stripped since
+// they're useful for the model but noise for humans browsing the catalog.
+func truncateDescription(desc string) string {
+	const maxLen = 200
+
+	// Find sentence boundaries and include as many as fit within maxLen.
+	lastEnd := 0
+	for i, ch := range desc {
+		if (ch == '.' || ch == '!' || ch == '?') && i > 10 {
+			rest := desc[i+1:]
+			if rest == "" {
+				lastEnd = i + 1
+				break
+			}
+			trimmed := strings.TrimLeft(rest, " ")
+			if len(trimmed) > 0 && trimmed[0] >= 'A' && trimmed[0] <= 'Z' {
+				candidate := i + 1
+				if candidate <= maxLen {
+					lastEnd = candidate
+				} else if lastEnd > 0 {
+					break // already have a good cut point
+				} else {
+					lastEnd = candidate // first sentence exceeds limit, take it anyway
+					break
+				}
+			}
+		}
+	}
+	if lastEnd > 0 {
+		return desc[:lastEnd]
+	}
+	// No sentence boundary found — hard truncate.
+	if len(desc) > maxLen {
+		return desc[:maxLen-3] + "..."
+	}
+	return desc
 }
 
 type QueryCmd struct {

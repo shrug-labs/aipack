@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestLoadRegistry_HappyPath(t *testing.T) {
@@ -257,6 +259,38 @@ packs:
 	}
 	if reg.Packs["my-pack"].Description != "source A wins" {
 		t.Errorf("expected source A to win, got %q", reg.Packs["my-pack"].Description)
+	}
+}
+
+func TestRegistryEntry_QuietAndContentPaths(t *testing.T) {
+	t.Parallel()
+	input := `schema_version: 1
+packs:
+  ext-skills:
+    repo: ssh://git@example.com:7999/team/repo.git
+    quiet: true
+    content_paths:
+      skills: nested/custom-skills
+  normal-pack:
+    repo: https://github.com/org/pack.git
+`
+	reg, err := ParseRegistry([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseRegistry: %v", err)
+	}
+	ext := reg.Packs["ext-skills"]
+	if !ext.Quiet {
+		t.Fatal("expected Quiet=true")
+	}
+	if ext.ContentPaths[domain.CategorySkills] != "nested/custom-skills" {
+		t.Fatalf("expected content_paths.skills = nested/custom-skills, got %q", ext.ContentPaths[domain.CategorySkills])
+	}
+	normal := reg.Packs["normal-pack"]
+	if normal.Quiet {
+		t.Fatal("expected Quiet=false for normal pack")
+	}
+	if len(normal.ContentPaths) != 0 {
+		t.Fatalf("expected no content_paths for normal pack, got %v", normal.ContentPaths)
 	}
 }
 

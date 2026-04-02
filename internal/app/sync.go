@@ -451,11 +451,142 @@ func updateIndex(profile domain.Profile, home string) error {
 
 	for _, pack := range profile.Packs {
 		info, resources := index.ExtractFromPack(pack)
+
+		// Load the manifest for content that bypasses or isn't included
+		// in the resolved pack (prompts always, other types when quiet).
+		manifestPath := filepath.Join(pack.Root, "pack.json")
+		if m, merr := config.LoadPackManifest(manifestPath); merr == nil {
+			packRoot := config.ResolvePackRoot(manifestPath, m.Root)
+			if packRoot == "" {
+				packRoot = pack.Root
+			}
+
+			// Index manifest content not already provided by the resolved
+			// pack. Resolved resources have richer parsed data; manifest
+			// items fill gaps for discovery (quiet packs, partial includes).
+			skip := map[string]bool{}
+			for _, r := range pack.Rules {
+				skip[r.Name] = true
+			}
+			for _, s := range pack.Skills {
+				skip[s.Name] = true
+			}
+			for _, a := range pack.Agents {
+				skip[a.Name] = true
+			}
+			for _, w := range pack.Workflows {
+				skip[w.Name] = true
+			}
+			resources = append(resources, indexManifestContent(pack.Name, m, packRoot, skip)...)
+		}
+
 		if err := db.Update(info, resources); err != nil {
 			return fmt.Errorf("updating index for pack %s: %w", pack.Name, err)
 		}
 	}
 	return nil
+}
+
+// indexInstalledPack indexes a single installed pack into the search index
+// by reading its manifest and content files directly. Called at install time
+// so search works without requiring a full sync first.
+func indexInstalledPack(configDir, packName, packRoot string) error {
+	db, err := openIndexDB(configDir, "")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	manifestPath := filepath.Join(packRoot, "pack.json")
+	m, err := config.LoadPackManifest(manifestPath)
+	if err != nil {
+		return nil // no manifest = nothing to index, not an error
+	}
+
+	root := config.ResolvePackRoot(manifestPath, m.Root)
+	if root == "" {
+		root = packRoot
+	}
+
+	info := index.PackInfo{
+		Name:      packName,
+		Version:   m.Version,
+		Installed: true,
+		Source:    "install",
+	}
+
+	resources := indexManifestContent(packName, m, root, nil)
+	return db.Update(info, resources)
+}
+
+// indexManifestContent reads content from a manifest's declared files and
+// returns index resources. The skip set excludes IDs already provided by
+// the resolved pack (which has richer parsed data). Pass nil to index everything.
+func indexManifestContent(packName string, m config.PackManifest, packRoot string, skip map[string]bool) []index.Resource {
+	flatPath := func(dir, ext string) func(string) (string, string) {
+		return func(id string) (string, string) {
+			p := filepath.Join(dir, id+ext)
+			return p, p
+		}
+	}
+	skillPath := func(id string) (string, string) {
+		dir := filepath.Join(packRoot, "skills", id)
+		return filepath.Join(dir, "SKILL.md"), dir
+	}
+
+	var resources []index.Resource
+	resources = append(resources, indexContentFromManifest("rule", diffIDs(m.Rules, skip), flatPath(filepath.Join(packRoot, "rules"), ".md"))...)
+	resources = append(resources, indexContentFromManifest("skill", diffIDs(m.Skills, skip), skillPath)...)
+	resources = append(resources, indexContentFromManifest("agent", diffIDs(m.Agents, skip), flatPath(filepath.Join(packRoot, "agents"), ".md"))...)
+	resources = append(resources, indexContentFromManifest("workflow", diffIDs(m.Workflows, skip), flatPath(filepath.Join(packRoot, "workflows"), ".md"))...)
+
+	for _, pe := range PromptListForPack(packName, m, packRoot) {
+		resources = append(resources, index.PromptResource(
+			pe.Name, pe.Description, pe.SourcePath, pe.Category, string(pe.Body),
+		))
+	}
+	return resources
+}
+
+// indexContentFromManifest reads content files and returns lightweight index
+// resources. Each ID is resolved to a file path via pathFn(id), which returns
+// (filePath, resourcePath) — the file to read and the path stored in the index.
+// Files that can't be read or parsed are silently skipped.
+func indexContentFromManifest(kind string, ids []string, pathFn func(id string) (filePath, resourcePath string)) []index.Resource {
+	var resources []index.Resource
+	for _, id := range ids {
+		fp, rp := pathFn(id)
+		raw, err := os.ReadFile(fp)
+		if err != nil {
+			continue
+		}
+		fm, body, err := domain.SplitFrontmatter(raw)
+		if err != nil {
+			continue
+		}
+		var meta map[string]any
+		if fm != nil {
+			_ = yaml.Unmarshal(fm, &meta)
+		}
+		resources = append(resources, index.ResourceFromMetadata(
+			kind, id, index.MetaString(meta, "description"), rp, meta, string(body),
+		))
+	}
+	return resources
+}
+
+// diffIDs returns manifest IDs not present in the skip set.
+func diffIDs(manifestIDs []string, resolved map[string]bool) []string {
+	if len(resolved) == 0 {
+		return manifestIDs
+	}
+	var out []string
+	for _, id := range manifestIDs {
+		if !resolved[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // processEmbeddedRegistries loads registry YAML files declared in pack

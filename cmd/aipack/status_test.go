@@ -50,8 +50,8 @@ func TestStatus_TextOutput(t *testing.T) {
 		"profile: default",
 		"packs (1):",
 		"demo",
-		"rules: 1",
-		"totals: 1 rules",
+		"1 rule",
+		"totals: 1 rule",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, stdout)

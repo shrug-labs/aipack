@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestLoadSyncConfig_Missing_IsEmpty(t *testing.T) {
@@ -79,6 +81,42 @@ func TestSaveSyncConfig_RoundTrip(t *testing.T) {
 	}
 	if meta.InstalledAt != "2025-06-15T12:00:00Z" {
 		t.Fatalf("installed_at = %q", meta.InstalledAt)
+	}
+}
+
+func TestSaveSyncConfig_ContentPathsRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sync-config.yaml")
+
+	cfg := SyncConfig{SchemaVersion: SyncConfigSchemaVersion}
+	cfg.InstalledPacks = map[string]InstalledPackMeta{
+		"ext-skills": {
+			Origin: "ssh://git@example.com:7999/team/repo.git",
+			Method: MethodClone,
+			ContentPaths: map[domain.PackCategory]string{
+				domain.CategorySkills: "src/agent/skills",
+				domain.CategoryRules:  "config/rules",
+			},
+		},
+	}
+	if err := SaveSyncConfig(path, cfg); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+
+	loaded, err := LoadSyncConfig(path)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	meta := loaded.InstalledPacks["ext-skills"]
+	if len(meta.ContentPaths) != 2 {
+		t.Fatalf("content_paths count = %d, want 2", len(meta.ContentPaths))
+	}
+	if meta.ContentPaths[domain.CategorySkills] != "src/agent/skills" {
+		t.Fatalf("skills path = %q", meta.ContentPaths[domain.CategorySkills])
+	}
+	if meta.ContentPaths[domain.CategoryRules] != "config/rules" {
+		t.Fatalf("rules path = %q", meta.ContentPaths[domain.CategoryRules])
 	}
 }
 

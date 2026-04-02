@@ -22,6 +22,10 @@ type PackEntry struct {
 	Name    string `yaml:"name"`
 	Enabled *bool  `yaml:"enabled"`
 
+	// Quiet makes omitted or empty vector selectors resolve to nothing instead
+	// of all content. Useful for large catalogs where you want opt-in inclusion.
+	Quiet bool `yaml:"quiet,omitempty"`
+
 	// Settings controls whether this pack's harness settings files are synced.
 	Settings PackSettingsConfig `yaml:"settings"`
 

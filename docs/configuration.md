@@ -1,6 +1,6 @@
 # Configuration and State
 
-What aipack puts on your machine, how to configure it, and how to manage it. For the CLI commands that operate on these files, see the [aipack reference](./aipack.md). For profile and registry schemas, see the [Pack Format Specification](./pack-format.md#8-composition). For JSON output contracts and environment variables, see the [CLI Specification](./cli-spec.md).
+What aipack puts on your machine, how to configure it, and how to manage it. For the CLI commands that operate on these files, see the [aipack reference](./aipack.md). For profiles and composition, see [Profiles](./profiles.md). For registry schemas, see the [Pack Format Specification](./pack-format.md#92-registry). For JSON output contracts and environment variables, see the [CLI Specification](./cli-spec.md).
 
 ## Config directory layout
 
@@ -96,6 +96,7 @@ Each entry records how a pack was installed. Keys are pack names.
 | `ref` | string | Git ref used at install time (remote only) |
 | `sub_path` | string | Subdirectory within the repo (remote only) |
 | `commit_hash` | string | Git HEAD SHA at install time (remote only) |
+| `content_paths` | map | Maps content types to directory paths within the clone (see [Content path remapping](./pack-format.md#94-content-path-remapping)) |
 
 Don't edit these entries by hand — use `pack install`, `pack delete`, `pack update`, and `pack rename`.
 

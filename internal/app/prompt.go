@@ -52,13 +52,7 @@ func PromptList(configDir string) ([]PromptEntry, error) {
 			continue // skip packs with invalid manifests
 		}
 		packRoot := config.ResolvePackRoot(manifestPath, m.Root)
-		for _, id := range m.Prompts {
-			pe, err := loadPrompt(id, m.Name, packRoot)
-			if err != nil {
-				continue // skip individual broken prompts
-			}
-			prompts = append(prompts, pe)
-		}
+		prompts = append(prompts, PromptListForPack(m.Name, m, packRoot)...)
 	}
 
 	sort.Slice(prompts, func(i, j int) bool {
@@ -113,6 +107,19 @@ func PromptCopy(name string, configDir string) error {
 	}
 	cmd.Stdin = bytes.NewReader(p.Body)
 	return cmd.Run()
+}
+
+// PromptListForPack returns prompts for a single pack given its manifest and root.
+func PromptListForPack(packName string, manifest config.PackManifest, packRoot string) []PromptEntry {
+	var prompts []PromptEntry
+	for _, id := range manifest.Prompts {
+		pe, err := loadPrompt(id, packName, packRoot)
+		if err != nil {
+			continue
+		}
+		prompts = append(prompts, pe)
+	}
+	return prompts
 }
 
 func loadPrompt(id, packName, packRoot string) (PromptEntry, error) {

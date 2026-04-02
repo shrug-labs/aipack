@@ -379,7 +379,7 @@ The `available_tools` field serves as a complete tool inventory. In the manifest
 }
 ```
 
-Profiles can override allowed tools per server (see [Section 8.3](#83-mcp-server-overrides)).
+Profiles can override allowed tools per server (see [Profiles — MCP server overrides](./profiles.md#mcp-server-overrides)).
 
 ## 7. Configurations
 
@@ -418,85 +418,7 @@ The manifest declares which files are settings (merged with engine-managed keys)
 
 ## 8. Composition
 
-Packs compose through **profiles** — YAML files that declare which packs to load, in what order, with what overrides.
-
-### 8.1 Profile structure
-
-```yaml
-schema_version: 2
-
-params:
-  jira_url: "https://jira.example.com"
-  confluence_url: "https://confluence.example.com"
-
-packs:
-  - name: team-ops
-    enabled: true
-    settings:
-      enabled: true
-    mcp:
-      atlassian:
-        enabled: true
-        allowed_tools:
-          - confluence_search
-          - confluence_get_page
-      deploy-tool:
-        enabled: false
-
-  - name: personal
-    enabled: true
-    rules:
-      exclude: ["noisy-rule"]
-    overrides:
-      rules: ["anti-slop"]   # personal's anti-slop replaces team-ops's
-```
-
-### 8.2 Vector selectors
-
-Each content vector supports `include` and `exclude` lists for fine-grained content selection:
-
-| Configuration | Behavior |
-|---------------|----------|
-| Omitted (default) | All content from this vector is included |
-| `include: [a, b]` | Only listed IDs are included |
-| `exclude: [x, y]` | All content except listed IDs |
-| `include: []` | No content from this vector |
-
-Include and exclude support glob patterns (e.g., `team-*`).
-
-### 8.3 MCP server overrides
-
-Profiles can enable/disable servers and override tool permissions per server:
-
-```yaml
-mcp:
-  my-server:
-    enabled: true
-    allowed_tools:       # overrides manifest default_allowed_tools
-      - tool_one
-    disabled_tools:      # explicitly blocked tools
-      - dangerous_tool
-```
-
-### 8.4 Layering and precedence
-
-- Packs are processed in profile order (first to last).
-- If two packs declare the same content ID (e.g., both have `rules/anti-slop.md`), the sync engine raises a conflict unless the later pack explicitly declares it in `overrides`.
-- Parameters are global to the profile — all packs share the same parameter namespace. (Legacy `globals` and `global` keys are accepted and merged into `params` for backward compatibility, but new profiles should use `params` exclusively.)
-- At most one pack per profile can have `settings.enabled: true` for a given harness.
-
-### 8.5 Override declarations
-
-```yaml
-packs:
-  - name: base-pack
-  - name: custom-pack
-    overrides:
-      rules: ["shared-rule"]      # custom-pack's version wins
-      workflows: ["deploy"]       # custom-pack's version wins
-```
-
-Without the override declaration, duplicate IDs across packs are treated as errors.
+Packs compose through **profiles** — YAML files that declare which packs to load, how to filter their content, and what parameters to expand. For the full specification including profile structure, vector selectors, layering, overrides, quiet packs, and MCP server configuration, see [Profiles](./profiles.md).
 
 ## 9. Distribution
 
@@ -539,6 +461,8 @@ packs:
 | `description` | string | No | Human-readable description |
 | `owner` | string | No | Pack maintainer or team |
 | `contact` | string | No | Contact information |
+| `quiet` | bool | No | Hint: install with `quiet: true` in the profile entry (omitted selectors include nothing) |
+| `content_paths` | map | No | Content type directory mappings for non-standard repo layouts |
 
 Multiple registry sources can be configured. The merged view resolves pack names with local entries taking highest priority, followed by cached remote sources in configuration order.
 
@@ -561,7 +485,15 @@ aipack profile set team --install
 aipack sync
 ```
 
-### 9.4 Versioning
+### 9.4 Content path remapping
+
+Repositories that aren't structured as standard packs can be consumed via `content_paths` — directory mappings declared in registry entries or as CLI flags at install time. For the full specification and worked examples, see [Installing Packs](./installing-packs.md#installing-from-any-repository).
+
+### 9.5 Quiet packs
+
+Pack entries in a profile can be marked `quiet: true`, which changes the default from "include all content" to "include nothing." Content activates only via explicit `include` lists. See [Profiles — Quiet packs](./profiles.md#quiet-packs) for the full specification.
+
+### 9.6 Versioning
 
 Pack versioning uses git refs. The `version` field in `pack.json` is informational. The authoritative version is the git ref (branch, tag, or commit) used at install time.
 
@@ -577,7 +509,7 @@ The sync engine guarantees the following for all supported harnesses:
 4. **Conflict detection** — user modifications to managed files are detected via content digest and surfaced as diffs rather than silently overwritten.
 5. **Determinism** — given identical inputs and profile, sync produces byte-identical outputs across runs.
 
-Per-harness rendering details (file paths, config formats, merge behavior) are documented in the [aipack reference](./aipack.md#per-harness-reference) and are implementation concerns of the sync engine, not part of the pack format specification. Four harnesses are supported: Claude Code, OpenCode, Codex, and Cline.
+Per-harness rendering details (file paths, config formats, merge behavior) are documented in the [Harness Reference](./harness-reference.md) and are implementation concerns of the sync engine, not part of the pack format specification. Four harnesses are supported: Claude Code, OpenCode, Codex, and Cline.
 
 ## Appendix A: Complete `pack.json` Example
 

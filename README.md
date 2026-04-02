@@ -136,17 +136,22 @@ harness.
 
 ## Documentation
 
-- **[Getting Started: Authoring and Sharing Packs](docs/getting-started.md)** — create a pack from scratch or existing content, share it, compose multiple packs
-- **[Pack Format Specification](docs/pack-format.md)** — full format reference including content vectors, MCP servers, profiles, distribution, and JSON Schemas
-- **[aipack Reference](docs/aipack.md)** — complete CLI reference, top-level command surface, per-harness behavior, and sync/save behavior
-- **[Configuration and State](docs/configuration.md)** — config directory layout, sync-config reference, ledger and state management
-- **[CLI Specification](docs/cli-spec.md)** — command tree, JSON output contracts, and enumerations for tooling integration
+- **[Getting Started](docs/getting-started.md)** — install packs and sync to your harness in five minutes
+- **[Installing Packs](docs/installing-packs.md)** — all installation methods, content_paths, quiet packs, registry entries
+- **[Creating Packs](docs/creating-packs.md)** — author your own pack from scratch or existing content
+- **[Profiles](docs/profiles.md)** — compose packs, filter content, expand parameters, scope to roles
+- **[Pack Format Specification](docs/pack-format.md)** — format reference for content vectors, MCP servers, environment references, and manifests
+- **[Harness Reference](docs/harness-reference.md)** — per-harness rendering behavior, write targets, and configuration differences
+- **[Sync and Save](docs/sync.md)** — sync workflow, save round-trips, restore, and clean
+- **[aipack Reference](docs/aipack.md)** — complete CLI reference
+- **[Configuration and State](docs/configuration.md)** — config directory layout, sync-config, ledger and state management
+- **[CLI Specification](docs/cli-spec.md)** — JSON output contracts and enumerations for tooling integration
 
 ## Key Concepts
 
-A **pack** is a directory of agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — with a `pack.json` manifest. Content is markdown with YAML frontmatter. Drop files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `mcp/`) and the sync engine discovers them automatically. Full format reference: [Pack Format Specification](docs/pack-format.md).
+A **pack** is a directory of agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — with a `pack.json` manifest. Content is markdown with YAML frontmatter. Drop files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `mcp/`) and the sync engine discovers them automatically. Any git repository can also be consumed as a pack by mapping its directories to content types — no `pack.json` required in the source. See [Installing Packs](docs/installing-packs.md).
 
-**Profiles** control which packs to sync and how — content filtering, parameter expansion, per-pack content overrides, context-based scoping. Packs can bundle profiles so setup is `pack install --seed` + `profile set` + `sync`. See [Getting Started](docs/getting-started.md#profiles) for worked examples.
+**Profiles** control which packs to sync and how — content filtering, parameter expansion, per-pack content overrides, context-based scoping. Packs can bundle profiles so setup is `pack install --seed` + `profile set` + `sync`. See [Profiles](docs/profiles.md) for the full guide.
 
 **Sync** resolves the active profile and writes to harness-native locations. Non-destructive by default — user modifications are detected via content digest and shown as diffs rather than overwritten.
 

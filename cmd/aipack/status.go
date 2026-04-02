@@ -72,16 +72,39 @@ func printEcosystemStatus(es *app.EcosystemStatus, w io.Writer) {
 			ver = " v" + p.Version
 		}
 		fmt.Fprintf(w, "  %d. %s%s%s\n", i+1, p.Name, ver, settings)
-		fmt.Fprintf(w, "     rules: %d  agents: %d  workflows: %d  skills: %d  mcp: %d\n",
-			p.Rules, p.Agents, p.Workflows, p.Skills, p.MCPServers)
+		if summary := statusContentSummary(p); summary != "" {
+			fmt.Fprintf(w, "     %s\n", summary)
+		}
 	}
-	fmt.Fprintf(w, "\ntotals: %d rules, %d agents, %d workflows, %d skills, %d mcp servers\n",
-		es.TotalRules, es.TotalAgents, es.TotalWorkflows, es.TotalSkills, es.TotalMCP)
+	fmt.Fprintf(w, "\ntotals: %s\n", statusTotals(es))
 
 	if len(config.HomeDir()) > 0 {
-		// Check for config dir in the status output.
 		if es.ConfigDir != "" {
 			fmt.Fprintf(w, "config: %s\n", es.ConfigDir)
 		}
 	}
+}
+
+func statusContentSummary(p app.PackStatus) string {
+	c := app.ContentCounts{
+		Rules: p.Rules, Skills: p.Skills,
+		Workflows: p.Workflows, Agents: p.Agents,
+		MCP: p.MCPServers,
+	}
+	if c.IsZero() {
+		return ""
+	}
+	return c.String()
+}
+
+func statusTotals(es *app.EcosystemStatus) string {
+	c := app.ContentCounts{
+		Rules: es.TotalRules, Skills: es.TotalSkills,
+		Workflows: es.TotalWorkflows, Agents: es.TotalAgents,
+		MCP: es.TotalMCP,
+	}
+	if c.IsZero() {
+		return "0 resources"
+	}
+	return c.String()
 }

@@ -413,6 +413,46 @@ func TestDoctorCheckLedgerHealth_MissingSourcePackMultiplePacks(t *testing.T) {
 	}
 }
 
+func TestDoctorCheckLedgerHealth_MCPMissingSourcePack(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ledgerDir := filepath.Join(dir, "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	eng := engine.New(nil, nil)
+
+	mcpKey := filepath.Join(dir, ".claude.json") + "#mcp:atlassian"
+	lg := domain.NewLedger()
+	lg.Managed[mcpKey] = domain.Entry{SourcePack: "", Digest: "abc"}
+	if err := eng.SaveLedger(filepath.Join(ledgerDir, "test.json"), lg, false); err != nil {
+		t.Fatal(err)
+	}
+
+	singlePack := []config.ResolvedPack{{Name: "only-pack"}}
+
+	cr := doctorCheckLedgerHealth(engine.New(nil, nil), dir, singlePack, false)
+	if cr.OK {
+		t.Fatalf("OK = true, want false")
+	}
+	if got := cr.Details["missing_source_pack"]; got != 1 {
+		t.Fatalf("missing_source_pack = %v, want 1", got)
+	}
+
+	cr = doctorCheckLedgerHealth(engine.New(nil, nil), dir, singlePack, true)
+	if !cr.Fixed {
+		t.Fatal("Fixed = false, want true")
+	}
+
+	lg2, _, err := eng.LoadLedger(filepath.Join(ledgerDir, "test.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lg2.Managed[mcpKey].SourcePack; got != "only-pack" {
+		t.Fatalf("SourcePack = %q, want only-pack", got)
+	}
+}
+
 func TestDoctorCheckLedgerHealth_IgnoresSyntheticMCPKeys(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -437,6 +477,39 @@ func TestDoctorCheckLedgerHealth_IgnoresSyntheticMCPKeys(t *testing.T) {
 	cr := doctorCheckLedgerHealth(engine.New(nil, nil), dir, nil, false)
 	if !cr.OK {
 		t.Fatalf("OK = false, want true (synthetic mcp keys should be ignored), message=%q", cr.Message)
+	}
+}
+
+func TestRunDoctor_UsesStableMCPRefsCheckNameWhenSkipped(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	configDir, err := config.DefaultConfigDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configDir, "profiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "sync-config.yaml"), []byte("schema_version: 1\ndefaults:\n  profile: missing\n  harnesses: [claudecode]\n  scope: global\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := RunDoctor(t.Context(), engine.New(nil, nil), DoctorRequest{
+		ConfigDir: configDir,
+		Home:      home,
+	})
+
+	foundRefs := false
+	for _, check := range rep.Checks {
+		if check.Name == "mcp_refs_present" {
+			foundRefs = true
+		}
+		if check.Name == "mcp_env_vars_present" {
+			t.Fatalf("unexpected legacy check name in report: %+v", check)
+		}
+	}
+	if !foundRefs {
+		t.Fatal("expected skipped mcp_refs_present check")
 	}
 }
 

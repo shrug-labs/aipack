@@ -96,5 +96,12 @@ func DiscoverContent(m *PackManifest, packRoot string) error {
 		}
 		m.Skills = ids
 	}
+	if m.Prompts == nil {
+		ids, err := DiscoverIDs(filepath.Join(packRoot, "prompts"), ".md")
+		if err != nil {
+			return err
+		}
+		m.Prompts = ids
+	}
 	return nil
 }

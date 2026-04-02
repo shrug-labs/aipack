@@ -722,25 +722,12 @@ func infoField(label, value string, labelWidth int) string {
 	return dimStyle.Render(padded) + value
 }
 
-// installedPackSummary returns a compact summary like "3 rules, 1 agent, 3 mcp".
 func installedPackSummary(e app.PackShowEntry) string {
-	var parts []string
-	if n := len(e.Rules); n > 0 {
-		parts = append(parts, fmt.Sprintf("%d rules", n))
+	c := e.Counts()
+	if c.IsZero() {
+		return ""
 	}
-	if n := len(e.Agents); n > 0 {
-		parts = append(parts, fmt.Sprintf("%d agents", n))
-	}
-	if n := len(e.Workflows); n > 0 {
-		parts = append(parts, fmt.Sprintf("%d workflows", n))
-	}
-	if n := len(e.Skills); n > 0 {
-		parts = append(parts, fmt.Sprintf("%d skills", n))
-	}
-	if n := len(e.MCPServers); n > 0 {
-		parts = append(parts, fmt.Sprintf("%d mcp", n))
-	}
-	return strings.Join(parts, ", ")
+	return c.String()
 }
 
 // viewContentPanel renders the middle column: content browser for installed packs.

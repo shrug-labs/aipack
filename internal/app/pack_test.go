@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/testutil"
 
 	"gopkg.in/yaml.v3"
@@ -833,8 +834,9 @@ func TestPackAdd_URL_GitHubBlobSubdir_InstallsExtractedPackAndRecordsSubPath(t *
 	if _, err := os.Stat(filepath.Join(dest, "pack.json")); err != nil {
 		t.Fatalf("expected extracted pack.json at dest: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dest, "marker.txt")); err != nil {
-		t.Fatalf("expected extracted marker.txt at dest: %v", err)
+	// Non-content files (marker.txt) should NOT be in the extracted pack.
+	if _, err := os.Stat(filepath.Join(dest, "marker.txt")); !os.IsNotExist(err) {
+		t.Fatalf("marker.txt should not survive extraction (non-content file)")
 	}
 	if _, err := os.Stat(filepath.Join(dest, "packs")); !os.IsNotExist(err) {
 		t.Fatalf("expected subtree extraction, got packs dir stat err=%v", err)
@@ -861,10 +863,11 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 	installGit := func(_ context.Context, args ...string) error {
 		if len(args) >= 4 && args[0] == "clone" {
 			dir := args[len(args)-1]
-			writePackManifest(t, filepath.Join(dir, "packs", "team"), "team-pack")
-			if err := os.WriteFile(filepath.Join(dir, "packs", "team", "marker.txt"), []byte("v1"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			packDir := filepath.Join(dir, "packs", "team")
+			writePackManifest(t, packDir, "team-pack")
+			os.MkdirAll(filepath.Join(packDir, "rules"), 0o755)
+			os.WriteFile(filepath.Join(packDir, "rules", "v1-rule.md"),
+				[]byte("---\nname: v1-rule\n---\nv1\n"), 0o644)
 		}
 		return nil
 	}
@@ -881,18 +884,15 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 	}
 
 	cloneCalls := 0
-	pullCalled := false
 	updateGit := func(_ context.Context, args ...string) error {
 		if len(args) >= 4 && args[0] == "clone" {
 			cloneCalls++
 			dir := args[len(args)-1]
-			writePackManifest(t, filepath.Join(dir, "packs", "team"), "team-pack")
-			if err := os.WriteFile(filepath.Join(dir, "packs", "team", "marker.txt"), []byte("v2"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if len(args) >= 3 && args[2] == "pull" {
-			pullCalled = true
+			packDir := filepath.Join(dir, "packs", "team")
+			writePackManifest(t, packDir, "team-pack")
+			os.MkdirAll(filepath.Join(packDir, "rules"), 0o755)
+			os.WriteFile(filepath.Join(packDir, "rules", "v2-rule.md"),
+				[]byte("---\nname: v2-rule\n---\nv2\n"), 0o644)
 		}
 		return nil
 	}
@@ -901,6 +901,7 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 		ConfigDir: configDir,
 		Name:      "team-pack",
 		RunGitFn:  updateGit,
+		GitHashFn: func(_ context.Context, _ string) (string, error) { return "newww", nil },
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -912,15 +913,13 @@ func TestPackUpdate_Clone_SubPath_ReclonesAndExtractsSubtree(t *testing.T) {
 	if cloneCalls != 1 {
 		t.Fatalf("clone calls = %d, want 1", cloneCalls)
 	}
-	if pullCalled {
-		t.Fatal("expected subpath update to reclone instead of pull")
+	// v2 rule present, v1 replaced.
+	packDir := filepath.Join(configDir, "packs", "team-pack")
+	if _, err := os.Stat(filepath.Join(packDir, "rules", "v2-rule.md")); err != nil {
+		t.Fatal("v2-rule.md not found after update")
 	}
-	b, err := os.ReadFile(filepath.Join(configDir, "packs", "team-pack", "marker.txt"))
-	if err != nil {
-		t.Fatalf("read marker: %v", err)
-	}
-	if string(b) != "v2" {
-		t.Fatalf("marker = %q, want v2", string(b))
+	if _, err := os.Stat(filepath.Join(packDir, "rules", "v1-rule.md")); !os.IsNotExist(err) {
+		t.Fatal("v1-rule.md should be gone after re-extraction")
 	}
 }
 
@@ -1403,12 +1402,12 @@ func TestPackUpdate_Copy_ReCopies(t *testing.T) {
 	}
 }
 
-func TestPackUpdate_Clone_PullsFFOnly(t *testing.T) {
+func TestPackUpdate_Clone_ReclonesAndExtracts(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	writeSeedSyncConfig(t, configDir)
 
-	// Simulate a cloned pack.
+	// Install a cloned pack.
 	var out bytes.Buffer
 	_ = PackAdd(context.Background(), PackAddRequest{
 		URL:       "https://github.com/example/my-pack",
@@ -1419,10 +1418,16 @@ func TestPackUpdate_Clone_PullsFFOnly(t *testing.T) {
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 
-	pullCalled := false
-	fakeGit := func(_ context.Context, args ...string) error {
-		if len(args) >= 3 && args[2] == "pull" {
-			pullCalled = true
+	// Update mock: re-clone creates an updated pack.
+	cloneCalled := false
+	updateGit := func(_ context.Context, args ...string) error {
+		if len(args) >= 1 && args[0] == "clone" {
+			cloneCalled = true
+			dir := args[len(args)-1]
+			writePackManifest(t, dir, "my-pack")
+			os.MkdirAll(filepath.Join(dir, "rules"), 0o755)
+			os.WriteFile(filepath.Join(dir, "rules", "updated.md"),
+				[]byte("---\nname: updated\n---\nnew rule\n"), 0o644)
 		}
 		return nil
 	}
@@ -1431,7 +1436,8 @@ func TestPackUpdate_Clone_PullsFFOnly(t *testing.T) {
 	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "my-pack",
-		RunGitFn:  fakeGit,
+		RunGitFn:  updateGit,
+		GitHashFn: func(_ context.Context, _ string) (string, error) { return "newcommit", nil },
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -1443,8 +1449,18 @@ func TestPackUpdate_Clone_PullsFFOnly(t *testing.T) {
 	if results[0].Status != "updated" {
 		t.Fatalf("status = %q, want updated", results[0].Status)
 	}
-	if !pullCalled {
-		t.Fatal("expected git pull to be called")
+	if !cloneCalled {
+		t.Fatal("expected re-clone during update")
+	}
+
+	// Verify updated content is present.
+	packDir := filepath.Join(configDir, "packs", "my-pack")
+	if _, err := os.Stat(filepath.Join(packDir, "rules", "updated.md")); err != nil {
+		t.Fatal("updated.md not found after update")
+	}
+	// No .git in the updated pack.
+	if _, err := os.Stat(filepath.Join(packDir, ".git")); !os.IsNotExist(err) {
+		t.Fatal(".git should not exist after re-clone-and-extract")
 	}
 }
 
@@ -1823,13 +1839,19 @@ func TestPackUpdate_Clone_TracksCommitHash(t *testing.T) {
 		t.Fatalf("PackAdd: %v", err)
 	}
 
-	// Update — new hash.
-	fakeGit := func(_ context.Context, args ...string) error { return nil }
+	// Update — re-clone produces new content with hash2.
+	updateGit := func(_ context.Context, args ...string) error {
+		if len(args) >= 1 && args[0] == "clone" {
+			dir := args[len(args)-1]
+			writePackManifest(t, dir, "my-pack")
+		}
+		return nil
+	}
 	out.Reset()
 	results, err := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir,
 		Name:      "my-pack",
-		RunGitFn:  fakeGit,
+		RunGitFn:  updateGit,
 		NowFn:     func() time.Time { return fixedNow },
 		GitHashFn: fakeHashFn(fakeHash2),
 	}, &out)
@@ -2217,6 +2239,56 @@ func TestPackInstallMissing_InstallsFromRegistry(t *testing.T) {
 	}
 }
 
+func TestPackInstallMissing_PropagatesRegistryContentPaths(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestProfile(t, configDir, "test", []string{"ext-catalog"})
+
+	writeTestRegistry(t, configDir, map[string]config.RegistryEntry{
+		"ext-catalog": {
+			Repo:  "https://example.com/mono.git",
+			Quiet: true,
+			ContentPaths: map[domain.PackCategory]string{
+				domain.CategorySkills: "tools/agent/skills",
+				domain.CategoryRules:  "tools/agent/rules",
+			},
+		},
+	})
+
+	var capturedReq PackAddRequest
+	fakePack := func(_ context.Context, req PackAddRequest, w io.Writer) error {
+		capturedReq = req
+		writePackManifest(t, filepath.Join(req.ConfigDir, "packs", req.Name), req.Name)
+		return nil
+	}
+
+	var out bytes.Buffer
+	results, err := PackInstallMissing(context.Background(), PackInstallMissingRequest{
+		ConfigDir:   configDir,
+		ProfileName: "test",
+		PackAddFn:   fakePack,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstallMissing: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != "installed" {
+		t.Fatalf("expected 1 installed result, got %v", results)
+	}
+
+	if !capturedReq.Quiet {
+		t.Error("Quiet not propagated from registry entry")
+	}
+	if len(capturedReq.ContentPaths) != 2 {
+		t.Fatalf("ContentPaths: got %d entries, want 2", len(capturedReq.ContentPaths))
+	}
+	if got := capturedReq.ContentPaths[domain.CategorySkills]; got != "tools/agent/skills" {
+		t.Errorf("ContentPaths[skills] = %q, want tools/agent/skills", got)
+	}
+	if got := capturedReq.ContentPaths[domain.CategoryRules]; got != "tools/agent/rules" {
+		t.Errorf("ContentPaths[rules] = %q, want tools/agent/rules", got)
+	}
+}
+
 func TestPackInstallMissing_PackAddError(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
@@ -2385,5 +2457,203 @@ func TestPackSeedProfiles_ConfirmFnDeclinesKeepsExisting(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "existing-pack") {
 		t.Fatalf("expected profile to be preserved after declined confirmation, got:\n%s", got)
+	}
+}
+
+func TestPackAdd_URL_QuietRegistersQuietInProfile(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSeedSyncConfig(t, configDir)
+	writeSeedProfile(t, configDir, "default")
+
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		URL:       "https://github.com/example/quiet-pack",
+		ConfigDir: configDir,
+		Register:  true,
+		Profile:   "default",
+		Quiet:     true,
+		RunGitFn:  fakeCloneGitFn(t, "quiet-pack"),
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	profilePath := filepath.Join(configDir, "profiles", "default.yaml")
+	cfg, err := config.LoadProfile(profilePath)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	var found *config.PackEntry
+	for i := range cfg.Packs {
+		if cfg.Packs[i].Name == "quiet-pack" {
+			found = &cfg.Packs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("quiet-pack not found in profile")
+	}
+	if !found.Quiet {
+		t.Fatal("expected Quiet=true in profile entry")
+	}
+	if !strings.Contains(out.String(), "quiet pack") {
+		t.Fatalf("expected 'quiet pack' in output, got: %s", out.String())
+	}
+}
+
+func TestPackAdd_URL_ContentPathsRecordedInSyncConfig(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeSeedSyncConfig(t, configDir)
+
+	paths := map[domain.PackCategory]string{
+		domain.CategorySkills: "nested/skills",
+		domain.CategoryRules:  "config/rules",
+	}
+
+	// Clone mock that creates non-standard layout (no pack.json).
+	cloneFn := func(_ context.Context, args ...string) error {
+		dir := args[len(args)-1]
+		os.MkdirAll(filepath.Join(dir, "nested", "skills", "triage"), 0o755)
+		os.WriteFile(filepath.Join(dir, "nested", "skills", "triage", "SKILL.md"),
+			[]byte("---\nname: triage\ndescription: t\n---\nbody\n"), 0o644)
+		os.MkdirAll(filepath.Join(dir, "config", "rules"), 0o755)
+		os.WriteFile(filepath.Join(dir, "config", "rules", "guide.md"),
+			[]byte("---\nname: guide\n---\nbody\n"), 0o644)
+		return nil
+	}
+
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		URL:          "https://github.com/example/ext-repo",
+		ConfigDir:    configDir,
+		Register:     false,
+		Name:         "ext-repo",
+		ContentPaths: paths,
+		RunGitFn:     cloneFn,
+		URLOKFn:      func(context.Context, string) (bool, error) { return true, nil },
+		NowFn:        func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	meta, ok := sc.InstalledPacks["ext-repo"]
+	if !ok {
+		t.Fatal("expected ext-repo in InstalledPacks")
+	}
+	if meta.ContentPaths[domain.CategorySkills] != "nested/skills" {
+		t.Fatalf("expected skills=nested/skills, got %q", meta.ContentPaths[domain.CategorySkills])
+	}
+	if meta.ContentPaths[domain.CategoryRules] != "config/rules" {
+		t.Fatalf("expected rules=config/rules, got %q", meta.ContentPaths[domain.CategoryRules])
+	}
+
+	// Verify standard layout was produced.
+	packDir := filepath.Join(configDir, "packs", "ext-repo")
+	if _, err := os.Stat(filepath.Join(packDir, "pack.json")); err != nil {
+		t.Fatal("pack.json missing from extracted pack")
+	}
+	if _, err := os.Stat(filepath.Join(packDir, "skills", "triage", "SKILL.md")); err != nil {
+		t.Fatal("skills/triage/SKILL.md missing from extracted pack")
+	}
+}
+
+func TestPackAdd_Path_QuietRegistersQuietInProfile(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	config.EnsureInit(configDir)
+
+	packDir := filepath.Join(t.TempDir(), "local-quiet")
+	os.MkdirAll(packDir, 0o755)
+	writePackManifest(t, packDir, "local-quiet")
+
+	var out bytes.Buffer
+	err := PackAdd(context.Background(), PackAddRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Register:  true,
+		Profile:   "default",
+		Quiet:     true,
+		Link:      true,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	cfg, err := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	var found *config.PackEntry
+	for i := range cfg.Packs {
+		if cfg.Packs[i].Name == "local-quiet" {
+			found = &cfg.Packs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("local-quiet not found in profile")
+	}
+	if !found.Quiet {
+		t.Fatal("expected Quiet=true in profile entry for local install with --quiet")
+	}
+}
+
+// TestPackRegister_QuietUpdatesExistingEntry verifies that re-registering a
+// pack with quiet=true updates the Quiet field on an existing profile entry.
+// Bug: the current code only sets Quiet when creating a *new* entry, silently
+// ignoring it when the pack already exists.
+func TestPackRegister_QuietUpdatesExistingEntry(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	config.EnsureInit(configDir)
+
+	// Register non-quiet first.
+	var out bytes.Buffer
+	if err := PackRegister(configDir, "default", "my-pack", false, &out); err != nil {
+		t.Fatalf("PackRegister (non-quiet): %v", err)
+	}
+	// Verify it's non-quiet.
+	cfg, err := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	for _, p := range cfg.Packs {
+		if p.Name == "my-pack" && p.Quiet {
+			t.Fatal("expected Quiet=false after initial register")
+		}
+	}
+
+	// Re-register the same pack with quiet=true.
+	out.Reset()
+	if err := PackRegister(configDir, "default", "my-pack", true, &out); err != nil {
+		t.Fatalf("PackRegister (quiet): %v", err)
+	}
+
+	cfg, err = config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	var found *config.PackEntry
+	for i := range cfg.Packs {
+		if cfg.Packs[i].Name == "my-pack" {
+			found = &cfg.Packs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("my-pack not found in profile after re-register")
+	}
+	if !found.Quiet {
+		t.Fatal("expected Quiet=true after re-registering with quiet=true — " +
+			"PackRegister ignores quiet flag on existing entries")
 	}
 }

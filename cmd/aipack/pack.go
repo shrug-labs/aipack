@@ -11,6 +11,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -36,12 +37,42 @@ definitions, and harness base configs.
 Packs are installed under ~/.config/aipack/packs/<name>/.`
 }
 
+// buildContentPaths builds a content type map from CLI flag values.
+// Returns nil when all inputs are empty.
+func buildContentPaths(rules, skills, agents, workflows, prompts string) map[domain.PackCategory]string {
+	pairs := []struct {
+		cat domain.PackCategory
+		val string
+	}{
+		{domain.CategoryRules, rules},
+		{domain.CategorySkills, skills},
+		{domain.CategoryAgents, agents},
+		{domain.CategoryWorkflows, workflows},
+		{domain.CategoryPrompts, prompts},
+	}
+	var cp map[domain.PackCategory]string
+	for _, p := range pairs {
+		if p.val != "" {
+			if cp == nil {
+				cp = map[domain.PackCategory]string{}
+			}
+			cp[p.cat] = p.val
+		}
+	}
+	return cp
+}
+
 // --- pack create ---
 
 type PackCreateCmd struct {
 	Name      string `arg:"" help:"Pack name"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Local     bool   `help:"Create pack inside the packs directory instead of the current directory" name:"local"`
+	Rules     string `help:"Symlink rules/ to this directory" name:"rules" type:"path"`
+	Skills    string `help:"Symlink skills/ to this directory" name:"skills" type:"path"`
+	Agents    string `help:"Symlink agents/ to this directory" name:"agents" type:"path"`
+	Workflows string `help:"Symlink workflows/ to this directory" name:"workflows" type:"path"`
+	Prompts   string `help:"Symlink prompts/ to this directory" name:"prompts" type:"path"`
 }
 
 func (c *PackCreateCmd) Help() string {
@@ -69,11 +100,15 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	if err := app.PackCreate(app.PackCreateRequest{
+	req := app.PackCreateRequest{
 		Name:      c.Name,
 		ConfigDir: cfgDir,
 		Local:     c.Local,
-	}); err != nil {
+	}
+	if cs := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cs != nil {
+		req.ContentSources = cs
+	}
+	if err := app.PackCreate(req); err != nil {
 		return err
 	}
 	if c.Local {
@@ -99,6 +134,12 @@ type PackInstallCmd struct {
 	Copy       bool   `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
 	Seed       bool   `help:"Apply bundled registries and profiles from remote packs (preview-only by default)" name:"seed"`
 	Missing    bool   `help:"Install all missing packs from the active profile" short:"m"`
+	Quiet      bool   `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
+	Rules      string `help:"Extract rules from this directory within the repo" name:"rules"`
+	Skills     string `help:"Extract skills from this directory within the repo" name:"skills"`
+	Agents     string `help:"Extract agents from this directory within the repo" name:"agents"`
+	Workflows  string `help:"Extract workflows from this directory within the repo" name:"workflows"`
+	Prompts    string `help:"Extract prompts from this directory within the repo" name:"prompts"`
 }
 
 func (c *PackInstallCmd) Help() string {
@@ -153,6 +194,7 @@ See also: pack delete, pack list, pack update, registry list`
 func (c *PackInstallCmd) Validate() error {
 	hasPath := c.Path != ""
 	hasURL := c.URL != ""
+	hasContentFlags := c.Rules != "" || c.Skills != "" || c.Agents != "" || c.Workflows != "" || c.Prompts != ""
 	if hasURL && hasPath {
 		return fmt.Errorf("--url and path argument are mutually exclusive")
 	}
@@ -164,6 +206,12 @@ func (c *PackInstallCmd) Validate() error {
 	}
 	if !hasPath && !hasURL && !c.Missing {
 		return fmt.Errorf("provide a pack path, --url, or -m to install missing packs from the active profile")
+	}
+	if hasContentFlags && !hasURL {
+		return fmt.Errorf("content flags (--rules, --skills, --agents, --workflows, --prompts) require --url")
+	}
+	if hasContentFlags && c.Name == "" {
+		return fmt.Errorf("content flags require --name (no pack.json to derive name from)")
 	}
 	return nil
 }
@@ -213,6 +261,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		Register:  !c.NoRegister,
 		Profile:   profile,
 		Seed:      c.Seed,
+		Quiet:     c.Quiet,
 		SeedConfirmFn: func(name string) bool {
 			fmt.Fprintf(g.Stderr, "Profile %q already exists. Replace with pack version? [y/N] ", name)
 			if !g.StdinTTY {
@@ -226,6 +275,11 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 			return strings.ToLower(strings.TrimSpace(answer)) == "y"
 		},
 	}
+	// CLI content flags take precedence over registry entry content_paths.
+	if cp := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cp != nil {
+		req.ContentPaths = cp
+	}
+
 	if c.URL != "" {
 		req.URL = c.URL
 		req.Ref = c.Ref
@@ -259,6 +313,12 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		}
 		if req.Name == "" {
 			req.Name = c.Path // use the registry key as the pack name
+		}
+		if entry.Quiet {
+			req.Quiet = true
+		}
+		if len(entry.ContentPaths) > 0 {
+			req.ContentPaths = entry.ContentPaths
 		}
 	} else {
 		req.PackPath = c.Path
@@ -338,22 +398,43 @@ func (c *PackListCmd) Run(ctx context.Context, g *Globals) error {
 		fmt.Fprintln(g.Stdout, "No packs installed.")
 		return nil
 	}
-	for _, e := range entries {
+	printPackListEntries(g.Stdout, entries)
+	return nil
+}
+
+func printPackListEntries(w io.Writer, entries []app.PackShowEntry) {
+	for i, e := range entries {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
 		ver := ""
 		if e.Version != "" {
 			ver = " v" + e.Version
-		}
-		origin := ""
-		if e.Origin != "" {
-			origin = " (from " + e.Origin + ")"
 		}
 		broken := ""
 		if e.Method == config.MethodLink && !util.PathExists(e.Path) {
 			broken = " [BROKEN LINK]"
 		}
-		fmt.Fprintf(g.Stdout, "  %s (%s)%s -> %s%s%s\n", e.Name, e.Method, ver, e.Path, origin, broken)
+		fmt.Fprintf(w, "Name:    %s (%s)%s%s\n", e.Name, e.Method, ver, broken)
+		if e.Origin != "" && e.Origin != e.Path {
+			fmt.Fprintf(w, "Origin:  %s\n", e.Origin)
+		}
+		fmt.Fprintf(w, "Path:    %s\n", e.Path)
+		if e.Ref != "" {
+			fmt.Fprintf(w, "Ref:     %s\n", e.Ref)
+		}
+		if summary := packContentSummary(e); summary != "" {
+			fmt.Fprintf(w, "Content: %s\n", summary)
+		}
 	}
-	return nil
+}
+
+func packContentSummary(e app.PackShowEntry) string {
+	c := e.Counts()
+	if c.IsZero() {
+		return ""
+	}
+	return c.String()
 }
 
 // --- pack delete ---
@@ -450,6 +531,7 @@ type PackEnableCmd struct {
 	Name      string `arg:"" help:"Name of the installed pack to enable in the profile" predictor:"pack"`
 	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Profile   string `help:"Profile to enable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Quiet     bool   `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
 }
 
 func (c *PackEnableCmd) Help() string {
@@ -479,7 +561,7 @@ func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
 		return fmt.Errorf("pack %q is not installed (run 'aipack pack install' first)", c.Name)
 	}
 
-	if err := app.PackRegister(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout); err != nil {
+	if err := app.PackRegister(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, c.Quiet, g.Stdout); err != nil {
 		return err
 	}
 	return nil

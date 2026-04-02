@@ -85,12 +85,15 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 			continue
 		}
 
-		manifestPath := filepath.Join(configDir, "packs", packName, "pack.json")
+		packRoot := filepath.Join(configDir, "packs", packName)
+		quiet := packCfg.Quiet
+
+		manifestPath := filepath.Join(packRoot, "pack.json")
 		manifest, err := LoadPackManifest(manifestPath)
 		if err != nil {
 			return nil, "", fmt.Errorf("pack %q manifest: %w", packName, err)
 		}
-		packRoot := ResolvePackRoot(manifestPath, manifest.Root)
+		packRoot = ResolvePackRoot(manifestPath, manifest.Root)
 		if packRoot == "" {
 			return nil, "", fmt.Errorf("pack %q root could not be resolved", packName)
 		}
@@ -101,19 +104,19 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 			return nil, "", err
 		}
 
-		rules, err := resolveVector(packName, capRules, manifest.Rules, packCfg.Rules)
+		rules, err := resolveVector(packName, capRules, manifest.Rules, packCfg.Rules, quiet)
 		if err != nil {
 			return nil, "", err
 		}
-		agents, err := resolveVector(packName, capAgents, manifest.Agents, packCfg.Agents)
+		agents, err := resolveVector(packName, capAgents, manifest.Agents, packCfg.Agents, quiet)
 		if err != nil {
 			return nil, "", err
 		}
-		workflows, err := resolveVector(packName, capWorkflows, manifest.Workflows, packCfg.Workflows)
+		workflows, err := resolveVector(packName, capWorkflows, manifest.Workflows, packCfg.Workflows, quiet)
 		if err != nil {
 			return nil, "", err
 		}
-		skills, err := resolveVector(packName, capSkills, manifest.Skills, packCfg.Skills)
+		skills, err := resolveVector(packName, capSkills, manifest.Skills, packCfg.Skills, quiet)
 		if err != nil {
 			return nil, "", err
 		}
@@ -245,7 +248,7 @@ var defaultTrue = PackEnabled
 // settingsEnabled delegates to SettingsEnabled for nil-defaults-to-false semantics.
 var settingsEnabled = SettingsEnabled
 
-func resolveVector(packName string, label string, inventory []string, sel VectorSelector) ([]string, error) {
+func resolveVector(packName string, label string, inventory []string, sel VectorSelector, quiet bool) ([]string, error) {
 	if sel.Include != nil && sel.Exclude != nil {
 		return nil, fmt.Errorf("pack %q %s cannot set both include and exclude", packName, label)
 	}
@@ -254,10 +257,23 @@ func resolveVector(packName string, label string, inventory []string, sel Vector
 	for _, v := range inv {
 		invSet[v] = struct{}{}
 	}
+
+	// Quiet packs include nothing unless an explicit non-empty include list
+	// is provided. Exclude selectors have no effect (nothing to subtract from).
+	if quiet {
+		if sel.Include != nil {
+			include := normalizeList(*sel.Include)
+			if len(include) > 0 {
+				return expandSelectors(packName, label, "include", include, inv, invSet)
+			}
+		}
+		return nil, nil
+	}
+
 	if sel.Include != nil {
 		include := normalizeList(*sel.Include)
 		if len(include) == 0 {
-			return inv, nil
+			return inv, nil // empty include = include all (backward compat)
 		}
 		return expandSelectors(packName, label, "include", include, inv, invSet)
 	}

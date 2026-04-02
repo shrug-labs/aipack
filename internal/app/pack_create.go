@@ -7,14 +7,16 @@ import (
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // PackCreateRequest describes a pack scaffolding request.
 type PackCreateRequest struct {
-	Name      string // pack name (required)
-	ConfigDir string // aipack config directory (required)
-	Local     bool   // when true, create inside packs dir; otherwise create in CWD and symlink
-	WorkDir   string // working directory for non-local creates (defaults to os.Getwd if empty)
+	Name           string                         // pack name (required)
+	ConfigDir      string                         // aipack config directory (required)
+	Local          bool                           // when true, create inside packs dir; otherwise create in CWD and symlink
+	WorkDir        string                         // working directory for non-local creates (defaults to os.Getwd if empty)
+	ContentSources map[domain.PackCategory]string // local absolute paths; replaces scaffold dirs with symlinks
 }
 
 // PackCreate scaffolds a new pack directory, installs it into the packs
@@ -90,6 +92,20 @@ func PackCreate(req PackCreateRequest) error {
 		}
 	}
 
+	// Replace scaffolded dirs with symlinks to content sources.
+	for cat, srcPath := range req.ContentSources {
+		if _, err := os.Stat(srcPath); err != nil {
+			return fmt.Errorf("--%s source %q not found: %w", cat.DirName(), srcPath, err)
+		}
+		targetDir := filepath.Join(contentDir, cat.DirName())
+		if err := os.RemoveAll(targetDir); err != nil {
+			return fmt.Errorf("removing scaffold dir %s: %w", cat.DirName(), err)
+		}
+		if err := os.Symlink(srcPath, targetDir); err != nil {
+			return fmt.Errorf("symlinking %s to %s: %w", cat.DirName(), srcPath, err)
+		}
+	}
+
 	// Write a seed profile that references this pack by name.
 	profileRel := "profiles/" + req.Name + ".yaml"
 	profilePath := filepath.Join(contentDir, "profiles", req.Name+".yaml")
@@ -108,6 +124,8 @@ func PackCreate(req PackCreateRequest) error {
 
 	// Content vector fields are intentionally nil so that DiscoverContent
 	// auto-discovers them from the directory structure at sync time.
+	// When content sources are provided, discover now so the manifest
+	// reflects what's actually linked.
 	manifest := config.PackManifest{
 		SchemaVersion: 1,
 		Name:          req.Name,
@@ -115,6 +133,11 @@ func PackCreate(req PackCreateRequest) error {
 		Root:          ".",
 		Profiles:      []string{profileRel},
 		Registries:    []string{registryRel},
+	}
+	if len(req.ContentSources) > 0 {
+		if err := config.DiscoverContent(&manifest, contentDir); err != nil {
+			return fmt.Errorf("discovering content: %w", err)
+		}
 	}
 	if err := config.SavePackManifest(manifestPath, manifest); err != nil {
 		return fmt.Errorf("write %s: %w", manifestPath, err)

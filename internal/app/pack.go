@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,6 +48,15 @@ type PackAddRequest struct {
 	// profile name and returns true to replace, false to skip. When nil and
 	// Seed is false, existing profiles are silently skipped.
 	SeedConfirmFn func(name string) bool
+
+	// Quiet marks the pack entry in the profile with quiet: true so that
+	// omitted vector selectors resolve to nothing. Set from --quiet flag
+	// or registry entry quiet hint.
+	Quiet bool
+
+	// ContentPaths maps content types to directories within the repo for packs
+	// that don't follow the standard pack layout. Stored in sync-config.
+	ContentPaths map[domain.PackCategory]string
 
 	// SubPath is the subdirectory within a cloned repo where pack.json lives.
 	// Set when installing from a registry entry that specifies a path.
@@ -209,10 +219,13 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 	packSeedProfiles(req.ConfigDir, destDir, manifest.Profiles, req.Seed, req.SeedConfirmFn, stdout)
 
 	if req.Register {
-		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, stdout); err != nil {
+		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
 			return fmt.Errorf("registering pack in profile: %w", err)
 		}
 	}
+
+	// Index the pack so search works immediately without requiring sync.
+	_ = indexInstalledPack(req.ConfigDir, name, destDir)
 
 	return nil
 }
@@ -312,6 +325,7 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 	if err := packRecordOrigin(req.ConfigDir, name, config.InstalledPackMeta{
 		Origin: req.URL, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
 		Ref: info.Ref, SubPath: info.SubPath, CommitHash: result.commitHash,
+		ContentPaths: req.ContentPaths,
 	}); err != nil {
 		fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
 	}
@@ -331,10 +345,13 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 	}
 
 	if req.Register {
-		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, stdout); err != nil {
+		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
 			return fmt.Errorf("registering pack in profile: %w", err)
 		}
 	}
+
+	// Index the pack so search works immediately without requiring sync.
+	_ = indexInstalledPack(req.ConfigDir, name, result.destDir)
 
 	return nil
 }
@@ -371,12 +388,14 @@ func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info source.P
 		return packInstallResult{}, fmt.Errorf("fetching tarball from %s: %w", tarballURL, err)
 	}
 
-	// Load and parse pack.json from the extracted content.
-	manifestPath := filepath.Join(tmpDir, "pack.json")
-	manifest, err := config.LoadPackManifest(manifestPath)
+	// Extract content into clean pack layout.
+	staging, manifest, err := extractPackContent(
+		packStagingDir(req.ConfigDir), tmpDir, req.ContentPaths, req.Name, "",
+	)
 	if err != nil {
-		return packInstallResult{}, fmt.Errorf("loading pack manifest from tarball: %w", err)
+		return packInstallResult{}, err
 	}
+	defer os.RemoveAll(staging)
 
 	name, err := resolvePackName(req.Name, manifest.Name)
 	if err != nil {
@@ -386,8 +405,8 @@ func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info source.P
 	destDir := filepath.Join(packsDir, name)
 	packRemoveExisting(destDir, stdout)
 
-	if err := os.Rename(tmpDir, destDir); err != nil {
-		return packInstallResult{}, fmt.Errorf("moving tarball content to %s: %w", destDir, err)
+	if err := os.Rename(staging, destDir); err != nil {
+		return packInstallResult{}, fmt.Errorf("moving extracted pack to %s: %w", destDir, err)
 	}
 	fmt.Fprintf(stdout, "Installed: %s -> %s\n", req.URL, destDir)
 
@@ -396,17 +415,15 @@ func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info source.P
 	return packInstallResult{name: name, destDir: destDir, method: config.MethodHTTPTarball, manifest: manifest}, nil
 }
 
-// packShallowClone installs a pack via shallow git clone.
+// packShallowClone installs a pack via shallow git clone. The clone is
+// transient — content is extracted into a clean standard pack layout and the
+// clone is discarded. The installed pack contains only pack content (no .git,
+// no non-pack repo files).
 func packShallowClone(ctx context.Context, req PackAddRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
-	subPath := info.SubPath
 	cloneDir, err := makePackTempDir(req.ConfigDir, "clone-*")
 	if err != nil {
 		return packInstallResult{}, fmt.Errorf("creating temp dir: %w", err)
 	}
-	// The clone dir is always transient — clean it unconditionally.
-	// For non-subpath packs it gets renamed away before this runs (RemoveAll
-	// on a non-existent path is a no-op). For subpath packs it still exists
-	// and must be removed.
 	defer os.RemoveAll(cloneDir)
 
 	if req.RunGitFn != nil {
@@ -419,61 +436,39 @@ func packShallowClone(ctx context.Context, req PackAddRequest, info source.PackU
 		}
 	}
 
-	// Capture commit hash before any subtree extraction destroys .git.
 	commitHash := resolveGitHash(ctx, cloneDir, req.GitHashFn)
 
 	packRoot := cloneDir
-	if subPath != "" {
-		packRoot = filepath.Join(cloneDir, subPath)
+	if info.SubPath != "" {
+		packRoot = filepath.Join(cloneDir, info.SubPath)
 	}
 
-	manifestPath := filepath.Join(packRoot, "pack.json")
-	manifest, err := config.LoadPackManifest(manifestPath)
+	// Extract content into clean staging directory. Use cloneDir as symlink
+	// boundary so subpath packs can resolve symlinks to sibling directories.
+	staging, manifest, err := extractPackContent(
+		packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, cloneDir,
+	)
 	if err != nil {
-		if subPath != "" && os.IsNotExist(err) {
+		// Provide a helpful hint when subpath packs fail to find pack.json.
+		if info.SubPath != "" && errors.Is(err, os.ErrNotExist) {
 			if hint := listClonePacks(cloneDir); hint != "" {
-				return packInstallResult{}, fmt.Errorf("path %q not found in repository; available packs: %s", subPath, hint)
+				return packInstallResult{}, fmt.Errorf("path %q not found in repository; available packs: %s", info.SubPath, hint)
 			}
 		}
-		return packInstallResult{}, fmt.Errorf("loading pack manifest from clone: %w", err)
+		return packInstallResult{}, err
 	}
+	defer os.RemoveAll(staging)
 
 	name, err := resolvePackName(req.Name, manifest.Name)
 	if err != nil {
 		return packInstallResult{}, err
 	}
 
-	// Determine the directory to install: for subpath packs, extract the
-	// subtree into its own temp dir; for root packs, install the clone directly.
-	installDir := cloneDir
-	if subPath != "" {
-		subTmp, err := extractSubtree(packStagingDir(req.ConfigDir), cloneDir, subPath)
-		if err != nil {
-			return packInstallResult{}, err
-		}
-		defer func() {
-			// Clean subtree dir if it wasn't renamed to the final destination.
-			if _, serr := os.Lstat(subTmp); serr == nil {
-				os.RemoveAll(subTmp)
-			}
-		}()
-		installDir = subTmp
-	}
-
 	destDir := filepath.Join(packsDir, name)
 	packRemoveExisting(destDir, stdout)
 
-	if err := os.Rename(installDir, destDir); err != nil {
-		return packInstallResult{}, fmt.Errorf("moving clone to %s: %w", destDir, err)
-	}
-
-	// For root packs (no subPath extraction), the installed directory may
-	// contain symlinks from the cloned repo. Resolve them in-place so the
-	// installed pack contains only regular files.
-	if subPath == "" {
-		if err := util.ResolveSymlinksInDir(destDir); err != nil {
-			return packInstallResult{}, fmt.Errorf("resolving symlinks in clone: %w", err)
-		}
+	if err := os.Rename(staging, destDir); err != nil {
+		return packInstallResult{}, fmt.Errorf("moving extracted pack to %s: %w", destDir, err)
 	}
 
 	fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
@@ -845,25 +840,6 @@ func packRenameInLedger(eng *engine.Engine, path, oldName, newName string) (bool
 	return true, nil
 }
 
-// extractSubtree copies the subtree at cloneDir/subPath into a new temp dir
-// under parentDir. Returns the temp dir path. Caller is responsible for
-// cleanup on error.
-func extractSubtree(parentDir, cloneDir, subPath string) (string, error) {
-	src := filepath.Join(cloneDir, subPath)
-	if _, err := os.Stat(src); err != nil {
-		return "", fmt.Errorf("sub-path %q not found in clone: %w", subPath, err)
-	}
-	tmp, err := os.MkdirTemp(parentDir, "subdir-*")
-	if err != nil {
-		return "", err
-	}
-	if err := util.CopyDirResolvingSymlinks(src, tmp, cloneDir); err != nil {
-		os.RemoveAll(tmp)
-		return "", fmt.Errorf("copying pack subtree: %w", err)
-	}
-	return tmp, nil
-}
-
 // packSeedProfiles copies profile YAML files from the installed pack to
 // configDir/profiles/. When force is true (explicit --seed), existing profiles
 // are overwritten. When force is false and confirm is non-nil, existing
@@ -947,7 +923,7 @@ func packClearOrigin(configDir, name string) error {
 }
 
 // PackRegister adds a pack entry to the named profile.
-func PackRegister(configDir string, profileName string, packName string, stdout io.Writer) error {
+func PackRegister(configDir string, profileName string, packName string, quiet bool, stdout io.Writer) error {
 	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
 
 	cfg, err := config.LoadProfile(profilePath)
@@ -958,11 +934,14 @@ func PackRegister(configDir string, profileName string, packName string, stdout 
 		return fmt.Errorf("parsing profile: %w", err)
 	}
 
-	// Check if pack already exists.
+	// Check if pack already exists; set Quiet only when explicitly requested.
 	packExists := false
-	for _, p := range cfg.Packs {
+	for i, p := range cfg.Packs {
 		if p.Name == packName {
 			packExists = true
+			if quiet {
+				cfg.Packs[i].Quiet = true
+			}
 			break
 		}
 	}
@@ -971,6 +950,7 @@ func PackRegister(configDir string, profileName string, packName string, stdout 
 		cfg.Packs = append(cfg.Packs, config.PackEntry{
 			Name:    packName,
 			Enabled: &enabled,
+			Quiet:   quiet,
 		})
 	}
 
@@ -984,7 +964,11 @@ func PackRegister(configDir string, profileName string, packName string, stdout 
 	}
 
 	if !packExists {
-		fmt.Fprintf(stdout, "Registered pack %q in profile %q\n", packName, profileName)
+		label := "pack"
+		if quiet {
+			label = "quiet pack"
+		}
+		fmt.Fprintf(stdout, "Registered %s %q in profile %q\n", label, packName, profileName)
 	} else {
 		fmt.Fprintf(stdout, "Pack %q already registered in profile %q\n", packName, profileName)
 	}
@@ -1059,10 +1043,24 @@ func (e PackShowEntry) ContentIDs(cat domain.PackCategory) []string {
 		return e.Workflows
 	case domain.CategorySkills:
 		return e.Skills
+	case domain.CategoryPrompts:
+		return e.Prompts
 	case domain.CategoryMCP:
 		return e.MCPServers
 	}
 	return nil
+}
+
+// Counts returns content counts for display formatting.
+func (e PackShowEntry) Counts() ContentCounts {
+	return ContentCounts{
+		Rules:     len(e.Rules),
+		Skills:    len(e.Skills),
+		Workflows: len(e.Workflows),
+		Agents:    len(e.Agents),
+		Prompts:   len(e.Prompts),
+		MCP:       len(e.MCPServers),
+	}
 }
 
 // packUpdateContext holds resolved dependencies for updating packs.
@@ -1172,54 +1170,47 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 	case config.MethodClone:
 		ref := meta.Ref
 		oldIntegrity, _ := loadIntegrity(packDir)
-		// hashDir tracks which directory to read HEAD from (may differ for subpath packs).
-		hashDir := packDir
-		if meta.SubPath != "" {
-			// Subdirectory pack: re-clone full repo, extract subtree.
-			tmpDir, err := makePackTempDir(uctx.configDir, "clone-*")
-			if err != nil {
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
-			defer os.RemoveAll(tmpDir)
-			if err := source.EnsureCloneWith(ctx, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
-			hashDir = tmpDir // capture hash from full clone before subtree extraction
-			subTmp, err := extractSubtree(uctx.tempDir, tmpDir, meta.SubPath)
-			if err != nil {
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
-			if err := os.RemoveAll(packDir); err != nil {
-				os.RemoveAll(subTmp)
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
-			if err := os.Rename(subTmp, packDir); err != nil {
-				os.RemoveAll(subTmp)
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
-		} else if ref != "" {
-			if err := uctx.runGitFn(ctx, "-C", packDir, "fetch", "--depth", "1", "origin", ref); err != nil {
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
-			if err := uctx.runGitFn(ctx, "-C", packDir, "checkout", ref); err != nil {
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
-		} else {
-			if err := uctx.runGitFn(ctx, "-C", packDir, "pull", "--ff-only"); err != nil {
-				return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-			}
+
+		// Unified: re-clone to temp and extract clean pack (handles root,
+		// subpath, and content_paths packs identically).
+		tmpDir, err := makePackTempDir(uctx.configDir, "clone-*")
+		if err != nil {
+			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
 		}
-		newHash := resolveGitHash(ctx, hashDir, uctx.gitHashFn)
+		defer os.RemoveAll(tmpDir)
+		if err := source.EnsureCloneWith(ctx, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
+			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
+		}
+
+		newHash := resolveGitHash(ctx, tmpDir, uctx.gitHashFn)
 		if newHash != "" && newHash == meta.CommitHash {
 			fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, shortHash(newHash))
 			return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "already at " + shortHash(newHash), CommitHash: newHash}
 		}
+
+		srcRoot := tmpDir
+		if meta.SubPath != "" {
+			srcRoot = filepath.Join(tmpDir, meta.SubPath)
+		}
+
+		staging, _, err := extractPackContent(uctx.tempDir, srcRoot, meta.ContentPaths, name, tmpDir)
+		if err != nil {
+			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
+		}
+		defer os.RemoveAll(staging)
+		if err := os.RemoveAll(packDir); err != nil {
+			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
+		}
+		if err := os.Rename(staging, packDir); err != nil {
+			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
+		}
+
 		_ = packRecordOrigin(uctx.configDir, name, config.InstalledPackMeta{
 			Origin: meta.Origin, Method: method, InstalledAt: uctx.nowFn().UTC().Format(time.RFC3339),
-			Ref: ref, SubPath: meta.SubPath, CommitHash: newHash,
+			Ref: ref, SubPath: meta.SubPath, CommitHash: newHash, ContentPaths: meta.ContentPaths,
 		})
 		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
-		msg := "pulled latest"
+		msg := "updated"
 		if newHash != "" {
 			msg = shortHash(newHash)
 			if meta.CommitHash != "" {
@@ -1571,12 +1562,14 @@ func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdo
 
 		// Install via PackAdd.
 		addReq := PackAddRequest{
-			ConfigDir: req.ConfigDir,
-			URL:       entry.Repo,
-			Ref:       entry.Ref,
-			SubPath:   entry.Path,
-			Name:      name,
-			Register:  false, // already in the profile
+			ConfigDir:    req.ConfigDir,
+			URL:          entry.Repo,
+			Ref:          entry.Ref,
+			SubPath:      entry.Path,
+			Name:         name,
+			Register:     false, // already in the profile
+			Quiet:        entry.Quiet,
+			ContentPaths: entry.ContentPaths,
 		}
 		if installErr := addFn(ctx, addReq, stdout); installErr != nil {
 			fmt.Fprintf(stdout, "  %s: install failed: %v\n", name, installErr)

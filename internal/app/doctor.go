@@ -114,7 +114,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		add(syncCheck)
 		add(doctorSkippedCheck("profile_loaded", "sync-config not loaded"))
 		add(doctorSkippedCheck("packs_resolved", "sync-config not loaded"))
-		add(doctorSkippedCheck("mcp_env_vars_present", "sync-config not loaded"))
+		add(doctorSkippedCheck("mcp_refs_present", "sync-config not loaded"))
 		add(doctorSkippedCheck("mcp_server_paths_exist", "sync-config not loaded"))
 		return rep
 	}
@@ -171,7 +171,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		profileCheck.Remediation = "Pass --profile-path or ensure HOME is set and the requested profile exists"
 		add(profileCheck)
 		add(doctorSkippedCheck("packs_resolved", "profile not loaded"))
-		add(doctorSkippedCheck("mcp_env_vars_present", "profile not loaded"))
+		add(doctorSkippedCheck("mcp_refs_present", "profile not loaded"))
 		add(doctorSkippedCheck("mcp_server_paths_exist", "profile not loaded"))
 		return rep
 	}
@@ -182,7 +182,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		profileCheck.Details = map[string]any{"profile_path": pp}
 		add(profileCheck)
 		add(doctorSkippedCheck("packs_resolved", "profile not loaded"))
-		add(doctorSkippedCheck("mcp_env_vars_present", "profile not loaded"))
+		add(doctorSkippedCheck("mcp_refs_present", "profile not loaded"))
 		add(doctorSkippedCheck("mcp_server_paths_exist", "profile not loaded"))
 		return rep
 	}
@@ -203,7 +203,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		packsCheck.Message = rcErr.Error()
 		packsCheck.Remediation = "Fix profile sources/packs and ensure all referenced pack.json and mcp inventory files exist locally (URL sources must already be cached)"
 		add(packsCheck)
-		add(doctorSkippedCheck("mcp_env_vars_present", "packs not resolved"))
+		add(doctorSkippedCheck("mcp_refs_present", "packs not resolved"))
 		add(doctorSkippedCheck("mcp_server_paths_exist", "packs not resolved"))
 		return rep
 	}
@@ -212,7 +212,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		packsCheck.Message = invErr.Error()
 		packsCheck.Remediation = "Fix profile sources/packs and ensure all referenced pack.json and mcp inventory files exist locally (URL sources must already be cached)"
 		add(packsCheck)
-		add(doctorSkippedCheck("mcp_env_vars_present", "packs not resolved"))
+		add(doctorSkippedCheck("mcp_refs_present", "packs not resolved"))
 		add(doctorSkippedCheck("mcp_server_paths_exist", "packs not resolved"))
 		return rep
 	}
@@ -817,8 +817,16 @@ func doctorCheckLedgerHealth(eng *engine.Engine, configDir string, packs []confi
 		for k, entry := range lg.Managed {
 			// MCP entries use synthetic keys (path#mcp:name) that aren't
 			// filesystem paths — orphan detection via Lstat is meaningless.
-			// TODO: add MCP-specific health checks (stale entries, missing SourcePack).
 			if domain.IsMCPLedgerKey(k) {
+				if entry.SourcePack == "" {
+					totalMissingSP++
+					if fix && singlePack != "" {
+						entry.SourcePack = singlePack
+						lg.Managed[k] = entry
+						modified = true
+						fileFixes++
+					}
+				}
 				continue
 			}
 			// Check for orphaned entries.

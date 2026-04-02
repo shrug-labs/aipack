@@ -6,6 +6,24 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.16.0]
+
+### Added
+
+- Content type flags (`--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`) on `pack install` and `pack create`. Install with `--url` extracts a clean content-only slice from the repo. Create with local paths produces directory-level symlinks for live editing.
+- Content path remapping (`content_paths`) in registry entries: declarative version of content flags for team distribution. Consumed repos need no `pack.json` — aipack generates one at install time.
+- Quiet packs (`quiet: true` on profile pack entries, `--quiet`/`-q` install flag, or `quiet: true` registry hint): omitted vector selectors resolve to nothing instead of all content, enabling opt-in inclusion from large catalogs.
+- Prompts as a content category: `--prompts` flag on `pack install` and `pack create`, `prompt` as a search kind, prompt content indexed at sync time.
+- `pack list` shows multi-line output with origin, ref, and content summary per pack.
+- `search` shows a summary header with result counts grouped by kind. Single-pack results omit the pack prefix. Descriptions truncate at sentence boundaries for readability.
+
+### Changed
+
+- All remote pack installs (clone and HTTP tarball) now produce clean content-only packs. Installed packs no longer contain `.git/`, test directories, or other non-pack files. `pack update` for clone-method packs re-clones and re-extracts instead of `git pull`.
+- `profile list` shows `(active)` marker instead of `*` for the current profile.
+- `doctor` renames `mcp_env_vars_present` check to `mcp_refs_present`. MCP ledger entries with missing SourcePack are now detected and auto-fixable.
+- Documentation restructured into focused guides: [Installing Packs](docs/installing-packs.md), [Creating Packs](docs/creating-packs.md), [Profiles](docs/profiles.md), [Sync and Save](docs/sync.md), and [Harness Reference](docs/harness-reference.md). Existing docs slimmed with cross-references to the new guides.
+
 ## [0.15.2]
 
 ### Fixed
