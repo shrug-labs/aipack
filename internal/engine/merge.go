@@ -74,11 +74,11 @@ func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 
 	threeWayMergeMap(disk, prev, next, "", &ops)
 
-	out, err := json.MarshalIndent(disk, "", "  ")
+	out, err := marshalJSON(disk)
 	if err != nil {
 		return nil, nil, err
 	}
-	return append(out, '\n'), ops, nil
+	return out, ops, nil
 }
 
 func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeOp, error) {
@@ -100,7 +100,7 @@ func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 
 	threeWayMergeMap(disk, prev, next, "", &ops)
 
-	out, err := toml.Marshal(disk)
+	out, err := marshalTOML(disk)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -263,4 +263,16 @@ func parseTOMLMap(b []byte) (map[string]any, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+func marshalJSON(m map[string]any) ([]byte, error) {
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+func marshalTOML(m map[string]any) ([]byte, error) {
+	return toml.Marshal(m)
 }

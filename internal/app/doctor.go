@@ -56,7 +56,7 @@ type EcosystemStatus struct {
 	TotalWorkflows int          `json:"total_workflows"`
 	TotalSkills    int          `json:"total_skills"`
 	TotalMCP       int          `json:"total_mcp_servers"`
-	SettingsPack   string       `json:"settings_pack,omitempty"`
+	SettingsPacks  []string     `json:"settings_packs,omitempty"`
 }
 
 // PackStatus describes a single pack's content contribution.
@@ -198,7 +198,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 
 	// packs + MCP inventory — reuse config.ResolveProfile + engine.LoadMCPInventoryForPacks
 	packsCheck := CheckResult{Name: "packs_resolved", Severity: "critical", Status: "fail", OK: false}
-	resolvedPacks, settingsPack, rcErr := config.ResolveProfile(prof, pp, configDir)
+	resolvedPacks, settingsPacks, rcErr := config.ResolveProfile(prof, pp, configDir)
 	if rcErr != nil {
 		packsCheck.Message = rcErr.Error()
 		packsCheck.Remediation = "Fix profile sources/packs and ensure all referenced pack.json and mcp inventory files exist locally (URL sources must already be cached)"
@@ -232,7 +232,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	add(packsCheck)
 
 	if req.Status {
-		rep.Ecosystem = BuildEcosystemStatus(resolvedPacks, settingsPack, profileName, pp, configDir)
+		rep.Ecosystem = BuildEcosystemStatus(resolvedPacks, settingsPacks, profileName, pp, configDir)
 	}
 
 	// required refs (params + env vars)
@@ -721,12 +721,12 @@ func gitHeadHash(dir string) (string, error) {
 }
 
 // BuildEcosystemStatus constructs an EcosystemStatus summary from resolved packs.
-func BuildEcosystemStatus(packs []config.ResolvedPack, settingsPack, profileName, profilePath, configDir string) *EcosystemStatus {
+func BuildEcosystemStatus(packs []config.ResolvedPack, settingsPacks []string, profileName, profilePath, configDir string) *EcosystemStatus {
 	es := &EcosystemStatus{
-		Profile:      profileName,
-		ProfilePath:  profilePath,
-		ConfigDir:    configDir,
-		SettingsPack: settingsPack,
+		Profile:       profileName,
+		ProfilePath:   profilePath,
+		ConfigDir:     configDir,
+		SettingsPacks: settingsPacks,
 	}
 	for _, rp := range packs {
 		ps := PackStatus{
@@ -737,7 +737,7 @@ func BuildEcosystemStatus(packs []config.ResolvedPack, settingsPack, profileName
 			Workflows:  len(rp.Workflows),
 			Skills:     len(rp.Skills),
 			MCPServers: len(rp.MCP),
-			Settings:   rp.Name == settingsPack,
+			Settings:   slices.Contains(settingsPacks, rp.Name),
 		}
 		es.TotalRules += ps.Rules
 		es.TotalAgents += ps.Agents

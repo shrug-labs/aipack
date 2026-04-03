@@ -597,9 +597,9 @@ func TestProfilesTab_NoSyncBlurb(t *testing.T) {
 	}
 }
 
-func TestProfilesTab_SettingsFromDisplay(t *testing.T) {
+func TestProfilesTab_SettingsDisabledDisplay(t *testing.T) {
 	t.Parallel()
-	enabled := true
+	disabled := false
 	m := profilesModel{
 		items: []profileItem{
 			{
@@ -607,7 +607,7 @@ func TestProfilesTab_SettingsFromDisplay(t *testing.T) {
 				cfg: config.ProfileConfig{
 					Packs: []config.PackEntry{
 						{Name: "pack-a"},
-						{Name: "pack-b", Settings: config.PackSettingsConfig{Enabled: &enabled}},
+						{Name: "pack-b", Settings: config.PackSettingsConfig{Enabled: &disabled}},
 					},
 				},
 			},
@@ -618,11 +618,8 @@ func TestProfilesTab_SettingsFromDisplay(t *testing.T) {
 	}
 
 	view := m.View()
-	if !strings.Contains(view, "(settings)") {
-		t.Fatalf("expected '(settings)' in view, got:\n%s", view)
-	}
-	if !strings.Contains(view, "pack-b") {
-		t.Fatalf("expected settings source 'pack-b' in view, got:\n%s", view)
+	if !strings.Contains(view, "(settings off)") {
+		t.Fatalf("expected '(settings off)' in view for disabled pack, got:\n%s", view)
 	}
 }
 
@@ -644,26 +641,23 @@ func TestProfilesTab_SettingsSourceToggle(t *testing.T) {
 		cursor: 0,
 	}
 
-	// Initially pack-a is the settings source.
-	if src := m.settingsSourcePack(); src != "pack-a" {
-		t.Fatalf("expected settings source pack-a, got %q", src)
+	// Initially pack-a has settings enabled — not disabled.
+	if config.SettingsDisabled(m.currentItem().cfg.Packs[0].Settings.Enabled) {
+		t.Fatal("expected pack-a to NOT be disabled")
 	}
 
-	// Switch to pack-b.
-	m = m.setSettingsSource("pack-b")
-	if src := m.settingsSourcePack(); src != "pack-b" {
-		t.Fatalf("expected settings source pack-b, got %q", src)
+	// Toggle pack-a off.
+	m = m.toggleSettingsDisabled("pack-a")
+	if !config.SettingsDisabled(m.currentItem().cfg.Packs[0].Settings.Enabled) {
+		t.Fatal("expected pack-a to be disabled after toggle")
 	}
 	if !m.dirty {
-		t.Fatal("expected dirty=true after settings source change")
+		t.Fatal("expected dirty=true after settings toggle")
 	}
 
-	// pack-a should no longer be settings source.
-	item := m.currentItem()
-	if item.cfg.Packs[0].Settings.Enabled != nil {
-		t.Fatal("expected pack-a settings.enabled to be nil")
-	}
-	if item.cfg.Packs[1].Settings.Enabled == nil || !*item.cfg.Packs[1].Settings.Enabled {
-		t.Fatal("expected pack-b settings.enabled to be true")
+	// Toggle pack-a back on.
+	m = m.toggleSettingsDisabled("pack-a")
+	if config.SettingsDisabled(m.currentItem().cfg.Packs[0].Settings.Enabled) {
+		t.Fatal("expected pack-a to be re-enabled after second toggle")
 	}
 }

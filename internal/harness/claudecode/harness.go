@@ -149,25 +149,26 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 	hasManagedContent := hasMCP || len(base) > 0
 	decision := engine.ClassifySettings(hasMCP, hasManagedContent, ctx.SkipSettings)
-	if decision.EmitSettings || decision.EmitMCP {
+	if decision.EmitSettings {
 		out, err := RenderSettingsBytes(base, ctx.Profile.MCPServers)
 		if err != nil {
 			return fmt.Errorf("render settings bytes: %w", err)
 		}
-		action := domain.SettingsAction{
-			Dst:        settingsPath,
-			Desired:    out,
-			Harness:    domain.HarnessClaudeCode,
-			Label:      "settings.local.json",
-			SourcePack: sp,
-			MergeMode:  true,
+		f.Settings = append(f.Settings, domain.SettingsAction{
+			Dst: settingsPath, Desired: out, Harness: domain.HarnessClaudeCode,
+			Label: "settings.local.json", SourcePack: sp, MergeMode: true,
+		})
+		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
+	} else if decision.EmitMCP {
+		// Skip base template, render only managed keys (MCP permissions).
+		out, err := RenderSettingsBytes(nil, ctx.Profile.MCPServers)
+		if err != nil {
+			return fmt.Errorf("render managed settings bytes: %w", err)
 		}
-		if decision.EmitSettings {
-			f.Settings = append(f.Settings, action)
-		} else {
-			action.Label = "settings.local.json (managed keys)"
-			f.MCP = append(f.MCP, action)
-		}
+		f.MCP = append(f.MCP, domain.SettingsAction{
+			Dst: settingsPath, Desired: out, Harness: domain.HarnessClaudeCode,
+			Label: "settings.local.json (managed keys)", SourcePack: sp, MergeMode: true,
+		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	}
 	return nil

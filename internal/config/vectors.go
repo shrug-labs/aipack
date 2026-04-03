@@ -93,9 +93,11 @@ func PackEnabled(v *bool) bool {
 	return *v
 }
 
-// SettingsEnabled returns whether settings sync is enabled (nil defaults to false).
-func SettingsEnabled(v *bool) bool {
-	return v != nil && *v
+// SettingsDisabled returns true when settings are explicitly opted out
+// (the *bool is set to false). Returns false for nil (default: contribute)
+// and for true (explicit contribute).
+func SettingsDisabled(v *bool) bool {
+	return v != nil && !*v
 }
 
 // BoolPtr returns a pointer to a bool value.

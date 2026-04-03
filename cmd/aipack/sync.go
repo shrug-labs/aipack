@@ -181,8 +181,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 			// with source counts. Verbose dry-run: already returned above.
 			return watchDirs, nil
 		}
-		fmt.Fprintf(g.Stdout, "sync OK: %s, %d settings\n",
-			counts.String(), len(p.Settings))
+		fmt.Fprintf(g.Stdout, "sync OK: %s\n", counts.String())
 
 		return watchDirs, nil
 	}

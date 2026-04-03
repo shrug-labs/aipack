@@ -93,7 +93,8 @@ func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]m
 	return append(out, '\n'), warnings, nil
 }
 
-// RenderMCPOnly produces a TOML document containing ONLY the mcp_servers table.
-func RenderMCPOnly(servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
-	return RenderBytes(nil, servers, nil)
+// RenderManagedKeysOnly produces a TOML document containing only the
+// sync-managed keys (mcp_servers + agent registrations), without base template.
+func RenderManagedKeysOnly(servers []domain.MCPServer, agentRegs map[string]map[string]any) ([]byte, []domain.Warning, error) {
+	return RenderBytes(nil, servers, agentRegs)
 }

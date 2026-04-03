@@ -1,36 +1,31 @@
 package config
 
-import (
-	"errors"
-	"fmt"
-	"strings"
-)
+import "strings"
 
-// HarnessSettingsPackForHarness finds the resolved pack that provides base
-// settings. settingsPack is the single pack name selected during profile
-// resolution; harness is used only to filter packs that actually declare
-// settings/plugins files for that harness.
-func HarnessSettingsPackForHarness(packs []ResolvedPack, settingsPack string, harness string) (ResolvedPack, error) {
+// HarnessSettingsPacksForHarness returns all resolved packs that contribute
+// settings or plugin files for the given harness, in profile order.
+// settingsPacks is the ordered list of contributing pack names from ResolveProfile.
+func HarnessSettingsPacksForHarness(packs []ResolvedPack, settingsPacks []string, harness string) []ResolvedPack {
 	h := strings.ToLower(strings.TrimSpace(harness))
-	if h == "" {
-		return ResolvedPack{}, errors.New("empty harness")
-	}
-	if len(packs) == 0 {
-		return ResolvedPack{}, errors.New("no packs resolved")
-	}
-	if settingsPack == "" {
-		return ResolvedPack{}, fmt.Errorf("no settings pack configured for profile")
+	if h == "" || len(packs) == 0 || len(settingsPacks) == 0 {
+		return nil
 	}
 
+	packByName := map[string]ResolvedPack{}
 	for _, p := range packs {
-		if p.Name != settingsPack {
+		packByName[p.Name] = p
+	}
+
+	var result []ResolvedPack
+	for _, name := range settingsPacks {
+		p, ok := packByName[name]
+		if !ok {
 			continue
 		}
-		// Verify this pack actually has settings or plugin files for the harness.
 		if len(p.Manifest.Configs.HarnessSettings[h]) == 0 && len(p.Manifest.Configs.HarnessPlugins[h]) == 0 {
-			return ResolvedPack{}, fmt.Errorf("settings pack %q has no settings or plugins for harness %q", settingsPack, h)
+			continue
 		}
-		return p, nil
+		result = append(result, p)
 	}
-	return ResolvedPack{}, fmt.Errorf("settings pack %q not found in resolved packs", settingsPack)
+	return result
 }

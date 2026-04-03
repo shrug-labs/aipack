@@ -39,7 +39,7 @@ type PackEntry struct {
 }
 
 // PackSettingsConfig controls per-pack harness settings sync.
-// nil Enabled = false (opt-in).
+// Packs with config files contribute by default. Set enabled: false to opt out.
 type PackSettingsConfig struct {
 	Enabled *bool `yaml:"enabled"`
 }

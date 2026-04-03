@@ -1024,10 +1024,10 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			} else {
 				m.statusText = dimStyle.Render("no packs in profile")
 			}
-		case actSettingsSource:
+		case actSettingsDisable, actSettingsEnable:
 			if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
 				packName := item.cfg.Packs[m.profiles.packCursor].Name
-				m.profiles = m.profiles.setSettingsSource(packName)
+				m.profiles = m.profiles.toggleSettingsDisabled(packName)
 				m.dirty = m.dirty || m.profiles.dirty
 				if item.dirty {
 					return m, saveProfile(m.cfg.ConfigDir, item.name, item.cfg)
@@ -1459,11 +1459,12 @@ const (
 
 // Action menu item labels — used in both open*Actions() and handleDialogResult().
 const (
-	actNewProfile     = "New profile"
-	actDuplicate      = "Duplicate"
-	actActivate       = "Activate"
-	actDelete         = "Delete"
-	actSettingsSource = "Settings source"
+	actNewProfile      = "New profile"
+	actDuplicate       = "Duplicate"
+	actActivate        = "Activate"
+	actDelete          = "Delete"
+	actSettingsDisable = "Disable settings"
+	actSettingsEnable  = "Enable settings"
 	// Profile pack roster actions (pack enable/disable = profile membership).
 	actProfileAddPack    = "Add to profile"
 	actProfileRemovePack = "Remove from profile"
@@ -1533,11 +1534,13 @@ func (m rootModel) openProfileActions() (tea.Model, tea.Cmd) {
 func (m rootModel) openPackRosterActions() (tea.Model, tea.Cmd) {
 	var actions []string
 	actions = append(actions, actProfileRemovePack)
-	// Offer "Settings source" for any pack that is not already the current settings source.
+	// Offer settings toggle: disable if currently contributing, enable if opted out.
 	if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
-		curName := item.cfg.Packs[m.profiles.packCursor].Name
-		if curName != m.profiles.settingsSourcePack() {
-			actions = append(actions, actSettingsSource)
+		pe := item.cfg.Packs[m.profiles.packCursor]
+		if pe.Settings.Enabled != nil && !*pe.Settings.Enabled {
+			actions = append(actions, actSettingsEnable)
+		} else {
+			actions = append(actions, actSettingsDisable)
 		}
 	}
 	if len(actions) == 0 {

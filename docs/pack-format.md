@@ -412,9 +412,9 @@ The manifest declares which files are settings (merged with engine-managed keys)
 }
 ```
 
-**Settings** are templates — the sync engine merges them with generated MCP configs, tool permissions, and content references. At most one pack per profile can provide settings for a given harness.
+**Settings** are base templates containing non-managed user preferences (theme, editor config, non-MCP permissions). The sync engine merges them with computed managed keys (MCP configs, tool permissions, content paths). Multiple packs can contribute settings for the same harness — they are deep-merged in profile order, with the first pack winning at leaf value conflicts.
 
-**Plugins** are pure copies — synced as-is regardless of `--skip-settings`.
+**Plugins** are pure copies — synced as-is regardless of `--skip-settings`. Same-name plugin files from different packs produce an error.
 
 ## 8. Composition
 

@@ -149,7 +149,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
-		managed, _, err := RenderMCPOnly(ctx.Profile.MCPServers)
+		managed, _, err := RenderManagedKeysOnly(ctx.Profile.MCPServers, agentRegs)
 		if err != nil {
 			return err
 		}

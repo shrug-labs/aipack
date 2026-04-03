@@ -552,8 +552,6 @@ func (m profilesModel) viewPackRoster(width, height int) string {
 	}
 	sb.WriteString(panelHeaderStyle.Render(fmt.Sprintf("Packs (%d/%d)", enabledCount, len(item.cfg.Packs))) + "\n")
 
-	settingsPack := m.settingsSourcePack()
-
 	var lines []string
 	focused := m.focus == panelPacks
 	for i, pe := range item.cfg.Packs {
@@ -574,8 +572,8 @@ func (m profilesModel) viewPackRoster(width, height int) string {
 		}
 		name := nameStyle.Render(pe.Name)
 		label := ""
-		if pe.Name == settingsPack {
-			label = " " + dimStyle.Render("(settings)")
+		if config.SettingsDisabled(pe.Settings.Enabled) {
+			label = " " + dimStyle.Render("(settings off)")
 		}
 		lines = append(lines, fmt.Sprintf("%s%s %s%s", cursor, check, name, label))
 	}
@@ -597,31 +595,22 @@ func (m profilesModel) viewPackRoster(width, height int) string {
 	return style.Render(sb.String())
 }
 
-// settingsSourcePack returns the name of the pack with settings.enabled: true.
-func (m profilesModel) settingsSourcePack() string {
-	item := m.currentItem()
-	if item == nil {
-		return ""
-	}
-	for _, pe := range item.cfg.Packs {
-		if pe.Settings.Enabled != nil && *pe.Settings.Enabled {
-			return pe.Name
-		}
-	}
-	return ""
-}
-
-// setSettingsSource sets settings.enabled on the named pack and clears it on all others.
-func (m profilesModel) setSettingsSource(packName string) profilesModel {
+// toggleSettingsDisabled toggles settings.enabled: false for the named pack.
+// If currently disabled, clears to nil (contribute by default).
+// If currently nil or true, sets to false (opt out).
+func (m profilesModel) toggleSettingsDisabled(packName string) profilesModel {
 	item := m.currentItem()
 	if item == nil {
 		return m
 	}
 	for i := range item.cfg.Packs {
 		if item.cfg.Packs[i].Name == packName {
-			item.cfg.Packs[i].Settings.Enabled = boolPtr(true)
-		} else {
-			item.cfg.Packs[i].Settings.Enabled = nil // nil = false (opt-in default)
+			if item.cfg.Packs[i].Settings.Enabled != nil && !*item.cfg.Packs[i].Settings.Enabled {
+				item.cfg.Packs[i].Settings.Enabled = nil // re-enable (default: contribute)
+			} else {
+				item.cfg.Packs[i].Settings.Enabled = boolPtr(false) // opt out
+			}
+			break
 		}
 	}
 	m.dirty = true

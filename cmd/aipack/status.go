@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -41,12 +42,12 @@ func (c *StatusCmd) Run(ctx context.Context, g *Globals) error {
 	}
 	cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
 
-	resolvedPacks, settingsPack, err := config.ResolveProfile(loaded.profileCfg, loaded.profilePath, loaded.configDir)
+	resolvedPacks, settingsPacks, err := config.ResolveProfile(loaded.profileCfg, loaded.profilePath, loaded.configDir)
 	if err != nil {
 		return err
 	}
 
-	es := app.BuildEcosystemStatus(resolvedPacks, settingsPack, loaded.profileName, loaded.profilePath, loaded.configDir)
+	es := app.BuildEcosystemStatus(resolvedPacks, settingsPacks, loaded.profileName, loaded.profilePath, loaded.configDir)
 
 	if c.JSON {
 		return cmdutil.WriteJSON(g.Stdout, es)
@@ -58,8 +59,8 @@ func (c *StatusCmd) Run(ctx context.Context, g *Globals) error {
 
 func printEcosystemStatus(es *app.EcosystemStatus, w io.Writer) {
 	fmt.Fprintf(w, "profile: %s (%s)\n", es.Profile, es.ProfilePath)
-	if es.SettingsPack != "" {
-		fmt.Fprintf(w, "settings: %s\n", es.SettingsPack)
+	if len(es.SettingsPacks) > 0 {
+		fmt.Fprintf(w, "settings: %s\n", strings.Join(es.SettingsPacks, ", "))
 	}
 	fmt.Fprintf(w, "\npacks (%d):\n", len(es.Packs))
 	for i, p := range es.Packs {

@@ -393,11 +393,7 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 			}
 		}
 	}
-	source := counts.String()
-	if n := len(plan.Settings); n > 0 {
-		source += fmt.Sprintf(", %d settings", n)
-	}
-	fmt.Fprintf(w, "plan: %d file ops from %s, %d identical\n", changes, source, skips)
+	fmt.Fprintf(w, "plan: %d file ops from %s, %d identical\n", changes, counts.String(), skips)
 }
 
 // classifyCopyKind aggregates per-file classifications for a CopyAction into a

@@ -47,7 +47,7 @@ packs:
 - **`params`** — key-value pairs expanded into `{params.*}` placeholders throughout pack content and MCP definitions.
 - **`packs`** — ordered list of pack entries. Each entry names an installed pack and optionally filters its content, configures MCP servers, or declares overrides.
 
-Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (true/false), vector selectors (`rules`, `skills`, `workflows`, `agents`), `mcp` server config, and `overrides`.
+Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (false to opt out), vector selectors (`rules`, `skills`, `workflows`, `agents`), `mcp` server config, and `overrides`.
 
 ## Parameters
 
@@ -221,7 +221,7 @@ packs:
 
 Without the `overrides` declaration, duplicate IDs across packs are treated as errors.
 
-At most one pack per profile can have `settings.enabled: true` for a given harness. If two packs claim settings, sync fails.
+Packs with harness config files (`configs/` directory in `pack.json`) contribute base settings automatically. Multiple packs' settings are deep-merged in profile order — the first pack wins at leaf value conflicts, and a warning identifies the overlap. Set `settings.enabled: false` on a pack entry to opt it out of settings contribution.
 
 ## Bundled profiles
 

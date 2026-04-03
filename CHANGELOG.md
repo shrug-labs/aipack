@@ -6,6 +6,19 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.17.0]
+
+### Changed
+
+- **Multi-pack settings.** Any pack with harness config files now contributes base settings automatically — no `settings.enabled: true` required. Multiple packs' settings are deep-merged in profile order (first pack wins at leaf conflicts, warning emitted). Set `settings.enabled: false` to opt a pack out. Existing profiles with `settings.enabled: true` continue to work unchanged.
+- `--skip-settings` now correctly skips only base template keys while still writing all computed managed keys (MCP permissions, agent registrations). Previously, Claude Code leaked the base template through in skip mode, and Codex dropped agent registrations.
+- Sync summary no longer shows settings count — settings are infrastructure, not user-authored content.
+- Plugin files (`harness_plugins`) from multiple packs are no longer silently merged. Same-filename collisions across packs now produce an error.
+
+### Added
+
+- TUI pack actions: "Disable settings" / "Enable settings" toggle replaces the old single-pack "Settings source" selector.
+
 ## [0.16.0]
 
 ### Added

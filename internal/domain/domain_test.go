@@ -367,8 +367,8 @@ func TestNewProfile_MapsInitialized(t *testing.T) {
 	if p.Params == nil {
 		t.Error("NewProfile().Params should be non-nil")
 	}
-	if p.SettingsPack != "" {
-		t.Error("NewProfile().SettingsPack should be empty")
+	if len(p.SettingsPacks) != 0 {
+		t.Error("NewProfile().SettingsPacks should be empty")
 	}
 }
 
@@ -565,20 +565,23 @@ func TestAgentFrontmatter_HarnessOmittedWhenEmpty(t *testing.T) {
 
 func TestProfile_SettingsPackName(t *testing.T) {
 	t.Parallel()
-	p := NewProfile()
-	p.SettingsPack = "my-pack"
 
-	// Same pack name returned regardless of which harness is asked.
+	// Single pack returns its name.
+	p := NewProfile()
+	p.SettingsPacks = []string{"my-pack"}
 	got := p.SettingsPackName(HarnessClaudeCode)
 	if got != "my-pack" {
-		t.Errorf("SettingsPackName(HarnessClaudeCode) = %q, want %q", got, "my-pack")
-	}
-	got = p.SettingsPackName(HarnessOpenCode)
-	if got != "my-pack" {
-		t.Errorf("SettingsPackName(HarnessOpenCode) = %q, want %q", got, "my-pack")
+		t.Errorf("SettingsPackName(single) = %q, want %q", got, "my-pack")
 	}
 
-	// Empty when no settings pack is set.
+	// Multiple packs returns "(composite)".
+	p.SettingsPacks = []string{"pack-a", "pack-b"}
+	got = p.SettingsPackName(HarnessClaudeCode)
+	if got != "(composite)" {
+		t.Errorf("SettingsPackName(multi) = %q, want %q", got, "(composite)")
+	}
+
+	// Empty when no settings packs.
 	p2 := NewProfile()
 	if p2.SettingsPackName(HarnessClaudeCode) != "" {
 		t.Errorf("expected empty SettingsPackName on fresh profile")

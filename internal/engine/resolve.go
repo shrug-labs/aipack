@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"fmt"
-
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
@@ -22,25 +20,12 @@ func (e *Engine) Resolve(
 	configDir string,
 ) (domain.Profile, []domain.Warning, error) {
 	// Step 1: Validate profile, resolve packs, apply selectors, check overrides.
-	resolvedPacks, settingsPack, err := config.ResolveProfile(profileCfg, profilePath, configDir)
+	resolvedPacks, settingsPacks, err := config.ResolveProfile(profileCfg, profilePath, configDir)
 	if err != nil {
 		return domain.Profile{}, nil, err
 	}
 
 	var warnings []domain.Warning
-
-	// Warn if settings are configured on a disabled pack (settings silently lost).
-	if settingsPack == "" {
-		for _, pe := range profileCfg.Packs {
-			disabled := pe.Enabled != nil && !*pe.Enabled
-			if pe.Settings.Enabled != nil && *pe.Settings.Enabled && disabled {
-				warnings = append(warnings, domain.Warning{
-					Message: fmt.Sprintf("settings source %q is disabled — no base settings will be applied", pe.Name),
-				})
-				break
-			}
-		}
-	}
 
 	// Step 2: Parse content per pack into typed domain structs.
 	packs, contentWarnings, err := e.resolvePackContent(resolvedPacks)
@@ -58,7 +43,7 @@ func (e *Engine) Resolve(
 
 	// Step 4: Load harness settings for all harnesses.
 	allH := domain.AllHarnesses()
-	settings, settingsWarnings, err := e.loadHarnessSettings(resolvedPacks, settingsPack, allH)
+	settings, settingsWarnings, err := e.loadHarnessSettings(resolvedPacks, settingsPacks, allH)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
@@ -69,7 +54,7 @@ func (e *Engine) Resolve(
 	p.Packs = packs
 	p.MCPServers = mcpServers
 	p.BaseSettings = settings
-	p.SettingsPack = settingsPack
+	p.SettingsPacks = settingsPacks
 	return p, warnings, nil
 }
 

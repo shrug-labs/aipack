@@ -381,7 +381,7 @@ func TestPlan_Project_BaseSettingsMergedWithMCP(t *testing.T) {
 					{Filename: "settings.local.json", Content: base, SourcePack: "test"},
 				},
 			},
-			SettingsPack: "test",
+			SettingsPacks: []string{"test"},
 		},
 	}
 
@@ -435,7 +435,7 @@ func TestPlan_Project_BaseSettingsOnlyNoMCP(t *testing.T) {
 					{Filename: "settings.local.json", Content: base, SourcePack: "test"},
 				},
 			},
-			SettingsPack: "test",
+			SettingsPacks: []string{"test"},
 		},
 	}
 

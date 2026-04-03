@@ -32,13 +32,13 @@ type ResolvedMCPServer struct {
 	DisabledTools []string
 }
 
-func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]ResolvedPack, string, error) {
+func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]ResolvedPack, []string, error) {
 	if len(cfg.Packs) == 0 {
-		return nil, "", errors.New("profile packs must be configured")
+		return nil, nil, errors.New("profile packs must be configured")
 	}
 
 	var packs []ResolvedPack
-	var settingsPack string
+	var settingsPacks []string
 	seenServers := map[string]string{}
 
 	// vectorState tracks seen IDs and override owners for each string-slice
@@ -79,7 +79,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 	for _, packCfg := range cfg.Packs {
 		packName := strings.TrimSpace(packCfg.Name)
 		if packName == "" {
-			return nil, "", errors.New("profile packs entries must have name")
+			return nil, nil, errors.New("profile packs entries must have name")
 		}
 		if !defaultTrue(packCfg.Enabled) {
 			continue
@@ -91,34 +91,34 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 		manifestPath := filepath.Join(packRoot, "pack.json")
 		manifest, err := LoadPackManifest(manifestPath)
 		if err != nil {
-			return nil, "", fmt.Errorf("pack %q manifest: %w", packName, err)
+			return nil, nil, fmt.Errorf("pack %q manifest: %w", packName, err)
 		}
 		packRoot = ResolvePackRoot(manifestPath, manifest.Root)
 		if packRoot == "" {
-			return nil, "", fmt.Errorf("pack %q root could not be resolved", packName)
+			return nil, nil, fmt.Errorf("pack %q root could not be resolved", packName)
 		}
 		if err := DiscoverContent(&manifest, packRoot); err != nil {
-			return nil, "", fmt.Errorf("pack %q content discovery: %w", packName, err)
+			return nil, nil, fmt.Errorf("pack %q content discovery: %w", packName, err)
 		}
 		if err := validatePackInventory(packName, packRoot, manifest); err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 
 		rules, err := resolveVector(packName, capRules, manifest.Rules, packCfg.Rules, quiet)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		agents, err := resolveVector(packName, capAgents, manifest.Agents, packCfg.Agents, quiet)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		workflows, err := resolveVector(packName, capWorkflows, manifest.Workflows, packCfg.Workflows, quiet)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		skills, err := resolveVector(packName, capSkills, manifest.Skills, packCfg.Skills, quiet)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 
 		packResolved := ResolvedPack{
@@ -140,7 +140,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 				if prev, ok := v.seen[id]; ok {
 					owner := v.owner[id]
 					if owner == "" {
-						return nil, "", fmt.Errorf("%s id %q appears in both %q and %q (declare overrides.%s in the pack that should win)", v.label, id, prev, packName, v.label)
+						return nil, nil, fmt.Errorf("%s id %q appears in both %q and %q (declare overrides.%s in the pack that should win)", v.label, id, prev, packName, v.label)
 					}
 					if owner == packName {
 						stripFromPack(packs, prev, id, v.field)
@@ -163,7 +163,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 		}
 		for name, serverCfg := range mcpSelection {
 			if _, ok := manifest.MCP.Servers[name]; !ok {
-				return nil, "", fmt.Errorf("pack %q references unknown mcp server %q", packName, name)
+				return nil, nil, fmt.Errorf("pack %q references unknown mcp server %q", packName, name)
 			}
 			if !defaultTrue(serverCfg.Enabled) {
 				continue
@@ -180,7 +180,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 			if prev, ok := seenServers[name]; ok {
 				owner := overrideOwnerMCP[name]
 				if owner == "" {
-					return nil, "", fmt.Errorf("mcp server %q appears in both %q and %q (declare overrides.mcp in the pack that should win)", name, prev, packName)
+					return nil, nil, fmt.Errorf("mcp server %q appears in both %q and %q (declare overrides.mcp in the pack that should win)", name, prev, packName)
 				}
 				if owner == packName {
 					stripMCP(packs, prev, name)
@@ -192,17 +192,15 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 			seenServers[name] = packName
 		}
 
-		if settingsEnabled(packCfg.Settings.Enabled) {
-			if settingsPack != "" {
-				return nil, "", fmt.Errorf("multiple packs have settings.enabled: %q and %q; only one is allowed per profile", settingsPack, packName)
-			}
-			settingsPack = packName
+		// Settings: packs contribute if they have config files and are not opted out.
+		if !settingsDisabled(packCfg.Settings.Enabled) && manifest.Configs.HasAnyConfigs() {
+			settingsPacks = append(settingsPacks, packName)
 		}
 
 		packs = append(packs, packResolved)
 	}
 	if len(packs) == 0 {
-		return nil, "", errors.New("no enabled packs in profile")
+		return nil, nil, errors.New("no enabled packs in profile")
 	}
 
 	// Post-resolution validation: every override ID must match an actual
@@ -210,17 +208,17 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 	for _, v := range vectors {
 		for id, owner := range v.owner {
 			if _, ok := v.seen[id]; !ok {
-				return nil, "", fmt.Errorf("pack %q overrides.%s references %q, but no pack provides that %s", owner, v.label, id, v.label)
+				return nil, nil, fmt.Errorf("pack %q overrides.%s references %q, but no pack provides that %s", owner, v.label, id, v.label)
 			}
 		}
 	}
 	for id, owner := range overrideOwnerMCP {
 		if _, ok := seenServers[id]; !ok {
-			return nil, "", fmt.Errorf("pack %q overrides.mcp references %q, but no pack provides that server", owner, id)
+			return nil, nil, fmt.Errorf("pack %q overrides.mcp references %q, but no pack provides that server", owner, id)
 		}
 	}
 
-	return packs, settingsPack, nil
+	return packs, settingsPacks, nil
 }
 
 func stripFromPack(packs []ResolvedPack, packName, id string, field func(*ResolvedPack) *[]string) {
@@ -245,8 +243,8 @@ func stripMCP(packs []ResolvedPack, packName, name string) {
 // defaultTrue delegates to PackEnabled for nil-defaults-to-true semantics.
 var defaultTrue = PackEnabled
 
-// settingsEnabled delegates to SettingsEnabled for nil-defaults-to-false semantics.
-var settingsEnabled = SettingsEnabled
+// settingsDisabled delegates to SettingsDisabled for the opt-out model.
+var settingsDisabled = SettingsDisabled
 
 func resolveVector(packName string, label string, inventory []string, sel VectorSelector, quiet bool) ([]string, error) {
 	if sel.Include != nil && sel.Exclude != nil {

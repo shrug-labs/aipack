@@ -21,9 +21,9 @@ type Profile struct {
 	MCPServers   []MCPServer
 	BaseSettings SettingsBundle
 
-	// SettingsPack is the name of the single pack that provides base settings
-	// for all harnesses. At most one pack per profile can have settings.enabled.
-	SettingsPack string
+	// SettingsPacks lists packs that contribute base settings, in profile order.
+	// All packs with config files contribute by default; set settings.enabled: false to opt out.
+	SettingsPacks []string
 }
 
 // Pack is a resolved pack within a profile, carrying fully-typed content.
@@ -74,11 +74,18 @@ func (p Profile) AllSkills() []Skill {
 	return out
 }
 
-// SettingsPackName returns the pack name that provides base settings,
-// or "" if none is configured. The harness parameter is accepted for
-// call-site compatibility but ignored — one pack provides settings for all.
+// SettingsPackName returns a label for the settings source. If exactly one
+// pack contributes, returns its name. If multiple, returns "(composite)".
+// The harness parameter is accepted for call-site compatibility but ignored.
 func (p Profile) SettingsPackName(_ Harness) string {
-	return p.SettingsPack
+	switch len(p.SettingsPacks) {
+	case 0:
+		return ""
+	case 1:
+		return p.SettingsPacks[0]
+	default:
+		return "(composite)"
+	}
 }
 
 // HasContent reports whether the profile has any rules, agents, workflows, or skills.

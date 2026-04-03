@@ -182,7 +182,9 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n"})
 
-	packs, settingsPack, err := ResolveProfile(ProfileConfig{
+	// Neither pack has config files, so settingsPacks should be empty
+	// even with settings.enabled: true (no configs to contribute).
+	packs, settingsPacks, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first"}, {Name: "second", Overrides: Overrides{Rules: []string{"shared"}}, Settings: PackSettingsConfig{Enabled: BoolPtr(true)}}},
 	}, filepath.Join(root, "profile.yaml"), root)
@@ -192,23 +194,32 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 	if len(packs) != 2 {
 		t.Fatalf("packs = %d, want 2", len(packs))
 	}
-	if settingsPack != "second" {
-		t.Fatalf("settingsPack = %q, want %q", settingsPack, "second")
+	if len(settingsPacks) != 0 {
+		t.Fatalf("settingsPacks = %v, want empty (no pack has config files)", settingsPacks)
 	}
 
+	// Install a pack WITH config files — it should auto-contribute.
 	installPackForResolveTest(t, root, "third", PackManifest{
 		SchemaVersion: 1,
 		Name:          "third",
 		Version:       "1",
 		Root:          ".",
 		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
-	}, nil)
-	_, _, err = ResolveProfile(ProfileConfig{
+		Configs:       PackConfigs{HarnessSettings: map[string][]string{"claudecode": {"settings.local.json"}}},
+	}, map[string]string{
+		"configs/claudecode/settings.local.json": `{"theme": "dark"}`,
+	})
+	// Two packs with settings.enabled: true is no longer an error.
+	_, settingsPacks, err = ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
-		Packs:         []PackEntry{{Name: "first", Settings: PackSettingsConfig{Enabled: BoolPtr(true)}}, {Name: "third", Settings: PackSettingsConfig{Enabled: BoolPtr(true)}}},
+		Packs:         []PackEntry{{Name: "first", Settings: PackSettingsConfig{Enabled: BoolPtr(true)}}, {Name: "third"}},
 	}, filepath.Join(root, "profile.yaml"), root)
-	if err == nil || !strings.Contains(err.Error(), `multiple packs have settings.enabled`) {
-		t.Fatalf("expected multiple settings pack error, got %v", err)
+	if err != nil {
+		t.Fatalf("ResolveProfile with multi-pack settings: %v", err)
+	}
+	// Only "third" has config files, so only it contributes.
+	if len(settingsPacks) != 1 || settingsPacks[0] != "third" {
+		t.Fatalf("settingsPacks = %v, want [third]", settingsPacks)
 	}
 }
 
