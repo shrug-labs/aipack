@@ -1,7 +1,7 @@
 package config
 
 import (
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -80,7 +80,7 @@ func TestSelectionsToVector_Deterministic(t *testing.T) {
 	}
 	// Should be sorted.
 	sorted := append([]string{}, *got.Include...)
-	sort.Strings(sorted)
+	slices.Sort(sorted)
 	for i, v := range *got.Include {
 		if v != sorted[i] {
 			t.Fatalf("Include not sorted: %v", *got.Include)

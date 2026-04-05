@@ -18,24 +18,25 @@ type RegistryCmd struct {
 }
 
 func (c *RegistryCmd) Help() string {
-	return `Browse and manage pack registry sources. The registry maps pack names to
+	return fmt.Sprintf(`Browse and manage pack registry sources. The registry maps pack names to
 source repositories, enabling discovery and installation.
 
-The registry view merges cached remote sources in ~/.config/aipack/registries/
+The registry view merges cached remote sources in %s
 in source order (first-seen wins for name conflicts).
 
 Common workflow:
   aipack registry fetch <url>     # add and fetch a source
   aipack registry list            # see available packs
-  aipack pack install <name>      # install a pack by name`
+  aipack pack install <name>      # install a pack by name`,
+		configPathDisplay("registries"),
+	)
 }
 
 // --- registry list ---
 
 type RegistryListCmd struct {
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Registry  string `help:"Path to registry YAML file (single-file mode)" name:"registry" type:"path"`
-	JSON      bool   `help:"Emit machine-readable JSON array" name:"json"`
+	Registry string `help:"Path to registry YAML file (single-file mode)" name:"registry" type:"path"`
+	JSON     bool   `help:"Emit machine-readable JSON array" name:"json"`
 }
 
 func (c *RegistryListCmd) Help() string {
@@ -56,7 +57,7 @@ See also: registry fetch, pack install`
 }
 
 func (c *RegistryListCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -87,17 +88,16 @@ func (c *RegistryListCmd) Run(ctx context.Context, g *Globals) error {
 // --- registry fetch ---
 
 type RegistryFetchCmd struct {
-	URL       string `arg:"" optional:"" help:"URL to fetch registry from (git repo or HTTP)"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Ref       string `help:"Git ref (branch/tag) — implies git-based fetch" name:"ref"`
-	Path      string `help:"File path within git repo (default: registry.yaml)" name:"path"`
-	Name      string `help:"Source name for caching (default: derived from URL)" name:"name"`
-	Deep      bool   `help:"Clone each registry pack and index resource-level frontmatter for search" name:"deep"`
+	URL  string `arg:"" optional:"" help:"URL to fetch registry from (git repo or HTTP)"`
+	Ref  string `help:"Git ref (branch/tag) — implies git-based fetch" name:"ref"`
+	Path string `help:"File path within git repo (default: registry.yaml)" name:"path"`
+	Name string `help:"Source name for caching (default: derived from URL)" name:"name"`
+	Deep bool   `help:"Clone each registry pack and index resource-level frontmatter for search" name:"deep"`
 }
 
 func (c *RegistryFetchCmd) Help() string {
-	return `Fetches a remote registry and caches it locally. Each source is cached as a
-separate file in ~/.config/aipack/registries/ and saved to sync-config for
+	return fmt.Sprintf(`Fetches a remote registry and caches it locally. Each source is cached as a
+separate file in %s and saved to sync-config for
 future fetches.
 
 With an explicit URL, fetches that single source. Without a URL, fetches all
@@ -126,7 +126,9 @@ Examples:
   # Fetch all configured sources
   aipack registry fetch
 
-See also: registry list, registry sources`
+See also: registry list, registry sources`,
+		configPathDisplay("registries"),
+	)
 }
 
 func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
@@ -135,7 +137,7 @@ func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 		return fmt.Errorf("--path requires a git URL (ending in .git) or --ref")
 	}
 
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -161,8 +163,7 @@ func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 // --- registry remove ---
 
 type RegistryRemoveCmd struct {
-	Name      string `arg:"" help:"Name of the registry source to remove" predictor:"registry-source"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	Name string `arg:"" help:"Name of the registry source to remove" predictor:"registry-source"`
 }
 
 func (c *RegistryRemoveCmd) Help() string {
@@ -179,7 +180,7 @@ See also: registry sources, registry fetch`
 }
 
 func (c *RegistryRemoveCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -193,8 +194,7 @@ func (c *RegistryRemoveCmd) Run(ctx context.Context, g *Globals) error {
 // --- registry sources ---
 
 type RegistrySourcesCmd struct {
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	JSON      bool   `help:"Emit machine-readable JSON array" name:"json"`
+	JSON bool `help:"Emit machine-readable JSON array" name:"json"`
 }
 
 func (c *RegistrySourcesCmd) Help() string {
@@ -212,7 +212,7 @@ See also: registry fetch, registry remove`
 }
 
 func (c *RegistrySourcesCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

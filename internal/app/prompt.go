@@ -2,12 +2,13 @@ package app
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -55,8 +56,8 @@ func PromptList(configDir string) ([]PromptEntry, error) {
 		prompts = append(prompts, PromptListForPack(m.Name, m, packRoot)...)
 	}
 
-	sort.Slice(prompts, func(i, j int) bool {
-		return prompts[i].Name < prompts[j].Name
+	slices.SortFunc(prompts, func(a, b PromptEntry) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 	return prompts, nil
 }

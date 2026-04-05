@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"path/filepath"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -194,6 +196,108 @@ func TestExpandMCPServers_SkipsOnUnresolvedParamRef(t *testing.T) {
 	}
 	if warnings[0].Field != "mcp.param-missing" {
 		t.Fatalf("warning field = %q", warnings[0].Field)
+	}
+}
+
+func TestExpandMCPServers_ResolvesPackRoot(t *testing.T) {
+	t.Parallel()
+	packRoot := filepath.Join(t.TempDir(), "packs", "my-pack")
+	servers := []domain.MCPServer{
+		{
+			Name:      "wrapped",
+			Transport: domain.TransportStdio,
+			PackRoot:  packRoot,
+			Command:   []string{"python3", "{pack:root}/wrappers/proxy.py", "--", "uvx", "some-mcp"},
+			Env:       map[string]string{"BOOTSTRAP": "{pack:root}/wrappers/auth.sh"},
+		},
+	}
+
+	result, warnings := ExpandMCPServers(servers)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(result))
+	}
+	wantCmd := filepath.Join(packRoot, "wrappers", "proxy.py")
+	if result[0].Command[1] != wantCmd {
+		t.Errorf("Command[1] = %q, want %q", result[0].Command[1], wantCmd)
+	}
+	wantEnv := filepath.Join(packRoot, "wrappers", "auth.sh")
+	if result[0].Env["BOOTSTRAP"] != wantEnv {
+		t.Errorf("Env[BOOTSTRAP] = %q, want %q", result[0].Env["BOOTSTRAP"], wantEnv)
+	}
+}
+
+func TestExpandMCPServers_SkipsOnUnresolvedPackRoot(t *testing.T) {
+	t.Parallel()
+	servers := []domain.MCPServer{
+		{
+			Name:      "no-pack-root",
+			Transport: domain.TransportStdio,
+			Command:   []string{"python3", "{pack:root}/wrappers/proxy.py"},
+			// PackRoot intentionally empty
+		},
+	}
+
+	result, warnings := ExpandMCPServers(servers)
+	if len(result) != 0 {
+		t.Fatalf("expected server to be skipped, got %d", len(result))
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+}
+
+func TestExpandMCPServers_PackRootWithParamsAndEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	packRoot := filepath.Join(home, ".config", "aipack", "packs", "test")
+	params := map[string]string{"pypi_url": "https://pypi.example.com/simple"}
+	servers := []domain.MCPServer{
+		{
+			Name:      "combo",
+			Transport: domain.TransportStdio,
+			PackRoot:  packRoot,
+			Command: []string{
+				"python3",
+				"{pack:root}/wrappers/proxy.py",
+				"--",
+				"uv", "run", "--default-index", "{params.pypi_url}",
+				"python", "{pack:root}/mcp-servers/api.py",
+			},
+			Env: map[string]string{
+				"SCRIPT": "{pack:root}/wrappers/auth.sh",
+				"HOME":   "{env:HOME}",
+			},
+		},
+	}
+
+	packs := []config.ResolvedPack{{
+		Name: "test",
+		MCP:  map[string]config.ResolvedMCPServer{"combo": {}},
+	}}
+	result, warnings := buildMCPServers(params, packs, map[string]domain.MCPServer{"combo": servers[0]})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(result))
+	}
+	if result[0].Command[1] != filepath.Join(packRoot, "wrappers", "proxy.py") {
+		t.Errorf("Command[1] = %q", result[0].Command[1])
+	}
+	if result[0].Command[6] != "https://pypi.example.com/simple" {
+		t.Errorf("Command[6] (params) = %q", result[0].Command[6])
+	}
+	if result[0].Command[8] != filepath.Join(packRoot, "mcp-servers", "api.py") {
+		t.Errorf("Command[8] = %q", result[0].Command[8])
+	}
+	if result[0].Env["SCRIPT"] != filepath.Join(packRoot, "wrappers", "auth.sh") {
+		t.Errorf("Env[SCRIPT] = %q", result[0].Env["SCRIPT"])
+	}
+	if result[0].Env["HOME"] != home {
+		t.Errorf("Env[HOME] = %q", result[0].Env["HOME"])
 	}
 }
 

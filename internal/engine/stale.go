@@ -1,11 +1,13 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 )
@@ -20,11 +22,7 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 	copy(staleRoots, managedRoots)
 	staleRoots[len(managedRoots)] = filepath.Dir(plan.Ledger)
 
-	keys := make([]string, 0, len(lg.Managed))
-	for k := range lg.Managed {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(lg.Managed))
 
 	var nonInteractiveSkips int
 	cleanup := newEmptyDirCleanup(staleRoots, e.FS)
@@ -170,7 +168,7 @@ func (c *emptyDirCleanup) Flush() {
 		seen[dc] = struct{}{}
 		uniq = append(uniq, dc)
 	}
-	sort.Slice(uniq, func(i, j int) bool { return len(uniq[i]) > len(uniq[j]) })
+	slices.SortFunc(uniq, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
 	for _, d := range uniq {
 		c.cleanupUp(d)
 	}

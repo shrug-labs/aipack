@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // PlanRequest describes what to sync.
 type PlanRequest struct {
+	ConfigDir    string
 	Scope        domain.Scope
 	Harnesses    []domain.Harness
 	ProjectDir   string
@@ -70,9 +72,14 @@ func PlanSync(ctx context.Context, profile domain.Profile, req PlanRequest, harn
 
 // ledgerPath computes the ledger file path for a plan request.
 // Expects a single-harness PlanRequest (per-harness plan+apply).
+// Resolves ConfigDir from Home when not explicitly set.
 func ledgerPath(req PlanRequest) string {
 	if len(req.Harnesses) == 0 {
 		return ""
 	}
-	return LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses[0])
+	home := req.Home
+	if home == "" {
+		home = req.ProjectDir
+	}
+	return LedgerPath(config.FallbackConfigDir(req.ConfigDir, home), req.Scope, req.ProjectDir, req.Harnesses[0])
 }

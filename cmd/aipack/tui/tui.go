@@ -77,7 +77,7 @@ const (
 	dialogSyncSelectProfile = "sync-select-profile"
 	dialogAddPack           = "add-pack"
 	dialogRemovePack        = "remove-pack"
-	dialogPackAdd           = "pack-add"
+	dialogPackInstall       = "pack-install"
 	dialogPackRemove        = "pack-remove"
 	dialogWarnings          = "warnings"
 	dialogActionSave        = "action-save"
@@ -100,16 +100,17 @@ type rootModel struct {
 	syncTab  syncTabModel
 	search   searchTabModel
 
-	dialog     *dialogModel
-	preview    *previewModel  // full-screen markdown preview overlay
-	planView   *planViewModel // full-screen sync plan overlay
-	dirty      bool
-	quitting   bool
-	exitErr    error
-	statusText string // transient status message (auto-cleared after timeout)
-	statusID   int    // monotonic counter to match statusClearMsg to current status
-	width      int
-	height     int
+	dialog               *dialogModel
+	preview              *previewModel  // full-screen markdown preview overlay
+	planView             *planViewModel // full-screen sync plan overlay
+	dirty                bool
+	quitting             bool
+	exitErr              error
+	statusText           string                 // transient status message (auto-cleared after timeout)
+	statusID             int                    // monotonic counter to match statusClearMsg to current status
+	pendingUpdateResults []app.PackUpdateResult // stashed for bundled candidate dialog
+	width                int
+	height               int
 
 	// Exit-flow state.
 	pendingExit   bool
@@ -557,13 +558,13 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			loadProfiles(m.cfg.ConfigDir, m.cfg.SyncCfg),
 		)
 	}
-	if msg, ok := msg.(packAddedMsg); ok {
+	if msg, ok := msg.(packInstalledMsg); ok {
 		if msg.err != nil {
-			m.statusText = errorStyle.Render(fmt.Sprintf("add error: %v", msg.err))
+			m.statusText = errorStyle.Render(fmt.Sprintf("install error: %v", msg.err))
 		} else {
-			m.statusText = dimStyle.Render(fmt.Sprintf("added %s", msg.name))
+			m.statusText = dimStyle.Render(fmt.Sprintf("installed %s", msg.name))
 		}
-		// Reload both packs and profiles — installing a pack may seed new profiles.
+		// Reload both packs and profiles — installing a pack may bundle new profiles.
 		return m, tea.Batch(
 			loadPacks(m.cfg.ConfigDir),
 			loadProfiles(m.cfg.ConfigDir, m.cfg.SyncCfg),
@@ -586,14 +587,41 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusText = errorStyle.Render(fmt.Sprintf("update error: %v", msg.err))
 		} else if len(msg.results) > 0 {
 			summaries := make([]string, len(msg.results))
+			seen := map[domain.BundledCategory]bool{}
+			var items []checkItem
 			for i, r := range msg.results {
 				summaries[i] = fmt.Sprintf("%s: %s", r.Name, r.Status)
+				for _, cat := range r.BundledCandidates.Categories() {
+					if !seen[cat] {
+						seen[cat] = true
+						items = append(items, checkItem{
+							label:   string(cat),
+							checked: cat == domain.BundledProfiles,
+						})
+					}
+				}
 			}
 			m.statusText = dimStyle.Render(strings.Join(summaries, ", "))
+			if len(items) > 0 {
+				m.pendingUpdateResults = msg.results
+				d := newChecklistDialog(dialogBundledCandidates, "New bundled content found:", items)
+				m.dialog = &d
+			}
 		} else {
 			m.statusText = dimStyle.Render("updated")
 		}
 		return m, loadPacks(m.cfg.ConfigDir)
+	}
+	if msg, ok := msg.(bundledApprovedMsg); ok {
+		if msg.err != nil {
+			m.statusText = errorStyle.Render(fmt.Sprintf("bundled content error: %v", msg.err))
+		} else {
+			m.statusText = dimStyle.Render("bundled content applied")
+		}
+		return m, tea.Batch(
+			loadPacks(m.cfg.ConfigDir),
+			loadProfiles(m.cfg.ConfigDir, m.cfg.SyncCfg),
+		)
 	}
 
 	// Route async data messages to the correct sub-model regardless of active tab.
@@ -793,7 +821,7 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 	case dialogSaveOnExit, dialogSyncOnExit, dialogSyncScope, dialogSyncHarness, dialogSyncSelectProfile:
 		return m.handleSyncDialogResult(msg)
 	// Pack roster mutations (profile packs panel + pack tab installs).
-	case dialogAddPack, dialogRemovePack, dialogPackAdd, dialogPackRemove:
+	case dialogAddPack, dialogRemovePack, dialogPackInstall, dialogPackRemove:
 		return m.handlePackDialogResult(msg)
 	// Action menu results.
 	case dialogActionProfile, dialogActionPack, dialogActionPackTab, dialogActionSync:
@@ -820,6 +848,19 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 			return m, deleteSaveFile(path)
 		}
 		m.pendingDeletePath = ""
+	// Bundled candidates checklist.
+	case dialogBundledCandidates:
+		results := m.pendingUpdateResults
+		m.pendingUpdateResults = nil
+		if msg.confirmed && len(msg.values) > 0 {
+			var cats []domain.BundledCategory
+			for _, v := range msg.values {
+				if c, ok := domain.ParseBundledCategory(v); ok {
+					cats = append(cats, c)
+				}
+			}
+			return m, approveBundled(m.cfg.ConfigDir, results, domain.NewBundledSet(cats...))
+		}
 	// Search install dialog.
 	case dialogSearchInstall:
 		if msg.confirmed && m.pendingSearchInstall != "" {
@@ -942,10 +983,10 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 			}
 			return m, tea.Batch(cmds...)
 		}
-	case dialogPackAdd:
+	case dialogPackInstall:
 		if msg.confirmed && msg.value != "" {
-			m.statusText = dimStyle.Render("adding pack...")
-			return m, addPack(m.ctx, m.cfg.ConfigDir, msg.value)
+			m.statusText = dimStyle.Render("installing pack...")
+			return m, installPack(m.ctx, m.cfg.ConfigDir, msg.value)
 		}
 	case dialogPackRemove:
 		if msg.confirmed {
@@ -963,10 +1004,13 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 		return m, nil
 	}
 
-	// Handle edit actions that span multiple dialog IDs.
+	// Handle actions that are context-independent across dialog IDs.
 	switch msg.value {
 	case actEditSyncConfig:
 		return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "sync-config.yaml"))
+	case actUpdateAll:
+		m.statusText = dimStyle.Render("updating all packs...")
+		return m, updatePack(m.ctx, m.cfg.ConfigDir, "", true)
 	}
 
 	switch msg.id {
@@ -1038,6 +1082,12 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 				pe := item.cfg.Packs[m.profiles.packCursor]
 				return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "packs", pe.Name, "pack.json"))
 			}
+		case actUpdate:
+			if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
+				name := item.cfg.Packs[m.profiles.packCursor].Name
+				m.statusText = dimStyle.Render(fmt.Sprintf("updating %s...", name))
+				return m, updatePack(m.ctx, m.cfg.ConfigDir, name, false)
+			}
 		}
 	case dialogActionSync:
 		// actEditSyncConfig handled above.
@@ -1058,7 +1108,7 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			if li := m.packs.currentListItem(); li != nil && !li.installed && li.inRegistry {
 				prefill = li.name
 			}
-			d := newTextInputDialog(dialogPackAdd, "Pack name, path, or URL:")
+			d := newTextInputDialog(dialogPackInstall, "Pack name, path, or URL:")
 			if prefill != "" {
 				d.textValue = prefill
 			}
@@ -1076,9 +1126,6 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 				m.statusText = dimStyle.Render(fmt.Sprintf("updating %s...", pi.entry.Name))
 				return m, updatePack(m.ctx, m.cfg.ConfigDir, pi.entry.Name, false)
 			}
-		case actUpdateAll:
-			m.statusText = dimStyle.Render("updating all packs...")
-			return m, updatePack(m.ctx, m.cfg.ConfigDir, "", true)
 		}
 	}
 	return m, nil
@@ -1236,7 +1283,7 @@ func (m rootModel) doSync(scope, harness string) (tea.Model, tea.Cmd) {
 		scope = string(item.syncTarget.scope)
 	}
 	if scope == "" {
-		scope = string(domain.ScopeProject)
+		scope = string(domain.ScopeGlobal)
 	}
 	if harness == "" {
 		harness = strings.Join(item.syncTarget.harnesses, ",")
@@ -1451,10 +1498,11 @@ func (m rootModel) View() string {
 // --- Action menu system ---
 
 const (
-	dialogActionProfile = "action-profile"
-	dialogActionPack    = "action-pack"
-	dialogActionPackTab = "action-pack-tab"
-	dialogActionSync    = "action-sync"
+	dialogActionProfile     = "action-profile"
+	dialogActionPack        = "action-pack"
+	dialogActionPackTab     = "action-pack-tab"
+	dialogActionSync        = "action-sync"
+	dialogBundledCandidates = "bundled-candidates"
 )
 
 // Action menu item labels — used in both open*Actions() and handleDialogResult().
@@ -1526,6 +1574,9 @@ func (m rootModel) openProfileActions() (tea.Model, tea.Cmd) {
 		actions = append(actions, actProfileAddPack)
 	}
 	actions = append(actions, actDelete, actEditFile)
+	if len(m.packs.items) > 0 {
+		actions = append(actions, actUpdateAll)
+	}
 	d := newListSelectDialog(dialogActionProfile, "Profile actions:", actions)
 	m.dialog = &d
 	return m, nil
@@ -1533,15 +1584,23 @@ func (m rootModel) openProfileActions() (tea.Model, tea.Cmd) {
 
 func (m rootModel) openPackRosterActions() (tea.Model, tea.Cmd) {
 	var actions []string
-	actions = append(actions, actProfileRemovePack)
-	// Offer settings toggle: disable if currently contributing, enable if opted out.
 	if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
 		pe := item.cfg.Packs[m.profiles.packCursor]
+		// Offer update if the pack is installed on disk.
+		if _, installed := m.packs.installedMap[pe.Name]; installed {
+			actions = append(actions, actUpdate)
+		}
+		actions = append(actions, actProfileRemovePack)
+		// Offer settings toggle: disable if currently contributing, enable if opted out.
 		if pe.Settings.Enabled != nil && !*pe.Settings.Enabled {
 			actions = append(actions, actSettingsEnable)
 		} else {
 			actions = append(actions, actSettingsDisable)
 		}
+		actions = append(actions, actEditManifest)
+	}
+	if len(m.packs.items) > 0 {
+		actions = append(actions, actUpdateAll)
 	}
 	if len(actions) == 0 {
 		m.statusText = dimStyle.Render("no actions available")

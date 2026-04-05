@@ -197,7 +197,7 @@ Validate checks manifest structure, content inventory (declared files exist on d
 
 ## Share your pack
 
-Anyone consuming your pack needs aipack installed (see the [README](../README.md#install) for brew, script, and source options). On first use, `aipack init` bootstraps the config directory, default profile, and public registry. `pack install` also creates the config directory if it doesn't exist, so the seeded install flow below can skip the explicit init.
+Anyone consuming your pack needs aipack installed (see the [README](../README.md#install) for brew, script, and source options). On first use, `aipack init` bootstraps the config directory, default profile, and public registry. `pack install` also creates the config directory if it doesn't exist, so the onboarding flow below can skip the explicit init.
 
 ### The simplest path
 
@@ -229,7 +229,7 @@ packs:
   - name: my-pack
 ```
 
-**2. Add a bundled registry** — `registries/registry.yaml`:
+**2. Add a bundled registry** — `registries/team-tools.yaml`:
 
 ```yaml
 schema_version: 1
@@ -242,33 +242,18 @@ packs:
     owner: "my-team"
 ```
 
-**3. Declare them in pack.json**:
+Profiles and registries are auto-discovered from their directories, just like rules and skills. No need to list them in `pack.json` unless you want to filter which ones are included.
 
-```json
-{
-  "schema_version": 1,
-  "name": "my-pack",
-  "version": "0.1.0",
-  "root": ".",
-  "profiles": [
-    "profiles/default.yaml",
-    "profiles/frontend-dev.yaml",
-    "profiles/backend-dev.yaml"
-  ],
-  "registries": ["registries/registry.yaml"]
-}
-```
-
-**4. Install with seeding** — three commands:
+**3. Install with bundled content** — three commands:
 
 ```bash
 aipack pack install --url https://github.com/org/shared-repo.git \
-  --path my-pack --seed
+  --path my-pack -w all
 aipack profile set default --install
 aipack sync
 ```
 
-`--seed` applies the bundled profiles and registry. `--install` fetches any dependency packs. After this, the consumer's harness is fully configured.
+`-w all` accepts all bundled content (profiles, registries, extras). `--install` fetches any dependency packs. After this, the consumer's harness is fully configured.
 
 ## What to read next
 

@@ -102,15 +102,22 @@ No concurrent/parallel harness planning or capture. Most users have 1-2 harnesse
 
 **Docs.** Rendering or path changes require updating `docs/aipack.md` per-harness reference in the same change.
 
+## Settings
+
+Multiple packs can contribute harness settings via `configs/harness_settings` in their manifest. Settings from all contributing packs are deep-merged in profile order (first pack wins at leaf conflicts). `settings.enabled: false` on a pack entry opts it out. `--skip-settings` skips base template keys but still writes computed managed keys (MCP configs, tool permissions, agent registrations).
+
+Plugin files (`configs/harness_plugins`) are pure copies. Same-filename plugins from different packs produce an error (collision detection).
+
 ## Vector rendering per harness
 
 | Vector | Claude Code | OpenCode | Codex | Cline |
 |--------|-------------|----------|-------|-------|
 | Rules | `.claude/rules/` | `.opencode/rules/` + `instructions` ref | Flattened `AGENTS.override.md` | `.clinerules/` |
-| Agents | `.claude/agents/` | `.opencode/agents/` | Promoted to `.agents/skills/` | Promoted to `.agents/skills/` (shared with Codex) |
+| Agents | `.claude/agents/` | `.opencode/agents/` | Native TOML in `codex.toml` | Promoted to `.agents/skills/` |
 | Workflows | `.claude/commands/` | `.opencode/commands/` | Promoted to `.agents/skills/` | `.clinerules/workflows/` |
 | Skills | `.claude/skills/` | `.opencode/skills/` | `.agents/skills/` | `.agents/skills/` (shared with Codex) |
 | MCP | `.mcp.json` | `opencode.json` | `config.toml` | Global VS Code storage |
+| Settings | `settings.local.json` | `opencode.json` | `config.toml` | N/A |
 
 Full per-harness details including merge behavior and tool permissions: `docs/aipack.md` Per-harness reference.
 
@@ -127,7 +134,11 @@ Full per-harness details including merge behavior and tool permissions: `docs/ai
 
 ## Testing
 
-Unit tests: use stub harnesses (pattern in `internal/app/sync_test.go`):
+**Integration tests** in `internal/app/integration_test.go` run full sync cycles with real harness adapters across all four harnesses. Use the `contractEnv` helper for new cross-harness behavioral tests.
+
+**Per-harness tests** in each harness package test rendering and capture for that harness specifically.
+
+**Stub harnesses** for unit tests that need a harness but don't care about rendering:
 
 ```go
 type stubHarness struct {
@@ -141,5 +152,3 @@ func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error) {
     return s.fragment, nil
 }
 ```
-
-Capture tests in `capture_test.go` use real filesystem state — create temp dirs with harness-native file layouts, then verify capture round-trips correctly.

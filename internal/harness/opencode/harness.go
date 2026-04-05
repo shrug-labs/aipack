@@ -1,12 +1,13 @@
 package opencode
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -284,7 +285,7 @@ func parseOpenCodeSettings(servers map[string]domain.MCPServer, allowed map[stri
 		normalizedNames = append(normalizedNames, norm)
 		normalizedToOriginal[norm] = name
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(normalizedNames))) // longest first
+	slices.SortFunc(normalizedNames, func(a, b string) int { return cmp.Compare(b, a) }) // longest first
 
 	for tool, enabled := range cfg.Tools {
 		if strings.HasSuffix(tool, "_*") {
@@ -304,11 +305,11 @@ func parseOpenCodeSettings(servers map[string]domain.MCPServer, allowed map[stri
 		}
 	}
 	for k := range allowed {
-		sort.Strings(allowed[k])
+		slices.Sort(allowed[k])
 	}
 	for name, srv := range servers {
 		if len(srv.DisabledTools) > 0 {
-			sort.Strings(srv.DisabledTools)
+			slices.Sort(srv.DisabledTools)
 			servers[name] = srv
 		}
 	}
@@ -320,8 +321,8 @@ func parseOpenCodeSettings(servers map[string]domain.MCPServer, allowed map[stri
 // names must be sorted longest-first.
 func matchServerPrefix(tool string, names []string) (prefix, toolName string) {
 	for _, n := range names {
-		if strings.HasPrefix(tool, n+"_") {
-			return n, tool[len(n)+1:]
+		if rest, ok := strings.CutPrefix(tool, n+"_"); ok {
+			return n, rest
 		}
 	}
 	return "", ""

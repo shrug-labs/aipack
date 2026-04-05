@@ -17,6 +17,9 @@ __pycache__/
 .cursor/
 .agents/
 
+# Test artifacts
+**/ledger/
+
 # IDE
 .idea/
 .vscode/

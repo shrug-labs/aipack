@@ -225,18 +225,20 @@ Packs with harness config files (`configs/` directory in `pack.json`) contribute
 
 ## Bundled profiles
 
-Packs can ship profile files for team distribution. List them in `pack.json`:
+Packs can ship profile files for distribution. Drop them in the `profiles/` directory — they're auto-discovered like rules and skills:
 
-```json
-{
-  "profiles": ["profiles/default.yaml", "profiles/frontend-dev.yaml", "profiles/oncall.yaml"]
-}
+```
+my-pack/
+└── profiles/
+    ├── dev.yaml
+    ├── frontend-dev.yaml
+    └── lean.yaml
 ```
 
-On install with `--seed`, bundled profiles are copied to `~/.config/aipack/profiles/` and bundled registries are merged into the user's registry configuration. This enables single-command team setup:
+On install with `-w all`, bundled profiles are copied to `~/.config/aipack/profiles/` and bundled registries are merged into the user's registry configuration. This enables single-command team setup:
 
 ```bash
-aipack pack install --url https://github.com/org/team-pack.git --seed
+aipack pack install --url https://github.com/org/team-pack.git -w all
 aipack profile set frontend-dev --install
 aipack sync
 ```

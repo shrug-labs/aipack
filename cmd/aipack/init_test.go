@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -114,9 +116,17 @@ func TestInit_ForceOverwrites(t *testing.T) {
 
 func TestInit_HelpReturnsOK(t *testing.T) {
 	t.Parallel()
-	_, _, code := runApp(t, "init", "--help")
+	stdout, _, code := runApp(t, "init", "--help")
 	if code != cmdutil.ExitOK {
 		t.Fatalf("init --help exit=%d, want %d", code, cmdutil.ExitOK)
+	}
+	if !strings.Contains(stdout, defaultConfigDirDisplay()) {
+		t.Fatalf("init --help missing config dir display %q:\n%s", defaultConfigDirDisplay(), stdout)
+	}
+	if runtime.GOOS == "windows" &&
+		(!strings.Contains(stdout, "%APPDATA%\\aipack on") ||
+			!strings.Contains(stdout, "Windows; ~/.config/aipack elsewhere")) {
+		t.Fatalf("init --help should show explicit cross-platform config dir help on Windows:\n%s", stdout)
 	}
 }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -78,7 +79,7 @@ func TestRunPackValidate_LeadingFrontmatterMarkerCountsAsPresent(t *testing.T) {
 func TestRunPackValidate_DocsAreExcludedFromSecretScan(t *testing.T) {
 	t.Parallel()
 	packDir := writePackValidateFixture(t)
-	writeFile(t, filepath.Join(packDir, "docs", "guide.md"), "ocid1.instance.oc1.phx.secret\n")
+	writeFile(t, filepath.Join(packDir, "docs", "guide.md"), "ocid1.test.oc1.example.placeholder123\n")
 
 	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
 	if !rep.OK {
@@ -279,6 +280,153 @@ func TestRunPackValidate_EmptyFrontmatterBlockEmitsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected frontmatter warning for empty/malformed frontmatter, got %v", rep.Findings)
+	}
+}
+
+func TestRunPackValidate_Extras(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		extras  string                         // JSON array value for "extras"
+		setup   func(t *testing.T, dir string) // create files/dirs the test needs
+		wantOK  bool
+		wantMsg string // substring expected in a finding message (ignored when wantOK)
+	}{
+		// --- valid cases ---
+		{
+			name:   "directory",
+			extras: `["wrappers"]`,
+			setup:  func(t *testing.T, d string) { os.MkdirAll(filepath.Join(d, "wrappers"), 0o755) },
+			wantOK: true,
+		},
+		{
+			name:   "file",
+			extras: `["proxy.py"]`,
+			setup:  func(t *testing.T, d string) { writeFile(t, filepath.Join(d, "proxy.py"), "#!/usr/bin/env python3\n") },
+			wantOK: true,
+		},
+		{
+			name:   "mixed files and dirs",
+			extras: `["wrappers","bootstrap.sh"]`,
+			setup: func(t *testing.T, d string) {
+				os.MkdirAll(filepath.Join(d, "wrappers"), 0o755)
+				writeFile(t, filepath.Join(d, "bootstrap.sh"), "#!/bin/sh\n")
+			},
+			wantOK: true,
+		},
+
+		// --- rejected: missing ---
+		{
+			name:    "missing path",
+			extras:  `["nonexistent"]`,
+			wantMsg: `extras path "nonexistent" not found`,
+		},
+
+		// --- valid: repo-relative ---
+		{
+			name:   "parent-relative directory",
+			extras: `["../shared-scripts"]`,
+			setup: func(t *testing.T, d string) {
+				os.MkdirAll(filepath.Join(d, "..", "shared-scripts"), 0o755)
+			},
+			wantOK: true,
+		},
+
+		// --- rejected: path safety ---
+		{
+			name:    "absolute path",
+			extras:  `["/tmp/escape"]`,
+			wantMsg: `must be relative`,
+		},
+
+		// --- rejected: degenerate entries ---
+		{
+			name:    "empty string",
+			extras:  `[""]`,
+			wantMsg: `must not be empty or '.'`,
+		},
+		{
+			name:    "dot resolves to pack root",
+			extras:  `["."]`,
+			wantMsg: `must not be empty or '.'`,
+		},
+		{
+			name:    "only dotdot resolves to empty staging name",
+			extras:  `[".."]`,
+			wantMsg: `resolves to empty staging name`,
+		},
+
+		// --- rejected: structural ---
+		{
+			name:    "overlaps standard content dir",
+			extras:  `["rules"]`,
+			setup:   func(t *testing.T, d string) { os.MkdirAll(filepath.Join(d, "rules"), 0o755) },
+			wantMsg: `conflicts with standard content directory`,
+		},
+		{
+			name:    "parent-relative overlaps standard content dir",
+			extras:  `["../rules"]`,
+			setup:   func(t *testing.T, d string) { os.MkdirAll(filepath.Join(d, "..", "rules"), 0o755) },
+			wantMsg: `conflicts with standard content directory`,
+		},
+		{
+			name:    "duplicate entry",
+			extras:  `["wrappers","wrappers"]`,
+			setup:   func(t *testing.T, d string) { os.MkdirAll(filepath.Join(d, "wrappers"), 0o755) },
+			wantMsg: `collides with another extras entry`,
+		},
+		{
+			name:   "staging name collision between local and parent-relative",
+			extras: `["scripts","../scripts"]`,
+			setup: func(t *testing.T, d string) {
+				os.MkdirAll(filepath.Join(d, "scripts"), 0o755)
+				os.MkdirAll(filepath.Join(d, "..", "scripts"), 0o755)
+			},
+			wantMsg: `collides with another extras entry`,
+		},
+		{
+			name:   "prefix containment",
+			extras: `["shared","shared/sub"]`,
+			setup: func(t *testing.T, d string) {
+				os.MkdirAll(filepath.Join(d, "shared", "sub"), 0o755)
+			},
+			wantMsg: `overlaps with`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			packDir := t.TempDir()
+			writeFile(t, filepath.Join(packDir, "pack.json"),
+				`{"schema_version":1,"name":"test","root":".","extras":`+tt.extras+`}`)
+			if tt.setup != nil {
+				tt.setup(t, packDir)
+			}
+
+			rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
+			if tt.wantOK {
+				if !rep.OK {
+					t.Fatalf("expected valid, got findings: %v", rep.Findings)
+				}
+				return
+			}
+			if rep.OK {
+				t.Fatal("expected validation to fail")
+			}
+			if tt.wantMsg != "" {
+				found := false
+				for _, f := range rep.Findings {
+					if strings.Contains(f.Message, tt.wantMsg) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("expected finding containing %q, got %v", tt.wantMsg, rep.Findings)
+				}
+			}
+		})
 	}
 }
 

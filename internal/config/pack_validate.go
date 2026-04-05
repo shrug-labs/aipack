@@ -2,11 +2,12 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -66,8 +67,8 @@ func ValidatePackRoot(packRoot string) []Finding {
 	v := packValidator{root: absRoot, policy: defaultPackValidationPolicy}
 	v.validateManifestAndInventory()
 	v.walkPackFiles()
-	sort.Slice(v.findings, func(i, j int) bool {
-		return v.findings[i].String() < v.findings[j].String()
+	slices.SortFunc(v.findings, func(a, b Finding) int {
+		return cmp.Compare(a.String(), b.String())
 	})
 	return v.findings
 }
@@ -91,6 +92,23 @@ func (v *packValidator) validateManifestAndInventory() {
 	}
 	if err := validatePackInventory(manifest.Name, resolvedRoot, manifest); err != nil {
 		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
+	}
+
+	if len(manifest.Extras) > MaxExtras {
+		v.addFinding("pack.json", FindingCategoryPolicy, FindingSeverityError,
+			fmt.Sprintf("extras declares %d entries (max %d)", len(manifest.Extras), MaxExtras))
+	}
+	ev := NewExtrasValidator()
+	for _, ext := range manifest.Extras {
+		if _, err := ev.ValidateEntry(ext); err != nil {
+			v.addFinding("pack.json", FindingCategoryPolicy, FindingSeverityError, err.Error())
+			continue
+		}
+		extPath := filepath.Join(resolvedRoot, ext)
+		if _, err := os.Stat(extPath); err != nil {
+			v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError,
+				fmt.Sprintf("extras path %q not found in %s", ext, resolvedRoot))
+		}
 	}
 
 	v.validateFrontmatter(manifest, resolvedRoot)

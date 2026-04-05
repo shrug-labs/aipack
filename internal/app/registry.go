@@ -1,12 +1,13 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -638,8 +639,8 @@ func registryEntriesToResults(reg config.Registry) []RegistrySearchResult {
 			RegistryEntry: entry,
 		})
 	}
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Name < results[j].Name
+	slices.SortFunc(results, func(a, b RegistrySearchResult) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 	return results
 }

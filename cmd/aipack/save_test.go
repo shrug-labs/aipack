@@ -146,6 +146,7 @@ func TestRunSave_ToPackInitializesMissingConfigDir(t *testing.T) {
 		"--to-pack", "captured",
 		"--config-dir", configDir,
 		"--project-dir", projectDir,
+		"--scope", "project",
 		"--harness", "claudecode",
 	)
 	if code != cmdutil.ExitOK {

@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# install.ps1 - Install aipack on Windows
+# install.ps1 - Install aipack on Windows (~/.local/bin)
 # Usage: irm https://raw.githubusercontent.com/shrug-labs/aipack/main/install.ps1 | iex
 # Optional env:
 #   AIPACK_VERSION=latest|vX.Y.Z|X.Y.Z (default: latest)
@@ -26,7 +26,7 @@ function Get-LatestVersion {
 }
 
 function Get-InstallDir {
-    $dir = Join-Path (Join-Path $env:LOCALAPPDATA "aipack") "bin"
+    $dir = Join-Path $HOME ".local\bin"
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }

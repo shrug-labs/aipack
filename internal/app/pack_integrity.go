@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -124,9 +124,9 @@ func diffIntegrity(old, new IntegrityManifest) IntegrityCheckResult {
 		}
 	}
 
-	sort.Strings(r.Modified)
-	sort.Strings(r.Added)
-	sort.Strings(r.Removed)
+	slices.Sort(r.Modified)
+	slices.Sort(r.Added)
+	slices.Sort(r.Removed)
 	return r
 }
 

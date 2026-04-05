@@ -6,6 +6,35 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.18.0]
+
+### Added
+
+- **Pack extras and `{pack:root}` expansion.** Packs can declare an `extras` field in pack.json listing supporting files — wrapper scripts, data files, helper source — that are preserved through install and update. MCP server definitions reference these via `{pack:root}`, which resolves to the installed pack's absolute path before `{params.*}` and `{env:*}` expansion. Enables self-contained packs that ship executable helpers alongside their MCP configs.
+- **Selective content installation (`--with` / `-w`).** Replaces `--seed` on `pack install` and `pack update`. Controls bundled content — `profiles`(`p`), `registries`(`r`), `extras`(`e`), or `all`. Core content (rules, skills, workflows, agents, prompts, mcp, configs) is always installed. Without `--with`, remote installs preview available bundled content; local installs default to all.
+- **Registry install at pack install time.** `pack install -w registries` and `pack update -w registries` merge pack-bundled registry entries into the local embedded registry cache immediately, rather than waiting for the next sync.
+- **Bundled content candidates on update.** When `pack update` finds new content categories that weren't previously approved, they appear as candidates — printed in the CLI, shown as a checklist dialog in the TUI (space to toggle, enter to confirm).
+- TUI profiles tab: "Update" (per-pack) and "Update all" actions via the `.` action menu.
+- `pack show` includes extras in output.
+
+### Changed
+
+- **Profiles and registries are now ID-based.** *(Breaking)* Manifest fields use bare IDs (`"profiles": ["dev"]`, `"registries": ["team-tools"]`) discovered from standard `profiles/` and `registries/` directories, matching rules, skills, and other content types. Old relative-path format (`"profiles/ops.yaml"`, `"registry.yaml"`) is no longer supported — move files into the standard directories and update pack.json to use bare IDs.
+- **Default scope is now `global`.** When `--scope` is not specified and sync-config has no `defaults.scope`, CLI and TUI default to `global` instead of `project`. Fixes confusion when running from `$HOME` where project and global paths coincide. Set `defaults.scope: project` in sync-config or pass `--scope project` for the old behavior.
+- **Pack-bundled profiles are managed content.** On install or update, profiles from the pack always overwrite the local copy. Copy to a new name to preserve customizations.
+- **Content approval tracking.** Sync-config records which bundled content categories the user approved per pack. On update, previously approved categories carry forward automatically (profiles re-copied, registries re-merged); new categories surface as candidates. Pre-`--with` installs are treated as fully approved for backward compatibility.
+- Content vector fields (`rules`, `agents`, `workflows`, `skills`, `prompts`) no longer distinguish `null` from `[]` for discovery — both trigger auto-discovery from the conventional directory.
+- Save and TUI discovery skip project scope when the working directory is `$HOME`.
+- CLI help text and config-path references show platform-aware defaults (`%APPDATA%\aipack` on Windows, `~/.config/aipack` elsewhere).
+- Windows installer (`install.ps1`) installs to `~/.local/bin`, matching macOS/Linux. Update your PATH if upgrading from a previous Windows install.
+- Build system uses a cross-platform Go task runner (`go run ./tools/task`) instead of shell-dependent Makefile recipes. `make` targets still work.
+
+### Fixed
+
+- `--config-dir` override was not respected for ledger operations — reads and writes always derived from `$HOME`. Now threaded end-to-end through TargetSpec, PlanRequest, and ledger resolution.
+- `aipack version` shows correct version and commit when installed via `go install` (previously "dev (unknown)"). Falls back to Go build info metadata when linker flags are absent.
+- `aipack trace` misattributed shared-path destinations (e.g., `.agents/skills/`) to the wrong harness when multiple harnesses target the same directory.
+
 ## [0.17.0]
 
 ### Changed

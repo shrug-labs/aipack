@@ -3,9 +3,10 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -166,11 +167,7 @@ func (e *Engine) RestoreFromCache(ledgerPath, filterHarness string, dryRun bool)
 			continue
 		}
 
-		keys := make([]string, 0, len(idx))
-		for k := range idx {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+		keys := slices.Sorted(maps.Keys(idx))
 
 		var dirRestored []RestoredFile
 		for _, key := range keys {

@@ -32,12 +32,12 @@ Cline, Codex, OpenCode, and Claude Code. Same packs, different targets. `aipack 
 Three commands to a full environment:
 
 ```bash
-aipack pack install <pack-name-or-url> --seed
+aipack pack install <pack-name-or-url> -w all
 aipack profile set <profile> --install
 aipack sync --harness <your-harness>
 ```
 
-`--seed` applies bundled profiles and registry entries from the pack. `--install` fetches dependency packs. The full setup flow is in the [Getting Started guide](./getting-started.md).
+`-w all` accepts all bundled content (profiles, registries, extras) from the pack. `--install` fetches dependency packs. The full setup flow is in the [Getting Started guide](./getting-started.md).
 
 ### What happens to my existing harness config?
 
@@ -45,7 +45,7 @@ Sync is non-destructive by default. aipack tracks what it manages via a ledger. 
 
 ### What platforms does it run on?
 
-macOS (ARM and Intel), Linux (amd64), and Windows (amd64). Install via Homebrew (macOS/Linux), the install script, the PowerShell installer (Windows), or build from source with Go 1.24+.
+macOS (ARM and Intel), Linux (amd64), and Windows (amd64). Install via Homebrew (macOS/Linux), the install script, the PowerShell installer (Windows), or build from source with Go 1.25+.
 
 ### What about WSL?
 

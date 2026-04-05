@@ -2,13 +2,14 @@ package app
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -71,7 +72,7 @@ func RunClean(ctx context.Context, eng *engine.Engine, req CleanRequest, reg *ha
 	}
 
 	if req.DryRun {
-		ops := buildCleanOps(eng, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
+		ops := buildCleanOps(eng, req.ConfigDir, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
 		for _, op := range ops {
 			fmt.Fprintf(stderr, "  would remove: %s\n", op.path())
 		}
@@ -82,7 +83,7 @@ func RunClean(ctx context.Context, eng *engine.Engine, req CleanRequest, reg *ha
 		return fmt.Errorf("refusing to clean without --yes (non-interactive)")
 	}
 
-	ops := buildCleanOps(eng, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
+	ops := buildCleanOps(eng, req.ConfigDir, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
 
 	rctx := cleanRunContext{Yes: req.Yes, Stdin: stdin, Stderr: stderr}
 	for _, op := range ops {
@@ -167,7 +168,8 @@ func (o editFileOp) run(ctx context.Context, rctx cleanRunContext) error {
 	return util.WriteFileAtomic(o.FilePath, out)
 }
 
-func buildCleanOps(eng *engine.Engine, scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool, reg *harness.Registry) []cleanOp {
+func buildCleanOps(eng *engine.Engine, configDir string, scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool, reg *harness.Registry) []cleanOp {
+	configDir = config.FallbackConfigDir(configDir, home)
 	var ops []cleanOp
 	seenRemovePaths := map[string]struct{}{}
 
@@ -204,7 +206,7 @@ func buildCleanOps(eng *engine.Engine, scope domain.Scope, home string, projectD
 		// plugin/drop-in config files). Remove any ledger-tracked paths inside
 		// validation roots that are not partially-owned files and not already
 		// covered by an explicit RemovePath.
-		ledgerPath := engine.LedgerPathForScope(scope, projectDir, home, hid)
+		ledgerPath := engine.LedgerPath(configDir, scope, projectDir, hid)
 		lg, _, err := eng.LoadLedger(ledgerPath)
 		if err != nil {
 			continue
@@ -226,8 +228,7 @@ func buildCleanOps(eng *engine.Engine, scope domain.Scope, home string, projectD
 	}
 
 	if wipeLedger && home != "" {
-		cfgDir, _ := config.DefaultConfigDir(home)
-		ledgerDir := filepath.Join(cfgDir, "ledger")
+		ledgerDir := filepath.Join(configDir, "ledger")
 		if scope == domain.ScopeProject {
 			ops = append(ops, removePathOp{Path: filepath.Join(ledgerDir, engine.EncodeProjectPath(projectDir))})
 			ops = append(ops, removePathOp{Path: filepath.Join(projectDir, ".aipack", "ledger.json")})
@@ -236,8 +237,8 @@ func buildCleanOps(eng *engine.Engine, scope domain.Scope, home string, projectD
 		}
 	}
 
-	sort.SliceStable(ops, func(i, j int) bool {
-		return ops[i].path() < ops[j].path()
+	slices.SortStableFunc(ops, func(a, b cleanOp) int {
+		return cmp.Compare(a.path(), b.path())
 	})
 
 	return ops

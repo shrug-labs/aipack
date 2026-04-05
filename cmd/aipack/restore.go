@@ -14,8 +14,7 @@ import (
 )
 
 type RestoreCmd struct {
-	ConfigDir  string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Scope      string  `help:"Where to restore: 'project' or 'global' (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
+	Scope      string  `help:"Where to restore: 'project' or 'global' (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
 	ProjectDir *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
 	Harness    string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then all)" name:"harness" predictor:"harness"`
 	Yes        bool    `help:"Skip confirmation prompt and proceed immediately"`
@@ -51,7 +50,7 @@ func (c *RestoreCmd) Run(ctx context.Context, g *Globals) error {
 	home := config.HomeDir()
 
 	// Load sync-config for scope and harness resolution.
-	cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, home)
+	cfgDir, err := cmdutil.ResolveConfigDir(g.ConfigDir, home)
 	if err != nil {
 		return err
 	}
@@ -127,6 +126,7 @@ func (c *RestoreCmd) Run(ctx context.Context, g *Globals) error {
 	eng := engine.New(nil, nil)
 	res, err := app.RunRestore(eng, app.RestoreRequest{
 		TargetSpec: app.TargetSpec{
+			ConfigDir:  cfgDir,
 			Scope:      scope,
 			ProjectDir: projectAbs,
 			Harnesses:  harnesses,

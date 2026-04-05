@@ -3,7 +3,7 @@ package opencode
 import (
 	"bytes"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -123,7 +123,7 @@ func reverseTools(v any) []string {
 			}
 			tools = append(tools, name)
 		}
-		sort.Strings(tools)
+		slices.Sort(tools)
 		return tools
 	case []any:
 		tools := make([]string, 0, len(t))

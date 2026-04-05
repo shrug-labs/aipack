@@ -1,13 +1,14 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -223,8 +224,8 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		serverNames = append(serverNames, name)
 		providersList = append(providersList, p)
 	}
-	sort.Strings(serverNames)
-	sort.Slice(providersList, func(i, j int) bool { return providersList[i].Name < providersList[j].Name })
+	slices.Sort(serverNames)
+	slices.SortFunc(providersList, func(a, b ServerProvider) int { return cmp.Compare(a.Name, b.Name) })
 	packsCheck.OK = true
 	packsCheck.Status = "pass"
 	packsCheck.Message = "packs resolved"
@@ -249,7 +250,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	refsCheck.OK = true
 	refsCheck.Status = "pass"
 	refsCheck.Message = "required MCP refs present"
-	refsCheck.Details = map[string]any{"required": sortedMapKeys(requiredBy)}
+	refsCheck.Details = map[string]any{"required": slices.Sorted(maps.Keys(requiredBy))}
 	add(refsCheck)
 
 	// MCP server path checks
@@ -350,7 +351,7 @@ func doctorSkippedCheck(name string, reason string) CheckResult {
 }
 
 func doctorLoadSyncConfig(configDirFlag string, home string) (string, string, config.SyncConfig, error) {
-	configDir := strings.TrimSpace(configDirFlag)
+	configDir := configDirFlag
 	if configDir == "" {
 		d, err := config.DefaultConfigDir(home)
 		if err != nil {
@@ -395,7 +396,7 @@ func doctorBuildPackInfoAndProviders(packs []config.ResolvedPack, inventory map[
 		for name := range rp.MCP {
 			mcpNames = append(mcpNames, name)
 		}
-		sort.Strings(mcpNames)
+		slices.Sort(mcpNames)
 		packInfos = append(packInfos, PackInfo{
 			Name:         rp.Name,
 			ManifestPath: manifestPath,
@@ -465,17 +466,9 @@ func doctorRequiredMCPRefs(params map[string]string, inv map[string]domain.MCPSe
 	// Check which refs are actually missing.
 	missing := []string{}
 	flat := map[string][]string{}
-	keys := make([]string, 0, len(requiredBy))
-	for k := range requiredBy {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(requiredBy))
 	for _, k := range keys {
-		servers := make([]string, 0, len(requiredBy[k]))
-		for s := range requiredBy[k] {
-			servers = append(servers, s)
-		}
-		sort.Strings(servers)
+		servers := slices.Sorted(maps.Keys(requiredBy[k]))
 		flat[k] = servers
 
 		if strings.HasPrefix(k, "param:") {
@@ -537,15 +530,15 @@ func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[strin
 			}
 		}
 	}
-	sort.Slice(failures, func(i, j int) bool {
-		is, _ := failures[i]["server"].(string)
-		js, _ := failures[j]["server"].(string)
-		if is != js {
-			return is < js
+	slices.SortFunc(failures, func(a, b map[string]any) int {
+		as, _ := a["server"].(string)
+		bs, _ := b["server"].(string)
+		if c := cmp.Compare(as, bs); c != 0 {
+			return c
 		}
-		pi, _ := failures[i]["path"].(string)
-		pj, _ := failures[j]["path"].(string)
-		return pi < pj
+		ap, _ := a["path"].(string)
+		bp, _ := b["path"].(string)
+		return cmp.Compare(ap, bp)
 	})
 	return failures
 }
@@ -581,7 +574,7 @@ func doctorCheckUnregisteredPacks(configDir string, syncCfg config.SyncConfig) C
 			unregistered = append(unregistered, name)
 		}
 	}
-	sort.Strings(unregistered)
+	slices.Sort(unregistered)
 
 	if len(unregistered) > 0 {
 		check.Status = "warn"
@@ -667,7 +660,7 @@ func doctorCheckPackDrift(configDir string, syncCfg config.SyncConfig) CheckResu
 		// link: no drift possible (symlink points to source)
 	}
 
-	sort.Slice(drifted, func(i, j int) bool { return drifted[i].Name < drifted[j].Name })
+	slices.SortFunc(drifted, func(a, b PackDrift) int { return cmp.Compare(a.Name, b.Name) })
 
 	if len(drifted) > 0 {
 		check.Status = "warn"
@@ -774,7 +767,7 @@ func ledgerFilesUnder(configDir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(files)
+	slices.Sort(files)
 	return files, nil
 }
 
@@ -1028,10 +1021,10 @@ func fixManifestDrift(packs []config.ResolvedPack, drifts []driftItem) int {
 		}
 
 		// Sort each slice for deterministic output.
-		sort.Strings(manifest.Rules)
-		sort.Strings(manifest.Agents)
-		sort.Strings(manifest.Workflows)
-		sort.Strings(manifest.Skills)
+		slices.Sort(manifest.Rules)
+		slices.Sort(manifest.Agents)
+		slices.Sort(manifest.Workflows)
+		slices.Sort(manifest.Skills)
 
 		manifestPath := filepath.Join(rp.Root, "pack.json")
 		if err := config.SavePackManifest(manifestPath, manifest); err == nil {

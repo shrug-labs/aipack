@@ -3,8 +3,9 @@ package harness
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -119,11 +120,7 @@ func (r *CaptureResult) MaterializeCapturedMCP(harnessPath string) {
 	if harnessPath == "" {
 		return
 	}
-	names := make([]string, 0, len(r.MCPServers))
-	for name := range r.MCPServers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(r.MCPServers))
 	r.MCP = r.MCP[:0]
 	for _, name := range names {
 		server := r.MCPServers[name]
@@ -142,11 +139,7 @@ func PlannedMCPServers(source []domain.MCPServer, captured map[string]domain.MCP
 	for _, server := range source {
 		sourceByName[server.Name] = server
 	}
-	names := make([]string, 0, len(captured))
-	for name := range captured {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(captured))
 	out := make([]domain.MCPServer, 0, len(names))
 	for _, name := range names {
 		server := captured[name]
@@ -278,8 +271,8 @@ func mergeAllowedTools(dst, src map[string][]string) {
 			continue
 		}
 		if _, ok := dst[k]; !ok {
-			dst[k] = append([]string{}, tools...)
-			sort.Strings(dst[k])
+			dst[k] = slices.Clone(tools)
+			slices.Sort(dst[k])
 			continue
 		}
 		set := map[string]struct{}{}
@@ -289,11 +282,7 @@ func mergeAllowedTools(dst, src map[string][]string) {
 		for _, t := range tools {
 			set[t] = struct{}{}
 		}
-		out := make([]string, 0, len(set))
-		for t := range set {
-			out = append(out, t)
-		}
-		sort.Strings(out)
+		out := slices.Sorted(maps.Keys(set))
 		dst[k] = out
 	}
 }

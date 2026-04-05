@@ -159,9 +159,8 @@ func gitErrorHint(output string, args []string) string {
 	if strings.Contains(lower, "operation timed out") ||
 		strings.Contains(lower, "connection timed out") {
 		for _, arg := range args {
-			if strings.HasPrefix(arg, "git@") && strings.Contains(arg, ":") && !strings.Contains(arg, "://") {
+			if host, ok := strings.CutPrefix(arg, "git@"); ok && strings.Contains(arg, ":") && !strings.Contains(arg, "://") {
 				// SCP-style URL defaults to port 22; Bitbucket Server typically uses 7999.
-				host := arg[len("git@"):]
 				if idx := strings.Index(host, ":"); idx >= 0 {
 					host = host[:idx]
 				}

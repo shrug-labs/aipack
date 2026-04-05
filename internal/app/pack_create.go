@@ -106,17 +106,19 @@ func PackCreate(req PackCreateRequest) error {
 		}
 	}
 
-	// Write a seed profile that references this pack by name.
-	profileRel := "profiles/" + req.Name + ".yaml"
+	// Write a starter profile that references this pack by name.
 	profilePath := filepath.Join(contentDir, "profiles", req.Name+".yaml")
 	profileContent := []byte("schema_version: 2\npacks:\n  - name: " + req.Name + "\n")
 	if err := os.WriteFile(profilePath, profileContent, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", profilePath, err)
 	}
 
-	// Write a seed registry.
-	registryRel := "registry.yaml"
-	registryPath := filepath.Join(contentDir, registryRel)
+	// Write a starter registry.
+	regDir := filepath.Join(contentDir, "registries")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		return fmt.Errorf("create registries dir: %w", err)
+	}
+	registryPath := filepath.Join(regDir, "default.yaml")
 	registryContent := []byte("schema_version: 1\npacks: {}\n")
 	if err := os.WriteFile(registryPath, registryContent, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", registryPath, err)
@@ -131,8 +133,8 @@ func PackCreate(req PackCreateRequest) error {
 		Name:          req.Name,
 		Version:       "0.1.0",
 		Root:          ".",
-		Profiles:      []string{profileRel},
-		Registries:    []string{registryRel},
+		Profiles:      []string{req.Name},
+		Registries:    []string{"default"},
 	}
 	if len(req.ContentSources) > 0 {
 		if err := config.DiscoverContent(&manifest, contentDir); err != nil {

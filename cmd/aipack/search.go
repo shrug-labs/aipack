@@ -21,7 +21,6 @@ type SearchCmd struct {
 	Installed bool     `help:"Show only installed resources" name:"installed"`
 	Available bool     `help:"Show only available (uninstalled) packs" name:"available"`
 	JSON      bool     `help:"Emit machine-readable JSON" name:"json"`
-	ConfigDir string   `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 }
 
 func (c *SearchCmd) Help() string {
@@ -67,7 +66,7 @@ func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 	}
 
 	results, err := app.RunIndexSearch(app.IndexSearchRequest{
-		ConfigDir: c.ConfigDir,
+		ConfigDir: g.ConfigDir,
 		Home:      config.HomeDir(),
 		Terms:     strings.Join(c.Terms, " "),
 		Tags:      c.Tags,
@@ -193,9 +192,8 @@ func truncateDescription(desc string) string {
 }
 
 type QueryCmd struct {
-	SQL       string `arg:"" optional:"" help:"SQL query to execute against the index database"`
-	Schema    bool   `help:"Print the index database schema" name:"schema"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	SQL    string `arg:"" optional:"" help:"SQL query to execute against the index database"`
+	Schema bool   `help:"Print the index database schema" name:"schema"`
 }
 
 func (c *QueryCmd) Help() string {
@@ -226,7 +224,7 @@ func (c *QueryCmd) Run(ctx context.Context, g *Globals) error {
 	home := config.HomeDir()
 
 	if c.Schema {
-		schema, err := app.RunIndexSchema(c.ConfigDir, home)
+		schema, err := app.RunIndexSchema(g.ConfigDir, home)
 		if err != nil {
 			return err
 		}
@@ -238,7 +236,7 @@ func (c *QueryCmd) Run(ctx context.Context, g *Globals) error {
 		return fmt.Errorf("provide a SQL query or use --schema")
 	}
 
-	rows, err := app.RunIndexQuery(c.ConfigDir, home, c.SQL)
+	rows, err := app.RunIndexQuery(g.ConfigDir, home, c.SQL)
 	if err != nil {
 		return err
 	}

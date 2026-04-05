@@ -236,8 +236,9 @@ func ToggleSyncHarness(cfg config.SyncConfig, name string) config.SyncConfig {
 }
 
 // CycleSyncScope returns a new SyncConfig with the scope toggled between project and global.
+// Empty scope is treated as global (the default) so the first toggle switches to project.
 func CycleSyncScope(cfg config.SyncConfig) config.SyncConfig {
-	if cfg.Defaults.Scope == string(domain.ScopeGlobal) {
+	if cfg.Defaults.Scope == string(domain.ScopeGlobal) || cfg.Defaults.Scope == "" {
 		cfg.Defaults.Scope = string(domain.ScopeProject)
 	} else {
 		cfg.Defaults.Scope = string(domain.ScopeGlobal)

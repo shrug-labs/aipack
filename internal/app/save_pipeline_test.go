@@ -204,7 +204,7 @@ func TestDiscoverSaveFiles_WithLedger(t *testing.T) {
 	os.WriteFile(modFile, []byte("modified content"), 0o644)
 
 	// Write ledger with matching digest for clean, non-matching for mod.
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, projectDir, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		cleanFile: {SourcePack: "test-pack", Digest: domain.SingleFileDigest([]byte("clean content"))},
 		modFile:   {SourcePack: "test-pack", Digest: "old-digest"},
@@ -282,7 +282,7 @@ func TestDiscoverSaveFiles_SelectsTrackedSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, projectDir, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		settingsPath: {SourcePack: "test-pack", Digest: domain.SingleFileDigest([]byte(`{"managed":true}`))},
 	})
@@ -533,7 +533,7 @@ func TestRunSavePipeline_ExistingPack(t *testing.T) {
 	}
 
 	// Verify ledger updated.
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, projectDir, domain.HarnessClaudeCode)
 	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
@@ -666,7 +666,7 @@ func TestRunSavePipeline_LedgerDigestUsesRawBytes(t *testing.T) {
 	}
 
 	// Ledger digest should match the raw harness bytes, not normalized.
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, projectDir, domain.HarnessClaudeCode)
 	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
@@ -717,7 +717,7 @@ func TestRunSavePipeline_SkipsFilesTrackedToDifferentPack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, projectDir, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		harnessFile: {SourcePack: "source-pack", Digest: domain.SingleFileDigest([]byte("shared rule"))},
 	})
@@ -966,7 +966,7 @@ func TestRunSavePipeline_MCPServer(t *testing.T) {
 		t.Fatalf("expected default allowed tools to be preserved, got %v", defaults.DefaultAllowedTools)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, projectDir, domain.HarnessCodex)
 	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		t.Fatal(err)

@@ -5,9 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -199,11 +200,7 @@ func (e *Engine) pathDigest(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(m))
 	h := sha256.New()
 	for _, k := range keys {
 		_, _ = h.Write([]byte(k))
@@ -426,7 +423,7 @@ func groupHunks(edits []edit, ctx int) []hunk {
 		startA := 0
 		startB := 0
 		if es.start > 0 {
-			for k := 0; k < es.start; k++ {
+			for k := range es.start {
 				switch edits[k].kind {
 				case editEqual:
 					startA++

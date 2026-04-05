@@ -115,7 +115,7 @@ func TestPlanWithDiffs_PerServerMCPActionsProduceNoOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MCPInventoryBytes: %v", err)
 	}
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		configPath: {SourcePack: "settings-pack", Digest: domain.SingleFileDigest(settings.Desired)},
 	})
@@ -175,7 +175,7 @@ func TestPlanWithDiffs_SkipsCleanPromotedContentUsingSourceDigest(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		dstPath: {
 			SourcePack: "core",

@@ -95,7 +95,7 @@ func contains(s, substr string) bool {
 }
 
 func containsSubstr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
+	for i := range len(s) - len(sub) + 1 {
 		if s[i:i+len(sub)] == sub {
 			return true
 		}

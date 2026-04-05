@@ -36,18 +36,18 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 		t.Fatalf("root = %q, want %q", m.Root, ".")
 	}
 
-	// Content vector fields must be nil so DiscoverContent auto-discovers.
-	if m.Rules != nil {
-		t.Fatalf("Rules = %v, want nil (auto-discovery friendly)", m.Rules)
+	// Content vector fields must be empty so DiscoverContent auto-discovers.
+	if len(m.Rules) != 0 {
+		t.Fatalf("Rules = %v, want empty (auto-discovery friendly)", m.Rules)
 	}
-	if m.Agents != nil {
-		t.Fatalf("Agents = %v, want nil (auto-discovery friendly)", m.Agents)
+	if len(m.Agents) != 0 {
+		t.Fatalf("Agents = %v, want empty (auto-discovery friendly)", m.Agents)
 	}
-	if m.Workflows != nil {
-		t.Fatalf("Workflows = %v, want nil (auto-discovery friendly)", m.Workflows)
+	if len(m.Workflows) != 0 {
+		t.Fatalf("Workflows = %v, want empty (auto-discovery friendly)", m.Workflows)
 	}
-	if m.Skills != nil {
-		t.Fatalf("Skills = %v, want nil (auto-discovery friendly)", m.Skills)
+	if len(m.Skills) != 0 {
+		t.Fatalf("Skills = %v, want empty (auto-discovery friendly)", m.Skills)
 	}
 
 	// Verify all vector dirs exist.
@@ -62,16 +62,16 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 		}
 	}
 
-	// Verify seed profile exists and is referenced in manifest.
-	if len(m.Profiles) != 1 || m.Profiles[0] != "profiles/my-pack.yaml" {
-		t.Fatalf("Profiles = %v, want [profiles/my-pack.yaml]", m.Profiles)
+	// Verify starter profile exists and is referenced in manifest.
+	if len(m.Profiles) != 1 || m.Profiles[0] != "my-pack" {
+		t.Fatalf("Profiles = %v, want [my-pack]", m.Profiles)
 	}
 	profileCfg, err := config.LoadProfile(filepath.Join(packDir, "profiles", "my-pack.yaml"))
 	if err != nil {
-		t.Fatalf("parse seed profile: %v", err)
+		t.Fatalf("parse starter profile: %v", err)
 	}
 	if len(profileCfg.Packs) != 1 || profileCfg.Packs[0].Name != "my-pack" {
-		t.Fatalf("seed profile packs = %+v, want [{Name:my-pack}]", profileCfg.Packs)
+		t.Fatalf("starter profile packs = %+v, want [{Name:my-pack}]", profileCfg.Packs)
 	}
 
 	// Verify registered in sync-config.

@@ -14,12 +14,20 @@ const (
 	dialogConfirm dialogKind = iota
 	dialogTextInput
 	dialogListSelect
+	dialogChecklist
 )
 
 // listAction maps a key press to an action name for list select dialogs.
 type listAction struct {
 	key  string // key binding (e.g., "a")
 	name string // action name (e.g., "activate")
+}
+
+// checkItem represents a single item in a checklist dialog.
+type checkItem struct {
+	label   string
+	checked bool
+	danger  bool // renders with warning styling
 }
 
 type dialogModel struct {
@@ -38,6 +46,9 @@ type dialogModel struct {
 	listCursor  int
 	listLabels  []string     // per-item annotations displayed before each item
 	listActions []listAction // additional key bindings
+
+	// For checklist dialogs.
+	checkItems []checkItem
 }
 
 func newConfirmDialog(id, title string) dialogModel {
@@ -76,6 +87,15 @@ func newListSelectDialog(id, title string, items []string) dialogModel {
 	}
 }
 
+func newChecklistDialog(id, title string, items []checkItem) dialogModel {
+	return dialogModel{
+		kind:       dialogChecklist,
+		id:         id,
+		title:      title,
+		checkItems: items,
+	}
+}
+
 func sendDialogResult(id string, confirmed bool, value string) tea.Cmd {
 	return func() tea.Msg {
 		return dialogResultMsg{
@@ -86,13 +106,32 @@ func sendDialogResult(id string, confirmed bool, value string) tea.Cmd {
 	}
 }
 
+func sendChecklistResult(id string, confirmed bool, items []checkItem) tea.Cmd {
+	var selected []string
+	for _, item := range items {
+		if item.checked {
+			selected = append(selected, item.label)
+		}
+	}
+	return func() tea.Msg {
+		return dialogResultMsg{
+			id:        id,
+			confirmed: confirmed,
+			value:     strings.Join(selected, ","),
+			values:    selected,
+		}
+	}
+}
+
 func (d dialogModel) Update(msg tea.Msg) (dialogModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch d.kind {
 		case dialogConfirm:
 			switch msg.String() {
-			case "y", "enter":
+			case "y":
+				return d, sendDialogResult(d.id, true, "")
+			case "enter":
 				if d.focused == 0 {
 					return d, sendDialogResult(d.id, true, "")
 				}
@@ -148,6 +187,26 @@ func (d dialogModel) Update(msg tea.Msg) (dialogModel, tea.Cmd) {
 					}
 				}
 			}
+
+		case dialogChecklist:
+			switch msg.String() {
+			case " ":
+				if len(d.checkItems) > 0 {
+					d.checkItems[d.listCursor].checked = !d.checkItems[d.listCursor].checked
+				}
+			case "enter":
+				return d, sendChecklistResult(d.id, true, d.checkItems)
+			case "esc":
+				return d, sendChecklistResult(d.id, false, d.checkItems)
+			case "j", "down":
+				if d.listCursor < len(d.checkItems)-1 {
+					d.listCursor++
+				}
+			case "k", "up":
+				if d.listCursor > 0 {
+					d.listCursor--
+				}
+			}
 		}
 	}
 	return d, nil
@@ -192,6 +251,27 @@ func (d dialogModel) View() string {
 
 			content += prefix + annotation + item + "\n"
 		}
+
+	case dialogChecklist:
+		content = dialogTitleStyle.Render(d.title) + "\n\n"
+		for i, item := range d.checkItems {
+			prefix := "  "
+			if i == d.listCursor {
+				prefix = "> "
+			}
+			check := "[ ]"
+			if item.checked {
+				check = "[x]"
+			}
+			label := item.label
+			if item.danger {
+				label = errorStyle.Render(label)
+				check = errorStyle.Render(check)
+			} else if i == d.listCursor {
+				label = selectedStyle.Render(label)
+			}
+			content += prefix + check + " " + label + "\n"
+		}
 	}
 
 	width := max(lipgloss.Width(content)+6, 30)
@@ -208,6 +288,8 @@ func (d dialogModel) helpText() string {
 			parts = append(parts, a.key+":"+a.name)
 		}
 		return strings.Join(parts, "  ")
+	case dialogChecklist:
+		return "space:toggle  enter:confirm  esc:cancel"
 	default:
 		return "enter:confirm  esc:cancel"
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -70,5 +71,63 @@ func TestValidateCmd_JSONReportsFindings(t *testing.T) {
 	}
 	if f.Severity == "" {
 		t.Fatal("expected severity to be set")
+	}
+}
+
+func TestValidateCmd_ExtrasValid(t *testing.T) {
+	// Proves: extras validation is wired through the CLI for both files and dirs.
+	t.Parallel()
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "pack.json"), []byte(
+		`{"schema_version":1,"name":"inc","root":".","extras":["wrappers","proxy.py"]}`), 0o644)
+	os.MkdirAll(filepath.Join(dir, "wrappers"), 0o755)
+	os.WriteFile(filepath.Join(dir, "proxy.py"), []byte("#!/usr/bin/env python3\n"), 0o644)
+
+	_, _, code := runApp(t, "pack", "validate", dir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestValidateCmd_ExtrasInvalidJSON(t *testing.T) {
+	// Proves: extras errors surface in --json output with correct structure.
+	t.Parallel()
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "pack.json"), []byte(
+		`{"schema_version":1,"name":"inc","root":".","extras":["missing","/absolute"]}`), 0o644)
+
+	stdout, _, code := runApp(t, "pack", "validate", dir, "--json")
+	if code == cmdutil.ExitOK {
+		t.Fatal("expected non-zero exit")
+	}
+	var rep struct {
+		OK       bool `json:"ok"`
+		Findings []struct {
+			Path     string `json:"path"`
+			Message  string `json:"message"`
+			Severity string `json:"severity"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("unmarshal: %v\njson=%s", err, stdout)
+	}
+	if rep.OK {
+		t.Fatal("expected ok=false")
+	}
+	// Should have findings for both the missing path and the absolute path.
+	var gotMissing, gotAbsolute bool
+	for _, f := range rep.Findings {
+		if f.Severity == "error" && strings.Contains(f.Message, "not found") {
+			gotMissing = true
+		}
+		if strings.Contains(f.Message, "must be relative") {
+			gotAbsolute = true
+		}
+	}
+	if !gotMissing {
+		t.Errorf("expected a 'not found' finding for missing extras path")
+	}
+	if !gotAbsolute {
+		t.Errorf("expected a 'must be relative' finding for /absolute")
 	}
 }

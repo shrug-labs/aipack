@@ -151,6 +151,7 @@ type MCPServer struct {
 	AllowedTools  []string `json:"allowed_tools,omitempty"`
 	DisabledTools []string `json:"disabled_tools,omitempty"`
 	SourcePack    string   `json:"source_pack,omitempty"`
+	PackRoot      string   `json:"-"` // absolute path to source pack dir; resolves {pack:root}
 
 	// Doc-only metadata from inventory files. Not rendered to harness configs.
 	// Links: URLs to source repos, setup docs, or reference pages for this server.

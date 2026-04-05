@@ -1,8 +1,9 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -228,11 +229,14 @@ func (m *packsModel) rebuildList() {
 		}
 	}
 
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].installed != list[j].installed {
-			return list[i].installed
+	slices.SortFunc(list, func(a, b packListItem) int {
+		if a.installed != b.installed {
+			if a.installed {
+				return -1
+			}
+			return 1
 		}
-		return strings.ToLower(list[i].name) < strings.ToLower(list[j].name)
+		return cmp.Compare(strings.ToLower(a.name), strings.ToLower(b.name))
 	})
 
 	m.listItems = list

@@ -6,11 +6,12 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -21,11 +22,7 @@ func buildTestTarGz(t *testing.T, files map[string]string) []byte {
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
-	keys := make([]string, 0, len(files))
-	for k := range files {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(files))
 
 	dirs := make(map[string]bool)
 	for _, name := range keys {

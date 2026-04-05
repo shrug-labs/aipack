@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,23 +15,12 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
-	ccharness "github.com/shrug-labs/aipack/internal/harness/claudecode"
-	clharness "github.com/shrug-labs/aipack/internal/harness/cline"
-	cxharness "github.com/shrug-labs/aipack/internal/harness/codex"
-	ocharness "github.com/shrug-labs/aipack/internal/harness/opencode"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
-
-// realRegistry returns a registry with all real harness implementations.
-func realRegistry() *harness.Registry {
-	return harness.NewRegistry(
-		ccharness.Harness{}, clharness.Harness{}, cxharness.Harness{}, ocharness.Harness{},
-	)
-}
 
 // testProfile builds a non-trivial profile with content in every vector.
 // The pack root is created on disk so that skill copy sources exist.
@@ -133,7 +123,7 @@ func TestPlanDestinations_WithinValidationRoots(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	for _, hid := range domain.AllHarnesses() {
 		t.Run(string(hid)+"/project", func(t *testing.T) {
@@ -220,7 +210,7 @@ func TestSyncThenClean_ReturnsToBaseline(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	for _, hid := range domain.AllHarnesses() {
 		t.Run(string(hid), func(t *testing.T) {
@@ -303,7 +293,7 @@ func TestSyncThenCapture_ContentFidelity(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	// Test with Claude Code — the most complete harness.
 	hid := domain.HarnessClaudeCode
@@ -372,11 +362,11 @@ func TestSyncThenCapture_ContentFidelity(t *testing.T) {
 	rulesDir := filepath.Join(projectDir, ".claude", "rules")
 	foundWorkflow := false
 	for _, dir := range []string{commandsDir, rulesDir} {
-		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil
 			}
-			if strings.Contains(strings.ToLower(info.Name()), "deploy") {
+			if strings.Contains(strings.ToLower(d.Name()), "deploy") {
 				foundWorkflow = true
 			}
 			return nil
@@ -491,7 +481,7 @@ func TestIdempotency_SyncTwiceIdentical(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	for _, hid := range domain.AllHarnesses() {
 		t.Run(string(hid), func(t *testing.T) {
@@ -545,7 +535,7 @@ func TestSubtraction_RemovedContentCleaned(t *testing.T) {
 	packRoot := t.TempDir()
 	fullProfile := testProfile(t, packRoot)
 	reduced := reducedProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	for _, hid := range domain.AllHarnesses() {
 		t.Run(string(hid), func(t *testing.T) {
@@ -612,7 +602,7 @@ func TestConvergence_ManualEditsOverwritten(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	for _, hid := range domain.AllHarnesses() {
 		t.Run(string(hid), func(t *testing.T) {
@@ -689,7 +679,7 @@ func TestConvergence_CorruptedOwnedFiles(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	for _, hid := range domain.AllHarnesses() {
 		t.Run(string(hid), func(t *testing.T) {
@@ -744,7 +734,7 @@ func TestCrossHarnessIsolation(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 	harnesses := domain.AllHarnesses()
 
 	projectDir := t.TempDir()
@@ -803,7 +793,7 @@ func TestOrderingIndependence(t *testing.T) {
 
 	packRoot := t.TempDir()
 	profile := testProfile(t, packRoot)
-	reg := realRegistry()
+	reg := testRegistry()
 
 	// Build a reordered profile: reverse the slices within the pack.
 	reordered := testProfile(t, packRoot)
@@ -862,5 +852,1239 @@ func reverseSkills(s []domain.Skill)       { reverseSlice(s) }
 func reverseSlice[T any](s []T) {
 	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
 		s[i], s[j] = s[j], s[i]
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: Multi-pack — both packs contribute content
+//
+// Story: "I compose a profile from two packs — both packs' content appears in
+// every harness." Two independently-authored packs each contribute rules and
+// agents. After sync, all four content names must be discoverable regardless
+// of harness.
+// ---------------------------------------------------------------------------
+
+func TestMultiPack_BothPacksContributeContent(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := multiPackProfile(packRoot,
+		packWith("alpha", withRules("style-guide"), withAgents("reviewer")),
+		packWith("beta", withRules("security"), withAgents("triage")),
+	)
+
+	forAllHarnesses(t, func(t *testing.T, env *contractEnv) {
+		env.sync(profile)
+
+		for _, name := range []string{"style-guide", "reviewer", "security", "triage"} {
+			if !env.contentExists(name) {
+				t.Errorf("expected content %q not found", name)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Multi-pack — rules and workflows combine
+//
+// Story: "Rules and workflows from multiple packs land in the same harness
+// directories." Two packs each contribute rules and workflows. After sync,
+// all four content names must be discoverable.
+// ---------------------------------------------------------------------------
+
+func TestMultiPack_WorkflowsAndRulesCombine(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := multiPackProfile(packRoot,
+		packWith("ops", withRules("escalation"), withWorkflows("deploy")),
+		packWith("dev", withRules("testing"), withWorkflows("review")),
+	)
+
+	forAllHarnesses(t, func(t *testing.T, env *contractEnv) {
+		env.sync(profile)
+
+		for _, name := range []string{"escalation", "deploy", "testing", "review"} {
+			if !env.contentExists(name) {
+				t.Errorf("expected content %q not found", name)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: MCP server rendered per harness
+//
+// Story: "An MCP server in the profile appears in the harness's rendered
+// settings." A profile carries a single stdio MCP server. After syncing to
+// each harness at project scope, the server name should appear in the
+// rendered settings file — except Cline, which only renders MCP at global
+// scope.
+// ---------------------------------------------------------------------------
+
+func TestMCPServer_RenderedPerHarness(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	reg := testRegistry()
+
+	profile := profileWith(packRoot, withRules("placeholder"))
+	profile.MCPServers = []domain.MCPServer{
+		{
+			Name:       "test-mcp-server",
+			Transport:  domain.TransportStdio,
+			Command:    []string{"echo", "hello"},
+			SourcePack: "test-pack",
+		},
+	}
+
+	for _, hid := range domain.AllHarnesses() {
+		t.Run(string(hid), func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			home := t.TempDir()
+
+			syncAndApply(t, profile, domain.ScopeProject, projectDir, home, hid, reg)
+			files := collectFiles(t, projectDir)
+
+			if hid == domain.HarnessCline {
+				// Cline renders MCP at global scope only; rules should still sync.
+				found := false
+				for path, content := range files {
+					if strings.Contains(path, "placeholder") || strings.Contains(content, "placeholder") {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Error("Cline: expected rule 'placeholder' not found at project scope")
+				}
+				return
+			}
+
+			// Non-Cline harnesses: the MCP server name should appear in the
+			// rendered settings file (.mcp.json, opencode.json, or config.toml).
+			found := false
+			for _, content := range files {
+				if strings.Contains(content, "test-mcp-server") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: expected MCP server 'test-mcp-server' not found in project files", hid)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Codex agent rendered as native TOML
+//
+// Story: "I define an agent — Codex renders it as a native .toml file in
+// .codex/agents/, not as markdown like other harnesses."
+// ---------------------------------------------------------------------------
+
+func TestCodex_AgentRenderedAsNativeTOML(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, withAgents("reviewer"))
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	// Agent TOML must exist.
+	tomlPath := filepath.Join(".codex", "agents", "reviewer.toml")
+	content, ok := files[tomlPath]
+	if !ok {
+		t.Fatalf("expected %s to exist", tomlPath)
+	}
+	if !strings.Contains(content, "reviewer") {
+		t.Error("agent TOML does not contain agent name 'reviewer'")
+	}
+
+	// AGENTS.override.md should NOT contain the agent (it's for rules only).
+	if override, exists := files["AGENTS.override.md"]; exists {
+		if strings.Contains(override, "reviewer") {
+			t.Error("AGENTS.override.md should not contain agent 'reviewer' — agents go to .codex/agents/")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Codex rules flattened to AGENTS.override.md
+//
+// Story: "Multiple rules from my profile are flattened into a single
+// AGENTS.override.md, not individual files."
+// ---------------------------------------------------------------------------
+
+func TestCodex_RulesFlattenedToOverrideMD(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot,
+		ruleWithContent("style", "Use consistent style.\n"),
+		ruleWithContent("security", "Never store secrets in code.\n"),
+	)
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	// AGENTS.override.md must contain both rules' content.
+	override, ok := files["AGENTS.override.md"]
+	if !ok {
+		t.Fatal("expected AGENTS.override.md to exist")
+	}
+	if !strings.Contains(override, "Use consistent style") {
+		t.Error("AGENTS.override.md missing 'Use consistent style'")
+	}
+	if !strings.Contains(override, "Never store secrets in code") {
+		t.Error("AGENTS.override.md missing 'Never store secrets in code'")
+	}
+
+	// Individual rule files must NOT exist.
+	for path := range files {
+		if strings.Contains(path, filepath.Join(".codex", "rules")) {
+			t.Errorf("unexpected individual rule file: %s", path)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Existing AGENTS.md preserved below separator
+//
+// Story: "I have a handwritten AGENTS.md — sync creates AGENTS.override.md
+// that preserves my content below a separator."
+// ---------------------------------------------------------------------------
+
+func TestCodex_ExistingAGENTSMD_PreservedBelowSeparator(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, withRules("team-rule"))
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	// Create a handwritten AGENTS.md before sync.
+	agentsMD := filepath.Join(projectDir, "AGENTS.md")
+	if err := os.WriteFile(agentsMD, []byte("# My Custom Agent Instructions\n\nDo excellent work.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+	override, ok := files["AGENTS.override.md"]
+	if !ok {
+		t.Fatal("expected AGENTS.override.md to exist")
+	}
+
+	if !strings.Contains(override, "team-rule") {
+		t.Error("AGENTS.override.md missing managed rule 'team-rule'")
+	}
+	if !strings.Contains(override, "My Custom Agent Instructions") {
+		t.Error("AGENTS.override.md missing preserved user content")
+	}
+	if !strings.Contains(override, "preserved from existing AGENTS.md") {
+		t.Error("AGENTS.override.md missing preservation separator comment")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: Codex workflow promoted to skill directory
+//
+// Story: "Codex doesn't have native workflows, so my workflow is promoted
+// to a skill directory."
+// ---------------------------------------------------------------------------
+
+func TestCodex_WorkflowPromotedToSkillDir(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, withWorkflows("deploy"))
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	skillPath := filepath.Join(".agents", "skills", "deploy", "SKILL.md")
+	content, ok := files[skillPath]
+	if !ok {
+		t.Fatalf("expected %s to exist", skillPath)
+	}
+	if !strings.Contains(content, "source_type: workflow") {
+		t.Error("promoted SKILL.md missing 'source_type: workflow' marker")
+	}
+	if !strings.Contains(content, "deploy") {
+		t.Error("promoted SKILL.md missing workflow name 'deploy'")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: MCP server in Codex config.toml
+//
+// Story: "My MCP server appears in Codex's config.toml, not in a JSON file."
+// ---------------------------------------------------------------------------
+
+func TestCodex_MCPServerInConfigTOML(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, withRules("placeholder"))
+	profile.MCPServers = []domain.MCPServer{
+		{
+			Name:       "lint-server",
+			Transport:  domain.TransportStdio,
+			Command:    []string{"echo", "lint"},
+			SourcePack: "test-pack",
+		},
+	}
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	// config.toml must exist and contain the server.
+	configPath := filepath.Join(".codex", "config.toml")
+	content, ok := files[configPath]
+	if !ok {
+		t.Fatalf("expected %s to exist", configPath)
+	}
+	if !strings.Contains(content, "lint-server") {
+		t.Error("config.toml missing MCP server 'lint-server'")
+	}
+
+	// .mcp.json should NOT exist (that's Claude Code's format).
+	if _, exists := files[".mcp.json"]; exists {
+		t.Error("unexpected .mcp.json — Codex uses config.toml for MCP servers")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Codex agent with harness model override
+//
+// Story: "I set a Codex-specific model on my agent — it renders into the
+// native TOML."
+// ---------------------------------------------------------------------------
+
+func TestCodex_AgentWithHarnessModelOverride(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot,
+		agentWith("explorer", []string{"bash", "read"}, map[string]map[string]any{
+			"codex": {"model": "o3", "model_reasoning_effort": "high"},
+		}),
+	)
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	tomlPath := filepath.Join(".codex", "agents", "explorer.toml")
+	content, ok := files[tomlPath]
+	if !ok {
+		t.Fatalf("expected %s to exist", tomlPath)
+	}
+	if !strings.Contains(content, "o3") {
+		t.Error("agent TOML missing model 'o3'")
+	}
+	if !strings.Contains(content, "high") {
+		t.Error("agent TOML missing reasoning effort 'high'")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: User edit preserved without force
+//
+// Story: "I edited a file that aipack manages — re-sync without --force
+// should not overwrite my edit."
+//
+// The conflict mechanism is engine-level and harness-independent. We test
+// with Claude Code where rules are individual .md files (fully managed
+// writes, not owned files with merge semantics).
+// ---------------------------------------------------------------------------
+
+func TestConflict_UserEditPreservedWithoutForce(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, ruleWithContent("editable", "Original content.\n"))
+	reg := testRegistry()
+	hid := domain.HarnessClaudeCode
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	// First sync with force — creates the rule file.
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, hid, reg)
+
+	// Find and modify the managed rule file.
+	ruleFile := filepath.Join(projectDir, ".claude", "rules", "editable.md")
+	if _, err := os.Stat(ruleFile); err != nil {
+		t.Fatalf("rule file not created: %v", err)
+	}
+	if err := os.WriteFile(ruleFile, []byte("User's custom edit.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-sync WITHOUT force. Force: false means conflicts are skipped.
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{hid},
+			Home:       home,
+		},
+		Force: false,
+		Yes:   true,
+		Quiet: true,
+	}, reg, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("RunSync: %v", err)
+	}
+
+	// File should still have the user's edit.
+	got, err := os.ReadFile(ruleFile)
+	if err != nil {
+		t.Fatalf("read rule file: %v", err)
+	}
+	if string(got) != "User's custom edit.\n" {
+		t.Errorf("user edit was overwritten: got %q, want %q", got, "User's custom edit.\n")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: MCP-only profile syncs without content files
+//
+// Story: "I have a tools-only pack — just MCP servers, no rules or agents.
+// Sync should work and render the server config."
+// ---------------------------------------------------------------------------
+
+func TestMCPOnly_SyncsWithoutContentFiles(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	reg := testRegistry()
+
+	// Profile with no content — only MCP servers.
+	profile := profileWith(packRoot)
+	profile.MCPServers = []domain.MCPServer{
+		{
+			Name:       "tools-server",
+			Transport:  domain.TransportStdio,
+			Command:    []string{"echo", "tools"},
+			SourcePack: "test-pack",
+		},
+	}
+
+	// Test across harnesses that support MCP at project scope.
+	// Cline renders MCP at global scope only, so skip it.
+	for _, hid := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode, domain.HarnessCodex} {
+		t.Run(string(hid), func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			home := t.TempDir()
+
+			syncAndApply(t, profile, domain.ScopeProject, projectDir, home, hid, reg)
+			files := collectFiles(t, projectDir)
+
+			// MCP server name must appear in some settings file.
+			found := false
+			for _, content := range files {
+				if strings.Contains(content, "tools-server") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: MCP server 'tools-server' not found in any file", hid)
+			}
+
+			// No rule or agent content files should exist.
+			for path, content := range files {
+				for _, marker := range []string{"Rule:", "Agent:"} {
+					if strings.Contains(content, marker) {
+						t.Errorf("%s: unexpected content marker %q in %s", hid, marker, path)
+					}
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: Skill nested subdirectories preserved
+//
+// Story: "My skill has helper subdirectories — they survive the copy to
+// the harness."
+// ---------------------------------------------------------------------------
+
+func TestSkillNested_SubdirectoriesPreserved(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+
+	// Create a skill directory with nested structure on disk.
+	skillDir := filepath.Join(packRoot, "skills", "deploy")
+	templatesDir := filepath.Join(skillDir, "templates")
+	libDir := filepath.Join(skillDir, "lib")
+	for _, d := range []string{templatesDir, libDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skillFiles := map[string]string{
+		filepath.Join(skillDir, "SKILL.md"):      "---\nname: deploy\n---\nDeploy skill.\n",
+		filepath.Join(templatesDir, "prod.yaml"): "env: production\nreplicas: 3\n",
+		filepath.Join(libDir, "helper.sh"):       "#!/bin/bash\necho deploy\n",
+	}
+	for path, content := range skillFiles {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Build profile with the nested skill.
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name:    "test-pack",
+			Version: "1.0.0",
+			Root:    packRoot,
+			Skills: []domain.Skill{
+				{Name: "deploy", DirPath: skillDir, SourcePack: "test-pack"},
+			},
+		}},
+	}
+
+	reg := testRegistry()
+	hid := domain.HarnessClaudeCode
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, hid, reg)
+	files := collectFiles(t, projectDir)
+
+	// Verify all 3 files exist at destination with matching content.
+	wantFiles := map[string]string{
+		filepath.Join(".claude", "skills", "deploy", "SKILL.md"):               "---\nname: deploy\n---\nDeploy skill.\n",
+		filepath.Join(".claude", "skills", "deploy", "templates", "prod.yaml"): "env: production\nreplicas: 3\n",
+		filepath.Join(".claude", "skills", "deploy", "lib", "helper.sh"):       "#!/bin/bash\necho deploy\n",
+	}
+	for wantPath, wantContent := range wantFiles {
+		got, ok := files[wantPath]
+		if !ok {
+			t.Errorf("expected %s to exist", wantPath)
+			continue
+		}
+		if got != wantContent {
+			t.Errorf("%s: content mismatch\n  got:  %q\n  want: %q", wantPath, got, wantContent)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 22: Dry run produces plan without writing
+//
+// Story: "I want to see what would change without committing."
+// ---------------------------------------------------------------------------
+
+func TestDryRun_ProducesPlanWithoutWriting(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := testProfile(t, packRoot)
+	reg := testRegistry()
+	hid := domain.HarnessClaudeCode
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	// Sync with DryRun: true.
+	result, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{hid},
+			Home:       home,
+		},
+		DryRun: true,
+		Force:  true,
+		Yes:    true,
+		Quiet:  true,
+	}, reg, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("RunSync dry-run: %v", err)
+	}
+
+	// Plan should have operations.
+	totalOps := len(result.Plan.Writes) + len(result.Plan.Copies) + len(result.Plan.Settings) + len(result.Plan.MCP)
+	if totalOps == 0 {
+		t.Error("dry-run plan has no operations — expected a non-trivial plan")
+	}
+
+	// No files should have been written to disk.
+	files := collectFiles(t, projectDir)
+	if len(files) != 0 {
+		t.Errorf("dry-run should not write files: found %d files", len(files))
+		for path := range files {
+			t.Logf("  unexpected file: %s", path)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 23: Multiple agents each get their own TOML and config.toml registration
+//
+// Story: "My pack has three agents — each gets its own .toml file and a
+// registration entry in config.toml."
+// ---------------------------------------------------------------------------
+
+func TestCodex_MultipleAgents_EachRegisteredInConfigTOML(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, withAgents("reviewer", "deployer", "triage"))
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	// Each agent must have a .toml file under .codex/agents/.
+	for _, name := range []string{"reviewer", "deployer", "triage"} {
+		tomlPath := filepath.Join(".codex", "agents", name+".toml")
+		if _, ok := files[tomlPath]; !ok {
+			t.Errorf("expected %s to exist", tomlPath)
+		}
+	}
+
+	// config.toml must exist and contain a registration for each agent.
+	configPath := filepath.Join(".codex", "config.toml")
+	config, ok := files[configPath]
+	if !ok {
+		t.Fatal("expected .codex/config.toml to exist")
+	}
+	for _, name := range []string{"reviewer", "deployer", "triage"} {
+		if !strings.Contains(config, name) {
+			t.Errorf("config.toml missing agent registration for %q", name)
+		}
+		configFileRef := "./agents/" + name + ".toml"
+		if !strings.Contains(config, configFileRef) {
+			t.Errorf("config.toml missing config_file reference %q", configFileRef)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 24: Agent with MCP reference — server config embedded in TOML
+//
+// Story: "My agent references an MCP server by name — the server config is
+// embedded directly in the agent's TOML."
+// ---------------------------------------------------------------------------
+
+func TestCodex_AgentWithMCPReference_ServerEmbeddedInTOML(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+
+	// Build a profile with an agent that references an MCP server.
+	pack := domain.Pack{
+		Name:    "test-pack",
+		Version: "1.0.0",
+		Root:    packRoot,
+		Agents: []domain.Agent{
+			{
+				Name: "analyzer",
+				Frontmatter: domain.AgentFrontmatter{
+					Name:       "analyzer",
+					MCPServers: []string{"lint-server"},
+				},
+				Body:       []byte("Analyze code.\n"),
+				SourcePack: "test-pack",
+			},
+		},
+	}
+	profile := domain.Profile{
+		Packs: []domain.Pack{pack},
+		MCPServers: []domain.MCPServer{
+			{
+				Name:       "lint-server",
+				Transport:  domain.TransportStdio,
+				Command:    []string{"eslint", "--server"},
+				SourcePack: "test-pack",
+			},
+		},
+	}
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	tomlPath := filepath.Join(".codex", "agents", "analyzer.toml")
+	content, ok := files[tomlPath]
+	if !ok {
+		t.Fatalf("expected %s to exist", tomlPath)
+	}
+	if !strings.Contains(content, "lint-server") {
+		t.Error("agent TOML missing embedded MCP server name 'lint-server'")
+	}
+	if !strings.Contains(content, "eslint") {
+		t.Error("agent TOML missing MCP server command 'eslint'")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 25: Rules and agents both rendered
+//
+// Story: "My pack has both rules and agents — Codex renders AGENTS.override.md
+// for rules AND native .toml for agents."
+// ---------------------------------------------------------------------------
+
+func TestCodex_RulesAndAgents_BothRendered(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot,
+		withRules("style", "security"),
+		withAgents("reviewer"),
+	)
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	// Rules must appear in AGENTS.override.md.
+	override, ok := files["AGENTS.override.md"]
+	if !ok {
+		t.Fatal("expected AGENTS.override.md to exist")
+	}
+	if !strings.Contains(override, "style") {
+		t.Error("AGENTS.override.md missing rule 'style'")
+	}
+	if !strings.Contains(override, "security") {
+		t.Error("AGENTS.override.md missing rule 'security'")
+	}
+
+	// Agent must be a native TOML file.
+	tomlPath := filepath.Join(".codex", "agents", "reviewer.toml")
+	if _, ok := files[tomlPath]; !ok {
+		t.Error("expected .codex/agents/reviewer.toml to exist")
+	}
+
+	// config.toml must reference the agent.
+	configPath := filepath.Join(".codex", "config.toml")
+	config, ok := files[configPath]
+	if !ok {
+		t.Fatal("expected .codex/config.toml to exist")
+	}
+	if !strings.Contains(config, "reviewer") {
+		t.Error("config.toml missing agent 'reviewer'")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 26: Agents only — no AGENTS.override.md created
+//
+// Story: "My pack only has agents, no rules — Codex should NOT create
+// AGENTS.override.md since there are no rules to flatten."
+// ---------------------------------------------------------------------------
+
+func TestCodex_AgentsOnly_NoOverrideMDCreated(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, withAgents("reviewer"))
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	// Agent TOML must exist.
+	tomlPath := filepath.Join(".codex", "agents", "reviewer.toml")
+	if _, ok := files[tomlPath]; !ok {
+		t.Fatal("expected .codex/agents/reviewer.toml to exist")
+	}
+
+	// AGENTS.override.md must NOT exist — no rules to flatten.
+	if _, ok := files["AGENTS.override.md"]; ok {
+		t.Error("AGENTS.override.md should not exist when there are no rules")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 27: Global scope — correct paths
+//
+// Story: "I sync at global scope — Codex puts AGENTS.override.md inside
+// .codex/ and agents in .codex/agents/."
+// ---------------------------------------------------------------------------
+
+func TestCodex_GlobalScope_CorrectPaths(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot,
+		ruleWithContent("global-rule", "Global rule content.\n"),
+		withAgents("reviewer"),
+	)
+	reg := testRegistry()
+
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeGlobal, home, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, home)
+
+	// At global scope, AGENTS.override.md goes inside .codex/ (not at root).
+	globalOverride := filepath.Join(".codex", "AGENTS.override.md")
+	content, ok := files[globalOverride]
+	if !ok {
+		t.Fatal("expected .codex/AGENTS.override.md to exist at global scope")
+	}
+	if !strings.Contains(content, "Global rule content") {
+		t.Error(".codex/AGENTS.override.md missing rule content")
+	}
+
+	// Root-level AGENTS.override.md should NOT exist at global scope.
+	if _, ok := files["AGENTS.override.md"]; ok {
+		t.Error("AGENTS.override.md at root should not exist for global scope — should be inside .codex/")
+	}
+
+	// Agent TOML at .codex/agents/.
+	tomlPath := filepath.Join(".codex", "agents", "reviewer.toml")
+	if _, ok := files[tomlPath]; !ok {
+		t.Error("expected .codex/agents/reviewer.toml at global scope")
+	}
+
+	// config.toml at .codex/.
+	configPath := filepath.Join(".codex", "config.toml")
+	if _, ok := files[configPath]; !ok {
+		t.Error("expected .codex/config.toml at global scope")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 28: config.toml user settings preserved across re-sync
+//
+// Story: "I added custom_setting to my config.toml — re-sync shouldn't blow
+// away my setting."
+// ---------------------------------------------------------------------------
+
+func TestCodex_ConfigTOML_UserSettingsPreservedAcrossResync(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	profile := profileWith(packRoot, withAgents("reviewer"))
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	// First sync — creates config.toml with agent registration.
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	// Inject a user setting at the top of config.toml (bare key before first table).
+	configPath := filepath.Join(projectDir, ".codex", "config.toml")
+	existing, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml after first sync: %v", err)
+	}
+	modified := append([]byte("custom_setting = true\n\n"), existing...)
+	if err := os.WriteFile(configPath, modified, 0o644); err != nil {
+		t.Fatalf("write modified config.toml: %v", err)
+	}
+
+	// Re-sync with force.
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	// Read config.toml again and verify user setting survived.
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml after re-sync: %v", err)
+	}
+	content := string(got)
+	if !strings.Contains(content, "custom_setting") {
+		t.Error("user setting 'custom_setting' lost after re-sync")
+	}
+	// Agent registration should also still be present.
+	if !strings.Contains(content, "reviewer") {
+		t.Error("agent registration 'reviewer' lost after re-sync")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 29: Rules sorted deterministically
+//
+// Story: "Rules always appear in alphabetical order in AGENTS.override.md,
+// regardless of how they're ordered in my profile."
+// ---------------------------------------------------------------------------
+
+func TestCodex_RulesSortedDeterministically(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	// Add rules in reverse alphabetical order.
+	profile := profileWith(packRoot,
+		ruleWithContent("zulu", "Zulu content.\n"),
+		ruleWithContent("alpha", "Alpha content.\n"),
+		ruleWithContent("mike", "Mike content.\n"),
+	)
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+	override, ok := files["AGENTS.override.md"]
+	if !ok {
+		t.Fatal("expected AGENTS.override.md to exist")
+	}
+
+	// All three rules must appear, in alphabetical order.
+	posAlpha := strings.Index(override, "Alpha content")
+	posMike := strings.Index(override, "Mike content")
+	posZulu := strings.Index(override, "Zulu content")
+	if posAlpha == -1 || posMike == -1 || posZulu == -1 {
+		t.Fatal("AGENTS.override.md missing one or more rule contents")
+	}
+	if !(posAlpha < posMike && posMike < posZulu) {
+		t.Errorf("rules not sorted alphabetically: alpha@%d, mike@%d, zulu@%d", posAlpha, posMike, posZulu)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 30: Agent with skill reference — skills config in TOML
+//
+// Story: "My agent references a skill by name — the skill path appears in
+// the agent's TOML as a skills config entry."
+// ---------------------------------------------------------------------------
+
+func TestCodex_AgentWithSkillReference_SkillsConfigInTOML(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+
+	// Create a real skill directory on disk.
+	skillDir := filepath.Join(packRoot, "skills", "deploy")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: deploy\n---\nDeploy skill.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build profile with a skill and an agent that references it.
+	pack := domain.Pack{
+		Name:    "test-pack",
+		Version: "1.0.0",
+		Root:    packRoot,
+		Skills: []domain.Skill{
+			{Name: "deploy", DirPath: skillDir, SourcePack: "test-pack"},
+		},
+		Agents: []domain.Agent{
+			{
+				Name: "deployer",
+				Frontmatter: domain.AgentFrontmatter{
+					Name:   "deployer",
+					Skills: []string{"deploy"},
+				},
+				Body:       []byte("Deploy agent.\n"),
+				SourcePack: "test-pack",
+			},
+		},
+	}
+	profile := domain.Profile{Packs: []domain.Pack{pack}}
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	files := collectFiles(t, projectDir)
+
+	tomlPath := filepath.Join(".codex", "agents", "deployer.toml")
+	content, ok := files[tomlPath]
+	if !ok {
+		t.Fatalf("expected %s to exist", tomlPath)
+	}
+	if !strings.Contains(content, "deploy") {
+		t.Error("agent TOML missing skill reference 'deploy'")
+	}
+	if !strings.Contains(content, "skills") {
+		t.Error("agent TOML missing [skills] config section")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 31: Full round trip — sync then capture
+//
+// Story: "I sync a full profile (rules, agents, workflows, skills) to Codex,
+// then capture. The captured content should reflect agents, skills, and
+// promoted workflows."
+// ---------------------------------------------------------------------------
+
+func TestCodex_FullRoundTrip_SyncThenCapture(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+
+	// Create a skill directory on disk.
+	skillDir := filepath.Join(packRoot, "skills", "diagnose")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: diagnose\n---\nDiagnose issues.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name:    "test-pack",
+			Version: "1.0.0",
+			Root:    packRoot,
+			Rules: []domain.Rule{
+				{Name: "no-force-push", Raw: []byte("Never force push to main."), SourcePack: "test-pack"},
+			},
+			Agents: []domain.Agent{
+				{
+					Name:        "reviewer",
+					Frontmatter: domain.AgentFrontmatter{Name: "reviewer"},
+					Body:        []byte("Review code changes.\n"),
+					SourcePack:  "test-pack",
+				},
+			},
+			Workflows: []domain.Workflow{
+				{Name: "deploy", Body: []byte("Deploy to staging.\n"), Raw: []byte("---\nname: deploy\n---\nDeploy to staging.\n"), SourcePack: "test-pack"},
+			},
+			Skills: []domain.Skill{
+				{Name: "diagnose", DirPath: skillDir, SourcePack: "test-pack"},
+			},
+		}},
+	}
+
+	reg := testRegistry()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	// Capture.
+	h, err := reg.Lookup(domain.HarnessCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureResult, err := h.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		Home:       home,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	// Agents should be captured from native TOML.
+	foundAgent := false
+	for _, a := range captureResult.Agents {
+		if a.Name == "reviewer" {
+			foundAgent = true
+			break
+		}
+	}
+	if !foundAgent {
+		t.Error("agent 'reviewer' not captured")
+	}
+
+	// Skills should appear in copies.
+	foundSkill := false
+	for _, c := range captureResult.Copies {
+		if strings.Contains(c.Src, "diagnose") || strings.Contains(c.Dst, "diagnose") {
+			foundSkill = true
+			break
+		}
+	}
+	if !foundSkill {
+		t.Error("skill 'diagnose' not captured")
+	}
+
+	// Promoted workflow should be captured as a workflow (via CapturePromotedContent).
+	foundWorkflow := false
+	for _, w := range captureResult.Workflows {
+		if w.Name == "deploy" {
+			foundWorkflow = true
+			break
+		}
+	}
+	if !foundWorkflow {
+		t.Error("workflow 'deploy' not captured (expected promoted workflow to round-trip)")
+	}
+
+	// Rules are NOT captured for Codex — they are flattened into AGENTS.override.md
+	// which is a one-way transform. This is documented behavior.
+	if len(captureResult.Rules) > 0 {
+		t.Error("expected no captured rules for Codex (rules are flattened, not individually recoverable)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 32: Promotion collision — skill and workflow with same name
+//
+// Story: "My pack has a skill and a workflow with the same name — Codex
+// should detect the collision and return an error."
+// ---------------------------------------------------------------------------
+
+func TestCodex_PromotionCollision_SkillAndWorkflowSameName(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+
+	// Create a skill directory on disk.
+	skillDir := filepath.Join(packRoot, "skills", "deploy")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: deploy\n---\nDeploy skill.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Profile with both a skill and a workflow named "deploy".
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name:    "test-pack",
+			Version: "1.0.0",
+			Root:    packRoot,
+			Skills: []domain.Skill{
+				{Name: "deploy", DirPath: skillDir, SourcePack: "test-pack"},
+			},
+			Workflows: []domain.Workflow{
+				{Name: "deploy", Body: []byte("Deploy workflow.\n"), Raw: []byte("---\nname: deploy\n---\nDeploy workflow.\n"), SourcePack: "test-pack"},
+			},
+		}},
+	}
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	// RunSync directly — expect an error from the collision check.
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessCodex},
+			Home:       home,
+		},
+		Force: true,
+		Yes:   true,
+		Quiet: true,
+	}, reg, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for skill/workflow name collision, got nil")
+	}
+	if !strings.Contains(err.Error(), "collision") {
+		t.Errorf("expected collision error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Layout contract tests
+// ---------------------------------------------------------------------------
+
+// TestLayoutContract_StructuralInvariants verifies that every harness's Layout
+// satisfies structural contracts for both scopes: ValidationRoots are non-empty,
+// OwnedFiles paths are absolute, and RemovePaths are under ValidationRoots.
+func TestLayoutContract_StructuralInvariants(t *testing.T) {
+	t.Parallel()
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	for _, scope := range []domain.Scope{domain.ScopeProject, domain.ScopeGlobal} {
+		baseDir := projectDir
+		if scope == domain.ScopeGlobal {
+			baseDir = home
+		}
+		for _, h := range reg.All() {
+			name := string(h.ID()) + "/" + string(scope)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				l := h.Layout(scope, baseDir, home)
+
+				// ValidationRoots must be non-empty — every harness writes somewhere.
+				if len(l.ValidationRoots) == 0 {
+					t.Error("ValidationRoots is empty")
+				}
+
+				// ValidationRoots must be absolute paths.
+				for _, r := range l.ValidationRoots {
+					if !filepath.IsAbs(r) {
+						t.Errorf("ValidationRoot is not absolute: %q", r)
+					}
+				}
+
+				// RemovePaths must be absolute.
+				for _, rp := range l.RemovePaths {
+					if !filepath.IsAbs(rp) {
+						t.Errorf("RemovePath is not absolute: %q", rp)
+					}
+				}
+
+				// Each RemovePath must be under at least one ValidationRoot.
+				for _, rp := range l.RemovePaths {
+					found := false
+					for _, vr := range l.ValidationRoots {
+						if rp == vr || strings.HasPrefix(rp, vr+string(filepath.Separator)) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("RemovePath %q is not under any ValidationRoot", rp)
+					}
+				}
+
+				// OwnedFiles paths must be absolute.
+				for _, of := range l.OwnedFiles {
+					if !filepath.IsAbs(of.Path) {
+						t.Errorf("OwnedFile path is not absolute: %q", of.Path)
+					}
+					if of.Strip == nil {
+						t.Errorf("OwnedFile %q has nil Strip", of.Path)
+					}
+					if of.Reset == nil {
+						t.Errorf("OwnedFile %q has nil Reset", of.Path)
+					}
+				}
+			})
+		}
 	}
 }

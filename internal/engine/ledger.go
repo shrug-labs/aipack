@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -81,13 +80,13 @@ func EncodeProjectPath(projectDir string) string {
 //   - Project local:   <projectDir>/.aipack/ledger.json
 //
 // Entries are routed by path prefix matching against harness managed roots.
-func (e *Engine) MigrateOldLedgers(scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
+func (e *Engine) MigrateOldLedgers(configDir string, scope domain.Scope, projectDir string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
 	migrated := 0
 
 	// Check for old project-local ledger.
 	if scope == domain.ScopeProject {
 		oldPath := filepath.Join(projectDir, ".aipack", "ledger.json")
-		n, err := e.migrateOneLedger(oldPath, scope, projectDir, home, harnesses, managedRoots)
+		n, err := e.migrateOneLedger(oldPath, configDir, scope, projectDir, harnesses, managedRoots)
 		if err != nil {
 			return 0, err
 		}
@@ -95,8 +94,7 @@ func (e *Engine) MigrateOldLedgers(scope domain.Scope, projectDir, home string, 
 	}
 
 	// Check for old combined-harness ledgers in global ledger dir.
-	cfgDir, _ := config.DefaultConfigDir(home)
-	ledgerDir := filepath.Join(cfgDir, "ledger")
+	ledgerDir := filepath.Join(configDir, "ledger")
 	entries, err := e.FS.ReadDir(ledgerDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -113,7 +111,7 @@ func (e *Engine) MigrateOldLedgers(scope domain.Scope, projectDir, home string, 
 			continue
 		}
 		oldPath := filepath.Join(ledgerDir, ent.Name())
-		n, err := e.migrateOneLedger(oldPath, scope, projectDir, home, harnesses, managedRoots)
+		n, err := e.migrateOneLedger(oldPath, configDir, scope, projectDir, harnesses, managedRoots)
 		if err != nil {
 			return migrated, err
 		}
@@ -123,7 +121,7 @@ func (e *Engine) MigrateOldLedgers(scope domain.Scope, projectDir, home string, 
 	return migrated, nil
 }
 
-func (e *Engine) migrateOneLedger(oldPath string, scope domain.Scope, projectDir, home string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
+func (e *Engine) migrateOneLedger(oldPath, configDir string, scope domain.Scope, projectDir string, harnesses []domain.Harness, managedRoots map[domain.Harness][]string) (int, error) {
 	old, _, err := e.LoadLedger(oldPath)
 	if err != nil || len(old.Managed) == 0 {
 		return 0, err
@@ -132,7 +130,7 @@ func (e *Engine) migrateOneLedger(oldPath string, scope domain.Scope, projectDir
 	// Load or create per-harness ledgers and distribute entries.
 	perHarness := map[domain.Harness]*domain.Ledger{}
 	for _, h := range harnesses {
-		lp := LedgerPathForScope(scope, projectDir, home, h)
+		lp := LedgerPath(configDir, scope, projectDir, h)
 		lg, _, lerr := e.LoadLedger(lp)
 		if lerr != nil {
 			return 0, lerr
@@ -161,7 +159,7 @@ func (e *Engine) migrateOneLedger(oldPath string, scope domain.Scope, projectDir
 
 	// Save per-harness ledgers.
 	for h, lg := range perHarness {
-		lp := LedgerPathForScope(scope, projectDir, home, h)
+		lp := LedgerPath(configDir, scope, projectDir, h)
 		if err := e.SaveLedger(lp, *lg, false); err != nil {
 			return migrated, err
 		}
@@ -170,15 +168,11 @@ func (e *Engine) migrateOneLedger(oldPath string, scope domain.Scope, projectDir
 	return migrated, nil
 }
 
-// LedgerPathForScope returns the ledger file path for a single harness.
-// All ledgers live under ~/.config/aipack/ledger/. Project-scoped ledgers
-// use a path-encoded subdirectory.
-func LedgerPathForScope(scope domain.Scope, projectDir, home string, harness domain.Harness) string {
-	if home == "" {
-		home = projectDir // fallback
-	}
-	cfgDir, _ := config.DefaultConfigDir(home)
-	base := filepath.Join(cfgDir, "ledger")
+// LedgerPath returns the ledger file path for a single harness.
+// All ledgers live under <configDir>/ledger/. Project-scoped ledgers use a
+// path-encoded subdirectory.
+func LedgerPath(configDir string, scope domain.Scope, projectDir string, harness domain.Harness) string {
+	base := filepath.Join(configDir, "ledger")
 	if scope == domain.ScopeProject {
 		base = filepath.Join(base, EncodeProjectPath(projectDir))
 	}

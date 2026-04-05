@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -224,11 +225,12 @@ type PendingSettingsChange struct {
 // Each harness is processed independently with its own per-harness ledger.
 func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest, reg *harness.Registry) (RoundTripResult, error) {
 	home := req.Home
+	configDir := config.FallbackConfigDir(req.ConfigDir, home)
 	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
 	var result RoundTripResult
 
 	for _, hid := range req.Harnesses {
-		ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, home, hid)
+		ledgerPath := engine.LedgerPath(configDir, req.Scope, req.ProjectDir, hid)
 		lg, ledgerWarnings, err := eng.LoadLedger(ledgerPath)
 		if err != nil {
 			return RoundTripResult{}, fmt.Errorf("loading ledger for %s: %w", hid, err)
@@ -595,7 +597,7 @@ func dirDigest(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 	var b strings.Builder
 	for _, rel := range paths {
 		d, err := util.FileDigest(filepath.Join(root, rel))
@@ -646,15 +648,6 @@ func packDirMatchesLedger(srcDir, dstDir string, lg domain.Ledger) bool {
 	return clean
 }
 
-func sortedMapKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func scanBytesForSecrets(b []byte) []string {
 	text := string(b)
 	var results []string
@@ -669,7 +662,7 @@ func scanBytesForSecrets(b []byte) []string {
 
 	// AWS access key IDs (AKIA followed by 16 uppercase alphanumeric chars).
 	if strings.Contains(text, "AKIA") {
-		for i := 0; i <= len(text)-20; i++ {
+		for i := range len(text) - 19 {
 			if text[i:i+4] == "AKIA" {
 				candidate := text[i : i+20]
 				allUpper := true

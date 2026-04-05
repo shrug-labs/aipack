@@ -168,9 +168,8 @@ func splitCommaSeparated(s string) []string {
 	if s == "" {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
+	var out []string
+	for p := range strings.SplitSeq(s, ",") {
 		t := strings.TrimSpace(p)
 		if t != "" {
 			out = append(out, t)

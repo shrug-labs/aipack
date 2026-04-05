@@ -19,7 +19,7 @@ var errPackRootEscape = fmt.Errorf("pack.json root escapes source boundary")
 // Only these are extracted from a source into the installed pack.
 var packContentDirs = []string{
 	"rules", "agents", "workflows", "skills",
-	"mcp", "configs", "prompts", "profiles",
+	"mcp", "configs", "prompts", "profiles", "registries",
 }
 
 // extractPackContent extracts pack content from srcRoot into a clean staging
@@ -81,6 +81,25 @@ func extractStandardPack(staging, srcRoot, symlinkBoundary string) (string, conf
 	// Content is flattened into the staging root, so the manifest's Root
 	// must be "." regardless of what the source pack declared.
 	manifest.Root = "."
+	origExtras := manifest.Extras
+
+	// Validate extras entries and compute staging-relative names (leading
+	// ".." segments stripped) before saving the manifest. Validation runs
+	// first so structural errors fail early.
+	if len(origExtras) > config.MaxExtras {
+		return cleanup(fmt.Errorf("extras declares %d entries (max %d)", len(origExtras), config.MaxExtras))
+	}
+	ev := config.NewExtrasValidator()
+	rewritten := make([]string, 0, len(origExtras))
+	for _, ext := range origExtras {
+		stagingName, err := ev.ValidateEntry(ext)
+		if err != nil {
+			return cleanup(err)
+		}
+		rewritten = append(rewritten, stagingName)
+	}
+	manifest.Extras = rewritten
+
 	if err := config.SavePackManifest(filepath.Join(staging, "pack.json"), manifest); err != nil {
 		return cleanup(fmt.Errorf("writing pack.json: %w", err))
 	}
@@ -95,6 +114,51 @@ func extractStandardPack(staging, srcRoot, symlinkBoundary string) (string, conf
 				continue
 			}
 			return cleanup(fmt.Errorf("copying %s: %w", dir, err))
+		}
+	}
+
+	// Copy extras (files or directories) declared in the manifest.
+	// Structural validation was done above; filesystem boundary and symlink
+	// checks are extraction-specific.
+	type resolvedEntry struct {
+		realPath string
+		extras   string
+	}
+	var resolvedSources []resolvedEntry
+	for i, ext := range origExtras {
+		src := filepath.Join(packRoot, ext)
+		dst := filepath.Join(staging, rewritten[i])
+		if !util.IsWithinDir(src, symlinkBoundary) {
+			return cleanup(fmt.Errorf("extras path %q escapes repo boundary", ext))
+		}
+		if !util.IsWithinDir(dst, staging) {
+			return cleanup(fmt.Errorf("extras path %q escapes staging directory", ext))
+		}
+
+		// Resolve symlinks to detect real-path overlaps.
+		realSrc, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			return cleanup(fmt.Errorf("resolving extras path %s: %w", ext, err))
+		}
+		for _, prev := range resolvedSources {
+			if realSrc == prev.realPath || util.IsWithinDir(realSrc, prev.realPath) || util.IsWithinDir(prev.realPath, realSrc) {
+				return cleanup(fmt.Errorf("extras path %q overlaps with %q (both resolve under %s)", ext, prev.extras, prev.realPath))
+			}
+		}
+		resolvedSources = append(resolvedSources, resolvedEntry{realPath: realSrc, extras: ext})
+
+		info, err := os.Lstat(src)
+		if err != nil {
+			return cleanup(fmt.Errorf("stat extras %s: %w", ext, err))
+		}
+		if info.IsDir() {
+			if err := util.CopyDirResolvingSymlinks(src, dst, symlinkBoundary); err != nil {
+				return cleanup(fmt.Errorf("copying extras dir %s: %w", ext, err))
+			}
+		} else {
+			if err := util.CopyFileResolvingSymlink(src, dst, symlinkBoundary); err != nil {
+				return cleanup(fmt.Errorf("copying extras file %s: %w", ext, err))
+			}
 		}
 	}
 
@@ -122,6 +186,51 @@ func extractStandardPack(staging, srcRoot, symlinkBoundary string) (string, conf
 	}
 
 	return staging, manifest, nil
+}
+
+// applyWithFilter removes bundled content (profiles, registries, extras)
+// from a staging directory when not approved via --with. Core content
+// (rules, agents, workflows, skills, prompts, mcp, configs) is always
+// kept. Updates the manifest in-place, deletes unapproved files from
+// disk, and re-saves pack.json. No-op when with is nil or when all
+// bundled categories are approved.
+func applyWithFilter(staging string, manifest *config.PackManifest, with domain.BundledSet) error {
+	if with == nil {
+		return nil
+	}
+	// Short-circuit when all bundled categories are approved.
+	allApproved := true
+	for _, cat := range domain.AllBundledCategories {
+		if !with.Has(cat) {
+			allApproved = false
+			break
+		}
+	}
+	if allApproved {
+		return nil
+	}
+
+	// Profiles: directory-based bundled content.
+	if !with.Has(domain.BundledProfiles) {
+		os.RemoveAll(filepath.Join(staging, "profiles"))
+		manifest.Profiles = nil
+	}
+
+	// Extras: remove individual paths listed in the manifest.
+	if !with.Has(domain.BundledExtras) {
+		for _, ext := range manifest.Extras {
+			os.RemoveAll(filepath.Join(staging, ext))
+		}
+		manifest.Extras = nil
+	}
+
+	// Registries: directory-based bundled content.
+	if !with.Has(domain.BundledRegistries) {
+		os.RemoveAll(filepath.Join(staging, "registries"))
+		manifest.Registries = nil
+	}
+
+	return config.SavePackManifest(filepath.Join(staging, "pack.json"), *manifest)
 }
 
 func extractWithContentPaths(staging, srcRoot, symlinkBoundary string, contentPaths map[domain.PackCategory]string, packName string) (string, config.PackManifest, error) {

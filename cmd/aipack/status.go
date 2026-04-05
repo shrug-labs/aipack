@@ -14,7 +14,6 @@ import (
 type StatusCmd struct {
 	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
-	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	JSON        bool   `help:"Emit machine-readable JSON" name:"json"`
 }
 
@@ -36,7 +35,7 @@ See also: doctor, profile show`
 }
 
 func (c *StatusCmd) Run(ctx context.Context, g *Globals) error {
-	loaded, code := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
+	loaded, code := loadProfile(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
 	if code >= 0 {
 		return ExitError{Code: code}
 	}

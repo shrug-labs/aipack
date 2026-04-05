@@ -1,6 +1,6 @@
 # CLI Specification
 
-Version: 0.9.0
+Version: 0.18.0
 
 Machine-readable output contracts for the aipack CLI. This document defines the JSON shapes that `--json` commands emit — the public interface for CI pipelines, dashboards, wrapper scripts, and automation. For command behavior, flags, and per-harness rendering details, see the [aipack reference](./aipack.md).
 
@@ -23,11 +23,13 @@ aipack
 ├── query
 ├── manage
 ├── version
+├── update
 ├── pack
 │   ├── create
 │   ├── install
 │   ├── list
 │   ├── show
+│   ├── validate
 │   ├── update
 │   ├── delete
 │   ├── rename
@@ -137,7 +139,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
   "total_workflows": 11,
   "total_skills": 10,
   "total_mcp_servers": 5,
-  "settings_pack": "my-team-ops"
+  "settings_packs": ["my-team-ops"]
 }
 ```
 
@@ -160,7 +162,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 | `total_workflows` | int | Sum of workflows |
 | `total_skills` | int | Sum of skills |
 | `total_mcp_servers` | int | Sum of MCP servers |
-| `settings_pack` | string | Name of the pack providing settings (omitempty) |
+| `settings_packs` | string[] | Packs contributing settings, in profile order (omitempty) |
 
 ### `aipack trace`
 
@@ -255,7 +257,7 @@ Overall `ok` is false only when a critical-severity check fails. Warning-level c
     "total_workflows": 11,
     "total_skills": 10,
     "total_mcp_servers": 5,
-    "settings_pack": "base-pack"
+    "settings_packs": ["base-pack"]
   }
 }
 ```
@@ -364,7 +366,8 @@ Content ID arrays are always present (empty `[]`, never null).
   "workflows": ["session-retro", "brainstorm"],
   "skills": ["deep-research", "writing-plans"],
   "prompts": [],
-  "mcp_servers": []
+  "mcp_servers": [],
+  "extras": ["scripts/run-server.sh"]
 }
 ```
 
@@ -384,6 +387,7 @@ Content ID arrays are always present (empty `[]`, never null).
 | `skills` | string[] | Skill IDs |
 | `prompts` | string[] | Prompt IDs |
 | `mcp_servers` | string[] | MCP server names |
+| `extras` | string[] | Extra bundled file paths (omitempty) |
 
 ### `aipack pack validate`
 
@@ -475,16 +479,15 @@ Several flags follow a common resolution chain across commands:
 | Flag | Resolution order |
 |------|-----------------|
 | `--profile` | `--profile-path` → `--profile` → `sync-config defaults.profile` → `"default"` |
-| `--scope` | `--scope` → `sync-config defaults.scope` → `"project"` |
+| `--scope` | `--scope` → `sync-config defaults.scope` → `"global"` |
 | `--harness` | `--harness` → `sync-config defaults.harnesses` → `$AIPACK_DEFAULT_HARNESS` |
-| `--config-dir` | `--config-dir` → `$AIPACK_CONFIG_DIR` → `~/.config/aipack` (`%APPDATA%\aipack` on Windows) |
+| `--config-dir` | `--config-dir` → `~/.config/aipack` (`%APPDATA%\aipack` on Windows) |
 
 ## Environment variables
 
 | Variable | Description |
 |----------|-------------|
 | `AIPACK_DEFAULT_HARNESS` | Default harness when none configured |
-| `AIPACK_CONFIG_DIR` | Override config directory |
 | `AIPACK_NO_UPDATE_CHECK` | Set to `1` to disable automatic update checking |
 
 ## Enumerations
@@ -503,7 +506,7 @@ Several flags follow a common resolution chain across commands:
 
 **Finding severities:** `error`, `warning`
 
-**Doctor check names:** `sync_config`, `active_profile`, `profile_validated`, `packs_resolved`, `packs_registered`, `git_available`, `ledger_health`, `manifest_drift`, `cli_update`, `pack_version_drift`, `stale_ledgers`
+**Doctor check names:** `sync_config`, `active_profile`, `profile_validated`, `packs_resolved`, `packs_registered`, `git_available`, `ledger_health`, `manifest_drift`, `cli_update`, `pack_version_drift`, `stale_ledgers`, `mcp_refs_present`, `mcp_server_paths_exist`
 
 **Doctor check statuses:** `pass`, `fail`, `skip`, `warn`, `fixed`
 

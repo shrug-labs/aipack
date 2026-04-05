@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -156,6 +155,37 @@ func FindRepoRoot(dir string) string {
 	}
 }
 
+// CopyFileResolvingSymlink copies a single file from src to dst. If src is
+// a symlink, it is resolved and the target must be within boundary.
+func CopyFileResolvingSymlink(src, dst, boundary string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory, not a file", src)
+	}
+	readPath := src
+	if info.Mode()&os.ModeSymlink != 0 {
+		if boundary == "" {
+			return fmt.Errorf("symlink in pack content cannot be resolved (no boundary): %s", src)
+		}
+		resolved, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			return fmt.Errorf("resolving symlink %s: %w", src, err)
+		}
+		if err := ValidateSymlinkTarget(resolved, boundary); err != nil {
+			return fmt.Errorf("symlink not allowed: %s: %w", src, err)
+		}
+		readPath = resolved
+	}
+	data, err := os.ReadFile(readPath)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomicWithPerms(dst, data, 0o700, 0o600)
+}
+
 // CopyDirResolvingSymlinks recursively copies src to dst, resolving file
 // symlinks whose targets are within boundary. If boundary is empty, symlinks
 // are rejected (same behavior as CopyDir). Directory symlinks are always
@@ -276,6 +306,14 @@ func ListSubDirs(dir string) []string {
 		}
 		out = append(out, filepath.Join(dir, e.Name()))
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
+}
+
+// ShortHash returns the first 7 characters of a hash string for display.
+func ShortHash(h string) string {
+	if len(h) > 7 {
+		return h[:7]
+	}
+	return h
 }

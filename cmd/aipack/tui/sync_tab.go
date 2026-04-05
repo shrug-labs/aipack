@@ -148,7 +148,7 @@ func (m syncTabModel) viewConfigPanel(width int) string {
 	if m.cursor == cursor {
 		indicator = selectedStyle.Render("> ")
 	}
-	sb.WriteString(fmt.Sprintf("%sProfile:   %s\n", indicator, profileName))
+	fmt.Fprintf(&sb, "%sProfile:   %s\n", indicator, profileName)
 	cursor++
 
 	// Harness checkboxes.
@@ -162,7 +162,7 @@ func (m syncTabModel) viewConfigPanel(width int) string {
 		if m.harnessEnabled(h) {
 			check = "[x]"
 		}
-		sb.WriteString(fmt.Sprintf("  %s%s %s\n", indicator, check, h))
+		fmt.Fprintf(&sb, "  %s%s %s\n", indicator, check, h)
 		cursor++
 	}
 
@@ -173,11 +173,11 @@ func (m syncTabModel) viewConfigPanel(width int) string {
 	}
 	scope := m.syncCfg.Defaults.Scope
 	if scope == "" {
-		scope = string(domain.ScopeProject)
+		scope = string(domain.ScopeGlobal)
 	}
-	sb.WriteString(fmt.Sprintf("%sScope:     %s\n", indicator, scope))
+	fmt.Fprintf(&sb, "%sScope:     %s\n", indicator, scope)
 
-	sb.WriteString(fmt.Sprintf("  Config:    %s\n", dimStyle.Render(shortPath(m.configDir))))
+	fmt.Fprintf(&sb, "  Config:    %s\n", dimStyle.Render(shortPath(m.configDir)))
 
 	return style.Render(sb.String())
 }
@@ -206,7 +206,7 @@ func (m syncTabModel) viewStatusPanel(width int) string {
 	case syncError:
 		label = " error"
 	}
-	sb.WriteString(fmt.Sprintf("Status:  %s%s\n", dot, label))
+	fmt.Fprintf(&sb, "Status:  %s%s\n", dot, label)
 
 	if snap.syncState == syncError && snap.syncErrText != "" {
 		sb.WriteString(errorStyle.Render(fmt.Sprintf("  %s", snap.syncErrText)) + "\n")
@@ -216,14 +216,14 @@ func (m syncTabModel) viewStatusPanel(width int) string {
 	if snap.syncState == syncUnsynced || snap.syncState == syncSynced {
 		sb.WriteString("\n")
 		sb.WriteString("Pending Changes:\n")
-		sb.WriteString(fmt.Sprintf("  Rules:     %d\n", snap.syncTarget.NumRules))
-		sb.WriteString(fmt.Sprintf("  Workflows: %d\n", snap.syncTarget.NumWorkflows))
-		sb.WriteString(fmt.Sprintf("  Agents:    %d\n", snap.syncTarget.NumAgents))
-		sb.WriteString(fmt.Sprintf("  Skills:    %d\n", snap.syncTarget.NumSkills))
-		sb.WriteString(fmt.Sprintf("  Settings:  %d\n", snap.syncTarget.NumSettings))
-		sb.WriteString(fmt.Sprintf("  MCP:       %d\n", snap.syncTarget.NumMCP))
-		sb.WriteString(fmt.Sprintf("  Stale:     %d\n", snap.syncTarget.NumStale))
-		sb.WriteString(fmt.Sprintf("  Total:     %d\n", snap.syncTarget.TotalChanges()))
+		fmt.Fprintf(&sb, "  Rules:     %d\n", snap.syncTarget.NumRules)
+		fmt.Fprintf(&sb, "  Workflows: %d\n", snap.syncTarget.NumWorkflows)
+		fmt.Fprintf(&sb, "  Agents:    %d\n", snap.syncTarget.NumAgents)
+		fmt.Fprintf(&sb, "  Skills:    %d\n", snap.syncTarget.NumSkills)
+		fmt.Fprintf(&sb, "  Settings:  %d\n", snap.syncTarget.NumSettings)
+		fmt.Fprintf(&sb, "  MCP:       %d\n", snap.syncTarget.NumMCP)
+		fmt.Fprintf(&sb, "  Stale:     %d\n", snap.syncTarget.NumStale)
+		fmt.Fprintf(&sb, "  Total:     %d\n", snap.syncTarget.TotalChanges())
 	}
 
 	// Per-harness ledger info.
@@ -243,7 +243,7 @@ func (m syncTabModel) viewStatusPanel(width int) string {
 	if latest := latestLedgerTime(snap.syncTarget.HarnessLedgers); latest > 0 {
 		sb.WriteString("\n")
 		t := time.Unix(latest, 0)
-		sb.WriteString(fmt.Sprintf("Last sync: %s\n", dimStyle.Render(t.Format("2006-01-02 15:04:05"))))
+		fmt.Fprintf(&sb, "Last sync: %s\n", dimStyle.Render(t.Format("2006-01-02 15:04:05")))
 	}
 
 	// Warnings.

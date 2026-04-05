@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -26,7 +26,7 @@ func (e *Engine) loadMCPInventoryDir(dir string) (map[string]domain.MCPServer, e
 			paths = append(paths, filepath.Join(dir, e.Name()))
 		}
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 
 	out := map[string]domain.MCPServer{}
 	for _, p := range paths {
@@ -69,6 +69,7 @@ func (e *Engine) LoadMCPInventoryForPacks(packs []config.ResolvedPack) (map[stri
 			if _, ok := inventory[name]; ok {
 				return nil, fmt.Errorf("duplicate MCP server inventory for %s", name)
 			}
+			server.PackRoot = pack.Root
 			inventory[name] = server
 		}
 	}

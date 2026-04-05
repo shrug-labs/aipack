@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -649,7 +649,7 @@ func TestStaleCandidates(t *testing.T) {
 		t.Fatalf("staleCandidates: %v", err)
 	}
 
-	sort.Strings(candidates)
+	slices.Sort(candidates)
 	if len(candidates) != 1 {
 		t.Fatalf("candidates = %v, want exactly [%s]", candidates, fileC)
 	}

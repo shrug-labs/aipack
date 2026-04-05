@@ -7,21 +7,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
-	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/util"
-
-	"gopkg.in/yaml.v3"
 )
 
-// PackAddRequest holds the inputs for installing a pack.
-type PackAddRequest struct {
+// PackInstallRequest holds the inputs for installing a pack.
+type PackInstallRequest struct {
 	// PackPath is the local path to the pack directory (mutually exclusive with URL).
 	PackPath string
 	// URL is a git-accessible repository or pack.json URL to clone/install from (mutually exclusive with PackPath).
@@ -37,17 +34,12 @@ type PackAddRequest struct {
 	// Profile is the profile to register in (defaults to sync-config's defaults.profile).
 	Profile string
 
-	// Seed enables auto-seeding of bundled registries and profiles for remote
-	// installs. When false (default for URL installs), seeding candidates are
-	// printed but not applied. Local path installs always seed regardless.
-	// When true, existing profiles are overwritten with the pack's version.
-	Seed bool
-
-	// SeedConfirmFn, if non-nil, is called when an existing profile would be
-	// overwritten during seeding and Seed is false. The function receives the
-	// profile name and returns true to replace, false to skip. When nil and
-	// Seed is false, existing profiles are silently skipped.
-	SeedConfirmFn func(name string) bool
+	// With specifies which bundled content categories to install. When nil
+	// (default for URL installs), available bundled content is previewed
+	// and then stripped — registries, extras, and profiles are removed from
+	// the installed pack. Use domain.BundledAll() to accept everything. Local path
+	// installs default to domain.BundledAll() when With is nil.
+	With domain.BundledSet
 
 	// Quiet marks the pack entry in the profile with quiet: true so that
 	// omitted vector selectors resolve to nothing. Set from --quiet flag
@@ -90,9 +82,21 @@ func makePackTempDir(configDir, pattern string) (string, error) {
 	return os.MkdirTemp(stagingDir, pattern)
 }
 
-// PackAdd installs a pack to the canonical location and optionally registers it in a profile.
-func PackAdd(ctx context.Context, req PackAddRequest, stdout io.Writer) error {
-	if strings.TrimSpace(req.ConfigDir) == "" {
+func extractLocalPackToStaging(configDir, packDir string) (string, config.PackManifest, error) {
+	boundary := util.FindRepoRoot(packDir)
+	if boundary == "" {
+		boundary = packDir
+	}
+	stagingDir := packStagingDir(configDir)
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		return "", config.PackManifest{}, err
+	}
+	return extractPackContent(stagingDir, packDir, nil, "", boundary)
+}
+
+// PackInstall installs a pack to the canonical location and optionally registers it in a profile.
+func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
+	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
 	}
 	if req.URL != "" && req.PackPath != "" {
@@ -117,13 +121,13 @@ func PackAdd(ctx context.Context, req PackAddRequest, stdout io.Writer) error {
 	}
 
 	if req.URL != "" {
-		return packAddFromURL(ctx, req, stdout)
+		return packInstallFromURL(ctx, req, stdout)
 	}
-	return packAddFromPath(req, stdout)
+	return packInstallFromPath(req, stdout)
 }
 
-// packAddFromPath implements the local-path install flow (existing behavior + origin recording).
-func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
+// packInstallFromPath implements the local-path install flow (existing behavior + origin recording).
+func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	packPath, err := filepath.Abs(req.PackPath)
 	if err != nil {
 		return fmt.Errorf("resolving pack path: %w", err)
@@ -158,6 +162,13 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 		return fmt.Errorf("creating packs directory: %w", err)
 	}
 
+	// Resolve effective content preferences. Local installs default to
+	// domain.BundledAll() when --with is not specified.
+	with := req.With
+	if with == nil && req.PackPath != "" {
+		with = domain.BundledAll()
+	}
+
 	// Detect when the source pack already lives inside the packs directory.
 	// Without this guard, packRemoveExisting would delete the pack before
 	// the symlink/copy could use it. Resolve symlinks for a reliable comparison.
@@ -182,20 +193,21 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "Linked: %s -> %s\n", destDir, packDir)
 	} else {
 		method = config.MethodCopy
-		// Copy to a temp dir first, then atomic rename to prevent partial state.
-		tmpDir, err := makePackTempDir(req.ConfigDir, "copy-*")
+		// Extract to a temp dir first so repo-relative extras are
+		// materialized and rewritten before the atomic install swap.
+		staging, extractedManifest, err := extractLocalPackToStaging(req.ConfigDir, packDir)
 		if err != nil {
-			return fmt.Errorf("creating temp dir: %w", err)
+			return fmt.Errorf("extracting pack: %w", err)
 		}
-		defer os.RemoveAll(tmpDir)
-		boundary := util.FindRepoRoot(packDir)
-		if err := util.CopyDirResolvingSymlinks(packDir, tmpDir, boundary); err != nil {
-			return fmt.Errorf("copying pack: %w", err)
+		defer os.RemoveAll(staging)
+		if err := applyWithFilter(staging, &extractedManifest, with); err != nil {
+			return fmt.Errorf("applying content filter: %w", err)
 		}
 		packRemoveExisting(destDir, stdout)
-		if err := os.Rename(tmpDir, destDir); err != nil {
+		if err := os.Rename(staging, destDir); err != nil {
 			return fmt.Errorf("moving pack to %s: %w", destDir, err)
 		}
+		manifest = extractedManifest
 		fmt.Fprintf(stdout, "Copied: %s -> %s\n", packDir, destDir)
 	}
 
@@ -203,8 +215,11 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 	if req.NowFn != nil {
 		now = req.NowFn()
 	}
+
+	approvedList, declinedList := buildPrefsLists(with)
 	if err := packRecordOrigin(req.ConfigDir, name, config.InstalledPackMeta{
 		Origin: packDir, Method: method, InstalledAt: now.UTC().Format(time.RFC3339),
+		Approved: approvedList, Declined: declinedList,
 	}); err != nil {
 		fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
 	}
@@ -216,7 +231,7 @@ func packAddFromPath(req PackAddRequest, stdout io.Writer) error {
 		}
 	}
 
-	packSeedProfiles(req.ConfigDir, destDir, manifest.Profiles, req.Seed, req.SeedConfirmFn, stdout)
+	installBundledContent(req.ConfigDir, destDir, manifest, with, stdout)
 
 	if req.Register {
 		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
@@ -239,7 +254,7 @@ func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
 	if len(servers) == 0 {
 		return
 	}
-	sort.Strings(servers)
+	slices.Sort(servers)
 	fmt.Fprintln(stdout, "")
 	fmt.Fprintln(stdout, "WARNING: This pack defines MCP servers (external tool access):")
 	for _, s := range servers {
@@ -254,10 +269,10 @@ func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
 	fmt.Fprintln(stdout, "")
 }
 
-// packAddFromURL implements the URL-based install flow.
+// packInstallFromURL implements the URL-based install flow.
 // Tries git archive (selective fetch) first; falls back to git clone if the
 // remote does not support git archive --remote.
-func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) error {
+func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
 	// Resolve URL info: for SSH/git URLs or when SubPath/Ref is pre-set,
 	// skip the HTTP probe (ProbePackURL) and go directly to git operations.
 	var info source.PackURLInfo
@@ -321,11 +336,31 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 		now = req.NowFn()
 	}
 
+	// Preview bundled content BEFORE filtering so the user sees what's
+	// available. Filtering removes the files and clears manifest fields.
+	if req.With == nil {
+		packPreviewBundled(result.destDir, result.manifest, stdout)
+	}
+
+	// For URL installs, nil With means "decline all bundled categories".
+	// Core content (rules, skills, agents, etc.) is always kept; bundled
+	// content (profiles, registries, extras) requires explicit --with.
+	effectiveWith := req.With
+	if effectiveWith == nil {
+		effectiveWith = domain.NewBundledSet() // empty set — declines everything
+	}
+
+	if err := applyWithFilter(result.destDir, &result.manifest, effectiveWith); err != nil {
+		return fmt.Errorf("applying content filter: %w", err)
+	}
+
 	name := result.name
+	approvedList, declinedList := buildPrefsLists(effectiveWith)
 	if err := packRecordOrigin(req.ConfigDir, name, config.InstalledPackMeta{
 		Origin: req.URL, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
 		Ref: info.Ref, SubPath: info.SubPath, CommitHash: result.commitHash,
 		ContentPaths: req.ContentPaths,
+		Approved:     approvedList, Declined: declinedList,
 	}); err != nil {
 		fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
 	}
@@ -338,11 +373,7 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 		fmt.Fprintf(stdout, "Content unchanged.\n")
 	}
 
-	if req.Seed {
-		packSeedProfiles(req.ConfigDir, result.destDir, result.manifest.Profiles, true, nil, stdout)
-	} else {
-		packPreviewSeeding(result.destDir, result.manifest.Profiles, stdout)
-	}
+	installBundledContent(req.ConfigDir, result.destDir, result.manifest, effectiveWith, stdout)
 
 	if req.Register {
 		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
@@ -357,6 +388,8 @@ func packAddFromURL(ctx context.Context, req PackAddRequest, stdout io.Writer) e
 }
 
 // packInstallResult holds the output of a remote install operation.
+// The manifest is always unfiltered — callers apply applyWithFilter after
+// computing any diffs they need against the full source content.
 type packInstallResult struct {
 	name       string
 	destDir    string
@@ -366,7 +399,7 @@ type packInstallResult struct {
 }
 
 // packFetchHTTPTarball installs a pack by downloading a GitHub HTTP tarball.
-func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
+func packFetchHTTPTarball(ctx context.Context, req PackInstallRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
 	tarballURL, err := source.GitHubTarballURL(info.RepoURL, info.Ref)
 	if err != nil {
 		return packInstallResult{}, fmt.Errorf("building tarball URL: %w", err)
@@ -419,7 +452,7 @@ func packFetchHTTPTarball(ctx context.Context, req PackAddRequest, info source.P
 // transient — content is extracted into a clean standard pack layout and the
 // clone is discarded. The installed pack contains only pack content (no .git,
 // no non-pack repo files).
-func packShallowClone(ctx context.Context, req PackAddRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
+func packShallowClone(ctx context.Context, req PackInstallRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
 	cloneDir, err := makePackTempDir(req.ConfigDir, "clone-*")
 	if err != nil {
 		return packInstallResult{}, fmt.Errorf("creating temp dir: %w", err)
@@ -531,6 +564,20 @@ func resolvePackName(reqName, manifestName string) (string, error) {
 	return "", fmt.Errorf("pack has no name and --name was not provided")
 }
 
+// resolveGitHash returns the HEAD commit hash for dir, or "" if unavailable.
+// Uses gitHashFn if non-nil, otherwise falls back to source.GitHeadHash.
+func resolveGitHash(ctx context.Context, dir string, gitHashFn func(context.Context, string) (string, error)) string {
+	fn := gitHashFn
+	if fn == nil {
+		fn = source.GitHeadHash
+	}
+	h, err := fn(ctx, dir)
+	if err != nil {
+		return ""
+	}
+	return h
+}
+
 // inferInstallMethod returns MethodLink or MethodCopy based on the file mode.
 func inferInstallMethod(mode os.FileMode) string {
 	if mode&os.ModeSymlink != 0 {
@@ -550,1039 +597,4 @@ func packRemoveExisting(destDir string, stdout io.Writer) {
 		}
 		os.RemoveAll(destDir)
 	}
-}
-
-// PackList returns all installed packs. It delegates to PackListDetailed,
-// which populates content inventory fields (Rules, Agents, etc.) as well.
-func PackList(configDir string) ([]PackShowEntry, error) {
-	return PackListDetailed(configDir)
-}
-
-// PackRemove uninstalls a pack and deregisters it from all profiles.
-// PackRemoveResult holds post-removal metadata for callers to act on.
-type PackRemoveResult struct {
-	// SeededProfiles lists profile names that were seeded by this pack
-	// and still exist after removal. Callers should prompt for confirmation
-	// before deleting these.
-	SeededProfiles []string
-}
-
-func PackRemove(configDir string, name string, stdout io.Writer) (PackRemoveResult, error) {
-	var result PackRemoveResult
-
-	if strings.TrimSpace(name) == "" {
-		return result, fmt.Errorf("pack name is required")
-	}
-	packsDir := PacksDir(configDir)
-	destDir := filepath.Join(packsDir, name)
-
-	if _, err := os.Lstat(destDir); os.IsNotExist(err) {
-		return result, fmt.Errorf("pack %q is not installed", name)
-	}
-
-	// Load manifest before removing so we know which profiles were seeded.
-	if manifest, err := config.LoadPackManifest(filepath.Join(destDir, "pack.json")); err == nil {
-		result.SeededProfiles = packFindSeededProfiles(configDir, manifest.Profiles)
-	}
-
-	if err := os.RemoveAll(destDir); err != nil {
-		return result, fmt.Errorf("removing pack: %w", err)
-	}
-	fmt.Fprintf(stdout, "Removed: %s\n", destDir)
-
-	// Best-effort origin cleanup.
-	_ = packClearOrigin(configDir, name)
-
-	// Best-effort deregister from all profiles.
-	packDeregisterFromAllProfiles(configDir, name, stdout)
-
-	return result, nil
-}
-
-// packFindSeededProfiles returns profile names (without extension) for profiles
-// declared in the pack manifest that still exist on disk.
-func packFindSeededProfiles(configDir string, manifestProfiles []string) []string {
-	if len(manifestProfiles) == 0 {
-		return nil
-	}
-	profilesDir := filepath.Join(configDir, "profiles")
-	var found []string
-	for _, relPath := range manifestProfiles {
-		base := filepath.Base(relPath)
-		name := strings.TrimSuffix(base, filepath.Ext(base))
-		dest := filepath.Join(profilesDir, base)
-		if _, err := os.Stat(dest); err == nil {
-			found = append(found, name)
-		}
-	}
-	return found
-}
-
-// RemoveSeededProfiles deletes seeded profile files by name, clearing the
-// active-profile setting if needed. Delegates to ProfileDelete for each profile.
-func RemoveSeededProfiles(configDir string, names []string, stdout io.Writer) {
-	for _, name := range names {
-		if err := ProfileDelete(ProfileDeleteRequest{ConfigDir: configDir, Name: name}); err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to remove seeded profile %q: %v\n", name, err)
-			continue
-		}
-		fmt.Fprintf(stdout, "Removed seeded profile %q\n", name)
-	}
-}
-
-// packDeregisterFromAllProfiles removes source and pack entries for a given pack
-// name from every profile YAML in configDir/profiles/.
-func packDeregisterFromAllProfiles(configDir, packName string, stdout io.Writer) {
-	profilesDir := filepath.Join(configDir, "profiles")
-	names, err := config.ListProfileNames(profilesDir)
-	if err != nil {
-		return
-	}
-	for _, name := range names {
-		profilePath := filepath.Join(profilesDir, name+".yaml")
-		if packDeregister(profilePath, packName) {
-			fmt.Fprintf(stdout, "Deregistered pack %q from profile %q\n", packName, name)
-		}
-	}
-}
-
-// packDeregister removes pack entries matching packName from a single profile file.
-// Returns true if the profile was modified.
-func packDeregister(profilePath, packName string) bool {
-	cfg, err := config.LoadProfile(profilePath)
-	if err != nil {
-		return false
-	}
-
-	modified := false
-
-	// Remove matching pack entries.
-	filteredPacks := cfg.Packs[:0]
-	for _, p := range cfg.Packs {
-		if p.Name == packName {
-			modified = true
-			continue
-		}
-		filteredPacks = append(filteredPacks, p)
-	}
-	cfg.Packs = filteredPacks
-
-	if !modified {
-		return false
-	}
-
-	out, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return false
-	}
-	_ = util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600)
-	return true
-}
-
-// PackRename renames a pack across all config: directory, manifest, sync-config,
-// profiles, and ledger files. Rolls back the directory rename on failure.
-func PackRename(eng *engine.Engine, configDir, oldName, newName string, stdout io.Writer) error {
-	oldName = strings.TrimSpace(oldName)
-	newName = strings.TrimSpace(newName)
-	if oldName == "" || newName == "" {
-		return fmt.Errorf("old and new pack names are required")
-	}
-	if oldName == newName {
-		return fmt.Errorf("old and new names are the same")
-	}
-	if strings.ContainsAny(newName, "/\\\x00") || strings.Contains(newName, "..") {
-		return fmt.Errorf("invalid pack name %q", newName)
-	}
-
-	packsDir := PacksDir(configDir)
-	oldDir := filepath.Join(packsDir, oldName)
-	newDir := filepath.Join(packsDir, newName)
-
-	if _, err := os.Lstat(oldDir); os.IsNotExist(err) {
-		return fmt.Errorf("pack %q is not installed", oldName)
-	}
-	if _, err := os.Lstat(newDir); err == nil {
-		return fmt.Errorf("pack %q already exists", newName)
-	}
-
-	// 1. Rename directory.
-	if err := os.Rename(oldDir, newDir); err != nil {
-		return fmt.Errorf("renaming pack directory: %w", err)
-	}
-	rollback := func() { _ = os.Rename(newDir, oldDir) }
-
-	// 2. Update pack.json name field.
-	manifestPath := filepath.Join(newDir, "pack.json")
-	manifest, err := config.LoadPackManifest(manifestPath)
-	if err != nil {
-		rollback()
-		return fmt.Errorf("loading manifest after rename: %w", err)
-	}
-	manifest.Name = newName
-	if err := config.SavePackManifest(manifestPath, manifest); err != nil {
-		rollback()
-		return fmt.Errorf("saving manifest: %w", err)
-	}
-
-	// 3. Update sync-config.
-	if err := packRenameInSyncConfig(configDir, oldName, newName); err != nil {
-		rollback()
-		return fmt.Errorf("updating sync-config: %w", err)
-	}
-
-	// 4. Update all profiles.
-	packRenameInAllProfiles(configDir, oldName, newName, stdout)
-
-	// 5. Update all ledger files.
-	packRenameInAllLedgers(eng, configDir, oldName, newName, stdout)
-
-	fmt.Fprintf(stdout, "Renamed pack %q → %q\n", oldName, newName)
-	return nil
-}
-
-func packRenameInSyncConfig(configDir, oldName, newName string) error {
-	scPath := config.SyncConfigPath(configDir)
-	sc, err := config.LoadSyncConfig(scPath)
-	if err != nil {
-		return err
-	}
-	if sc.InstalledPacks == nil {
-		return nil
-	}
-	meta, ok := sc.InstalledPacks[oldName]
-	if !ok {
-		return nil
-	}
-	delete(sc.InstalledPacks, oldName)
-	sc.InstalledPacks[newName] = meta
-	return config.SaveSyncConfig(scPath, sc)
-}
-
-func packRenameInAllProfiles(configDir, oldName, newName string, stdout io.Writer) {
-	profilesDir := filepath.Join(configDir, "profiles")
-	names, err := config.ListProfileNames(profilesDir)
-	if err != nil {
-		return
-	}
-	for _, name := range names {
-		profilePath := filepath.Join(profilesDir, name+".yaml")
-		if packRenameInProfile(profilePath, oldName, newName) {
-			fmt.Fprintf(stdout, "Updated profile %q: %s → %s\n", name, oldName, newName)
-		}
-	}
-}
-
-func packRenameInProfile(profilePath, oldName, newName string) bool {
-	cfg, err := config.LoadProfile(profilePath)
-	if err != nil {
-		return false
-	}
-	modified := false
-	for i := range cfg.Packs {
-		if cfg.Packs[i].Name == oldName {
-			cfg.Packs[i].Name = newName
-			modified = true
-		}
-	}
-	if !modified {
-		return false
-	}
-	out, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return false
-	}
-	_ = util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600)
-	return true
-}
-
-func packRenameInAllLedgers(eng *engine.Engine, configDir, oldName, newName string, stdout io.Writer) {
-	ledgerDir := filepath.Join(configDir, "ledger")
-	entries, err := os.ReadDir(ledgerDir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(ledgerDir, e.Name())
-		updated, lerr := packRenameInLedger(eng, path, oldName, newName)
-		if lerr != nil {
-			fmt.Fprintf(stdout, "Warning: ledger %s: %s\n", e.Name(), lerr)
-		} else if updated {
-			fmt.Fprintf(stdout, "Updated ledger %q: %s → %s\n", e.Name(), oldName, newName)
-		}
-	}
-}
-
-func packRenameInLedger(eng *engine.Engine, path, oldName, newName string) (bool, error) {
-	lg, warnings, err := eng.LoadLedger(path)
-	if err != nil {
-		return false, fmt.Errorf("load: %w", err)
-	}
-	if len(warnings) > 0 {
-		return false, fmt.Errorf("load warning: %s", warnings[0])
-	}
-	modified := false
-	for k, entry := range lg.Managed {
-		if entry.SourcePack == oldName {
-			entry.SourcePack = newName
-			lg.Managed[k] = entry
-			modified = true
-		}
-	}
-	if !modified {
-		return false, nil
-	}
-	if err := eng.SaveLedger(path, lg, false); err != nil {
-		return false, fmt.Errorf("save: %w", err)
-	}
-	return true, nil
-}
-
-// packSeedProfiles copies profile YAML files from the installed pack to
-// configDir/profiles/. When force is true (explicit --seed), existing profiles
-// are overwritten. When force is false and confirm is non-nil, existing
-// profiles prompt via confirm. Otherwise existing profiles are skipped.
-func packSeedProfiles(configDir, packDir string, profiles []string, force bool, confirm func(string) bool, stdout io.Writer) {
-	if len(profiles) == 0 {
-		return
-	}
-	profilesDir := filepath.Join(configDir, "profiles")
-	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to create profiles dir: %v\n", err)
-		return
-	}
-	for _, relPath := range profiles {
-		src := filepath.Join(packDir, relPath)
-		base := filepath.Base(relPath)
-		name := strings.TrimSuffix(base, filepath.Ext(base))
-		dest := filepath.Join(profilesDir, base)
-		if _, err := os.Stat(dest); err == nil && !force {
-			if confirm == nil || !confirm(name) {
-				continue
-			}
-		}
-		data, err := os.ReadFile(src)
-		if err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to read seed profile %s: %v\n", relPath, err)
-			continue
-		}
-		if err := util.WriteFileAtomicWithPerms(dest, data, 0o700, 0o600); err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to write seed profile %s: %v\n", dest, err)
-			continue
-		}
-		fmt.Fprintf(stdout, "Seeded profile %q from pack\n", name)
-		fmt.Fprintf(stdout, "  To activate: aipack profile set %s\n", name)
-	}
-}
-
-// packPreviewSeeding prints what would be seeded without applying changes.
-// Used for remote installs when --seed is not specified.
-func packPreviewSeeding(packDir string, profiles []string, stdout io.Writer) {
-	var lines []string
-	for _, relPath := range profiles {
-		if util.PathExists(filepath.Join(packDir, relPath)) {
-			lines = append(lines, fmt.Sprintf("  profile:  %s", relPath))
-		}
-	}
-	if len(lines) > 0 {
-		fmt.Fprintln(stdout, "This pack bundles profile content (use --seed to apply):")
-		for _, l := range lines {
-			fmt.Fprintln(stdout, l)
-		}
-	}
-}
-
-// packRecordOrigin saves the install metadata for a pack in sync-config.
-func packRecordOrigin(configDir, name string, meta config.InstalledPackMeta) error {
-	scPath := config.SyncConfigPath(configDir)
-	sc, err := config.LoadSyncConfig(scPath)
-	if err != nil {
-		return err
-	}
-	if sc.InstalledPacks == nil {
-		sc.InstalledPacks = make(map[string]config.InstalledPackMeta)
-	}
-	sc.InstalledPacks[name] = meta
-	return config.SaveSyncConfig(scPath, sc)
-}
-
-// packClearOrigin removes the install metadata for a pack from sync-config.
-func packClearOrigin(configDir, name string) error {
-	scPath := config.SyncConfigPath(configDir)
-	sc, err := config.LoadSyncConfig(scPath)
-	if err != nil {
-		return err
-	}
-	if sc.InstalledPacks == nil {
-		return nil
-	}
-	delete(sc.InstalledPacks, name)
-	return config.SaveSyncConfig(scPath, sc)
-}
-
-// PackRegister adds a pack entry to the named profile.
-func PackRegister(configDir string, profileName string, packName string, quiet bool, stdout io.Writer) error {
-	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
-
-	cfg, err := config.LoadProfile(profilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("profile %q does not exist at %s (run 'aipack init' first)", profileName, profilePath)
-		}
-		return fmt.Errorf("parsing profile: %w", err)
-	}
-
-	// Check if pack already exists; set Quiet only when explicitly requested.
-	packExists := false
-	for i, p := range cfg.Packs {
-		if p.Name == packName {
-			packExists = true
-			if quiet {
-				cfg.Packs[i].Quiet = true
-			}
-			break
-		}
-	}
-	if !packExists {
-		enabled := true
-		cfg.Packs = append(cfg.Packs, config.PackEntry{
-			Name:    packName,
-			Enabled: &enabled,
-			Quiet:   quiet,
-		})
-	}
-
-	out, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return fmt.Errorf("marshalling profile: %w", err)
-	}
-
-	if err := util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600); err != nil {
-		return err
-	}
-
-	if !packExists {
-		label := "pack"
-		if quiet {
-			label = "quiet pack"
-		}
-		fmt.Fprintf(stdout, "Registered %s %q in profile %q\n", label, packName, profileName)
-	} else {
-		fmt.Fprintf(stdout, "Pack %q already registered in profile %q\n", packName, profileName)
-	}
-	return nil
-}
-
-// PackDeregister removes a pack entry from the named profile.
-func PackDeregister(configDir string, profileName string, packName string, stdout io.Writer) error {
-	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
-
-	if packDeregister(profilePath, packName) {
-		fmt.Fprintf(stdout, "Removed pack %q from profile %q\n", packName, profileName)
-		return nil
-	}
-
-	// Check if profile exists at all.
-	if _, err := os.Stat(profilePath); os.IsNotExist(err) {
-		return fmt.Errorf("profile %q does not exist at %s", profileName, profilePath)
-	}
-
-	fmt.Fprintf(stdout, "Pack %q not found in profile %q\n", packName, profileName)
-	return nil
-}
-
-// PackUpdateRequest holds the inputs for updating pack(s).
-type PackUpdateRequest struct {
-	ConfigDir     string
-	Name          string // empty when All=true
-	All           bool
-	Seed          bool                                                  // re-seed bundled profiles from updated packs
-	RunGitFn      func(ctx context.Context, args ...string) error       // test injection; nil = real git
-	NowFn         func() time.Time                                      // test injection; nil = time.Now
-	GitHashFn     func(ctx context.Context, dir string) (string, error) // test injection; nil = source.GitHeadHash
-	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
-}
-
-// PackUpdateResult describes the outcome of updating a single pack.
-type PackUpdateResult struct {
-	Name       string `json:"name"`
-	Method     string `json:"method"`
-	Status     string `json:"status"` // "updated", "up-to-date", "skipped", "error"
-	Message    string `json:"message"`
-	CommitHash string `json:"commit_hash,omitempty"`
-}
-
-// PackShowEntry describes detailed information about an installed pack.
-type PackShowEntry struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Path        string   `json:"path"`
-	Method      string   `json:"method"`
-	Origin      string   `json:"origin"`
-	Ref         string   `json:"ref,omitempty"`
-	CommitHash  string   `json:"commit_hash,omitempty"`
-	InstalledAt string   `json:"installed_at,omitempty"`
-	Rules       []string `json:"rules"`
-	Agents      []string `json:"agents"`
-	Workflows   []string `json:"workflows"`
-	Skills      []string `json:"skills"`
-	Prompts     []string `json:"prompts"`
-	MCPServers  []string `json:"mcp_servers"`
-}
-
-// ContentIDs returns the resource IDs for the given category.
-func (e PackShowEntry) ContentIDs(cat domain.PackCategory) []string {
-	switch cat {
-	case domain.CategoryRules:
-		return e.Rules
-	case domain.CategoryAgents:
-		return e.Agents
-	case domain.CategoryWorkflows:
-		return e.Workflows
-	case domain.CategorySkills:
-		return e.Skills
-	case domain.CategoryPrompts:
-		return e.Prompts
-	case domain.CategoryMCP:
-		return e.MCPServers
-	}
-	return nil
-}
-
-// Counts returns content counts for display formatting.
-func (e PackShowEntry) Counts() ContentCounts {
-	return ContentCounts{
-		Rules:     len(e.Rules),
-		Skills:    len(e.Skills),
-		Workflows: len(e.Workflows),
-		Agents:    len(e.Agents),
-		Prompts:   len(e.Prompts),
-		MCP:       len(e.MCPServers),
-	}
-}
-
-// packUpdateContext holds resolved dependencies for updating packs.
-// Built once per PackUpdate call via newPackUpdateContext.
-type packUpdateContext struct {
-	packsDir      string
-	tempDir       string
-	configDir     string
-	sc            config.SyncConfig
-	registry      config.Registry // loaded once, reused across all packs
-	runGitFn      func(ctx context.Context, args ...string) error
-	nowFn         func() time.Time
-	gitHashFn     func(ctx context.Context, dir string) (string, error)
-	httpTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
-	stdout        io.Writer
-}
-
-// newPackUpdateContext resolves defaults from the request and returns the
-// dependency context used by packUpdateOne.
-func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io.Writer) packUpdateContext {
-	runGitFn := req.RunGitFn
-	if runGitFn == nil {
-		runGitFn = source.RunGit
-	}
-
-	nowFn := req.NowFn
-	if nowFn == nil {
-		nowFn = time.Now
-	}
-	reg, _ := config.LoadMergedRegistry(req.ConfigDir)
-
-	return packUpdateContext{
-		packsDir:      PacksDir(req.ConfigDir),
-		tempDir:       packStagingDir(req.ConfigDir),
-		configDir:     req.ConfigDir,
-		sc:            sc,
-		registry:      reg,
-		runGitFn:      runGitFn,
-		nowFn:         nowFn,
-		gitHashFn:     req.GitHashFn,
-		httpTarballFn: req.HTTPTarballFn,
-		stdout:        stdout,
-	}
-}
-
-// PackUpdate refreshes one or all installed packs.
-func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer) ([]PackUpdateResult, error) {
-	if strings.TrimSpace(req.ConfigDir) == "" {
-		return nil, fmt.Errorf("config dir is required")
-	}
-
-	scPath := config.SyncConfigPath(req.ConfigDir)
-	sc, _ := config.LoadSyncConfig(scPath)
-	uctx := newPackUpdateContext(req, sc, stdout)
-
-	var names []string
-	if req.All {
-		entries, err := os.ReadDir(uctx.packsDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, nil
-			}
-			return nil, err
-		}
-		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), ".") {
-				continue
-			}
-			if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
-				names = append(names, e.Name())
-			}
-		}
-	} else {
-		names = []string{req.Name}
-	}
-
-	var results []PackUpdateResult
-	for _, name := range names {
-		r := packUpdateOne(ctx, name, uctx)
-		if req.Seed && (r.Status == "updated" || r.Status == "up-to-date") {
-			packDir := filepath.Join(uctx.packsDir, name)
-			manifestPath := filepath.Join(packDir, "pack.json")
-			if m, err := config.LoadPackManifest(manifestPath); err == nil && len(m.Profiles) > 0 {
-				packSeedProfiles(uctx.configDir, packDir, m.Profiles, true, nil, stdout)
-			}
-		}
-		results = append(results, r)
-	}
-	return results, nil
-}
-
-func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) PackUpdateResult {
-	packDir := filepath.Join(uctx.packsDir, name)
-	meta, hasMeta := uctx.sc.InstalledPacks[name]
-
-	info, err := os.Lstat(packDir)
-	if err != nil {
-		return PackUpdateResult{Name: name, Status: "error", Message: fmt.Sprintf("not installed: %v", err)}
-	}
-
-	method := meta.Method
-	if method == "" {
-		method = inferInstallMethod(info.Mode())
-	}
-
-	switch method {
-	case config.MethodClone:
-		ref := meta.Ref
-		oldIntegrity, _ := loadIntegrity(packDir)
-
-		// Unified: re-clone to temp and extract clean pack (handles root,
-		// subpath, and content_paths packs identically).
-		tmpDir, err := makePackTempDir(uctx.configDir, "clone-*")
-		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-		defer os.RemoveAll(tmpDir)
-		if err := source.EnsureCloneWith(ctx, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-
-		newHash := resolveGitHash(ctx, tmpDir, uctx.gitHashFn)
-		if newHash != "" && newHash == meta.CommitHash {
-			fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, shortHash(newHash))
-			return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "already at " + shortHash(newHash), CommitHash: newHash}
-		}
-
-		srcRoot := tmpDir
-		if meta.SubPath != "" {
-			srcRoot = filepath.Join(tmpDir, meta.SubPath)
-		}
-
-		staging, _, err := extractPackContent(uctx.tempDir, srcRoot, meta.ContentPaths, name, tmpDir)
-		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-		defer os.RemoveAll(staging)
-		if err := os.RemoveAll(packDir); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-		if err := os.Rename(staging, packDir); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-
-		_ = packRecordOrigin(uctx.configDir, name, config.InstalledPackMeta{
-			Origin: meta.Origin, Method: method, InstalledAt: uctx.nowFn().UTC().Format(time.RFC3339),
-			Ref: ref, SubPath: meta.SubPath, CommitHash: newHash, ContentPaths: meta.ContentPaths,
-		})
-		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
-		msg := "updated"
-		if newHash != "" {
-			msg = shortHash(newHash)
-			if meta.CommitHash != "" {
-				msg = shortHash(meta.CommitHash) + " -> " + shortHash(newHash)
-			}
-		}
-		fmt.Fprintf(uctx.stdout, "Updated (clone): %s %s\n", name, msg)
-		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: msg, CommitHash: newHash}
-
-	case config.MethodCopy:
-		origin := meta.Origin
-		if origin == "" {
-			return PackUpdateResult{Name: name, Method: method, Status: "skipped", Message: "no origin recorded; cannot re-copy"}
-		}
-		if _, err := os.Stat(origin); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: fmt.Sprintf("origin not found: %s", origin)}
-		}
-		oldIntegrity, _ := loadIntegrity(packDir)
-		if err := os.RemoveAll(packDir); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-		if err := util.CopyDir(origin, packDir); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-		_ = packRecordOrigin(uctx.configDir, name, config.InstalledPackMeta{
-			Origin: origin, Method: method, InstalledAt: uctx.nowFn().UTC().Format(time.RFC3339),
-		})
-		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
-		fmt.Fprintf(uctx.stdout, "Updated (copy): %s from %s\n", name, origin)
-		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: "re-copied from " + origin}
-
-	case config.MethodArchive, config.MethodHTTPTarball:
-		origin := meta.Origin
-		if origin == "" {
-			return PackUpdateResult{Name: name, Method: method, Status: "skipped", Message: "no origin recorded; cannot re-fetch"}
-		}
-
-		// Re-resolve through the registry to pick up ref/origin changes
-		// that happened after the pack was initially installed.
-		ref := meta.Ref
-		subPath := meta.SubPath
-		if entry, ok := uctx.registry.Packs[name]; ok {
-			if entry.Repo != "" {
-				origin = entry.Repo
-			}
-			if entry.Ref != "" {
-				ref = entry.Ref
-			}
-			if entry.Path != "" {
-				subPath = entry.Path
-			}
-		}
-
-		oldIntegrity, _ := loadIntegrity(packDir)
-
-		addReq := PackAddRequest{
-			URL:           origin,
-			ConfigDir:     uctx.configDir,
-			Ref:           ref,
-			SubPath:       subPath,
-			Name:          name,
-			HTTPTarballFn: uctx.httpTarballFn,
-		}
-		addInfo := source.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
-		var result packInstallResult
-		var err error
-		if method == config.MethodHTTPTarball {
-			result, err = packFetchHTTPTarball(ctx, addReq, addInfo, uctx.packsDir, io.Discard)
-		} else {
-			result, err = packShallowClone(ctx, addReq, addInfo, uctx.packsDir, io.Discard)
-		}
-		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: err.Error()}
-		}
-
-		_, changed, _ := saveAndDiffIntegrity(result.destDir, oldIntegrity, uctx.stdout)
-		if !changed && len(oldIntegrity.Files) > 0 {
-			fmt.Fprintf(uctx.stdout, "Up-to-date (%s): %s\n", method, name)
-			return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "content unchanged"}
-		}
-
-		_ = packRecordOrigin(uctx.configDir, name, config.InstalledPackMeta{
-			Origin: origin, Method: method, InstalledAt: uctx.nowFn().UTC().Format(time.RFC3339),
-			Ref: ref, SubPath: subPath, CommitHash: result.commitHash,
-		})
-		fmt.Fprintf(uctx.stdout, "Updated (%s): %s from %s\n", method, name, origin)
-		return PackUpdateResult{Name: name, Method: method, Status: "updated", Message: "re-fetched from " + origin}
-
-	case config.MethodLink:
-		target, err := os.Readlink(packDir)
-		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: fmt.Sprintf("readlink: %v", err)}
-		}
-		if _, err := os.Stat(target); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: "error", Message: fmt.Sprintf("symlink target missing: %s", target)}
-		}
-		fmt.Fprintf(uctx.stdout, "OK (link): %s -> %s\n", name, target)
-		return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "symlink target exists"}
-
-	case config.MethodLocal:
-		fmt.Fprintf(uctx.stdout, "OK (local): %s\n", name)
-		return PackUpdateResult{Name: name, Method: method, Status: "up-to-date", Message: "installed in-place"}
-
-	default:
-		if !hasMeta {
-			return PackUpdateResult{Name: name, Method: method, Status: "skipped", Message: "no install metadata; cannot determine update method"}
-		}
-		return PackUpdateResult{Name: name, Method: method, Status: "skipped", Message: fmt.Sprintf("unknown method %q", method)}
-	}
-}
-
-// PackShow returns detailed information about an installed pack.
-func PackShow(configDir string, name string) (PackShowEntry, error) {
-	if strings.TrimSpace(name) == "" {
-		return PackShowEntry{}, fmt.Errorf("pack name is required")
-	}
-	packsDir := PacksDir(configDir)
-
-	scPath := config.SyncConfigPath(configDir)
-	sc, _ := config.LoadSyncConfig(scPath)
-
-	return packShowCore(packsDir, name, sc.InstalledPacks)
-}
-
-// PackListDetailed returns detailed information for all installed packs,
-// loading sync-config once instead of per-pack.
-func PackListDetailed(configDir string) ([]PackShowEntry, error) {
-	packsDir := PacksDir(configDir)
-	entries, err := os.ReadDir(packsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	scPath := config.SyncConfigPath(configDir)
-	sc, _ := config.LoadSyncConfig(scPath)
-
-	var result []PackShowEntry
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
-			continue
-		}
-		entry, err := packShowCore(packsDir, name, sc.InstalledPacks)
-		if err != nil {
-			continue
-		}
-		result = append(result, entry)
-	}
-	return result, nil
-}
-
-// packShowCore builds a PackShowEntry for a single pack using pre-loaded metadata.
-func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMeta) (PackShowEntry, error) {
-	packDir := filepath.Join(packsDir, name)
-
-	info, err := os.Lstat(packDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return PackShowEntry{}, fmt.Errorf("pack %q is not installed", name)
-		}
-		return PackShowEntry{}, fmt.Errorf("stat pack %q: %w", name, err)
-	}
-
-	entry := PackShowEntry{Name: name}
-
-	if info.Mode()&os.ModeSymlink != 0 {
-		target, err := os.Readlink(packDir)
-		if err == nil {
-			entry.Path = target
-		} else {
-			entry.Path = packDir
-		}
-	} else {
-		entry.Path = packDir
-	}
-
-	manifestPath := filepath.Join(packDir, "pack.json")
-	if m, err := config.LoadPackManifest(manifestPath); err == nil {
-		packRoot := config.ResolvePackRoot(manifestPath, m.Root)
-		if packRoot != "" {
-			_ = config.DiscoverContent(&m, packRoot)
-		}
-		entry.Version = m.Version
-		entry.Rules = m.Rules
-		entry.Agents = m.Agents
-		entry.Workflows = m.Workflows
-		entry.Skills = m.Skills
-		entry.Prompts = m.Prompts
-		servers := make([]string, 0, len(m.MCP.Servers))
-		for k := range m.MCP.Servers {
-			servers = append(servers, k)
-		}
-		entry.MCPServers = servers
-	}
-
-	if m, ok := meta[name]; ok {
-		entry.Origin = m.Origin
-		entry.Method = m.Method
-		entry.Ref = m.Ref
-		entry.CommitHash = m.CommitHash
-		entry.InstalledAt = m.InstalledAt
-	}
-
-	if entry.Method == "" {
-		entry.Method = inferInstallMethod(info.Mode())
-	}
-
-	if entry.Rules == nil {
-		entry.Rules = []string{}
-	}
-	if entry.Agents == nil {
-		entry.Agents = []string{}
-	}
-	if entry.Workflows == nil {
-		entry.Workflows = []string{}
-	}
-	if entry.Skills == nil {
-		entry.Skills = []string{}
-	}
-	if entry.Prompts == nil {
-		entry.Prompts = []string{}
-	}
-	if entry.MCPServers == nil {
-		entry.MCPServers = []string{}
-	}
-
-	return entry, nil
-}
-
-// resolveGitHash returns the HEAD commit hash for dir, or "" if unavailable.
-// Uses gitHashFn if non-nil, otherwise falls back to source.GitHeadHash.
-func resolveGitHash(ctx context.Context, dir string, gitHashFn func(context.Context, string) (string, error)) string {
-	fn := gitHashFn
-	if fn == nil {
-		fn = source.GitHeadHash
-	}
-	h, err := fn(ctx, dir)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-// shortHash returns the first 12 characters of a commit hash for display.
-func shortHash(h string) string {
-	if len(h) > 12 {
-		return h[:12]
-	}
-	return h
-}
-
-// --- profile-aware pack install ---
-
-// PackInstallMissingRequest holds the inputs for installing packs missing from a profile.
-type PackInstallMissingRequest struct {
-	ConfigDir   string
-	ProfileName string
-
-	// PackAddFn overrides PackAdd for testing. nil = use PackAdd.
-	PackAddFn func(context.Context, PackAddRequest, io.Writer) error
-}
-
-// PackInstallMissingResult describes the outcome for a single pack in the profile.
-type PackInstallMissingResult struct {
-	Pack   string // pack name from profile
-	Status string // "installed", "present", "not-in-registry", "error"
-	Detail string // install method or error message
-}
-
-// ProfileMissingPacks returns the names of enabled packs in a profile whose
-// directories do not exist under configDir/packs/.
-func ProfileMissingPacks(configDir, profileName string) ([]string, error) {
-	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
-	cfg, err := config.LoadProfile(profilePath)
-	if err != nil {
-		return nil, fmt.Errorf("loading profile %q: %w", profileName, err)
-	}
-
-	packsDir := PacksDir(configDir)
-	var missing []string
-	for _, pe := range cfg.Packs {
-		name := strings.TrimSpace(pe.Name)
-		if name == "" {
-			continue
-		}
-		// Skip disabled packs (nil Enabled = enabled).
-		if pe.Enabled != nil && !*pe.Enabled {
-			continue
-		}
-		packDir := filepath.Join(packsDir, name)
-		if _, err := os.Stat(packDir); os.IsNotExist(err) {
-			missing = append(missing, name)
-		}
-	}
-	return missing, nil
-}
-
-// PackInstallMissing installs packs that a profile declares but that are not
-// present on disk. Each missing pack is looked up in the merged registry and
-// installed via PackAdd. Packs not found in the registry are reported but do
-// not cause a failure.
-func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdout io.Writer) ([]PackInstallMissingResult, error) {
-	profilePath := filepath.Join(req.ConfigDir, "profiles", req.ProfileName+".yaml")
-	cfg, err := config.LoadProfile(profilePath)
-	if err != nil {
-		return nil, fmt.Errorf("loading profile %q: %w", req.ProfileName, err)
-	}
-
-	packsDir := PacksDir(req.ConfigDir)
-	regReq := RegistryListRequest{ConfigDir: req.ConfigDir}
-	addFn := req.PackAddFn
-	if addFn == nil {
-		addFn = PackAdd
-	}
-
-	var results []PackInstallMissingResult
-	for _, pe := range cfg.Packs {
-		name := strings.TrimSpace(pe.Name)
-		if name == "" {
-			continue
-		}
-		if pe.Enabled != nil && !*pe.Enabled {
-			continue
-		}
-
-		packDir := filepath.Join(packsDir, name)
-		if _, err := os.Stat(packDir); err == nil {
-			results = append(results, PackInstallMissingResult{
-				Pack: name, Status: "present",
-			})
-			continue
-		}
-
-		// Look up in registry.
-		entry, err := RegistryLookup(regReq, name)
-		if err != nil {
-			fmt.Fprintf(stdout, "  %s: not in registry — install manually or check 'aipack registry list'\n", name)
-			results = append(results, PackInstallMissingResult{
-				Pack: name, Status: "not-in-registry", Detail: err.Error(),
-			})
-			continue
-		}
-
-		// Install via PackAdd.
-		addReq := PackAddRequest{
-			ConfigDir:    req.ConfigDir,
-			URL:          entry.Repo,
-			Ref:          entry.Ref,
-			SubPath:      entry.Path,
-			Name:         name,
-			Register:     false, // already in the profile
-			Quiet:        entry.Quiet,
-			ContentPaths: entry.ContentPaths,
-		}
-		if installErr := addFn(ctx, addReq, stdout); installErr != nil {
-			fmt.Fprintf(stdout, "  %s: install failed: %v\n", name, installErr)
-			results = append(results, PackInstallMissingResult{
-				Pack: name, Status: "error", Detail: installErr.Error(),
-			})
-			continue
-		}
-
-		results = append(results, PackInstallMissingResult{
-			Pack: name, Status: "installed",
-		})
-	}
-
-	return results, nil
 }

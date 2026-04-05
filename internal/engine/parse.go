@@ -2,10 +2,11 @@ package engine
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -207,9 +208,8 @@ func FlattenRules(rules []domain.Rule) string {
 	if len(rules) == 0 {
 		return ""
 	}
-	sorted := make([]domain.Rule, len(rules))
-	copy(sorted, rules)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	sorted := slices.Clone(rules)
+	slices.SortFunc(sorted, func(a, b domain.Rule) int { return cmp.Compare(a.Name, b.Name) })
 	parts := make([]string, 0, len(sorted)*3)
 	for _, r := range sorted {
 		t := strings.TrimRight(string(r.Raw), "\n")

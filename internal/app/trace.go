@@ -60,16 +60,6 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 	result.Found = true
 	result.Source = source
 
-	// Build harness identification closure using registry + managed roots.
-	baseDir := req.ProjectDir
-	if req.Scope == domain.ScopeGlobal {
-		baseDir = req.Home
-	}
-	rootsIdx := harness.BuildRootsIndex(reg, req.Scope, baseDir, req.Home)
-	identifyHarness := func(path string) string {
-		return string(rootsIdx.Identify(path))
-	}
-
 	// Build per-harness plans and aggregate destinations.
 	for _, hid := range req.Harnesses {
 		planners, err := reg.AsPlanners([]domain.Harness{hid})
@@ -77,6 +67,7 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 			continue
 		}
 		planReq := engine.PlanRequest{
+			ConfigDir:  req.ConfigDir,
 			Scope:      req.Scope,
 			Harnesses:  []domain.Harness{hid},
 			ProjectDir: req.ProjectDir,
@@ -108,7 +99,7 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 		if err != nil {
 			continue
 		}
-		dests := matchDestinations(eng, plan, source, lg, currentMCP, req.ResourceType, req.ResourceName, identifyHarness)
+		dests := matchDestinations(eng, plan, source, lg, currentMCP, req.ResourceType, req.ResourceName, hid)
 		result.Destinations = append(result.Destinations, dests...)
 	}
 
@@ -178,7 +169,7 @@ func findResource(profile domain.Profile, resType, name string) *TraceSource {
 
 // matchDestinations finds plan actions that correspond to the traced resource
 // and classifies each destination's on-disk state.
-func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource, lg domain.Ledger, currentMCP map[string]string, resType, resName string, harnessForPath func(string) string) []TraceDestination {
+func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource, lg domain.Ledger, currentMCP map[string]string, resType, resName string, hid domain.Harness) []TraceDestination {
 	var dests []TraceDestination
 
 	cat, _ := domain.ParseSingularLabel(resType)
@@ -187,7 +178,7 @@ func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource
 		for _, cp := range plan.Copies {
 			if matchesCopy(cp, source) {
 				dest := TraceDestination{
-					Harness: harnessForPath(cp.Dst),
+					Harness: string(hid),
 					Path:    cp.Dst,
 				}
 				dest.State, dest.DiffKind = classifyCopyState(cp, lg)
@@ -212,7 +203,7 @@ func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource
 			matched, embedded := matchesWrite(wr, source, resName)
 			if matched {
 				dest := TraceDestination{
-					Harness:  harnessForPath(wr.Dst),
+					Harness:  string(hid),
 					Path:     wr.Dst,
 					Embedded: embedded,
 				}

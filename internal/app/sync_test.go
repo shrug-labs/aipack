@@ -127,7 +127,7 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 		t.Fatalf("RunSync: %v", err)
 	}
 
-	newLedgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	newLedgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	if _, statErr := os.Stat(newLedgerPath); !os.IsNotExist(statErr) {
 		t.Fatalf("dry-run should not create migrated ledger %s; stat err=%v", newLedgerPath, statErr)
 	}
@@ -162,10 +162,10 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
+	writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
 		claudeDst: {SourcePack: "core", Digest: domain.SingleFileDigest([]byte("alpha"))},
 	})
-	writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex), map[string]domain.Entry{
+	writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex), map[string]domain.Entry{
 		codexDst: {SourcePack: "core", Digest: domain.SingleFileDigest([]byte("demo-agent"))},
 	})
 
@@ -215,6 +215,57 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 	}
 }
 
+func TestRunSync_WritesLedgerToExplicitConfigDir(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	configDir := t.TempDir()
+	dst := filepath.Join(projectDir, ".codex", "config.toml")
+
+	reg := harness.NewRegistry(syncStubHarness{
+		id: domain.HarnessCodex,
+		fragment: domain.Fragment{
+			Settings: []domain.SettingsAction{{
+				Dst:     dst,
+				Desired: []byte("[mcp_servers]\n"),
+				Harness: domain.HarnessCodex,
+			}},
+			Desired: []string{dst},
+		},
+		roots: []string{filepath.Join(projectDir, ".codex")},
+	})
+
+	var stdout, stderr bytes.Buffer
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{
+			ConfigDir:  configDir,
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessCodex},
+			Home:       home,
+		},
+		Yes: true,
+	}, reg, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunSync: %v", err)
+	}
+
+	gotLedger := filepath.Join(configDir, "ledger", engine.EncodeProjectPath(projectDir), "codex.json")
+	if _, err := os.Stat(gotLedger); err != nil {
+		t.Fatalf("expected ledger in config dir: %v", err)
+	}
+
+	defaultCfgDir, derr := config.DefaultConfigDir(home)
+	if derr != nil {
+		t.Fatalf("DefaultConfigDir: %v", derr)
+	}
+	defaultLedger := filepath.Join(defaultCfgDir, "ledger", engine.EncodeProjectPath(projectDir), "codex.json")
+	if _, err := os.Stat(defaultLedger); !os.IsNotExist(err) {
+		t.Fatalf("unexpected ledger outside config dir: stat err=%v", err)
+	}
+}
+
 func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 	t.Parallel()
 
@@ -255,7 +306,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 			},
 			setupLedge: func(t *testing.T) {
 				t.Helper()
-				writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
+				writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
 					filepath.Join(skillDst, "SKILL.md"): {SourcePack: "pack", Digest: domain.SingleFileDigest([]byte("v2 content"))},
 				})
 			},
@@ -274,7 +325,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 			},
 			setupLedge: func(t *testing.T) {
 				t.Helper()
-				writeLedger(t, engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
+				writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode), map[string]domain.Entry{
 					filepath.Join(skillDst, "SKILL.md"): {SourcePack: "pack", Digest: domain.SingleFileDigest([]byte("v1 content"))},
 				})
 			},
@@ -286,7 +337,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clean destination and ledger between subtests.
 			os.RemoveAll(skillDst)
-			lgPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+			lgPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 			os.Remove(lgPath)
 
 			tt.setupDst(t)
@@ -343,9 +394,12 @@ func TestProcessEmbeddedRegistries_MergesIntoRegistryCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	registryPath := filepath.Join(packRoot, "registry.yaml")
+	regDir := filepath.Join(packRoot, "registries")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	registryYAML := "schema_version: 1\npacks:\n  embedded-pack:\n    repo: https://example.com/embedded.git\n    description: embedded pack\n"
-	if err := os.WriteFile(registryPath, []byte(registryYAML), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(regDir, "default.yaml"), []byte(registryYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -354,9 +408,9 @@ func TestProcessEmbeddedRegistries_MergesIntoRegistryCache(t *testing.T) {
 		Packs: []domain.Pack{{
 			Name:       "demo",
 			Root:       packRoot,
-			Registries: []string{"registry.yaml"},
+			Registries: []string{"default"},
 		}},
-	}, home, &stderr)
+	}, configDir, &stderr)
 	if len(warnings) > 0 {
 		t.Fatalf("processEmbeddedRegistries warnings: %v", warnings)
 	}
@@ -433,7 +487,7 @@ func TestUpdateIndex_QuietPackIndexesFromManifest(t *testing.T) {
 		}},
 	}
 
-	if err := updateIndex(profile, home); err != nil {
+	if err := updateIndex(profile, configDir); err != nil {
 		t.Fatalf("updateIndex: %v", err)
 	}
 
@@ -520,7 +574,7 @@ func TestUpdateIndex_PartialIncludeStillIndexesRest(t *testing.T) {
 		}},
 	}
 
-	if err := updateIndex(profile, home); err != nil {
+	if err := updateIndex(profile, configDir); err != nil {
 		t.Fatalf("updateIndex: %v", err)
 	}
 

@@ -1257,3 +1257,132 @@ func TestResolveProfile_ContentPathsPackYAMLRoundTrip(t *testing.T) {
 			meta.ContentPaths[domain.CategoryRules])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// User story tests
+// ---------------------------------------------------------------------------
+
+// "I installed two packs from different teams. My profile lists both.
+// I expect rules from both to appear in the resolved profile."
+func TestResolveProfile_TwoPacksComposeContent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "team-ops", PackManifest{
+		SchemaVersion: 1, Name: "team-ops", Version: "1", Root: ".",
+		MCP: MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/no-force-push.md":  "---\nname: no-force-push\n---\nbody\n",
+		"rules/require-review.md": "---\nname: require-review\n---\nbody\n",
+	})
+	installPackForResolveTest(t, root, "team-sec", PackManifest{
+		SchemaVersion: 1, Name: "team-sec", Version: "1", Root: ".",
+		MCP: MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/no-secrets.md": "---\nname: no-secrets\n---\nbody\n",
+	})
+
+	packs, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "team-ops"},
+			{Name: "team-sec"},
+		},
+	}, filepath.Join(root, "p.yaml"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packs) != 2 {
+		t.Fatalf("got %d packs, want 2", len(packs))
+	}
+	// team-ops contributes 2 rules, team-sec contributes 1.
+	if len(packs[0].Rules) != 2 {
+		t.Fatalf("team-ops rules = %d, want 2", len(packs[0].Rules))
+	}
+	if len(packs[1].Rules) != 1 {
+		t.Fatalf("team-sec rules = %d, want 1", len(packs[1].Rules))
+	}
+}
+
+// "I added a large catalog pack but marked it quiet. I only want 2 of its
+// 5 skills. The other 3 should not appear, and its rules should be empty."
+func TestResolveProfile_QuietCatalogSelectiveInclude(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "catalog", PackManifest{
+		SchemaVersion: 1, Name: "catalog", Version: "2.0.0", Root: ".",
+		Rules:  []string{"verbose-logging", "audit-trail"},
+		Skills: []string{"deploy", "triage", "rollback", "debug", "migrate"},
+		MCP:    MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/verbose-logging.md": "---\nname: verbose-logging\n---\nb\n",
+		"rules/audit-trail.md":     "---\nname: audit-trail\n---\nb\n",
+		"skills/deploy/SKILL.md":   "---\nname: deploy\ndescription: d\n---\nb\n",
+		"skills/triage/SKILL.md":   "---\nname: triage\ndescription: d\n---\nb\n",
+		"skills/rollback/SKILL.md": "---\nname: rollback\ndescription: d\n---\nb\n",
+		"skills/debug/SKILL.md":    "---\nname: debug\ndescription: d\n---\nb\n",
+		"skills/migrate/SKILL.md":  "---\nname: migrate\ndescription: d\n---\nb\n",
+	})
+
+	include := []string{"deploy", "triage"}
+	packs, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:   "catalog",
+			Quiet:  true,
+			Skills: VectorSelector{Include: &include},
+			// Rules: no selector → quiet means nothing.
+		}},
+	}, filepath.Join(root, "p.yaml"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packs[0].Skills) != 2 {
+		t.Fatalf("skills = %v, want [deploy triage]", packs[0].Skills)
+	}
+	if len(packs[0].Rules) != 0 {
+		t.Fatalf("quiet pack with no rules selector should produce 0 rules, got %d", len(packs[0].Rules))
+	}
+}
+
+// "I have two packs. I disabled one. Only the enabled pack's content appears —
+// the disabled pack contributes no rules, no skills, no MCP servers."
+func TestResolveProfile_DisabledPackContributesNothing(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "active", PackManifest{
+		SchemaVersion: 1, Name: "active", Version: "1", Root: ".",
+		Rules: []string{"keep-this"},
+		MCP:   MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{
+		"rules/keep-this.md": "---\nname: keep-this\n---\nb\n",
+	})
+	installPackForResolveTest(t, root, "dormant", PackManifest{
+		SchemaVersion: 1, Name: "dormant", Version: "1", Root: ".",
+		Rules:  []string{"important-rule"},
+		Skills: []string{"critical-skill"},
+		MCP: MCPPack{Servers: map[string]MCPDefaults{
+			"my-server": {},
+		}},
+	}, map[string]string{
+		"rules/important-rule.md":        "---\nname: important-rule\n---\nb\n",
+		"skills/critical-skill/SKILL.md": "---\nname: critical-skill\ndescription: d\n---\nb\n",
+		"mcp/my-server.json":             `{"name":"my-server","command":["echo"]}`,
+	})
+
+	packs, _, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "active"},
+			{Name: "dormant", Enabled: BoolPtr(false)},
+		},
+	}, filepath.Join(root, "p.yaml"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack (active only), got %d", len(packs))
+	}
+	if packs[0].Name != "active" {
+		t.Fatalf("surviving pack = %q, want active", packs[0].Name)
+	}
+}

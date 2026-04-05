@@ -34,6 +34,7 @@ func ResolvePackRootWithFallback(manifestPath string, manifest config.PackManife
 // AdoptFile copies a single untracked harness file into the named pack's
 // directory and updates the ledger so the file becomes tracked.
 func AdoptFile(eng *engine.Engine, req AdoptFileRequest) error {
+	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
 	packRoot := filepath.Join(req.ConfigDir, "packs", req.PackName)
 	manifestPath := filepath.Join(packRoot, "pack.json")
 
@@ -73,7 +74,7 @@ func AdoptFile(eng *engine.Engine, req AdoptFileRequest) error {
 	}
 
 	// Update ledger so this file is now tracked.
-	ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, req.Harnesses[0])
+	ledgerPath := engine.LedgerPath(req.ConfigDir, req.Scope, req.ProjectDir, req.Harnesses[0])
 	lg, _, err := eng.LoadLedger(ledgerPath)
 	if err != nil {
 		return fmt.Errorf("loading ledger: %w", err)

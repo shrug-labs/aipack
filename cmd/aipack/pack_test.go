@@ -9,6 +9,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestPackList_HelpReturnsOK(t *testing.T) {
@@ -43,14 +44,12 @@ func TestPackList_JSON_WithPack(t *testing.T) {
 	packDir := t.TempDir()
 	writePackManifestCmd(t, packDir, "test-pack")
 
-	var addOut [0]byte
-	_ = app.PackAdd(context.Background(), app.PackAddRequest{
+	_ = app.PackInstall(context.Background(), app.PackInstallRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
 		Register:  false,
 	}, os.NewFile(0, os.DevNull))
-	_ = addOut
 
 	stdout, stderr, code := runApp(t, "pack", "list", "--config-dir", configDir, "--json")
 	if code != cmdutil.ExitOK {
@@ -115,6 +114,118 @@ func TestPackShow_NotInstalled(t *testing.T) {
 	_, _, code := runApp(t, "pack", "show", "nonexistent", "--config-dir", configDir)
 	if code != cmdutil.ExitFail {
 		t.Fatalf("pack show nonexistent exit=%d, want %d", code, cmdutil.ExitFail)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseWithFlag
+// ---------------------------------------------------------------------------
+
+func TestParseWithFlag_Empty(t *testing.T) {
+	t.Parallel()
+	got, err := parseWithFlag(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("nil input should return nil, got %v", got)
+	}
+	got2, err := parseWithFlag([]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2 != nil {
+		t.Errorf("empty input should return nil, got %v", got2)
+	}
+}
+
+func TestParseWithFlag_All(t *testing.T) {
+	t.Parallel()
+	got, err := parseWithFlag([]string{"all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cat := range domain.AllBundledCategories {
+		if !got.Has(cat) {
+			t.Errorf("all should include %q", cat)
+		}
+	}
+}
+
+func TestParseWithFlag_AllMixedCase(t *testing.T) {
+	t.Parallel()
+	got, err := parseWithFlag([]string{"ALL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Has(domain.BundledProfiles) {
+		t.Error("ALL (uppercase) should expand to all categories")
+	}
+}
+
+func TestParseWithFlag_AllShortCircuits(t *testing.T) {
+	t.Parallel()
+	// "all" combined with other values should still return all.
+	got, err := parseWithFlag([]string{"profiles", "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cat := range domain.AllBundledCategories {
+		if !got.Has(cat) {
+			t.Errorf("all should include %q even when combined", cat)
+		}
+	}
+}
+
+func TestParseWithFlag_Aliases(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		alias string
+		want  domain.BundledCategory
+	}{
+		{"p", domain.BundledProfiles},
+		{"r", domain.BundledRegistries},
+		{"e", domain.BundledExtras},
+		{"P", domain.BundledProfiles}, // case-insensitive
+	}
+	for _, tc := range cases {
+		got, err := parseWithFlag([]string{tc.alias})
+		if err != nil {
+			t.Fatalf("alias %q: %v", tc.alias, err)
+		}
+		if !got.Has(tc.want) {
+			t.Errorf("alias %q should expand to %q", tc.alias, tc.want)
+		}
+	}
+}
+
+func TestParseWithFlag_Invalid(t *testing.T) {
+	t.Parallel()
+	_, err := parseWithFlag([]string{"bogus"})
+	if err == nil {
+		t.Fatal("expected error for invalid value")
+	}
+}
+
+func TestParseWithFlag_Whitespace(t *testing.T) {
+	t.Parallel()
+	got, err := parseWithFlag([]string{" profiles ", " extras"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Has(domain.BundledProfiles) || !got.Has(domain.BundledExtras) {
+		t.Errorf("should trim whitespace, got %v", got)
+	}
+}
+
+func TestParseWithFlag_Duplicates(t *testing.T) {
+	t.Parallel()
+	got, err := parseWithFlag([]string{"profiles", "profiles", "profiles"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Has(domain.BundledProfiles) {
+		t.Error("duplicates should not cause errors")
 	}
 }
 

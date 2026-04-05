@@ -30,11 +30,62 @@ type PackCmd struct {
 }
 
 func (c *PackCmd) Help() string {
-	return `Manage installed packs. Packs are portable, versioned bundles of AI agent
+	return fmt.Sprintf(`Manage installed packs. Packs are portable, versioned bundles of AI agent
 configuration containing rules, agents, workflows, skills, MCP server
 definitions, and harness base configs.
 
-Packs are installed under ~/.config/aipack/packs/<name>/.`
+Packs are installed under %s.`,
+		configPathDisplay("packs", "<name>"),
+	)
+}
+
+// withAliases maps single-letter shorthands to bundled categories.
+var withAliases = map[string]domain.BundledCategory{
+	"p": domain.BundledProfiles,
+	"r": domain.BundledRegistries,
+	"e": domain.BundledExtras,
+}
+
+// withUsageHint lists valid --with values for error messages.
+var withUsageHint = func() string {
+	var parts []string
+	for _, c := range domain.AllBundledCategories {
+		var s strings.Builder
+		s.WriteString(string(c))
+		for alias, cat := range withAliases {
+			if cat == c {
+				s.WriteString("(" + alias + ")")
+				break
+			}
+		}
+		parts = append(parts, s.String())
+	}
+	return strings.Join(append(parts, "all"), ", ")
+}()
+
+// parseWithFlag normalizes and validates --with/-w flag values, returning a
+// BundledSet. Returns nil when the flag was not provided (empty input).
+func parseWithFlag(vals []string) (domain.BundledSet, error) {
+	if len(vals) == 0 {
+		return nil, nil
+	}
+	cats := make([]domain.BundledCategory, 0, len(vals))
+	for _, v := range vals {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v == "all" {
+			return domain.BundledAll(), nil
+		}
+		if alias, ok := withAliases[v]; ok {
+			cats = append(cats, alias)
+			continue
+		}
+		cat, ok := domain.ParseBundledCategory(v)
+		if !ok {
+			return nil, fmt.Errorf("invalid --with value %q; valid: %s", v, withUsageHint)
+		}
+		cats = append(cats, cat)
+	}
+	return domain.NewBundledSet(cats...), nil
 }
 
 // buildContentPaths builds a content type map from CLI flag values.
@@ -66,7 +117,6 @@ func buildContentPaths(rules, skills, agents, workflows, prompts string) map[dom
 
 type PackCreateCmd struct {
 	Name      string `arg:"" help:"Pack name"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Local     bool   `help:"Create pack inside the packs directory instead of the current directory" name:"local"`
 	Rules     string `help:"Symlink rules/ to this directory" name:"rules" type:"path"`
 	Skills    string `help:"Symlink skills/ to this directory" name:"skills" type:"path"`
@@ -95,7 +145,7 @@ See also: pack install, pack show`
 }
 
 func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -122,28 +172,27 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack install ---
 
 type PackInstallCmd struct {
-	Path       string `arg:"" optional:"" help:"Local directory path or registry pack name"`
-	URL        string `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
-	Ref        string `help:"Git ref (branch/tag) to fetch" name:"ref"`
-	SubPath    string `help:"Subdirectory within the repo where the pack lives" name:"path"`
-	Name       string `help:"Override the pack name from pack.json" name:"name"`
-	ConfigDir  string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Registry   string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
-	Profile    string `help:"Profile to register pack source in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
-	NoRegister bool   `help:"Do not auto-register pack as a source in any profile" name:"no-register"`
-	Copy       bool   `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
-	Seed       bool   `help:"Apply bundled registries and profiles from remote packs (preview-only by default)" name:"seed"`
-	Missing    bool   `help:"Install all missing packs from the active profile" short:"m"`
-	Quiet      bool   `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
-	Rules      string `help:"Extract rules from this directory within the repo" name:"rules"`
-	Skills     string `help:"Extract skills from this directory within the repo" name:"skills"`
-	Agents     string `help:"Extract agents from this directory within the repo" name:"agents"`
-	Workflows  string `help:"Extract workflows from this directory within the repo" name:"workflows"`
-	Prompts    string `help:"Extract prompts from this directory within the repo" name:"prompts"`
+	Path       string   `arg:"" optional:"" help:"Local directory path or registry pack name"`
+	URL        string   `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
+	Ref        string   `help:"Git ref (branch/tag) to fetch" name:"ref"`
+	SubPath    string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
+	Name       string   `help:"Override the pack name from pack.json" name:"name"`
+	Registry   string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
+	Profile    string   `help:"Profile to register pack source in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	NoRegister bool     `help:"Do not auto-register pack as a source in any profile" name:"no-register"`
+	Copy       bool     `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
+	With       []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
+	Missing    bool     `help:"Install all missing packs from the active profile" short:"m"`
+	Quiet      bool     `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
+	Rules      string   `help:"Extract rules from this directory within the repo" name:"rules"`
+	Skills     string   `help:"Extract skills from this directory within the repo" name:"skills"`
+	Agents     string   `help:"Extract agents from this directory within the repo" name:"agents"`
+	Workflows  string   `help:"Extract workflows from this directory within the repo" name:"workflows"`
+	Prompts    string   `help:"Extract prompts from this directory within the repo" name:"prompts"`
 }
 
 func (c *PackInstallCmd) Help() string {
-	return `Installs a pack into ~/.config/aipack/packs/<name>/. Local directory packs are
+	return fmt.Sprintf(`Installs a pack into %s. Local directory packs are
 symlinked by default; use --copy to make a full copy instead. Remote packs
 are fetched via git archive (selective fetch of declared files only) with
 automatic fallback to shallow clone when the remote doesn't support archive.
@@ -188,7 +237,9 @@ Examples:
   # Install without registering in any profile
   aipack pack install ./my-pack --no-register
 
-See also: pack delete, pack list, pack update, registry list`
+See also: pack delete, pack list, pack update, registry list`,
+		configPathDisplay("packs", "<name>"),
+	)
 }
 
 func (c *PackInstallCmd) Validate() error {
@@ -203,6 +254,9 @@ func (c *PackInstallCmd) Validate() error {
 	}
 	if c.Missing && (hasPath || hasURL) {
 		return fmt.Errorf("-m/--missing cannot be combined with a path or --url")
+	}
+	if c.Missing && len(c.With) > 0 {
+		return fmt.Errorf("-m/--missing cannot be combined with --with")
 	}
 	if !hasPath && !hasURL && !c.Missing {
 		return fmt.Errorf("provide a pack path, --url, or -m to install missing packs from the active profile")
@@ -230,7 +284,7 @@ func effectiveProfile(explicit, cfgDir string) string {
 }
 
 func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -255,25 +309,18 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		profile = effectiveProfile(c.Profile, cfgDir)
 	}
 
-	req := app.PackAddRequest{
+	with, err := parseWithFlag(c.With)
+	if err != nil {
+		return err
+	}
+
+	req := app.PackInstallRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 		Register:  !c.NoRegister,
 		Profile:   profile,
-		Seed:      c.Seed,
+		With:      with,
 		Quiet:     c.Quiet,
-		SeedConfirmFn: func(name string) bool {
-			fmt.Fprintf(g.Stderr, "Profile %q already exists. Replace with pack version? [y/N] ", name)
-			if !g.StdinTTY {
-				fmt.Fprintln(g.Stderr, "Skipped (non-interactive, use --seed to overwrite).")
-				return false
-			}
-			var answer string
-			if _, err := fmt.Fscan(g.Stdin, &answer); err != nil {
-				return false
-			}
-			return strings.ToLower(strings.TrimSpace(answer)) == "y"
-		},
 	}
 	// CLI content flags take precedence over registry entry content_paths.
 	if cp := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cp != nil {
@@ -325,7 +372,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		req.Link = !c.Copy
 	}
 
-	if err := app.PackAdd(ctx, req, g.Stdout); err != nil {
+	if err := app.PackInstall(ctx, req, g.Stdout); err != nil {
 		return err
 	}
 	fmt.Fprintln(g.Stdout, "\nNext: run 'aipack sync' to sync pack content to your harness.")
@@ -335,12 +382,11 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack list ---
 
 type PackListCmd struct {
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	JSON      bool   `help:"Emit machine-readable JSON array" name:"json"`
+	JSON bool `help:"Emit machine-readable JSON array" name:"json"`
 }
 
 func (c *PackListCmd) Help() string {
-	return `Lists all packs installed under ~/.config/aipack/packs/, showing name, install
+	return fmt.Sprintf(`Lists all packs installed under %s, showing name, install
 method (link/copy/clone/archive), version, origin URL, and broken-link status.
 
 Examples:
@@ -350,11 +396,13 @@ Examples:
   # Machine-readable JSON output
   aipack pack list --json
 
-See also: pack show, pack install`
+See also: pack show, pack install`,
+		configPathDisplay("packs"),
+	)
 }
 
 func (c *PackListCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -440,24 +488,25 @@ func packContentSummary(e app.PackShowEntry) string {
 // --- pack delete ---
 
 type PackDeleteCmd struct {
-	Name      string `arg:"" help:"Name of the installed pack to delete" predictor:"pack"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Yes       bool   `help:"Skip confirmation prompt for seeded profile removal"`
+	Name string `arg:"" help:"Name of the installed pack to delete" predictor:"pack"`
+	Yes  bool   `help:"Skip confirmation prompt for bundled profile removal"`
 }
 
 func (c *PackDeleteCmd) Help() string {
-	return `Deletes an installed pack directory from ~/.config/aipack/packs/<name>/ and
+	return fmt.Sprintf(`Deletes an installed pack directory from %s and
 deregisters it from all profiles.
 
 Examples:
   # Delete an installed pack
   aipack pack delete my-pack
 
-See also: pack install, pack list`
+See also: pack install, pack list`,
+		configPathDisplay("packs", "<name>"),
+	)
 }
 
 func (c *PackDeleteCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -465,10 +514,10 @@ func (c *PackDeleteCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	if len(result.SeededProfiles) == 0 {
+	if len(result.BundledProfiles) == 0 {
 		return nil
 	}
-	fmt.Fprintf(g.Stderr, "This pack seeded profiles that still exist: %s\n", strings.Join(result.SeededProfiles, ", "))
+	fmt.Fprintf(g.Stderr, "This pack installed profiles that still exist: %s\n", strings.Join(result.BundledProfiles, ", "))
 	if !c.Yes {
 		fmt.Fprint(g.Stderr, "Remove them? [y/N] ")
 		if !g.StdinTTY {
@@ -494,16 +543,15 @@ func (c *PackDeleteCmd) Run(ctx context.Context, g *Globals) error {
 			}
 		}
 	}
-	app.RemoveSeededProfiles(cfgDir, result.SeededProfiles, g.Stdout)
+	app.RemoveBundledProfiles(cfgDir, result.BundledProfiles, g.Stdout)
 	return nil
 }
 
 // --- pack rename ---
 
 type PackRenameCmd struct {
-	OldName   string `arg:"" help:"Current name of the installed pack" predictor:"pack"`
-	NewName   string `arg:"" help:"New name for the pack"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	OldName string `arg:"" help:"Current name of the installed pack" predictor:"pack"`
+	NewName string `arg:"" help:"New name for the pack"`
 }
 
 func (c *PackRenameCmd) Help() string {
@@ -517,7 +565,7 @@ See also: pack list, pack show`
 }
 
 func (c *PackRenameCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -528,15 +576,14 @@ func (c *PackRenameCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack enable (profile) ---
 
 type PackEnableCmd struct {
-	Name      string `arg:"" help:"Name of the installed pack to enable in the profile" predictor:"pack"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Profile   string `help:"Profile to enable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
-	Quiet     bool   `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
+	Name    string `arg:"" help:"Name of the installed pack to enable in the profile" predictor:"pack"`
+	Profile string `help:"Profile to enable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Quiet   bool   `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
 }
 
 func (c *PackEnableCmd) Help() string {
-	return `Enables an already-installed pack in the active profile. The pack must be
-installed under ~/.config/aipack/packs/<name>/ first (see pack install).
+	return fmt.Sprintf(`Enables an already-installed pack in the active profile. The pack must be
+installed under %s first (see pack install).
 
 Examples:
   # Enable a pack in the default profile
@@ -545,11 +592,13 @@ Examples:
   # Enable a pack in a specific profile
   aipack pack enable my-pack --profile production
 
-See also: pack disable, pack install, pack list`
+See also: pack disable, pack install, pack list`,
+		configPathDisplay("packs", "<name>"),
+	)
 }
 
 func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -570,9 +619,8 @@ func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack disable (profile) ---
 
 type PackDisableCmd struct {
-	Name      string `arg:"" help:"Name of the pack to disable in the profile" predictor:"pack"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Profile   string `help:"Profile to disable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Name    string `arg:"" help:"Name of the pack to disable in the profile" predictor:"pack"`
+	Profile string `help:"Profile to disable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 }
 
 func (c *PackDisableCmd) Help() string {
@@ -590,7 +638,7 @@ See also: pack enable, pack delete, pack list`
 }
 
 func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -604,10 +652,9 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack update ---
 
 type PackUpdateCmd struct {
-	Name      string `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	All       bool   `help:"Update all installed packs" name:"all"`
-	Seed      bool   `help:"Re-seed bundled profiles from updated packs" name:"seed"`
+	Name string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
+	All  bool     `help:"Update all installed packs" name:"all"`
+	With []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
 }
 
 func (c *PackUpdateCmd) Help() string {
@@ -625,8 +672,11 @@ Examples:
   # Update all installed packs
   aipack pack update --all
 
-  # Update and re-seed bundled profiles
-  aipack pack update my-pack --seed
+  # Update and accept all bundled content
+  aipack pack update my-pack -w all
+
+  # Update and accept only profiles
+  aipack pack update --all -w p
 
 See also: pack install, pack show`
 }
@@ -642,7 +692,12 @@ func (c *PackUpdateCmd) Validate() error {
 }
 
 func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+
+	with, err := parseWithFlag(c.With)
 	if err != nil {
 		return err
 	}
@@ -651,7 +706,7 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 		All:       c.All,
-		Seed:      c.Seed,
+		With:      with,
 	}, g.Stdout)
 	if err != nil {
 		return err
@@ -659,8 +714,16 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 
 	hasError := false
 	for _, r := range results {
-		if r.Status == "error" {
+		if r.Status == app.StatusError {
 			hasError = true
+		}
+		if cats := r.BundledCandidates.Categories(); len(cats) > 0 {
+			names := make([]string, len(cats))
+			for i, c := range cats {
+				names[i] = string(c)
+			}
+			fmt.Fprintf(g.Stdout, "New content available in %s: %s\n", r.Name, strings.Join(names, ", "))
+			fmt.Fprintf(g.Stdout, "  To approve: aipack pack update %s -w %s\n", r.Name, strings.Join(names, ","))
 		}
 	}
 	if hasError {
@@ -672,9 +735,8 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack show ---
 
 type PackShowCmd struct {
-	Name      string `arg:"" help:"Name of the installed pack to show" predictor:"pack"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	JSON      bool   `help:"Emit machine-readable JSON" name:"json"`
+	Name string `arg:"" help:"Name of the installed pack to show" predictor:"pack"`
+	JSON bool   `help:"Emit machine-readable JSON" name:"json"`
 }
 
 func (c *PackShowCmd) Help() string {
@@ -693,7 +755,7 @@ See also: pack list, pack validate`
 }
 
 func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -737,6 +799,9 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 	}
 	if len(entry.MCPServers) > 0 {
 		fmt.Fprintf(g.Stdout, "MCP:         %s\n", joinComma(entry.MCPServers))
+	}
+	if len(entry.Extras) > 0 {
+		fmt.Fprintf(g.Stdout, "Extras:      %s\n", joinComma(entry.Extras))
 	}
 	return nil
 }

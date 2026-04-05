@@ -28,7 +28,7 @@ func TestInspectHarness_UsesPerServerMCPPath(t *testing.T) {
 		t.Fatalf("MCPTrackedBytes: %v", err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		domain.MCPLedgerKey(configPath, "jira"): {
 			SourcePack: "test-pack",
@@ -113,7 +113,7 @@ func TestInspectHarness_MCPMetadataDoesNotCauseConflictAfterSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		domain.MCPLedgerKey(configPath, "jira"): {
 			SourcePack: "test-pack",
@@ -163,6 +163,64 @@ func TestInspectHarness_MCPMetadataDoesNotCauseConflictAfterSync(t *testing.T) {
 		}
 	}
 	t.Fatal("expected MCP file in inspect result")
+}
+
+func TestInspectHarness_UsesExplicitConfigDirForLedger(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	configDir := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	rulePath := filepath.Join(projectDir, ".claude", "rules", "sample.md")
+	if err := os.MkdirAll(filepath.Dir(rulePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rulePath, []byte("sample"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := filepath.Join(configDir, "ledger", engine.EncodeProjectPath(projectDir), "claudecode.json")
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		rulePath: {
+			SourcePack: "test-pack",
+			Digest:     domain.SingleFileDigest([]byte("sample")),
+		},
+	})
+
+	reg := harness.NewRegistry(pipelineStub{
+		id: "claudecode",
+		capture: harness.CaptureResult{
+			Copies: []domain.CopyAction{{
+				Src:  rulePath,
+				Dst:  filepath.Join("rules", "sample.md"),
+				Kind: domain.CopyKindFile,
+			}},
+		},
+	})
+
+	result, err := InspectHarness(context.Background(), engine.New(nil, nil), InspectRequest{
+		TargetSpec: TargetSpec{
+			ConfigDir:  configDir,
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Home:       home,
+			Harnesses:  []domain.Harness{"claudecode"},
+		},
+		PackRoots: map[string]string{"test-pack": filepath.Join(home, "packs", "test-pack")},
+	}, reg)
+	if err != nil {
+		t.Fatalf("InspectHarness: %v", err)
+	}
+
+	if !result.HasLedger {
+		t.Fatal("expected inspect to find ledger in explicit config dir")
+	}
+	if result.LedgerPath != ledgerPath {
+		t.Fatalf("LedgerPath = %q, want %q", result.LedgerPath, ledgerPath)
+	}
+	if len(result.Files) != 1 || result.Files[0].State != FileClean {
+		t.Fatalf("files = %+v, want one clean file", result.Files)
+	}
 }
 
 func TestRelPathFromDst(t *testing.T) {

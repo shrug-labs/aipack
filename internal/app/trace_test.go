@@ -258,7 +258,7 @@ func TestRunTrace_ClassifiesPromotedContentWithSourceDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		dstPath: {
 			SourcePack: "core",
@@ -313,6 +313,156 @@ func TestRunTrace_ClassifiesPromotedContentWithSourceDigest(t *testing.T) {
 	if result.Destinations[0].State != "identical" {
 		t.Fatalf("state = %q, want identical", result.Destinations[0].State)
 	}
+	if result.Destinations[0].Harness != string(domain.HarnessCodex) {
+		t.Fatalf("harness = %q, want %q", result.Destinations[0].Harness, domain.HarnessCodex)
+	}
+}
+
+func TestRunTrace_SharedSkillsPath_PreservesRequestedHarness(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	srcDir := filepath.Join(home, "packs", "core", "skills", "deep-research")
+	dstDir := filepath.Join(projectDir, ".agents", "skills", "deep-research")
+
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name: "core",
+			Skills: []domain.Skill{{
+				Name:       "deep-research",
+				SourcePack: "core",
+				DirPath:    srcDir,
+			}},
+		}},
+	}
+
+	reg := harness.NewRegistry(
+		planHarnessStub{
+			id: domain.HarnessCodex,
+			fragment: domain.Fragment{
+				Copies: []domain.CopyAction{{
+					Src:        srcDir,
+					Dst:        dstDir,
+					Kind:       domain.CopyKindDir,
+					SourcePack: "core",
+				}},
+				Desired: []string{dstDir},
+			},
+			roots: []string{filepath.Join(projectDir, ".agents", "skills")},
+		},
+		planHarnessStub{
+			id: domain.HarnessCline,
+			fragment: domain.Fragment{
+				Copies: []domain.CopyAction{{
+					Src:        srcDir,
+					Dst:        dstDir,
+					Kind:       domain.CopyKindDir,
+					SourcePack: "core",
+				}},
+				Desired: []string{dstDir},
+			},
+			roots: []string{filepath.Join(projectDir, ".agents", "skills")},
+		},
+	)
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), profile, TraceRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessCodex},
+			Home:       home,
+		},
+		ResourceType: "skill",
+		ResourceName: "deep-research",
+	}, reg)
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+
+	if len(result.Destinations) != 1 {
+		t.Fatalf("destinations = %d, want 1", len(result.Destinations))
+	}
+	if result.Destinations[0].Harness != string(domain.HarnessCodex) {
+		t.Fatalf("harness = %q, want %q", result.Destinations[0].Harness, domain.HarnessCodex)
+	}
+}
+
+func TestRunTrace_SharedSkillsPath_AllHarnesses_ReturnsBothAttributions(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	srcDir := filepath.Join(home, "packs", "core", "skills", "deep-research")
+	dstDir := filepath.Join(projectDir, ".agents", "skills", "deep-research")
+
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name: "core",
+			Skills: []domain.Skill{{
+				Name:       "deep-research",
+				SourcePack: "core",
+				DirPath:    srcDir,
+			}},
+		}},
+	}
+
+	reg := harness.NewRegistry(
+		planHarnessStub{
+			id: domain.HarnessCodex,
+			fragment: domain.Fragment{
+				Copies: []domain.CopyAction{{
+					Src:        srcDir,
+					Dst:        dstDir,
+					Kind:       domain.CopyKindDir,
+					SourcePack: "core",
+				}},
+				Desired: []string{dstDir},
+			},
+			roots: []string{filepath.Join(projectDir, ".agents", "skills")},
+		},
+		planHarnessStub{
+			id: domain.HarnessCline,
+			fragment: domain.Fragment{
+				Copies: []domain.CopyAction{{
+					Src:        srcDir,
+					Dst:        dstDir,
+					Kind:       domain.CopyKindDir,
+					SourcePack: "core",
+				}},
+				Desired: []string{dstDir},
+			},
+			roots: []string{filepath.Join(projectDir, ".agents", "skills")},
+		},
+	)
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), profile, TraceRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessCodex, domain.HarnessCline},
+			Home:       home,
+		},
+		ResourceType: "skill",
+		ResourceName: "deep-research",
+	}, reg)
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+
+	if len(result.Destinations) != 2 {
+		t.Fatalf("destinations = %d, want 2", len(result.Destinations))
+	}
+	got := map[string]bool{}
+	for _, dest := range result.Destinations {
+		got[dest.Harness] = true
+	}
+	if !got[string(domain.HarnessCodex)] {
+		t.Fatalf("missing destination for %q", domain.HarnessCodex)
+	}
+	if !got[string(domain.HarnessCline)] {
+		t.Fatalf("missing destination for %q", domain.HarnessCline)
+	}
 }
 
 func TestRunTrace_ClassifiesTrackedMCPConflictFromLiveConfig(t *testing.T) {
@@ -339,7 +489,7 @@ func TestRunTrace_ClassifiesTrackedMCPConflictFromLiveConfig(t *testing.T) {
 		t.Fatalf("MCPTrackedBytes(desired): %v", err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		domain.MCPLedgerKey(configPath, "jira"): {
 			SourcePack: "core",

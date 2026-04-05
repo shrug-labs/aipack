@@ -40,6 +40,8 @@ Runs diagnostic checks on config, packs, and MCP servers. Overall status fails o
 | `stale_ledgers` | warning | Detects ledger files orphaned from a previous scope or harness configuration |
 | `ledger_health` | warning | Checks for orphaned entries and missing `source_pack` fields (auto-fixable with `--fix`) |
 | `manifest_drift` | warning | Detects undeclared or missing content in pack manifests (auto-fixable with `--fix`) |
+| `mcp_refs_present` | critical | Ensures required refs (env vars + params) are set for enabled MCP servers |
+| `mcp_server_paths_exist` | critical | Verifies MCP server commands exist and paths are accessible |
 
 ```bash
 aipack doctor
@@ -89,7 +91,7 @@ Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) av
 
 By default, auto-registers the pack as a source in the active profile. Use `--no-register` to skip, or `--profile <name>` to target a specific profile.
 
-Packs that bundle registries or profiles print a preview of what would be seeded. Use `--seed` to apply them, or review the output and seed manually.
+Core content (rules, skills, workflows, agents, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name.
 
 ```bash
 # Install all missing packs from the active profile
@@ -110,7 +112,7 @@ aipack pack install --url https://github.com/org/shared-repo.git --path team-pac
 aipack pack install my-team-pack
 
 # Apply bundled registries and profiles
-aipack pack install --url https://github.com/org/repo.git --path team-pack --seed
+aipack pack install --url https://github.com/org/repo.git --path team-pack -w all
 
 # Profile and registration control
 aipack pack install ./my-pack --no-register
@@ -151,9 +153,13 @@ aipack pack show my-pack --json
 
 Updates installed pack(s) to latest version from their origin. For cloned packs, re-clones from origin and re-extracts content (content path mappings from the original install are preserved). For HTTP-tarball packs, re-downloads and re-extracts. For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
 
+When an update brings new bundled content categories that weren't previously approved, they're surfaced for review — printed in the CLI, shown as a checklist dialog in the TUI. Use `-w` to approve specific categories or `-w all` to accept everything.
+
 ```bash
 aipack pack update my-pack
 aipack pack update --all
+aipack pack update my-pack -w profiles    # also apply bundled profiles on this update
+aipack pack update my-pack -w all         # accept all new bundled content
 ```
 
 ### pack delete
@@ -207,7 +213,7 @@ Resolution order when multiple sources specify a profile:
 
 ### profile list
 
-Lists all profiles. The active profile (from `defaults.profile` in sync-config) is marked with `*`.
+Lists all profiles. The active profile (from `defaults.profile` in sync-config) is marked with `(active)`.
 
 ```bash
 aipack profile list

@@ -15,15 +15,15 @@ import (
 func TestExtractPackContent_ContentPaths(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
-	os.MkdirAll(filepath.Join(srcDir, "src", "skills", "deploy"), 0o755)
-	os.WriteFile(filepath.Join(srcDir, "src", "skills", "deploy", "SKILL.md"),
-		[]byte("---\nname: deploy\ndescription: deploy\n---\nbody\n"), 0o644)
-	os.MkdirAll(filepath.Join(srcDir, "config", "rules"), 0o755)
-	os.WriteFile(filepath.Join(srcDir, "config", "rules", "style.md"),
-		[]byte("---\nname: style\n---\nbody\n"), 0o644)
+	writeFile(t, filepath.Join(srcDir, "src", "skills", "deploy", "SKILL.md"),
+		"---\nname: deploy\ndescription: deploy\n---\nbody\n")
+	writeFile(t, filepath.Join(srcDir, "config", "rules", "style.md"),
+		"---\nname: style\n---\nbody\n")
 	// Repo debris.
-	os.WriteFile(filepath.Join(srcDir, "README.md"), []byte("# Repo"), 0o644)
-	os.MkdirAll(filepath.Join(srcDir, ".git", "objects"), 0o755)
+	writeFile(t, filepath.Join(srcDir, "README.md"), "# Repo")
+	if err := os.MkdirAll(filepath.Join(srcDir, ".git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	paths := map[domain.PackCategory]string{
 		domain.CategorySkills: "src/skills",
@@ -353,27 +353,10 @@ func TestExtractPackContent_StandardPack_RootEscapeFromSubpath(t *testing.T) {
 	}
 }
 
-func TestExtractPackContent_StandardPack_RegistryPathTraversalBlocked(t *testing.T) {
-	t.Parallel()
-	srcDir := t.TempDir()
-	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "evil-reg", Version: "1.0.0", Root: ".",
-		Registries: []string{"../../etc/passwd"},
-	}
-	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
-	// Create the target so the stat check passes.
-	os.MkdirAll(filepath.Join(srcDir, "..", "..", "etc"), 0o755)
-	os.WriteFile(filepath.Join(srcDir, "..", "..", "etc", "passwd"),
-		[]byte("not really"), 0o644)
-
-	_, _, err := extractPackContent(t.TempDir(), srcDir, nil, "", "")
-	if err == nil {
-		t.Fatal("expected error for registry path escaping boundary")
-	}
-	if !strings.Contains(err.Error(), "escapes boundary") {
-		t.Fatalf("expected boundary escape error, got: %v", err)
-	}
-}
+// Registry path traversal test removed: registries are now ID-based
+// (discovered from registries/ directory), so user-supplied paths are no
+// longer a vector. The directory copy uses CopyDirResolvingSymlinks with
+// boundary checks, which prevents symlink escapes.
 
 func TestExtractPackContent_ContentPaths_InvalidCategoryRejected(t *testing.T) {
 	t.Parallel()
@@ -761,19 +744,359 @@ func TestExtractPackContent_StandardPack_NonDotRoot_RewritesRootToFlat(t *testin
 	}
 }
 
-func TestExtractPackContent_StandardPack_WithProfiles(t *testing.T) {
+// ---------------------------------------------------------------------------
+// User story tests
+// ---------------------------------------------------------------------------
+
+// "I install a pack from a git clone. The source has .git/, tests/,
+// README.md, and a Makefile. Only pack content should survive extraction."
+func TestExtractPackContent_StandardPack_ExcludesNonContent(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "real-repo", Version: "1.0.0", Root: ".",
+	}
+	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
+
+	// Pack content that should survive.
+	os.MkdirAll(filepath.Join(srcDir, "rules"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "rules", "security.md"),
+		[]byte("---\nname: security\n---\nbody\n"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "skills", "deploy"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "skills", "deploy", "SKILL.md"),
+		[]byte("---\nname: deploy\ndescription: d\n---\nbody\n"), 0o644)
+
+	// Non-content that should NOT survive.
+	os.MkdirAll(filepath.Join(srcDir, ".git", "objects"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, ".git", "HEAD"), []byte("ref: refs/heads/main"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "tests"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "tests", "pack_test.go"), []byte("package tests"), 0o644)
+	os.WriteFile(filepath.Join(srcDir, "README.md"), []byte("# My Pack"), 0o644)
+	os.WriteFile(filepath.Join(srcDir, "Makefile"), []byte("all: build"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "docs"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "docs", "usage.md"), []byte("Usage guide"), 0o644)
+
+	staging, _, err := extractPackContent(t.TempDir(), srcDir, nil, "", "")
+	if err != nil {
+		t.Fatalf("extractPackContent: %v", err)
+	}
+	defer os.RemoveAll(staging)
+
+	// Content present.
+	for _, want := range []string{"pack.json", "rules/security.md", "skills/deploy/SKILL.md"} {
+		if _, err := os.Stat(filepath.Join(staging, want)); err != nil {
+			t.Errorf("expected %s in extracted pack", want)
+		}
+	}
+	// Non-content excluded.
+	for _, reject := range []string{".git", "tests", "README.md", "Makefile", "docs"} {
+		if _, err := os.Stat(filepath.Join(staging, reject)); !os.IsNotExist(err) {
+			t.Errorf("%s should not survive extraction", reject)
+		}
+	}
+}
+
+// "I install a pack that has both an MCP server and extras. After install,
+// I can resolve a profile and the MCP server's {pack:root} reference points
+// to the INSTALLED location, not the source."
+func TestExtractPackContent_StandardPack_ExtrasPreservedForPackRoot(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "wrapper-pack", Version: "1.0.0", Root: ".",
+		Extras: []string{"wrappers"},
+		MCP:    config.MCPPack{Servers: map[string]config.MCPDefaults{"wrapped": {}}},
+	}
+	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
+
+	os.MkdirAll(filepath.Join(srcDir, "wrappers"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "wrappers", "proxy.py"),
+		[]byte("import sys; print(sys.argv)"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "mcp"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "mcp", "wrapped.json"), []byte(`{
+		"name": "wrapped",
+		"command": ["python3", "{pack:root}/wrappers/proxy.py"]
+	}`), 0o644)
+
+	// Also add noise that should be excluded.
+	os.WriteFile(filepath.Join(srcDir, "README.md"), []byte("# wrapper pack"), 0o644)
+
+	staging, _, err := extractPackContent(t.TempDir(), srcDir, nil, "", "")
+	if err != nil {
+		t.Fatalf("extractPackContent: %v", err)
+	}
+	defer os.RemoveAll(staging)
+
+	// Both the MCP inventory and the extras directory must be present.
+	for _, want := range []string{
+		"mcp/wrapped.json",
+		"wrappers/proxy.py",
+		"pack.json",
+	} {
+		if _, err := os.Stat(filepath.Join(staging, want)); err != nil {
+			t.Errorf("expected %s in extracted pack", want)
+		}
+	}
+	// README should not be present.
+	if _, err := os.Stat(filepath.Join(staging, "README.md")); !os.IsNotExist(err) {
+		t.Error("README.md should not survive extraction")
+	}
+
+	// The MCP inventory JSON still has {pack:root} — it's a template.
+	// Verify it's preserved, not prematurely expanded.
+	data, _ := os.ReadFile(filepath.Join(staging, "mcp", "wrapped.json"))
+	if !strings.Contains(string(data), "{pack:root}") {
+		t.Error("MCP inventory should preserve {pack:root} template — expanded at resolve time, not install time")
+	}
+}
+
+func TestExtractPackContent_StandardPack_Extras(t *testing.T) {
+	// Proves: extras (dirs, nested dirs, and single files) survive
+	// extraction with correct content, alongside standard content.
+	t.Parallel()
+	srcDir := t.TempDir()
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "with-extras", Version: "1.0.0", Root: ".",
+		Extras: []string{"wrappers", "mcp-servers/oci-api", "bootstrap.sh"},
+	}
+	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
+
+	os.MkdirAll(filepath.Join(srcDir, "wrappers"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "wrappers", "proxy.py"),
+		[]byte("proxy content"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "mcp-servers", "oci-api"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "mcp-servers", "oci-api", "main.py"),
+		[]byte("api content"), 0o644)
+	os.WriteFile(filepath.Join(srcDir, "bootstrap.sh"),
+		[]byte("#!/bin/sh\necho hello\n"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "rules"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "rules", "r.md"),
+		[]byte("---\nname: r\n---\nbody\n"), 0o644)
+
+	staging, _, err := extractPackContent(t.TempDir(), srcDir, nil, "", "")
+	if err != nil {
+		t.Fatalf("extractPackContent: %v", err)
+	}
+	defer os.RemoveAll(staging)
+
+	// Verify content, not just existence.
+	checks := map[string]struct {
+		wantContent string
+		wantDir     bool
+	}{
+		"wrappers/proxy.py":           {"proxy content", false},
+		"mcp-servers/oci-api/main.py": {"api content", false},
+		"bootstrap.sh":                {"#!/bin/sh\necho hello\n", false},
+		"rules/r.md":                  {"---\nname: r\n---\nbody\n", false},
+		"wrappers":                    {"", true},
+		"mcp-servers/oci-api":         {"", true},
+	}
+	for path, want := range checks {
+		full := filepath.Join(staging, path)
+		info, err := os.Stat(full)
+		if err != nil {
+			t.Fatalf("%s missing from extracted pack", path)
+		}
+		if want.wantDir {
+			if !info.IsDir() {
+				t.Fatalf("%s should be a directory", path)
+			}
+			continue
+		}
+		if info.IsDir() {
+			t.Fatalf("%s should be a file, not a directory", path)
+		}
+		got, _ := os.ReadFile(full)
+		if string(got) != want.wantContent {
+			t.Fatalf("%s content = %q, want %q", path, got, want.wantContent)
+		}
+	}
+}
+
+func TestExtractPackContent_StandardPack_ExtrasSymlinkEscapeBlocked(t *testing.T) {
+	// Proves: a symlink in extras that resolves outside the clone
+	// boundary is rejected during extraction.
+	t.Parallel()
+	srcDir := t.TempDir()
+	outsideDir := t.TempDir()
+	os.WriteFile(filepath.Join(outsideDir, "secret.sh"), []byte("secret"), 0o644)
+	os.Symlink(filepath.Join(outsideDir, "secret.sh"), filepath.Join(srcDir, "escape.sh"))
+
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "escape", Version: "1.0.0", Root: ".",
+		Extras: []string{"escape.sh"},
+	}
+	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
+
+	_, _, err := extractPackContent(t.TempDir(), srcDir, nil, "", "")
+	if err == nil {
+		t.Fatal("expected error for symlink escaping boundary")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got: %v", err)
+	}
+}
+
+func TestExtractPackContent_StandardPack_ExtrasRepoRelative(t *testing.T) {
+	// Proves: extras with leading ".." (repo-relative paths) are copied
+	// into the staging directory with the ".." prefix stripped, and the
+	// installed manifest uses the staging-relative name.
+	t.Parallel()
+	repoDir := t.TempDir()
+	packDir := filepath.Join(repoDir, "packs", "my-pack")
+	os.MkdirAll(packDir, 0o755)
+
+	// Shared directory at repo root, sibling to the pack.
+	os.MkdirAll(filepath.Join(repoDir, "shared-scripts"), 0o755)
+	os.WriteFile(filepath.Join(repoDir, "shared-scripts", "auth.sh"),
+		[]byte("#!/bin/sh\nauth"), 0o644)
+	// Also a local extras dir inside the pack.
+	os.MkdirAll(filepath.Join(packDir, "wrappers"), 0o755)
+	os.WriteFile(filepath.Join(packDir, "wrappers", "proxy.py"),
+		[]byte("proxy"), 0o644)
+
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "repo-rel", Version: "1.0.0", Root: ".",
+		Extras: []string{"../../shared-scripts", "wrappers"},
+	}
+	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
+
+	staging, m, err := extractPackContent(t.TempDir(), packDir, nil, "", repoDir)
+	if err != nil {
+		t.Fatalf("extractPackContent: %v", err)
+	}
+	defer os.RemoveAll(staging)
+
+	// The repo-relative extra should land at its staging name (no "..").
+	got, err := os.ReadFile(filepath.Join(staging, "shared-scripts", "auth.sh"))
+	if err != nil {
+		t.Fatalf("shared-scripts/auth.sh missing from staging: %v", err)
+	}
+	if string(got) != "#!/bin/sh\nauth" {
+		t.Fatalf("content mismatch: %q", got)
+	}
+	// Local extra should be present too.
+	if _, err := os.Stat(filepath.Join(staging, "wrappers", "proxy.py")); err != nil {
+		t.Fatalf("wrappers/proxy.py missing: %v", err)
+	}
+
+	// The installed manifest should have rewritten extras without "..".
+	for _, e := range m.Extras {
+		if strings.Contains(e, "..") {
+			t.Errorf("installed manifest extras should not contain '..', got %q", e)
+		}
+	}
+	if len(m.Extras) != 2 {
+		t.Fatalf("expected 2 extras, got %v", m.Extras)
+	}
+	// Verify via the on-disk manifest too.
+	diskManifest, err := config.LoadPackManifest(filepath.Join(staging, "pack.json"))
+	if err != nil {
+		t.Fatalf("loading staged manifest: %v", err)
+	}
+	for _, e := range diskManifest.Extras {
+		if strings.Contains(e, "..") {
+			t.Errorf("on-disk manifest extras should not contain '..', got %q", e)
+		}
+	}
+}
+
+func TestExtractPackContent_StandardPack_ExtrasRepoEscapeBlocked(t *testing.T) {
+	// Proves: extras with ".." that resolve outside the repo boundary are rejected.
+	t.Parallel()
+	repoDir := t.TempDir()
+	packDir := filepath.Join(repoDir, "packs", "my-pack")
+	os.MkdirAll(packDir, 0o755)
+
+	// The extras path tries to escape the repo entirely.
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "escape", Version: "1.0.0", Root: ".",
+		Extras: []string{"../../../outside"},
+	}
+	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
+	// Create the target outside the repo so it won't fail on stat.
+	os.MkdirAll(filepath.Join(repoDir, "..", "..", "outside"), 0o755)
+
+	_, _, err := extractPackContent(t.TempDir(), packDir, nil, "", repoDir)
+	if err == nil {
+		t.Fatal("expected error for extras escaping repo boundary")
+	}
+	if !strings.Contains(err.Error(), "escapes repo boundary") {
+		t.Fatalf("expected repo boundary error, got: %v", err)
+	}
+}
+
+func TestExtractPackContent_StandardPack_ExtrasSymlinkOverlapBlocked(t *testing.T) {
+	// Two extras that point to different manifest paths but resolve to the
+	// same real directory via symlink must be rejected.
+	t.Parallel()
+	repoDir := t.TempDir()
+	packDir := filepath.Join(repoDir, "packs", "my-pack")
+	os.MkdirAll(packDir, 0o755)
+
+	// Create a real directory and a symlink to it.
+	realDir := filepath.Join(repoDir, "real-scripts")
+	os.MkdirAll(realDir, 0o755)
+	os.WriteFile(filepath.Join(realDir, "run.sh"), []byte("run"), 0o644)
+	os.Symlink(realDir, filepath.Join(repoDir, "alias-scripts"))
+
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "sym-overlap", Version: "1.0.0", Root: ".",
+		Extras: []string{"../../real-scripts", "../../alias-scripts"},
+	}
+	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
+
+	_, _, err := extractPackContent(t.TempDir(), packDir, nil, "", repoDir)
+	if err == nil {
+		t.Fatal("expected error for symlink-resolved overlap")
+	}
+	if !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("expected overlap error, got: %v", err)
+	}
+}
+
+func TestExtractPackContent_StandardPack_ExtrasPrefixContainmentBlocked(t *testing.T) {
+	// An extras entry that is a parent directory of another extras entry
+	// must be rejected — the parent copy would include the child, then
+	// the child copy would silently overwrite.
+	t.Parallel()
+	repoDir := t.TempDir()
+	packDir := filepath.Join(repoDir, "packs", "my-pack")
+	os.MkdirAll(packDir, 0o755)
+
+	os.MkdirAll(filepath.Join(packDir, "shared", "sub"), 0o755)
+	os.WriteFile(filepath.Join(packDir, "shared", "top.txt"), []byte("top"), 0o644)
+	os.WriteFile(filepath.Join(packDir, "shared", "sub", "deep.txt"), []byte("deep"), 0o644)
+
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "prefix", Version: "1.0.0", Root: ".",
+		Extras: []string{"shared", "shared/sub"},
+	}
+	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
+
+	_, _, err := extractPackContent(t.TempDir(), packDir, nil, "", repoDir)
+	if err == nil {
+		t.Fatal("expected error for prefix containment overlap")
+	}
+	if !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("expected overlap error, got: %v", err)
+	}
+}
+
+func TestExtractPackContent_StandardPack_BundledProfiles(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
 		SchemaVersion: 1, Name: "with-profiles", Version: "1.0.0", Root: ".",
-		Profiles:   []string{"profiles/team.yaml"},
-		Registries: []string{"registry.yaml"},
+		Profiles:   []string{"dev"},
+		Registries: []string{"popular-packs"},
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 	os.MkdirAll(filepath.Join(srcDir, "profiles"), 0o755)
-	os.WriteFile(filepath.Join(srcDir, "profiles", "team.yaml"),
+	os.WriteFile(filepath.Join(srcDir, "profiles", "dev.yaml"),
 		[]byte("schema_version: 2\npacks: []\n"), 0o644)
-	os.WriteFile(filepath.Join(srcDir, "registry.yaml"),
+	os.MkdirAll(filepath.Join(srcDir, "registries"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "registries", "popular-packs.yaml"),
 		[]byte("schema_version: 1\npacks: {}\n"), 0o644)
 
 	staging, _, err := extractPackContent(t.TempDir(), srcDir, nil, "", "")
@@ -782,10 +1105,297 @@ func TestExtractPackContent_StandardPack_WithProfiles(t *testing.T) {
 	}
 	defer os.RemoveAll(staging)
 
-	if _, err := os.Stat(filepath.Join(staging, "profiles", "team.yaml")); err != nil {
-		t.Fatal("profiles/team.yaml missing")
+	if _, err := os.Stat(filepath.Join(staging, "profiles", "dev.yaml")); err != nil {
+		t.Fatal("profiles/dev.yaml missing")
 	}
-	if _, err := os.Stat(filepath.Join(staging, "registry.yaml")); err != nil {
-		t.Fatal("registry.yaml missing")
+	if _, err := os.Stat(filepath.Join(staging, "registries", "popular-packs.yaml")); err != nil {
+		t.Fatal("registries/popular-packs.yaml missing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyWithFilter
+// ---------------------------------------------------------------------------
+
+// buildFilterStaging creates a staging directory with pack.json, content dirs,
+// extras, and registries for applyWithFilter tests.
+func buildFilterStaging(t *testing.T, m config.PackManifest) string {
+	t.Helper()
+	staging := t.TempDir()
+
+	// Content directories.
+	for _, dir := range []string{"rules", "agents", "workflows", "skills", "prompts", "profiles", "registries", "mcp", "configs"} {
+		p := filepath.Join(staging, dir)
+		os.MkdirAll(p, 0o755)
+		os.WriteFile(filepath.Join(p, "placeholder.md"), []byte("content"), 0o644)
+	}
+	// Extras entries.
+	for _, ext := range m.Extras {
+		p := filepath.Join(staging, ext)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("extra"), 0o644)
+	}
+	// Registry entries (inside registries/ directory).
+	for _, id := range m.Registries {
+		p := filepath.Join(staging, "registries", id+".yaml")
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("registry"), 0o644)
+	}
+	if err := config.SavePackManifest(filepath.Join(staging, "pack.json"), m); err != nil {
+		t.Fatalf("SavePackManifest: %v", err)
+	}
+	return staging
+}
+
+func TestApplyWithFilter_NilNoOp(t *testing.T) {
+	t.Parallel()
+	m := config.PackManifest{
+		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		Rules:  []string{"style"},
+		Skills: []string{"deploy"},
+	}
+	staging := buildFilterStaging(t, m)
+
+	err := applyWithFilter(staging, &m, nil)
+	if err != nil {
+		t.Fatalf("applyWithFilter: %v", err)
+	}
+	// Everything still present.
+	if _, err := os.Stat(filepath.Join(staging, "rules", "placeholder.md")); err != nil {
+		t.Fatal("rules should still exist after nil domain.BundledSet")
+	}
+	if _, err := os.Stat(filepath.Join(staging, "skills", "placeholder.md")); err != nil {
+		t.Fatal("skills should still exist after nil domain.BundledSet")
+	}
+	// Manifest unchanged.
+	if len(m.Rules) != 1 || m.Rules[0] != "style" {
+		t.Fatalf("rules manifest changed: %v", m.Rules)
+	}
+}
+
+func TestApplyWithFilter_WithAll(t *testing.T) {
+	t.Parallel()
+	m := config.PackManifest{
+		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		Rules:      []string{"style"},
+		Skills:     []string{"deploy"},
+		Extras:     []string{"scripts/run.sh"},
+		Registries: []string{"popular-packs"},
+	}
+	staging := buildFilterStaging(t, m)
+
+	err := applyWithFilter(staging, &m, domain.BundledAll())
+	if err != nil {
+		t.Fatalf("applyWithFilter: %v", err)
+	}
+	// Everything still present.
+	for _, dir := range []string{"rules", "skills", "agents", "workflows", "prompts", "profiles", "registries", "mcp", "configs"} {
+		if _, err := os.Stat(filepath.Join(staging, dir)); err != nil {
+			t.Errorf("%s should still exist with WithAll", dir)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(staging, "scripts", "run.sh")); err != nil {
+		t.Error("extras should still exist with WithAll")
+	}
+}
+
+func TestApplyWithFilter_Partial(t *testing.T) {
+	// --with only gates bundled content (profiles, registries, extras).
+	// Core content dirs are always kept regardless of the domain.BundledSet.
+	t.Parallel()
+	m := config.PackManifest{
+		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		Rules:      []string{"style"},
+		Agents:     []string{"navigator"},
+		Workflows:  []string{"deploy-flow"},
+		Skills:     []string{"deploy"},
+		Prompts:    []string{"greeting"},
+		Profiles:   []string{"team"},
+		Extras:     []string{"scripts/run.sh"},
+		Registries: []string{"reg"},
+		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{
+			"pg": {DefaultAllowedTools: []string{"query"}},
+		}},
+		Configs: config.PackConfigs{
+			HarnessSettings: map[string][]string{"opencode": {"oc.json"}},
+		},
+	}
+	staging := buildFilterStaging(t, m)
+
+	// Approve only profiles — registries and extras should be removed,
+	// but all core dirs are always kept.
+	ws := domain.NewBundledSet(domain.BundledProfiles)
+	err := applyWithFilter(staging, &m, ws)
+	if err != nil {
+		t.Fatalf("applyWithFilter: %v", err)
+	}
+
+	// Core content dirs always kept regardless of domain.BundledSet.
+	for _, dir := range []string{"rules", "skills", "agents", "workflows", "prompts", "mcp", "configs"} {
+		if _, err := os.Stat(filepath.Join(staging, dir)); err != nil {
+			t.Errorf("%s should always be kept (core dir), but was removed", dir)
+		}
+	}
+
+	// Approved bundled dir still present.
+	if _, err := os.Stat(filepath.Join(staging, "profiles")); err != nil {
+		t.Fatal("profiles should exist (approved)")
+	}
+
+	// Unapproved bundled content removed.
+	if _, err := os.Stat(filepath.Join(staging, "scripts", "run.sh")); !os.IsNotExist(err) {
+		t.Error("extras should be removed (not in domain.BundledSet)")
+	}
+	if _, err := os.Stat(filepath.Join(staging, "registries")); !os.IsNotExist(err) {
+		t.Error("registries dir should be removed (not in domain.BundledSet)")
+	}
+
+	// Manifest: bundled fields cleared for unapproved categories.
+	if m.Extras != nil {
+		t.Errorf("extras manifest should be nil, got %v", m.Extras)
+	}
+	if m.Registries != nil {
+		t.Errorf("registries manifest should be nil, got %v", m.Registries)
+	}
+
+	// Manifest: core fields unchanged — filter does not touch them.
+	if len(m.Rules) != 1 || m.Rules[0] != "style" {
+		t.Errorf("rules manifest should be unchanged, got %v", m.Rules)
+	}
+	if len(m.Skills) != 1 || m.Skills[0] != "deploy" {
+		t.Errorf("skills manifest should be unchanged, got %v", m.Skills)
+	}
+	if len(m.Agents) != 1 || m.Agents[0] != "navigator" {
+		t.Errorf("agents manifest should be unchanged, got %v", m.Agents)
+	}
+	if len(m.Workflows) != 1 || m.Workflows[0] != "deploy-flow" {
+		t.Errorf("workflows manifest should be unchanged, got %v", m.Workflows)
+	}
+	if len(m.Prompts) != 1 || m.Prompts[0] != "greeting" {
+		t.Errorf("prompts manifest should be unchanged, got %v", m.Prompts)
+	}
+	if len(m.Profiles) != 1 || m.Profiles[0] != "team" {
+		t.Errorf("profiles manifest should be unchanged, got %v", m.Profiles)
+	}
+	if len(m.MCP.Servers) != 1 {
+		t.Errorf("MCP.Servers should be unchanged, got %v", m.MCP.Servers)
+	}
+	if !m.Configs.HasAnyConfigs() {
+		t.Errorf("configs should be unchanged, got %+v", m.Configs)
+	}
+
+	// pack.json re-saved with updated manifest.
+	reloaded, err := config.LoadPackManifest(filepath.Join(staging, "pack.json"))
+	if err != nil {
+		t.Fatalf("LoadPackManifest: %v", err)
+	}
+	// Core content preserved in persisted manifest.
+	if len(reloaded.Rules) != 1 {
+		t.Errorf("reloaded rules should have 1 entry, got %v", reloaded.Rules)
+	}
+	if len(reloaded.Agents) != 1 {
+		t.Errorf("reloaded agents should have 1 entry, got %v", reloaded.Agents)
+	}
+	// Unapproved bundled content cleared in persisted manifest.
+	if len(reloaded.Extras) != 0 {
+		t.Errorf("reloaded extras should be empty, got %v", reloaded.Extras)
+	}
+	if len(reloaded.Registries) != 0 {
+		t.Errorf("reloaded registries should be empty, got %v", reloaded.Registries)
+	}
+}
+
+func TestApplyWithFilter_ExtrasRemoval(t *testing.T) {
+	t.Parallel()
+	m := config.PackManifest{
+		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		Extras: []string{"scripts/deploy.sh", "data/config.yaml"},
+	}
+	staging := buildFilterStaging(t, m)
+
+	// Approve all bundled categories except extras.
+	ws := domain.NewBundledSet(domain.BundledProfiles, domain.BundledRegistries)
+	err := applyWithFilter(staging, &m, ws)
+	if err != nil {
+		t.Fatalf("applyWithFilter: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(staging, "scripts", "deploy.sh")); !os.IsNotExist(err) {
+		t.Error("extras file scripts/deploy.sh should be removed")
+	}
+	if _, err := os.Stat(filepath.Join(staging, "data", "config.yaml")); !os.IsNotExist(err) {
+		t.Error("extras file data/config.yaml should be removed")
+	}
+	if m.Extras != nil {
+		t.Errorf("extras should be nil, got %v", m.Extras)
+	}
+}
+
+func TestApplyWithFilter_RegistriesRemoval(t *testing.T) {
+	t.Parallel()
+	m := config.PackManifest{
+		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		Registries: []string{"team-tools", "community"},
+	}
+	staging := buildFilterStaging(t, m)
+
+	// Approve all bundled categories except registries.
+	ws := domain.NewBundledSet(domain.BundledProfiles, domain.BundledExtras)
+	err := applyWithFilter(staging, &m, ws)
+	if err != nil {
+		t.Fatalf("applyWithFilter: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(staging, "registries")); !os.IsNotExist(err) {
+		t.Error("registries/ directory should be removed")
+	}
+	if m.Registries != nil {
+		t.Errorf("registries should be nil, got %v", m.Registries)
+	}
+}
+
+func TestApplyWithFilter_PackJsonReSaved(t *testing.T) {
+	t.Parallel()
+	m := config.PackManifest{
+		SchemaVersion: 1, Name: "saved-test", Version: "2.0.0", Root: ".",
+		Rules:      []string{"alpha"},
+		Skills:     []string{"beta"},
+		Agents:     []string{"gamma"},
+		Profiles:   []string{"dev"},
+		Registries: []string{"popular-packs"},
+	}
+	staging := buildFilterStaging(t, m)
+
+	// Approve only profiles — registries removed, core content unchanged.
+	ws := domain.NewBundledSet(domain.BundledProfiles)
+	err := applyWithFilter(staging, &m, ws)
+	if err != nil {
+		t.Fatalf("applyWithFilter: %v", err)
+	}
+
+	reloaded, err := config.LoadPackManifest(filepath.Join(staging, "pack.json"))
+	if err != nil {
+		t.Fatalf("LoadPackManifest: %v", err)
+	}
+	if reloaded.Name != "saved-test" {
+		t.Errorf("name = %q, want saved-test", reloaded.Name)
+	}
+	// Core content fields preserved in pack.json.
+	if len(reloaded.Rules) != 1 || reloaded.Rules[0] != "alpha" {
+		t.Errorf("rules = %v, want [alpha]", reloaded.Rules)
+	}
+	if len(reloaded.Skills) != 1 || reloaded.Skills[0] != "beta" {
+		t.Errorf("skills = %v, want [beta]", reloaded.Skills)
+	}
+	if len(reloaded.Agents) != 1 || reloaded.Agents[0] != "gamma" {
+		t.Errorf("agents = %v, want [gamma]", reloaded.Agents)
+	}
+	// Approved bundled content preserved.
+	if len(reloaded.Profiles) != 1 || reloaded.Profiles[0] != "dev" {
+		t.Errorf("profiles = %v, want [dev]", reloaded.Profiles)
+	}
+	// Unapproved bundled content cleared in persisted manifest.
+	if len(reloaded.Registries) != 0 {
+		t.Errorf("registries should be empty in persisted manifest, got %v", reloaded.Registries)
 	}
 }

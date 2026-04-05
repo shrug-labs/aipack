@@ -48,7 +48,7 @@ defaults:
   profile: default        # active profile name
   harnesses:              # target harnesses for sync (list)
     - cline
-  scope: project          # default scope: "project" or "global"
+  scope: global           # "project" or "global" (default: global)
 
 installed_packs:          # managed by pack install/delete/update
   essentials:
@@ -80,7 +80,7 @@ registry_sources:         # managed by registry fetch
 |-------|------|---------|-------------|
 | `profile` | string | `default` | Active profile. Changed by `profile set`. |
 | `harnesses` | string[] | `[cline]` | Target harnesses for sync. Multiple harnesses sync in one pass. |
-| `scope` | string | `project` | Default scope when `--scope` is not specified. |
+| `scope` | string | `global` | Default scope when `--scope` is not specified. |
 
 CLI flags override these defaults. The full resolution chain is documented in the [CLI Specification](./cli-spec.md#shared-flag-resolution).
 
@@ -121,7 +121,7 @@ Packs live under `~/.config/aipack/packs/<name>/`. Four install methods produce 
 |--------|---------------|-------------|-----------------|
 | `link` | Symlink to source directory | Yes — edits at either location hit the same files | Re-validates symlink target |
 | `copy` | Full copy from local path | No — edits are local only | Re-copies from recorded origin |
-| `clone` | Shallow git clone | Yes (with `git pull`) | `git pull` in the clone |
+| `clone` | Content-extracted from git clone | No — installed content is a static snapshot | Re-clones from origin, re-extracts content |
 | `http-tarball` | Downloaded from GitHub | No — edits are local only | Re-downloads tarball, shows file-level diff |
 | `local` | Pack already in packs directory | Yes — it's the source | Registered in-place, no fetch |
 
@@ -144,7 +144,7 @@ schema_version: 2
 packs: []
 ```
 
-Profiles installed via `--seed` from a team pack are copied here automatically.
+Profiles installed via `-w all` (or `-w profiles`) from a team pack are copied here automatically.
 
 ## Registry configuration
 

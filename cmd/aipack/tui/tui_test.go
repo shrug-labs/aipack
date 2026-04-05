@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -443,6 +445,209 @@ func TestDialogHelpText(t *testing.T) {
 	}
 	if !strings.Contains(help3, "d:delete") {
 		t.Fatalf("expected 'd:delete' in help, got %q", help3)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// dialogChecklist
+// ---------------------------------------------------------------------------
+
+func TestChecklistDialog_SpaceToggles(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha", checked: false},
+		{label: "beta", checked: true},
+	}
+	d := newChecklistDialog("test", "Pick:", items)
+
+	// Space toggles first item on.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if !d.checkItems[0].checked {
+		t.Error("space should toggle first item to checked")
+	}
+	// Space again toggles it off.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if d.checkItems[0].checked {
+		t.Error("second space should toggle first item back to unchecked")
+	}
+}
+
+func TestChecklistDialog_EnterConfirms(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha", checked: true},
+		{label: "beta", checked: false},
+		{label: "gamma", checked: true},
+	}
+	d := newChecklistDialog("test", "Pick:", items)
+
+	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter should produce a command")
+	}
+	msg := cmd()
+	result, ok := msg.(dialogResultMsg)
+	if !ok {
+		t.Fatalf("expected dialogResultMsg, got %T", msg)
+	}
+	if !result.confirmed {
+		t.Fatal("enter should set confirmed=true")
+	}
+	if len(result.values) != 2 || result.values[0] != "alpha" || result.values[1] != "gamma" {
+		t.Fatalf("expected [alpha gamma], got %v", result.values)
+	}
+}
+
+func TestChecklistDialog_EscCancels(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha", checked: true},
+	}
+	d := newChecklistDialog("test", "Pick:", items)
+
+	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if cmd == nil {
+		t.Fatal("esc should produce a command")
+	}
+	msg := cmd()
+	result, ok := msg.(dialogResultMsg)
+	if !ok {
+		t.Fatalf("expected dialogResultMsg, got %T", msg)
+	}
+	if result.confirmed {
+		t.Fatal("esc should set confirmed=false")
+	}
+}
+
+func TestChecklistDialog_EmptyConfirmation(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha", checked: false},
+		{label: "beta", checked: false},
+	}
+	d := newChecklistDialog("test", "Pick:", items)
+
+	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	result := msg.(dialogResultMsg)
+	if len(result.values) != 0 {
+		t.Fatalf("expected empty values when nothing checked, got %v", result.values)
+	}
+}
+
+func TestChecklistDialog_Navigation(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha"},
+		{label: "beta"},
+		{label: "gamma"},
+	}
+	d := newChecklistDialog("test", "Pick:", items)
+
+	// Start at 0, move down.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if d.listCursor != 1 {
+		t.Fatalf("j should move to 1, got %d", d.listCursor)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if d.listCursor != 2 {
+		t.Fatalf("j should move to 2, got %d", d.listCursor)
+	}
+	// At bottom, j doesn't go past end.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if d.listCursor != 2 {
+		t.Fatalf("j at bottom should stay at 2, got %d", d.listCursor)
+	}
+	// Move up.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if d.listCursor != 1 {
+		t.Fatalf("k should move to 1, got %d", d.listCursor)
+	}
+}
+
+func TestChecklistDialog_HelpText(t *testing.T) {
+	t.Parallel()
+	d := newChecklistDialog("test", "Pick:", nil)
+	help := d.helpText()
+	if help != "space:toggle  enter:confirm  esc:cancel" {
+		t.Fatalf("unexpected help text: %q", help)
+	}
+}
+
+func TestBundledCandidatesDialog_ConfirmRehydratesApprovedContent(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(srcDir, "extras"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "extras", "helper.sh"), []byte("#!/bin/sh\necho hi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := config.PackManifest{
+		SchemaVersion: 1,
+		Name:          "copy-pack",
+		Version:       "1.0.0",
+		Root:          ".",
+		Extras:        []string{"extras"},
+	}
+	if err := config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := t.TempDir()
+	if err := config.SaveSyncConfig(config.SyncConfigPath(configDir), config.SyncConfig{
+		SchemaVersion: config.SyncConfigSchemaVersion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.PackInstall(context.Background(), app.PackInstallRequest{
+		PackPath:  srcDir,
+		ConfigDir: configDir,
+		Register:  false,
+		With:      domain.NewBundledSet(),
+	}, os.Stdout); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	packDir := filepath.Join(configDir, "packs", "copy-pack")
+	if _, err := os.Stat(filepath.Join(packDir, "extras", "helper.sh")); !os.IsNotExist(err) {
+		t.Fatalf("extras should be absent before approval, got err=%v", err)
+	}
+
+	m := newRootModel(context.Background(), RunConfig{ConfigDir: configDir})
+	msg := updatePack(context.Background(), configDir, "copy-pack", false)()
+	packMsg, ok := msg.(packUpdatedMsg)
+	if !ok {
+		t.Fatalf("expected packUpdatedMsg, got %T", msg)
+	}
+	if len(packMsg.results) != 1 || packMsg.results[0].BundledCandidates == nil {
+		t.Fatalf("expected bundled candidates, got %+v", packMsg.results)
+	}
+
+	result, _ := m.Update(packMsg)
+	rm := result.(rootModel)
+	if rm.dialog == nil || rm.dialog.id != dialogBundledCandidates {
+		t.Fatalf("expected bundled candidates dialog, got %+v", rm.dialog)
+	}
+
+	result, cmd := rm.handleDialogResult(dialogResultMsg{
+		id:        dialogBundledCandidates,
+		confirmed: true,
+		values:    []string{string(domain.BundledExtras)},
+	})
+	_ = result.(rootModel)
+	if cmd == nil {
+		t.Fatal("expected follow-up command after confirming bundled candidates")
+	}
+	_ = cmd()
+
+	got, err := os.ReadFile(filepath.Join(packDir, "extras", "helper.sh"))
+	if err != nil {
+		t.Fatalf("expected approved extras to be restored: %v", err)
+	}
+	if string(got) != "#!/bin/sh\necho hi\n" {
+		t.Fatalf("restored extras = %q", string(got))
 	}
 }
 

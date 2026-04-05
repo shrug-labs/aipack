@@ -18,8 +18,7 @@ type TraceCmd struct {
 	Name        string  `arg:"" help:"Resource name (rule name, agent name, skill name, MCP server name)" predictor:"resource"`
 	Profile     string  `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string  `help:"Direct path to a profile YAML file" name:"profile-path" type:"path"`
-	ConfigDir   string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Scope       string  `help:"Scope: project|global (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
+	Scope       string  `help:"Scope: project|global (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
 	ProjectDir  *string `help:"Project directory for scope=project" name:"project-dir" type:"path"`
 	Harness     string  `help:"Filter to specific harness" name:"harness" predictor:"harness"`
 	JSON        bool    `help:"Machine-readable JSON output" name:"json"`
@@ -58,7 +57,7 @@ func (c *TraceCmd) Validate() error {
 }
 
 func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
-	loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
+	loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
 	if exitCode >= 0 {
 		return ExitError{Code: exitCode}
 	}
@@ -91,6 +90,7 @@ func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 	eng := engine.New(nil, nil)
 	result, err := app.RunTrace(ctx, eng, loaded.profile, app.TraceRequest{
 		TargetSpec: app.TargetSpec{
+			ConfigDir:  loaded.configDir,
 			Scope:      scope,
 			ProjectDir: projectDir,
 			Harnesses:  hs,

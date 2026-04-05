@@ -4,7 +4,6 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -35,8 +34,8 @@ func BuildInstructionsSpec(ruleDirs []string, ruleFiles []string, manage bool) I
 			desired = append(desired, glob)
 		}
 	}
-	sort.Strings(managed)
-	sort.Strings(desired)
+	slices.Sort(managed)
+	slices.Sort(desired)
 	return InstructionsSpec{Manage: true, Managed: managed, Desired: desired}
 }
 
@@ -79,7 +78,7 @@ func uniqueSorted(items []string) []string {
 		set[v] = struct{}{}
 		out = append(out, v)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -156,7 +155,7 @@ func readInstructions(root map[string]any) []string {
 	}
 	switch v := raw.(type) {
 	case []string:
-		return append([]string{}, v...)
+		return slices.Clone(v)
 	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -187,7 +187,7 @@ func DiscoverSaveFilesAllScopes(ctx context.Context, eng *engine.Engine, req Dis
 	var allWarnings []string
 
 	for _, scope := range []domain.Scope{domain.ScopeProject, domain.ScopeGlobal} {
-		if scope == domain.ScopeProject && req.ProjectDir == "" {
+		if scope == domain.ScopeProject && (req.ProjectDir == "" || req.ProjectDir == req.Home) {
 			continue
 		}
 		scopeReq := req
@@ -219,7 +219,7 @@ func DiscoverSaveFilesAllScopes(ctx context.Context, eng *engine.Engine, req Dis
 func DiscoverContentVectorsAllScopes(ctx context.Context, harnessID domain.Harness, projectDir, home string, reg *harness.Registry) ([]domain.PackCategory, error) {
 	found := map[domain.PackCategory]bool{}
 	for _, scope := range []domain.Scope{domain.ScopeProject, domain.ScopeGlobal} {
-		if scope == domain.ScopeProject && projectDir == "" {
+		if scope == domain.ScopeProject && (projectDir == "" || projectDir == home) {
 			continue
 		}
 		vectors, err := DiscoverContentVectors(ctx, harnessID, scope, projectDir, home, reg)
@@ -247,6 +247,7 @@ func DiscoverContentVectorsAllScopes(ctx context.Context, harnessID domain.Harne
 // would change without writing anything.
 func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.Registry) (SavePipelineResult, error) {
 	var result SavePipelineResult
+	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
 	packRoot := filepath.Join(req.ConfigDir, "packs", req.PackName)
 
 	// Create pack scaffold if requested.
@@ -307,7 +308,7 @@ func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.R
 		if sl, ok := ledgers[scope]; ok {
 			return sl
 		}
-		lp := engine.LedgerPathForScope(scope, req.ProjectDir, req.Home, req.HarnessID)
+		lp := engine.LedgerPath(req.ConfigDir, scope, req.ProjectDir, req.HarnessID)
 		lg, _, lerr := eng.LoadLedger(lp)
 		if lerr != nil {
 			lg = domain.NewLedger()
@@ -560,7 +561,7 @@ func InstalledPackNames(configDir string) ([]string, error) {
 			names = append(names, e.Name())
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names, nil
 }
 

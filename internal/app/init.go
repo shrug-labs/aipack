@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/util"
@@ -24,7 +23,7 @@ type InitRequest struct {
 // RunInit initializes the user's config directory with a sync-config.yaml and
 // an empty default profile, then fetches the default registry.
 func RunInit(ctx context.Context, req InitRequest, stdout io.Writer) error {
-	if strings.TrimSpace(req.ConfigDir) == "" {
+	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
 	}
 

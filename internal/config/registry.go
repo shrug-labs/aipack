@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,11 +72,7 @@ func ParseRegistry(data []byte) (Registry, error) {
 
 // ValidateRegistry checks a parsed registry for structural issues.
 func ValidateRegistry(reg Registry) []string {
-	names := make([]string, 0, len(reg.Packs))
-	for name := range reg.Packs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(reg.Packs))
 
 	var errs []string
 	for _, name := range names {

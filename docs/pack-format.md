@@ -31,10 +31,12 @@ my-pack/
 ├── configs/               # harness settings templates
 │   └── claudecode/
 │       └── settings.local.json
-├── profiles/              # bundled profiles (optional, for team distribution)
-│   └── team.yaml
-└── registries/            # bundled registry fragments (optional)
-    └── registry.yaml
+├── profiles/              # bundled profiles (curated slices of skills, tools, and knowledge)
+│   └── dev.yaml
+├── registries/            # bundled registry fragments (optional)
+│   └── team-tools.yaml
+└── scripts/               # extras — bundled assets referenced via {pack:root}
+    └── run-server.sh
 ```
 
 ### Naming conventions
@@ -78,12 +80,13 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | `prompts` | string[] | Local prompt library IDs. Not synced to harnesses — used for pack-internal prompt management only. |
 | `mcp` | object | MCP server defaults (see [Section 6](#6-mcp-servers)) |
 | `configs` | object | Harness settings and plugin inventory (see [Section 7](#7-configurations)) |
-| `profiles` | string[] | Relative paths to bundled profile YAML files |
-| `registries` | string[] | Relative paths to bundled registry YAML files |
+| `profiles` | string[] | Profile IDs. If omitted, auto-discovered from `profiles/*.yaml` |
+| `registries` | string[] | Registry IDs. If omitted, auto-discovered from `registries/*.yaml` |
+| `extras` | string[] | Relative paths to bundled assets (scripts, data files, helper source) preserved through install. Referenced via `{pack:root}` in MCP configs. Max 50 entries. Must not collide with standard content directories. |
 
 ### Content discovery
 
-When a content vector field (`rules`, `agents`, `workflows`, `skills`) is **omitted or null**, the sync engine discovers content by scanning the corresponding directory:
+When a content vector field is **empty** — omitted, null, or an empty array — the sync engine discovers content by scanning the corresponding directory:
 
 | Vector | Discovery pattern |
 |--------|------------------|
@@ -91,8 +94,8 @@ When a content vector field (`rules`, `agents`, `workflows`, `skills`) is **omit
 | Agents | `agents/*.md` |
 | Workflows | `workflows/*.md` |
 | Skills | `skills/*/SKILL.md` (subdirectories containing a `SKILL.md` entry point) |
-
-An **explicit empty array** (`"rules": []`) disables discovery for that vector — the pack declares it has no content of that type.
+| Profiles | `profiles/*.yaml` |
+| Registries | `registries/*.yaml` |
 
 An **explicit non-empty array** (`"rules": ["rule-one", "rule-two"]`) acts as a filter — only listed IDs are included, even if the directory contains more files.
 
@@ -311,10 +314,28 @@ Environment variable references are resolved at sync time: the placeholder is re
 
 Pack authors write `{env:VAR}` once; the sync engine resolves it identically for all harnesses.
 
-### 5.3 Expansion order
+### 5.3 Pack root references
 
-1. Parameter references (`{params.*}`) are expanded first, using values from the active profile.
-2. Environment references (`{env:*}`) are then resolved to literal values from the process environment.
+Syntax: `{pack:root}`
+
+Resolves to the absolute path of the installed pack directory. Use this in MCP server `command` arrays and `env` values to reference bundled extras — scripts, binaries, data files — that ship with the pack.
+
+```json
+{
+  "command": ["{pack:root}/scripts/run-server.sh", "--port", "8080"],
+  "env": {
+    "DATA_DIR": "{pack:root}/data"
+  }
+}
+```
+
+Pack root references only work in MCP server definitions. They are resolved at sync time after the pack is installed, so the path is always the concrete location on the user's machine.
+
+### 5.4 Expansion order
+
+1. Pack root references (`{pack:root}`) are expanded first, resolving to the installed pack's absolute path.
+2. Parameter references (`{params.*}`) are expanded next, using values from the active profile.
+3. Environment references (`{env:*}`) are then resolved to literal values from the process environment.
 
 This means parameters can contain environment references: `{params.mcp_dir}` could expand to `{env:HOME}/.local/share/mcp-servers`, which then resolves to `/home/user/.local/share/mcp-servers` at sync time.
 
@@ -468,19 +489,21 @@ Multiple registry sources can be configured. The merged view resolves pack names
 
 ### 9.3 Bundled profiles and registries
 
-Packs can bundle profile and registry files for team distribution:
+Packs can bundle profiles and registries for distribution. Drop YAML files into the standard directories and they're auto-discovered like any other content vector:
 
-```json
-{
-  "profiles": ["profiles/team.yaml"],
-  "registries": ["registries/team-registry.yaml"]
-}
+```
+my-pack/
+├── profiles/
+│   ├── dev.yaml
+│   └── full-stack.yaml
+└── registries/
+    └── team-tools.yaml
 ```
 
-On install with `--seed`, bundled profiles are copied to the user's profile directory and bundled registries are merged into the user's registry. This enables single-command team onboarding:
+On install with `-w all`, bundled profiles are copied to the user's profile directory and bundled registry entries are merged into the user's embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`) using first-seen-wins semantics — existing entries with the same pack name are not overwritten. This enables single-command team onboarding:
 
 ```bash
-aipack pack install --url https://github.com/org/tools.git --path team-pack --seed
+aipack pack install --url https://github.com/org/tools.git --path team-pack -w all
 aipack profile set team --install
 aipack sync
 ```
@@ -547,13 +570,12 @@ Per-harness rendering details (file paths, config formats, merge behavior) are d
       "opencode": ["oh-my-opencode.json"]
     }
   },
-  "profiles": [
-    "profiles/default.yaml",
-    "profiles/oncall.yaml"
+  "extras": [
+    "scripts/run-server.sh",
+    "data"
   ],
-  "registries": [
-    "registries/team-registry.yaml"
-  ]
+  "profiles": ["dev", "full-stack"],
+  "registries": ["team-tools"]
 }
 ```
 
@@ -597,7 +619,6 @@ Validates `pack.json` files:
 - Pack and content ID naming patterns (`^[a-z0-9][a-z0-9_-]*$`)
 - Content vector arrays with uniqueness constraints
 - MCP server defaults and harness config structure
-- Path traversal prevention in relative paths (`profiles`, `registries`)
 - Strict mode — no unknown properties
 
 ### [`mcp-server.schema.json`](../schemas/mcp-server.schema.json) — MCP Server Definition

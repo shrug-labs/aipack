@@ -208,3 +208,27 @@ func TestPlanSync_LedgerPath_Global(t *testing.T) {
 		t.Errorf("Ledger = %q, want %q", plan.Ledger, want)
 	}
 }
+
+func TestPlanSync_LedgerPath_UsesConfigDir(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	configDir := t.TempDir()
+	req := PlanRequest{
+		ConfigDir:  configDir,
+		Scope:      domain.ScopeProject,
+		Harnesses:  []domain.Harness{domain.HarnessCodex},
+		ProjectDir: filepath.Join(home, "project"),
+		Home:       home,
+	}
+
+	plan, err := PlanSync(context.Background(), domain.NewProfile(), req, nil)
+	if err != nil {
+		t.Fatalf("PlanSync: %v", err)
+	}
+
+	want := filepath.Join(configDir, "ledger", EncodeProjectPath(req.ProjectDir), "codex.json")
+	if plan.Ledger != want {
+		t.Fatalf("Ledger = %q, want %q", plan.Ledger, want)
+	}
+}

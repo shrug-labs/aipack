@@ -10,9 +10,7 @@ import (
 )
 
 // ManageCmd is the Kong command struct for `aipack manage`.
-type ManageCmd struct {
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-}
+type ManageCmd struct{}
 
 func (c *ManageCmd) Help() string {
 	return `Interactive TUI for managing profiles and packs. Provides a tabbed interface
@@ -49,7 +47,7 @@ func (c *ManageCmd) Run(ctx context.Context, g *Globals) error {
 		return ExitError{Code: cmdutil.ExitUsage}
 	}
 
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

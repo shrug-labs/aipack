@@ -94,6 +94,7 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 		}
 
 		planReq := engine.PlanRequest{
+			ConfigDir:    req.ConfigDir,
 			Scope:        req.Scope,
 			Harnesses:    []domain.Harness{hid},
 			ProjectDir:   req.ProjectDir,

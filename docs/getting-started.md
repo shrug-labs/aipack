@@ -22,6 +22,13 @@ On Windows (PowerShell):
 irm https://raw.githubusercontent.com/shrug-labs/aipack/main/install.ps1 | iex
 ```
 
+The PowerShell installer writes `aipack.exe` to `~/.local/bin`.
+If you already have Go installed, you can also use:
+
+```powershell
+go install github.com/shrug-labs/aipack/cmd/aipack@latest
+```
+
 See the [README](../README.md#install) for version pinning and other install options.
 
 ## Initialize
@@ -68,8 +75,8 @@ To target a specific harness or scope:
 
 ```bash
 aipack sync --harness claudecode          # only Claude Code
-aipack sync --scope global                # user-level config (~/.claude/)
-aipack sync --scope global --dry-run      # preview global sync
+aipack sync --scope project               # project-level config (current directory)
+aipack sync --scope project --dry-run     # preview project sync
 ```
 
 ## See the result
@@ -81,7 +88,7 @@ Explore what's installed:
 ```bash
 aipack status              # profile, packs, content counts
 aipack search deploy       # full-text search across all pack content
-aipack trace anti-slop     # trace a rule from pack source to harness destination
+aipack trace rule anti-slop # trace a rule from pack source to harness destination
 ```
 
 ## Add more packs
@@ -106,17 +113,17 @@ All installed packs are now active. If two packs define the same content ID, aip
 
 You can also install packs from git URLs, local directories, or team registries. See [Installing Packs](./installing-packs.md) for all installation methods.
 
-## Seeded setup
+## One-command onboarding
 
 Packs can bundle profiles, registry entries, and dependency declarations. When a pack includes these, installation bootstraps your entire agent environment:
 
 ```bash
-aipack pack install --url https://github.com/org/team-pack.git --seed
+aipack pack install --url https://github.com/org/team-pack.git -w all
 aipack profile set frontend-dev --install
 aipack sync
 ```
 
-`--seed` applies the pack's bundled profiles and registry. `--install` fetches any dependency packs referenced in the profile. Three commands to go from zero to a fully configured agent environment.
+`-w all` accepts the pack's bundled content — profiles are copied to the user's profile directory, and registry entries are merged into the local registry cache so declared packs become discoverable via `aipack search` and installable by name. `--install` fetches any dependency packs referenced in the profile. Three commands to go from zero to a fully configured agent environment.
 
 ## Install from any repository
 

@@ -165,7 +165,7 @@ func TestDiscoverContent_ExplicitFieldsPreserved(t *testing.T) {
 	}
 }
 
-func TestDiscoverContent_EmptySliceMeansNoContent(t *testing.T) {
+func TestDiscoverContent_EmptySliceTriggersDiscovery(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
@@ -177,7 +177,7 @@ func TestDiscoverContent_EmptySliceMeansNoContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Explicit empty slice means "I explicitly have zero rules"
+	// Empty slice is treated the same as nil — discovery fills it.
 	m := PackManifest{
 		SchemaVersion: 1,
 		Name:          "test",
@@ -188,8 +188,7 @@ func TestDiscoverContent_EmptySliceMeansNoContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Should remain empty — not overwritten by discovery
-	if len(m.Rules) != 0 {
-		t.Fatalf("Rules = %v, want [] (empty slice preserved)", m.Rules)
+	if len(m.Rules) != 1 || m.Rules[0] != "r1" {
+		t.Fatalf("Rules = %v, want [r1] (empty slice triggers discovery)", m.Rules)
 	}
 }

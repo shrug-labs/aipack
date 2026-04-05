@@ -3,9 +3,10 @@ package codex
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -333,10 +334,7 @@ func captureNativeAgents(agentsDir string, res *harness.CaptureResult) {
 		var mcpNames []string
 		if mcpRaw, ok := parsed["mcp_servers"]; ok {
 			if mcpMap, ok := mcpRaw.(map[string]any); ok {
-				for srvName := range mcpMap {
-					mcpNames = append(mcpNames, srvName)
-				}
-				sort.Strings(mcpNames)
+				mcpNames = slices.Sorted(maps.Keys(mcpMap))
 			}
 		}
 
@@ -416,12 +414,12 @@ func parseCodexSettings(servers map[string]domain.MCPServer, allowed map[string]
 		}
 		if len(entry.DisabledTools) > 0 {
 			srv.DisabledTools = append([]string{}, entry.DisabledTools...)
-			sort.Strings(srv.DisabledTools)
+			slices.Sort(srv.DisabledTools)
 		}
 		servers[name] = srv
 		if len(entry.EnabledTools) > 0 {
 			allowed[name] = append([]string{}, entry.EnabledTools...)
-			sort.Strings(allowed[name])
+			slices.Sort(allowed[name])
 		}
 	}
 	return nil

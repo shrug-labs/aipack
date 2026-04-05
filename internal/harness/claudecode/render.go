@@ -2,7 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -101,7 +101,7 @@ func renderPermPatterns(servers []domain.MCPServer, tools func(domain.MCPServer)
 			perms = append(perms, mcpPermPrefix+name+"__"+tool)
 		}
 	}
-	sort.Strings(perms)
+	slices.Sort(perms)
 	return perms
 }
 

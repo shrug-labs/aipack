@@ -32,13 +32,15 @@ func TestClean_DryRunWithoutHarnessDefaults_UsesAllHarnesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(cmdutil.DefaultHarnessEnv, "")
 	t.Chdir(projectDir)
 
 	_, stderr, code := runApp(t, "clean", "--dry-run")
 	if code != cmdutil.ExitOK {
 		t.Fatalf("clean --dry-run exit=%d stderr=%s", code, stderr)
 	}
-	for _, frag := range []string{".claude", ".clinerules", ".agents", ".opencode"} {
+	for _, frag := range []string{".claude", ".cline", ".codex", "opencode"} {
 		if !strings.Contains(stderr, frag) {
 			t.Fatalf("expected clean dry-run output to mention %s, got: %s", frag, stderr)
 		}

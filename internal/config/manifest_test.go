@@ -1,7 +1,7 @@
 package config
 
 import (
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -19,8 +19,8 @@ func TestContentPaths(t *testing.T) {
 				"jira": {DefaultAllowedTools: []string{"search"}},
 			},
 		},
-		Profiles:   []string{"profiles/default.yaml"},
-		Registries: []string{"registry.yaml"},
+		Profiles:   []string{"default"},
+		Registries: []string{"team"},
 		Configs: PackConfigs{
 			HarnessSettings: map[string][]string{
 				"claudecode": {"settings.json"},
@@ -39,7 +39,7 @@ func TestContentPaths(t *testing.T) {
 		"skills/oncall/":                   false,
 		"mcp/jira.json":                    false,
 		"profiles/default.yaml":            false,
-		"registry.yaml":                    false,
+		"registries/team.yaml":             false,
 		"configs/claudecode/settings.json": false,
 	}
 
@@ -91,8 +91,8 @@ func TestContentPaths_FullManifest(t *testing.T) {
 				"bitbucket": {DefaultAllowedTools: []string{"list_repos"}},
 			},
 		},
-		Profiles:   []string{"profiles/default.yaml"},
-		Registries: []string{"registry.yaml"},
+		Profiles:   []string{"default"},
+		Registries: []string{"team"},
 		Configs: PackConfigs{
 			HarnessSettings: map[string][]string{
 				"claudecode": {"settings.json"},
@@ -117,13 +117,13 @@ func TestContentPaths_FullManifest(t *testing.T) {
 		"mcp/jira.json",
 		"mcp/bitbucket.json",
 		"profiles/default.yaml",
-		"registry.yaml",
+		"registries/team.yaml",
 		"configs/claudecode/settings.json",
 		"configs/opencode/plugin.json",
 	}
 
-	sort.Strings(paths)
-	sort.Strings(expected)
+	slices.Sort(paths)
+	slices.Sort(expected)
 
 	if len(paths) != len(expected) {
 		t.Fatalf("got %d paths, want %d:\n  got:  %v\n  want: %v", len(paths), len(expected), paths, expected)
@@ -164,14 +164,14 @@ func TestContentPaths_IncludesPlugins(t *testing.T) {
 	}
 
 	got := m.ContentPaths()
-	sort.Strings(got)
+	slices.Sort(got)
 
 	want := []string{
 		"configs/opencode/oh-my-opencode.json",
 		"configs/opencode/opencode.json",
 		"pack.json",
 	}
-	sort.Strings(want)
+	slices.Sort(want)
 
 	if len(got) != len(want) {
 		t.Fatalf("got %d paths %v, want %d paths %v", len(got), got, len(want), want)
@@ -179,6 +179,57 @@ func TestContentPaths_IncludesPlugins(t *testing.T) {
 	for i := range got {
 		if got[i] != want[i] {
 			t.Errorf("path[%d]: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestContentPaths_IncludesExtrasDirs(t *testing.T) {
+	t.Parallel()
+	m := PackManifest{
+		SchemaVersion: 1,
+		Name:          "extras-test",
+		Root:          ".",
+		Extras:        []string{"wrappers", "mcp-servers/oci-api", "bootstrap.sh"},
+	}
+
+	paths := m.ContentPaths()
+	slices.Sort(paths)
+
+	expected := []string{
+		"bootstrap.sh",
+		"mcp-servers/oci-api",
+		"pack.json",
+		"wrappers",
+	}
+	slices.Sort(expected)
+
+	if len(paths) != len(expected) {
+		t.Fatalf("got %d paths %v, want %d paths %v", len(paths), paths, len(expected), expected)
+	}
+	for i := range expected {
+		if paths[i] != expected[i] {
+			t.Errorf("path[%d] = %q, want %q", i, paths[i], expected[i])
+		}
+	}
+}
+
+func TestExtrasStagingName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"wrappers", "wrappers"},
+		{"mcp-servers/oci-api", "mcp-servers/oci-api"},
+		{"../shared-scripts", "shared-scripts"},
+		{"../../shared/lib", "shared/lib"},
+		{"../scripts/auth.sh", "scripts/auth.sh"},
+		{"..", "."}, // degenerate — validation catches this
+	}
+	for _, tt := range tests {
+		got := ExtrasStagingName(tt.input)
+		if got != tt.want {
+			t.Errorf("ExtrasStagingName(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

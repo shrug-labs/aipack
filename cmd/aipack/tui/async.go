@@ -231,23 +231,32 @@ func saveSyncConfig(configDir string, cfg config.SyncConfig) tea.Cmd {
 	}
 }
 
-// addPack installs a pack from a path, URL, or registry name.
+// installPack installs a pack from a path, URL, or registry name.
 // For bare names (no path separators, not an existing path), it performs a
 // registry lookup — matching the CLI's `pack install` behavior.
-func addPack(ctx context.Context, configDir, input string) tea.Cmd {
+func installPack(ctx context.Context, configDir, input string) tea.Cmd {
 	return func() tea.Msg {
-		req := app.PackAddRequest{
+		req := app.PackInstallRequest{
 			ConfigDir: configDir,
+			// With: nil — bundled content not auto-applied for TUI installs.
 		}
 		if strings.Contains(input, "://") ||
 			strings.HasPrefix(input, "github.com") ||
 			strings.HasPrefix(input, "bitbucket.org") {
 			req.URL = input
 		} else if isRegistryName(input) {
-			// Bare name — try registry lookup.
-			entry, err := app.RegistryLookup(app.RegistryListRequest{ConfigDir: configDir}, input)
+			// Bare name — try registry lookup. Auto-fetch and retry once
+			// on failure, matching the CLI's pack install behavior.
+			regReq := app.RegistryListRequest{ConfigDir: configDir}
+			entry, err := app.RegistryLookup(regReq, input)
 			if err != nil {
-				return packAddedMsg{name: input, err: fmt.Errorf("registry lookup for %q: %w", input, err)}
+				fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{ConfigDir: configDir}, io.Discard)
+				if fetchErr == nil {
+					entry, err = app.RegistryLookup(regReq, input)
+				}
+			}
+			if err != nil {
+				return packInstalledMsg{name: input, err: fmt.Errorf("registry lookup for %q: %w", input, err)}
 			}
 			req.URL = entry.Repo
 			req.SubPath = entry.Path
@@ -257,12 +266,12 @@ func addPack(ctx context.Context, configDir, input string) tea.Cmd {
 			req.PackPath = input
 			req.Link = true
 		}
-		err := app.PackAdd(ctx, req, io.Discard)
+		err := app.PackInstall(ctx, req, io.Discard)
 		name := req.Name
 		if name == "" {
 			name = filepath.Base(input)
 		}
-		return packAddedMsg{name: name, err: err}
+		return packInstalledMsg{name: name, err: err}
 	}
 }
 
@@ -290,12 +299,26 @@ func removePack(configDir, name string) tea.Cmd {
 		if err != nil {
 			return packRemovedMsg{name: name, err: err}
 		}
-		// TUI auto-removes seeded profiles without prompting — the user already
+		// TUI auto-removes bundled profiles without prompting — the user already
 		// confirmed the pack removal via the destructive dialog.
-		if len(result.SeededProfiles) > 0 {
-			app.RemoveSeededProfiles(configDir, result.SeededProfiles, io.Discard)
+		if len(result.BundledProfiles) > 0 {
+			app.RemoveBundledProfiles(configDir, result.BundledProfiles, io.Discard)
 		}
 		return packRemovedMsg{name: name, err: nil}
+	}
+}
+
+// approveBundled applies user-approved bundled content categories to updated packs.
+func approveBundled(configDir string, results []app.PackUpdateResult, approved domain.BundledSet) tea.Cmd {
+	return func() tea.Msg {
+		var names []string
+		for _, r := range results {
+			if r.BundledCandidates != nil {
+				names = append(names, r.Name)
+			}
+		}
+		err := app.PackApproveBundled(configDir, names, approved, io.Discard)
+		return bundledApprovedMsg{err: err}
 	}
 }
 
@@ -457,7 +480,7 @@ func installFromSearch(ctx context.Context, configDir, name, profile string) tea
 		if err != nil {
 			return searchInstallMsg{name: name, err: fmt.Errorf("registry lookup for %q: %w", name, err)}
 		}
-		req := app.PackAddRequest{
+		req := app.PackInstallRequest{
 			ConfigDir: configDir,
 			URL:       entry.Repo,
 			SubPath:   entry.Path,
@@ -466,7 +489,7 @@ func installFromSearch(ctx context.Context, configDir, name, profile string) tea
 			Register:  true,
 			Profile:   profile,
 		}
-		err = app.PackAdd(ctx, req, io.Discard)
+		err = app.PackInstall(ctx, req, io.Discard)
 		return searchInstallMsg{name: name, err: err}
 	}
 }

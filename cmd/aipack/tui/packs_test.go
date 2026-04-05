@@ -508,22 +508,21 @@ func TestPacksModel_HelpTextChangesInContentFocus(t *testing.T) {
 	}
 }
 
-func TestPacksTab_AddDialogResult(t *testing.T) {
+func TestPacksTab_InstallDialogResult(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})
 	m.activeTab = tabPacks
 
-	// Simulate dialog result for pack-add.
-	result, cmd := m.Update(dialogResultMsg{id: dialogPackAdd, confirmed: true, value: "/tmp/my-pack"})
+	result, cmd := m.Update(dialogResultMsg{id: dialogPackInstall, confirmed: true, value: "/tmp/my-pack"})
 	rm := result.(rootModel)
 	if rm.dialog != nil {
 		t.Fatal("expected dialog to be cleared after result")
 	}
 	if cmd == nil {
-		t.Fatal("expected addPack command")
+		t.Fatal("expected installPack command")
 	}
-	if !strings.Contains(rm.statusText, "adding") {
-		t.Fatalf("expected status text to mention 'adding', got %q", rm.statusText)
+	if !strings.Contains(rm.statusText, "installing") {
+		t.Fatalf("expected status text to mention 'installing', got %q", rm.statusText)
 	}
 }
 
@@ -548,28 +547,28 @@ func TestPacksTab_RemoveDialogResult(t *testing.T) {
 	}
 }
 
-func TestPackAddedMsg_ReloadsPacks(t *testing.T) {
+func TestPackInstalledMsg_ReloadsPacks(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})
 
-	result, cmd := m.Update(packAddedMsg{name: "new-pack"})
+	result, cmd := m.Update(packInstalledMsg{name: "new-pack"})
 	rm := result.(rootModel)
-	if !strings.Contains(rm.statusText, "added new-pack") {
-		t.Fatalf("expected status text 'added new-pack', got %q", rm.statusText)
+	if !strings.Contains(rm.statusText, "installed new-pack") {
+		t.Fatalf("expected status text 'installed new-pack', got %q", rm.statusText)
 	}
 	if cmd == nil {
 		t.Fatal("expected loadPacks reload command")
 	}
 }
 
-func TestPackAddedMsg_Error(t *testing.T) {
+func TestPackInstalledMsg_Error(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})
 
-	result, _ := m.Update(packAddedMsg{name: "bad-pack", err: fmt.Errorf("not found")})
+	result, _ := m.Update(packInstalledMsg{name: "bad-pack", err: fmt.Errorf("not found")})
 	rm := result.(rootModel)
-	if !strings.Contains(rm.statusText, "add error") {
-		t.Fatalf("expected status text to mention 'add error', got %q", rm.statusText)
+	if !strings.Contains(rm.statusText, "install error") {
+		t.Fatalf("expected status text to mention 'install error', got %q", rm.statusText)
 	}
 }
 

@@ -3,9 +3,11 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/util"
@@ -23,15 +25,21 @@ type PackManifest struct {
 	Prompts       []string `json:"prompts,omitempty"`
 	MCP           MCPPack  `json:"mcp,omitzero"`
 
-	// Profiles lists relative paths to seed profile YAML files within the pack.
-	// When a pack is installed, these profiles are copied to the config directory
-	// if they don't already exist there.
+	// Profiles lists profile IDs discovered from the profiles/ directory.
+	// Each ID corresponds to profiles/<id>.yaml. When a pack is installed
+	// with -w profiles, these are installed to the config profiles directory.
 	Profiles []string `json:"profiles,omitempty"`
 
-	// Registries lists relative paths to registry YAML files within the pack.
-	// On sync, entries from these registries are merged into the user's local
-	// registry, enabling packs to surface related packs for discovery.
+	// Registries lists registry IDs discovered from the registries/ directory.
+	// Each ID corresponds to registries/<id>.yaml. On install with
+	// -w registries, entries are merged into the user's local registry.
 	Registries []string `json:"registries,omitempty"`
+
+	// Extras lists relative paths for bundled assets (scripts, data files,
+	// helper source) that must be preserved through install. These stay in the
+	// pack directory and are referenced via {pack:root} in MCP command arrays
+	// and env values.
+	Extras []string `json:"extras,omitempty"`
 
 	// Configs inventories harness settings files shipped with the pack.
 	// This is used for validation and deterministic settings pack selection.
@@ -90,11 +98,7 @@ func (m PackManifest) ContentIDs(cat domain.PackCategory) []string {
 		return *p
 	}
 	if cat == domain.CategoryMCP {
-		names := make([]string, 0, len(m.MCP.Servers))
-		for n := range m.MCP.Servers {
-			names = append(names, n)
-		}
-		sort.Strings(names)
+		names := slices.Sorted(maps.Keys(m.MCP.Servers))
 		return names
 	}
 	return nil
@@ -139,7 +143,26 @@ func ParsePackManifest(data []byte) (PackManifest, error) {
 	if m.Root == "" {
 		return PackManifest{}, fmt.Errorf("pack manifest root must be set")
 	}
+	// Normalize legacy path-style entries to bare IDs.
+	// Old manifests may contain "profiles/team.yaml" or "registry.yaml";
+	// the current schema expects bare IDs like "team" or "registry".
+	m.Profiles = normalizeIDs(m.Profiles, ".yaml")
+	m.Registries = normalizeIDs(m.Registries, ".yaml")
 	return m, nil
+}
+
+// normalizeIDs converts path-style entries to bare IDs by stripping any
+// directory prefix and the given file extension. Entries that are already
+// bare IDs pass through unchanged.
+func normalizeIDs(entries []string, ext string) []string {
+	if len(entries) == 0 {
+		return entries
+	}
+	for i, e := range entries {
+		e = filepath.Base(e)
+		entries[i] = strings.TrimSuffix(e, ext)
+	}
+	return entries
 }
 
 // ContentPaths returns all file and directory paths declared by the manifest,
@@ -167,8 +190,12 @@ func (m PackManifest) ContentPaths() []string {
 	for name := range m.MCP.Servers {
 		paths = append(paths, filepath.ToSlash(filepath.Join("mcp", name+".json")))
 	}
-	paths = append(paths, m.Profiles...)
-	paths = append(paths, m.Registries...)
+	for _, id := range m.Profiles {
+		paths = append(paths, filepath.ToSlash(filepath.Join("profiles", id+".yaml")))
+	}
+	for _, id := range m.Registries {
+		paths = append(paths, filepath.ToSlash(filepath.Join("registries", id+".yaml")))
+	}
 	for harness, files := range m.Configs.HarnessSettings {
 		for _, f := range files {
 			paths = append(paths, filepath.ToSlash(filepath.Join("configs", harness, f)))
@@ -179,11 +206,103 @@ func (m PackManifest) ContentPaths() []string {
 			paths = append(paths, filepath.ToSlash(filepath.Join("configs", harness, f)))
 		}
 	}
+	for _, ext := range m.Extras {
+		paths = append(paths, filepath.ToSlash(ext))
+	}
 
 	return paths
 }
 
+// ExtrasReservedDirs is the set of top-level directory names that extras
+// entries must not collide with. Shared between validation and extraction.
+var ExtrasReservedDirs = map[string]struct{}{
+	"rules": {}, "agents": {}, "workflows": {}, "skills": {},
+	"mcp": {}, "configs": {}, "prompts": {}, "profiles": {},
+	"registries": {},
+}
+
+// ExtrasStagingName returns the staging-relative path for an extras entry.
+// Leading ".." segments are stripped so that repo-relative extras (e.g.
+// "../shared-scripts") land inside the staging directory as "shared-scripts".
+// Paths without ".." are returned cleaned but otherwise unchanged.
+func ExtrasStagingName(ext string) string {
+	clean := filepath.Clean(ext)
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	i := 0
+	for i < len(parts) && parts[i] == ".." {
+		i++
+	}
+	if i >= len(parts) {
+		return "." // all segments were ".." — degenerate, caught by validation
+	}
+	return strings.Join(parts[i:], "/")
+}
+
+// MaxExtras is the maximum number of extras entries allowed in a manifest.
+const MaxExtras = 50
+
+// ExtrasEntryError describes a validation failure for a single extras entry.
+type ExtrasEntryError struct {
+	Path    string
+	Message string
+}
+
+func (e ExtrasEntryError) Error() string {
+	return fmt.Sprintf("extras path %q: %s", e.Path, e.Message)
+}
+
+// ExtrasValidator accumulates state across multiple ValidateExtrasEntry calls
+// to detect cross-entry issues (duplicates, prefix containment).
+type ExtrasValidator struct {
+	seenStagingNames map[string]string // stagingName → original extras path
+}
+
+// NewExtrasValidator creates a validator for a batch of extras entries.
+func NewExtrasValidator() *ExtrasValidator {
+	return &ExtrasValidator{seenStagingNames: map[string]string{}}
+}
+
+// ValidateEntry checks a single extras entry for structural validity:
+// empty/dot paths, absolute paths, staging name collisions with reserved dirs,
+// duplicate staging names, and prefix containment. It does NOT check filesystem
+// existence or resolve symlinks — those require a concrete root and belong in
+// the caller.
+//
+// Returns the computed staging name and nil on success, or an ExtrasEntryError.
+func (v *ExtrasValidator) ValidateEntry(ext string) (string, error) {
+	clean := filepath.Clean(ext)
+	if clean == "" || clean == "." {
+		return "", ExtrasEntryError{Path: ext, Message: "must not be empty or '.'"}
+	}
+	if filepath.IsAbs(ext) || strings.HasPrefix(ext, "/") {
+		return "", ExtrasEntryError{Path: ext, Message: "must be relative"}
+	}
+	staging := ExtrasStagingName(ext)
+	if staging == "." || staging == "" {
+		return "", ExtrasEntryError{Path: ext, Message: "resolves to empty staging name"}
+	}
+	top := strings.SplitN(filepath.ToSlash(staging), "/", 2)[0]
+	if _, ok := ExtrasReservedDirs[top]; ok {
+		return "", ExtrasEntryError{Path: ext, Message: fmt.Sprintf("conflicts with standard content directory %q", top)}
+	}
+	if prev, dup := v.seenStagingNames[staging]; dup {
+		return "", ExtrasEntryError{Path: ext, Message: fmt.Sprintf("collides with another extras entry %q (staging name %q)", prev, staging)}
+	}
+	// Prefix containment: one entry nests inside another.
+	stagingSlash := filepath.ToSlash(staging) + "/"
+	for prevStaging, prevExt := range v.seenStagingNames {
+		prevSlash := filepath.ToSlash(prevStaging) + "/"
+		if strings.HasPrefix(stagingSlash, prevSlash) || strings.HasPrefix(prevSlash, stagingSlash) {
+			return "", ExtrasEntryError{Path: ext, Message: fmt.Sprintf("overlaps with %q (prefix containment)", prevExt)}
+		}
+	}
+	v.seenStagingNames[staging] = ext
+	return staging, nil
+}
+
 // SavePackManifest writes a pack manifest to disk as formatted JSON.
+// The manifest describes what content exists on disk. User preferences
+// (approved/declined categories) are stored in sync-config, not here.
 func SavePackManifest(path string, m PackManifest) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

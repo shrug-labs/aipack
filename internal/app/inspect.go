@@ -1,14 +1,16 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -74,13 +76,15 @@ func InspectActive(ctx context.Context, eng *engine.Engine, configDir string, re
 // against the ledger, returning a complete file inventory.
 func InspectHarness(ctx context.Context, eng *engine.Engine, req InspectRequest, reg *harness.Registry) (InspectResult, error) {
 	home := req.Home
+	configDir := req.ConfigDir
+	configDir = config.FallbackConfigDir(configDir, home)
 	var result InspectResult
 
 	// Build a merged ledger from all per-harness ledgers.
 	lg := domain.NewLedger()
 	var firstLedgerPath string
 	for _, hid := range req.Harnesses {
-		lp := engine.LedgerPathForScope(req.Scope, req.ProjectDir, home, hid)
+		lp := engine.LedgerPath(configDir, req.Scope, req.ProjectDir, hid)
 		if firstLedgerPath == "" {
 			firstLedgerPath = lp
 		}
@@ -322,12 +326,11 @@ func InspectHarness(ctx context.Context, eng *engine.Engine, req InspectRequest,
 	}
 
 	// Sort: modified/conflict/settings first, then untracked, then clean.
-	sort.Slice(result.Files, func(i, j int) bool {
-		si, sj := StateSortKey(result.Files[i].State), StateSortKey(result.Files[j].State)
-		if si != sj {
-			return si < sj
+	slices.SortFunc(result.Files, func(a, b HarnessFile) int {
+		if c := cmp.Compare(StateSortKey(a.State), StateSortKey(b.State)); c != 0 {
+			return c
 		}
-		return result.Files[i].HarnessPath < result.Files[j].HarnessPath
+		return cmp.Compare(a.HarnessPath, b.HarnessPath)
 	})
 
 	return result, nil

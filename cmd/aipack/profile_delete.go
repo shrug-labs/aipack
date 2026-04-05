@@ -10,23 +10,24 @@ import (
 )
 
 type ProfileDeleteCmd struct {
-	Name      string `arg:"" help:"Profile name to delete" predictor:"profile"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	Name string `arg:"" help:"Profile name to delete" predictor:"profile"`
 }
 
 func (c *ProfileDeleteCmd) Help() string {
-	return `Deletes a profile YAML file from ~/.config/aipack/profiles/. If the deleted
+	return fmt.Sprintf(`Deletes a profile YAML file from %s. If the deleted
 profile is the active profile, the active profile setting is cleared.
 
 Examples:
   # Delete a profile
   aipack profile delete staging
 
-See also: profile create, profile list`
+See also: profile create, profile list`,
+		configPathDisplay("profiles"),
+	)
 }
 
 func (c *ProfileDeleteCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

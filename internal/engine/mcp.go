@@ -2,7 +2,8 @@ package engine
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -78,11 +79,7 @@ func enabledServers(packs []config.ResolvedPack) []string {
 			seen[name] = struct{}{}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
+	out := slices.Sorted(maps.Keys(seen))
 	return out
 }
 
@@ -122,7 +119,7 @@ func PrefixToolList(server string, tools []string) []string {
 			out = append(out, p)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -130,8 +127,7 @@ func sortedCopy(in []string) []string {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]string, len(in))
-	copy(out, in)
-	sort.Strings(out)
+	out := slices.Clone(in)
+	slices.Sort(out)
 	return out
 }

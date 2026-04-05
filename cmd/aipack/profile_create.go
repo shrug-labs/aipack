@@ -10,12 +10,11 @@ import (
 )
 
 type ProfileCreateCmd struct {
-	Name      string `arg:"" help:"Profile name to create"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
+	Name string `arg:"" help:"Profile name to create"`
 }
 
 func (c *ProfileCreateCmd) Help() string {
-	return `Creates a new empty profile YAML file under ~/.config/aipack/profiles/.
+	return fmt.Sprintf(`Creates a new empty profile YAML file under %s.
 The profile is initialized with the current schema version and an empty
 packs list. Use 'pack enable' to add packs to it.
 
@@ -23,11 +22,13 @@ Examples:
   # Create a new profile
   aipack profile create staging
 
-See also: profile delete, profile list, pack enable`
+See also: profile delete, profile list, pack enable`,
+		configPathDisplay("profiles"),
+	)
 }
 
 func (c *ProfileCreateCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

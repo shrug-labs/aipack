@@ -13,8 +13,7 @@ import (
 )
 
 type CleanCmd struct {
-	ConfigDir  string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Scope      string  `help:"Where to clean: 'project' cleans project directory, 'global' cleans ~/ config locations (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
+	Scope      string  `help:"Where to clean: 'project' cleans project directory, 'global' cleans ~/ config locations (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
 	ProjectDir *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
 	Yes        bool    `help:"Skip confirmation prompt and proceed immediately"`
 	DryRun     bool    `help:"Preview what would be removed without deleting anything" name:"dry-run"`
@@ -29,7 +28,7 @@ harness settings (model choice, provider config, etc.) by only deleting files
 tracked in the sync ledger. Prompts for confirmation unless --yes is set.
 
 Examples:
-  # Clean managed files from the current project directory
+  # Clean managed files from all harness locations (default: global scope)
   aipack clean
 
   # Preview what would be removed without deleting
@@ -54,7 +53,8 @@ func (c *CleanCmd) Validate() error {
 func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 	// Load sync-config for scope and harness resolution.
 	var syncCfg config.SyncConfig
-	if cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, config.HomeDir()); err == nil {
+	cfgDir, cfgDirErr := cmdutil.ResolveConfigDir(g.ConfigDir, config.HomeDir())
+	if cfgDirErr == nil {
 		if sc, serr := config.LoadSyncConfig(config.SyncConfigPath(cfgDir)); serr == nil {
 			syncCfg = sc
 		}
@@ -91,6 +91,7 @@ func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 	eng := engine.New(nil, nil)
 	if err := app.RunClean(ctx, eng, app.CleanRequest{
 		TargetSpec: app.TargetSpec{
+			ConfigDir:  cfgDir,
 			Scope:      scope,
 			ProjectDir: projectAbs,
 			Harnesses:  harnesses,

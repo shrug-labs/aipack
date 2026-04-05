@@ -20,10 +20,10 @@ type saveEnv struct {
 	harnesses  []domain.Harness
 }
 
-func (c *SaveCmd) resolveSaveEnv(optionalHarness bool) (saveEnv, error) {
+func (c *SaveCmd) resolveSaveEnv(configDir string, optionalHarness bool) (saveEnv, error) {
 	// Load sync-config for scope and harness resolution.
 	var syncCfg config.SyncConfig
-	if cfgDir, err := cmdutil.ResolveConfigDir(c.ConfigDir, config.HomeDir()); err == nil {
+	if cfgDir, err := cmdutil.ResolveConfigDir(configDir, config.HomeDir()); err == nil {
 		if sc, serr := config.LoadSyncConfig(config.SyncConfigPath(cfgDir)); serr == nil {
 			syncCfg = sc
 		}
@@ -63,14 +63,13 @@ func (c *SaveCmd) resolveSaveEnv(optionalHarness bool) (saveEnv, error) {
 }
 
 type SaveCmd struct {
-	Scope       string  `help:"Where to capture from: 'project' reads project directory, 'global' reads ~/ config locations (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
+	Scope       string  `help:"Where to capture from: 'project' reads project directory, 'global' reads ~/ config locations (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
 	ProjectDir  *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
 	Harness     string  `help:"Harness to save from: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness" predictor:"harness"`
 	ToPack      string  `help:"Save content to this installed pack (creates pack if it does not exist)" name:"to-pack" predictor:"pack"`
 	Types       string  `help:"Content types to save: rules,agents,workflows,skills,mcp,settings (comma-separated; default: all types)" name:"types"`
 	Profile     string  `help:"Profile name for round-trip mode (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string  `help:"Direct path to a profile YAML file for round-trip mode" name:"profile-path" type:"path"`
-	ConfigDir   string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	Force       bool    `help:"Auto-approve settings saves and overwrite file conflicts"`
 	DryRun      bool    `help:"Preview changes without writing files" name:"dry-run"`
 }
@@ -131,13 +130,13 @@ func (c *SaveCmd) Run(ctx context.Context, g *Globals) error {
 }
 
 func (c *SaveCmd) runRoundTrip(ctx context.Context, g *Globals) error {
-	loaded, code := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
+	loaded, code := loadProfile(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
 	if code >= 0 {
 		return ExitError{Code: code}
 	}
 	cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
 
-	env, err := c.resolveSaveEnv(false)
+	env, err := c.resolveSaveEnv(g.ConfigDir, false)
 	if err != nil {
 		fmt.Fprintln(g.Stderr, "ERROR:", err)
 		return ExitError{Code: cmdutil.ExitUsage}
@@ -151,6 +150,7 @@ func (c *SaveCmd) runRoundTrip(ctx context.Context, g *Globals) error {
 	eng := engine.New(nil, nil)
 	result, err := app.RunRoundTrip(ctx, eng, app.RoundTripRequest{
 		TargetSpec: app.TargetSpec{
+			ConfigDir:  loaded.configDir,
 			Scope:      env.scope,
 			ProjectDir: env.projectDir,
 			Harnesses:  env.harnesses,
@@ -208,12 +208,12 @@ func (c *SaveCmd) runRoundTrip(ctx context.Context, g *Globals) error {
 }
 
 func (c *SaveCmd) runToPack(ctx context.Context, g *Globals) error {
-	env, err := c.resolveSaveEnv(true)
+	env, err := c.resolveSaveEnv(g.ConfigDir, true)
 	if err != nil {
 		fmt.Fprintln(g.Stderr, "ERROR:", err)
 		return ExitError{Code: cmdutil.ExitUsage}
 	}
-	configDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	configDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

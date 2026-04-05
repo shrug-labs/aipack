@@ -339,6 +339,196 @@ func TestResolve_HasContent(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// User story tests
+// ---------------------------------------------------------------------------
+
+// "My pack ships a wrapper script in extras/. The MCP server config references
+// it via {pack:root}. After Engine.Resolve, the command has the absolute path."
+func TestResolve_MCPPackRootExpandsToAbsolutePath(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "packs", "wrapped")
+	for _, sub := range []string{"mcp", "wrappers"} {
+		os.MkdirAll(filepath.Join(packDir, sub), 0o755)
+	}
+	writeManifest(t, packDir, config.PackManifest{
+		SchemaVersion: 1, Name: "wrapped", Version: "1", Root: ".",
+		Extras: []string{"wrappers"},
+		MCP:    config.MCPPack{Servers: map[string]config.MCPDefaults{"proxy": {}}},
+	})
+	os.WriteFile(filepath.Join(packDir, "wrappers", "proxy.py"),
+		[]byte("#!/usr/bin/env python3\n"), 0o644)
+	os.WriteFile(filepath.Join(packDir, "mcp", "proxy.json"), []byte(`{
+		"name": "proxy",
+		"command": ["python3", "{pack:root}/wrappers/proxy.py", "--port", "8080"]
+	}`), 0o644)
+
+	profile, warnings, err := eng.Resolve(config.ProfileConfig{
+		SchemaVersion: config.ProfileSchemaVersion,
+		Packs: []config.PackEntry{{
+			Name: "wrapped",
+			MCP:  map[string]config.MCPServerConfig{"proxy": {Enabled: config.BoolPtr(true)}},
+		}},
+	}, filepath.Join(dir, "p.yaml"), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range warnings {
+		t.Errorf("unexpected warning: %s: %s", w.Field, w.Message)
+	}
+	if len(profile.MCPServers) != 1 {
+		t.Fatalf("got %d servers, want 1", len(profile.MCPServers))
+	}
+	// The command should contain the absolute pack path, not the {pack:root} token.
+	cmd := profile.MCPServers[0].Command
+	wantArg := filepath.Join(packDir, "wrappers", "proxy.py")
+	if len(cmd) < 2 || cmd[1] != wantArg {
+		t.Fatalf("Command = %v, want [python3 %s --port 8080]", cmd, wantArg)
+	}
+}
+
+// "My profile sets params.pypi_url. My MCP server config uses {params.pypi_url}
+// in its command. After resolve, the URL is expanded."
+func TestResolve_ProfileParamsExpandInMCPCommand(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "packs", "parameterized")
+	os.MkdirAll(filepath.Join(packDir, "mcp"), 0o755)
+	writeManifest(t, packDir, config.PackManifest{
+		SchemaVersion: 1, Name: "parameterized", Version: "1", Root: ".",
+		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{"pypi": {}}},
+	})
+	os.WriteFile(filepath.Join(packDir, "mcp", "pypi.json"), []byte(`{
+		"name": "pypi",
+		"command": ["uv", "run", "--default-index", "{params.pypi_url}", "pypi-mcp"],
+		"env": {"INDEX_URL": "{params.pypi_url}"}
+	}`), 0o644)
+
+	profile, _, err := eng.Resolve(config.ProfileConfig{
+		SchemaVersion: config.ProfileSchemaVersion,
+		Params:        map[string]string{"pypi_url": "https://pypi.internal.example.com/simple"},
+		Packs: []config.PackEntry{{
+			Name: "parameterized",
+			MCP:  map[string]config.MCPServerConfig{"pypi": {Enabled: config.BoolPtr(true)}},
+		}},
+	}, filepath.Join(dir, "p.yaml"), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.MCPServers) != 1 {
+		t.Fatalf("got %d servers, want 1", len(profile.MCPServers))
+	}
+	srv := profile.MCPServers[0]
+	wantURL := "https://pypi.internal.example.com/simple"
+	if srv.Command[3] != wantURL {
+		t.Errorf("Command[3] = %q, want %q", srv.Command[3], wantURL)
+	}
+	if srv.Env["INDEX_URL"] != wantURL {
+		t.Errorf("Env[INDEX_URL] = %q, want %q", srv.Env["INDEX_URL"], wantURL)
+	}
+}
+
+// "My profile has two MCP servers. One requires GITHUB_TOKEN (not set).
+// The other is self-contained. I expect 1 server + 1 warning, not a crash."
+func TestResolve_UnresolvableEnvSkipsServerOthersSurvive(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "packs", "mixed-env")
+	os.MkdirAll(filepath.Join(packDir, "mcp"), 0o755)
+	writeManifest(t, packDir, config.PackManifest{
+		SchemaVersion: 1, Name: "mixed-env", Version: "1", Root: ".",
+		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{
+			"needs-token": {},
+			"standalone":  {},
+		}},
+	})
+	os.WriteFile(filepath.Join(packDir, "mcp", "needs-token.json"), []byte(`{
+		"name": "needs-token",
+		"command": ["mcp-github"],
+		"env": {"GITHUB_TOKEN": "{env:AIPACK_TEST_NONEXISTENT_VAR_12345}"}
+	}`), 0o644)
+	os.WriteFile(filepath.Join(packDir, "mcp", "standalone.json"), []byte(`{
+		"name": "standalone",
+		"command": ["echo", "hello"]
+	}`), 0o644)
+
+	profile, warnings, err := eng.Resolve(config.ProfileConfig{
+		SchemaVersion: config.ProfileSchemaVersion,
+		Packs: []config.PackEntry{{
+			Name: "mixed-env",
+			MCP: map[string]config.MCPServerConfig{
+				"needs-token": {Enabled: config.BoolPtr(true)},
+				"standalone":  {Enabled: config.BoolPtr(true)},
+			},
+		}},
+	}, filepath.Join(dir, "p.yaml"), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.MCPServers) != 1 {
+		t.Fatalf("got %d servers, want 1 (standalone only)", len(profile.MCPServers))
+	}
+	if profile.MCPServers[0].Name != "standalone" {
+		t.Fatalf("surviving server = %q, want standalone", profile.MCPServers[0].Name)
+	}
+	// Should have exactly one warning about the skipped server.
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mcp.needs-token" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning for skipped needs-token server, got %v", warnings)
+	}
+}
+
+// "My pack.json leaves rules as nil but agents as []. On disk, both dirs
+// have .md files. Rules should be auto-discovered; agents should not."
+func TestResolve_DiscoveryNilPopulatesEmptyArrayOpts(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "packs", "discovery")
+	for _, sub := range []string{"rules", "agents"} {
+		os.MkdirAll(filepath.Join(packDir, sub), 0o755)
+	}
+	// Manifest: Rules nil (discover), Agents empty (also discover — empty
+	// arrays trigger auto-discovery the same as nil/omitted).
+	manifest := config.PackManifest{
+		SchemaVersion: 1, Name: "discovery", Version: "1", Root: ".",
+		Agents: []string{}, // empty = also triggers discovery
+		MCP:    config.MCPPack{Servers: map[string]config.MCPDefaults{}},
+	}
+	writeManifest(t, packDir, manifest)
+
+	// Both dirs have content on disk.
+	os.WriteFile(filepath.Join(packDir, "rules", "discovered.md"),
+		[]byte("---\nname: discovered\n---\nbody\n"), 0o644)
+	os.WriteFile(filepath.Join(packDir, "agents", "also-discovered.md"),
+		[]byte("---\nname: also-discovered\ndescription: d\ntools: [read]\n---\nbody\n"), 0o644)
+
+	profile, _, err := eng.Resolve(config.ProfileConfig{
+		SchemaVersion: config.ProfileSchemaVersion,
+		Packs:         []config.PackEntry{{Name: "discovery"}},
+	}, filepath.Join(dir, "p.yaml"), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := profile.AllRules()
+	if len(rules) != 1 || rules[0].Name != "discovered" {
+		t.Fatalf("AllRules() = %v, want [discovered]", rules)
+	}
+	agents := profile.AllAgents()
+	if len(agents) != 1 || agents[0].Name != "also-discovered" {
+		t.Fatalf("AllAgents() = %v, want [also-discovered] (empty array triggers discovery)", agents)
+	}
+}
+
 func writeManifest(t *testing.T, packDir string, m config.PackManifest) {
 	t.Helper()
 	b, err := json.MarshalIndent(m, "", "  ")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/engine"
 )
 
@@ -26,9 +27,10 @@ func RunRestore(eng *engine.Engine, req RestoreRequest) (RestoreResult, error) {
 	if stderr == nil {
 		stderr = io.Discard
 	}
+	configDir := config.FallbackConfigDir(req.ConfigDir, req.Home)
 	var result RestoreResult
 	for _, harnessID := range req.Harnesses {
-		ledgerPath := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, harnessID)
+		ledgerPath := engine.LedgerPath(configDir, req.Scope, req.ProjectDir, harnessID)
 		restored, err := eng.RestoreFromCache(ledgerPath, req.FilterHarness, req.DryRun)
 		if err != nil {
 			return RestoreResult{}, err

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -198,7 +198,7 @@ func (e *Engine) StaleCandidatesWithLedger(plan domain.Plan, managedRoots []stri
 		}
 		candidates = append(candidates, k)
 	}
-	sort.Strings(candidates)
+	slices.Sort(candidates)
 	return candidates, nil
 }
 

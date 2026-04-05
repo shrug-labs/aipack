@@ -61,6 +61,20 @@ On Windows (PowerShell):
 irm https://raw.githubusercontent.com/shrug-labs/aipack/main/install.ps1 | iex
 ```
 
+On Windows, the PowerShell installer writes `aipack.exe` to `~/.local/bin`.
+
+If you already have Go installed and prefer a Go-native install path:
+
+```powershell
+go install github.com/shrug-labs/aipack/cmd/aipack@latest
+```
+
+Set `GOBIN` to `$HOME\.local\bin` if you want `go install` to use the same destination as the installer:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable('GOBIN', "$HOME\.local\bin", 'User')
+```
+
 The installers detect your platform, download the matching release binary, verify
 `SHA256SUMS`, install `aipack`, and print the installed version.
 
@@ -93,7 +107,7 @@ cd aipack
 make install    # builds and copies to ~/.local/bin/aipack
 ```
 
-Building from source requires Go 1.24+.
+Building from source requires Go 1.25+.
 
 ### First Use
 
@@ -119,8 +133,8 @@ Packs can bundle profiles, registry entries, and dependency declarations. When
 a pack includes these, the install path bootstraps your entire agent environment:
 
 ```bash
-# 1. Install a pack. --seed applies its bundled profiles and registry entries.
-aipack pack install --url https://github.com/org/my-pack.git --seed
+# 1. Install a pack. -w all accepts its bundled profiles, registries, and extras.
+aipack pack install --url https://github.com/org/my-pack.git -w all
 
 # 2. Activate a profile and install its dependency packs from the registry.
 aipack profile set frontend-dev --install
@@ -151,7 +165,7 @@ harness.
 
 A **pack** is a directory of agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — with a `pack.json` manifest. Content is markdown with YAML frontmatter. Drop files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `mcp/`) and the sync engine discovers them automatically. Any git repository can also be consumed as a pack by mapping its directories to content types — no `pack.json` required in the source. See [Installing Packs](docs/installing-packs.md).
 
-**Profiles** control which packs to sync and how — content filtering, parameter expansion, per-pack content overrides, context-based scoping. Packs can bundle profiles so setup is `pack install --seed` + `profile set` + `sync`. See [Profiles](docs/profiles.md) for the full guide.
+**Profiles** control which packs to sync and how — content filtering, parameter expansion, per-pack content overrides, context-based scoping. Packs can bundle profiles so setup is `pack install -w all` + `profile set` + `sync`. See [Profiles](docs/profiles.md) for the full guide.
 
 **Sync** resolves the active profile and writes to harness-native locations. Non-destructive by default — user modifications are detected via content digest and shown as diffs rather than overwritten.
 

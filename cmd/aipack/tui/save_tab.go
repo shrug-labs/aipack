@@ -1,11 +1,12 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -100,10 +101,6 @@ func (m saveTabModel) Update(msg tea.Msg) (saveTabModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case harnessDetectedMsg:
 		m.loading = false
-		if msg.err != nil {
-			m.loadErr = msg.err.Error()
-			return m, nil
-		}
 		m.loadErr = ""
 		m.availableHarnesses = msg.harnesses
 		m.harnessCursor = 0
@@ -454,8 +451,8 @@ func buildSortedIndices(candidates []app.SaveCandidate) []int {
 	for i := range indices {
 		indices[i] = i
 	}
-	sort.Slice(indices, func(a, b int) bool {
-		return app.StateSortKey(candidates[indices[a]].State) < app.StateSortKey(candidates[indices[b]].State)
+	slices.SortFunc(indices, func(a, b int) int {
+		return cmp.Compare(app.StateSortKey(candidates[a].State), app.StateSortKey(candidates[b].State))
 	})
 	return indices
 }
@@ -597,7 +594,7 @@ func (m saveTabModel) viewHarness() string {
 		if i == m.harnessCursor {
 			label = selectedStyle.Render(label)
 		}
-		lb.WriteString(fmt.Sprintf("%s%s\n", cursor, label))
+		fmt.Fprintf(&lb, "%s%s\n", cursor, label)
 	}
 
 	// Right: detail for highlighted harness.
@@ -611,7 +608,7 @@ func (m saveTabModel) viewHarness() string {
 		rb.WriteString(desc + "\n\n")
 		rb.WriteString(dimStyle.Render("Supported content:") + "\n")
 		for _, cat := range domain.AllPackCategories() {
-			rb.WriteString(fmt.Sprintf("  %s\n", cat.Label()))
+			fmt.Fprintf(&rb, "  %s\n", cat.Label())
 		}
 		rb.WriteString("  Settings\n")
 	}
@@ -648,7 +645,7 @@ func (m saveTabModel) viewVectors() string {
 		if i == m.vectorCursor {
 			label = selectedStyle.Render(label)
 		}
-		lb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, check, label))
+		fmt.Fprintf(&lb, "%s%s %s\n", cursor, check, label)
 	}
 
 	// Right: detail for highlighted vector.
@@ -667,7 +664,7 @@ func (m saveTabModel) viewVectors() string {
 		}
 	}
 	rb.WriteString("\n" + dimStyle.Render("─── Summary ───") + "\n")
-	rb.WriteString(fmt.Sprintf("%d of %d selected for discovery\n", selCount, len(m.availableVectors)))
+	fmt.Fprintf(&rb, "%d of %d selected for discovery\n", selCount, len(m.availableVectors))
 
 	sep := dimStyle.Render(" │ ")
 	return m.viewBreadcrumb() + lipgloss.JoinHorizontal(lipgloss.Top,
@@ -807,28 +804,28 @@ func (m saveTabModel) viewFileDetail(width int) string {
 
 	c := m.candidates[m.sortedIndices[m.fileCursor]]
 	name := saveCandidateLabel(c.HarnessFile)
-	sb.WriteString(fmt.Sprintf("%s %s\n\n", fileStateIcon(c.State), name))
-	sb.WriteString(fmt.Sprintf("State:    %s\n", fileStateLabel(c.State)))
-	sb.WriteString(fmt.Sprintf("Scope:    %s\n", scopeLabel(c.Scope)))
-	sb.WriteString(fmt.Sprintf("Category: %s\n", c.Category.Label()))
+	fmt.Fprintf(&sb, "%s %s\n\n", fileStateIcon(c.State), name)
+	fmt.Fprintf(&sb, "State:    %s\n", fileStateLabel(c.State))
+	fmt.Fprintf(&sb, "Scope:    %s\n", scopeLabel(c.Scope))
+	fmt.Fprintf(&sb, "Category: %s\n", c.Category.Label())
 	if c.PackName != "" {
-		sb.WriteString(fmt.Sprintf("Pack:     %s\n", c.PackName))
+		fmt.Fprintf(&sb, "Pack:     %s\n", c.PackName)
 	} else {
-		sb.WriteString(fmt.Sprintf("Pack:     %s\n", dimStyle.Render("(none)")))
+		fmt.Fprintf(&sb, "Pack:     %s\n", dimStyle.Render("(none)"))
 	}
-	sb.WriteString(fmt.Sprintf("Size:     %s\n", formatSize(c.Size)))
+	fmt.Fprintf(&sb, "Size:     %s\n", formatSize(c.Size))
 	pathLabel := "Path"
 	if c.Category == domain.CategoryMCP {
 		pathLabel = "Config"
 	}
-	sb.WriteString(fmt.Sprintf("%-9s %s\n", pathLabel+":", dimStyle.Render(shortPath(c.HarnessPath))))
-	sb.WriteString(fmt.Sprintf("Selected: %v\n", c.Selected))
+	fmt.Fprintf(&sb, "%-9s %s\n", pathLabel+":", dimStyle.Render(shortPath(c.HarnessPath)))
+	fmt.Fprintf(&sb, "Selected: %v\n", c.Selected)
 
 	// Summary.
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("─── Summary ───") + "\n")
 	counts := m.stateCounts
-	sb.WriteString(fmt.Sprintf("Total: %d  Selected: %d\n", len(m.candidates), m.selCount))
+	fmt.Fprintf(&sb, "Total: %d  Selected: %d\n", len(m.candidates), m.selCount)
 	for _, pair := range []struct {
 		s app.FileState
 		l string
@@ -840,7 +837,7 @@ func (m saveTabModel) viewFileDetail(width int) string {
 		{app.FileClean, "Clean"},
 	} {
 		if n := counts[pair.s]; n > 0 {
-			sb.WriteString(fmt.Sprintf("  %s %s: %d\n", fileStateIcon(pair.s), pair.l, n))
+			fmt.Fprintf(&sb, "  %s %s: %d\n", fileStateIcon(pair.s), pair.l, n)
 		}
 	}
 
@@ -866,7 +863,7 @@ func (m saveTabModel) viewDestPack() string {
 		if i == m.packCursor {
 			label = selectedStyle.Render(label)
 		}
-		sb.WriteString(fmt.Sprintf("%s%s\n", cursor, label))
+		fmt.Fprintf(&sb, "%s%s\n", cursor, label)
 	}
 	return sb.String()
 }
@@ -885,28 +882,28 @@ func (m saveTabModel) viewResult() string {
 
 	r := m.result
 	if r.PackCreated {
-		sb.WriteString(fmt.Sprintf("Created new pack: %s\n\n", selectedStyle.Render(m.destPackName)))
+		fmt.Fprintf(&sb, "Created new pack: %s\n\n", selectedStyle.Render(m.destPackName))
 	} else {
-		sb.WriteString(fmt.Sprintf("Saved to pack: %s\n\n", selectedStyle.Render(m.destPackName)))
+		fmt.Fprintf(&sb, "Saved to pack: %s\n\n", selectedStyle.Render(m.destPackName))
 	}
 
 	if len(r.SavedFiles) > 0 {
-		sb.WriteString(fmt.Sprintf("Saved %d file(s):\n", len(r.SavedFiles)))
+		fmt.Fprintf(&sb, "Saved %d file(s):\n", len(r.SavedFiles))
 		for _, f := range r.SavedFiles {
-			sb.WriteString(fmt.Sprintf("  %s → %s\n", dimStyle.Render(filepath.Base(f.HarnessPath)), dimStyle.Render(shortPath(f.PackPath))))
+			fmt.Fprintf(&sb, "  %s → %s\n", dimStyle.Render(filepath.Base(f.HarnessPath)), dimStyle.Render(shortPath(f.PackPath)))
 		}
 	}
 	if len(r.Conflicts) > 0 {
-		sb.WriteString(fmt.Sprintf("\n%s %d conflict(s) skipped (use --force to override):\n",
-			fileStateIcon(app.FileConflict), len(r.Conflicts)))
+		fmt.Fprintf(&sb, "\n%s %d conflict(s) skipped (use --force to override):\n",
+			fileStateIcon(app.FileConflict), len(r.Conflicts))
 		for _, c := range r.Conflicts {
-			sb.WriteString(fmt.Sprintf("  %s\n", filepath.Base(c.HarnessPath)))
+			fmt.Fprintf(&sb, "  %s\n", filepath.Base(c.HarnessPath))
 		}
 	}
 	if len(r.SecretFindings) > 0 {
-		sb.WriteString(fmt.Sprintf("\n%s Secret findings:\n", errorStyle.Render("!")))
+		fmt.Fprintf(&sb, "\n%s Secret findings:\n", errorStyle.Render("!"))
 		for _, f := range r.SecretFindings {
-			sb.WriteString(fmt.Sprintf("  %s\n", f))
+			fmt.Fprintf(&sb, "  %s\n", f)
 		}
 	}
 

@@ -289,12 +289,12 @@ func (m searchTabModel) View() string {
 			line := selectedStyle.Render(prefix+kind+"  "+pack+"  "+r.Name) + "  " + installedMark
 			sb.WriteString(line + "\n")
 		} else {
-			sb.WriteString(fmt.Sprintf("%s%s  %s  %s  %s\n",
+			fmt.Fprintf(&sb, "%s%s  %s  %s  %s\n",
 				prefix,
 				searchKindStyle(r.Kind).Render(kind),
 				dimStyle.Render(pack),
 				r.Name,
-				installedMark))
+				installedMark)
 		}
 		// Show body snippet on a second line when available.
 		if r.Snippet != "" {

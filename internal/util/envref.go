@@ -1,8 +1,10 @@
 package util
 
 import (
+	"cmp"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -64,15 +66,8 @@ func WalkParamRefs(s string, fn func(ref ParamRef) error) error {
 // paramRefPrefixesByLength is ParamRefPrefixes sorted longest-first for
 // unambiguous matching. "{params." must be tried before "{param.".
 var paramRefPrefixesByLength = func() []string {
-	sorted := make([]string, len(ParamRefPrefixes))
-	copy(sorted, ParamRefPrefixes)
-	for i := range len(sorted) {
-		for j := i + 1; j < len(sorted); j++ {
-			if len(sorted[j]) > len(sorted[i]) {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	sorted := slices.Clone(ParamRefPrefixes)
+	slices.SortFunc(sorted, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
 	return sorted
 }()
 

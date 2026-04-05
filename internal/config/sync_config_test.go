@@ -120,6 +120,59 @@ func TestSaveSyncConfig_ContentPathsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveSyncConfig_PrefsRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sync-config.yaml")
+
+	cfg := SyncConfig{SchemaVersion: SyncConfigSchemaVersion}
+	cfg.InstalledPacks = map[string]InstalledPackMeta{
+		"prefs-pack": {
+			Origin:   "https://example.com/repo.git",
+			Method:   MethodClone,
+			Approved: []domain.BundledCategory{"rules", "skills", "profiles"},
+			Declined: []domain.BundledCategory{"registries", "extras"},
+		},
+		"no-prefs": {
+			Origin: "/local/path",
+			Method: MethodCopy,
+			// Approved and Declined intentionally nil (pre-preference pack).
+		},
+	}
+	if err := SaveSyncConfig(path, cfg); err != nil {
+		t.Fatalf("SaveSyncConfig: %v", err)
+	}
+
+	loaded, err := LoadSyncConfig(path)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+
+	// Pack with preferences.
+	m := loaded.InstalledPacks["prefs-pack"]
+	if len(m.Approved) != 3 {
+		t.Fatalf("approved count = %d, want 3; got %v", len(m.Approved), m.Approved)
+	}
+	if m.Approved[0] != "rules" || m.Approved[1] != "skills" || m.Approved[2] != "profiles" {
+		t.Fatalf("approved = %v", m.Approved)
+	}
+	if len(m.Declined) != 2 {
+		t.Fatalf("declined count = %d, want 2; got %v", len(m.Declined), m.Declined)
+	}
+	if m.Declined[0] != "registries" || m.Declined[1] != "extras" {
+		t.Fatalf("declined = %v", m.Declined)
+	}
+
+	// Pre-preference pack (no approved/declined).
+	m2 := loaded.InstalledPacks["no-prefs"]
+	if m2.Approved != nil {
+		t.Fatalf("expected nil Approved for pre-preference pack, got %v", m2.Approved)
+	}
+	if m2.Declined != nil {
+		t.Fatalf("expected nil Declined for pre-preference pack, got %v", m2.Declined)
+	}
+}
+
 func TestLoadSyncConfig_NoInstalledPacks(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sync-config.yaml")

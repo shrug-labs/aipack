@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -264,11 +265,7 @@ func parseMCPJSON(servers map[string]domain.MCPServer, b []byte) []domain.Warnin
 	if err := json.Unmarshal(serverBytes, &raw); err != nil {
 		return []domain.Warning{{Message: fmt.Sprintf("failed to parse .mcp.json servers: %v", err)}}
 	}
-	names := make([]string, 0, len(raw))
-	for name := range raw {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(raw))
 	for _, name := range names {
 		var entry struct {
 			Type    string            `json:"type"`
@@ -326,8 +323,8 @@ func parseSettingsPermissions(servers map[string]domain.MCPServer, allowed map[s
 		}
 		allowed[serverName] = append(allowed[serverName], toolName)
 	}
-	for _, name := range sortedPermissionServerKeys(allowed) {
-		sort.Strings(allowed[name])
+	for _, name := range slices.Sorted(maps.Keys(allowed)) {
+		slices.Sort(allowed[name])
 	}
 	for _, perm := range root.Permissions.Deny {
 		serverName, toolName, ok := parseMCPPermission(perm)
@@ -337,7 +334,7 @@ func parseSettingsPermissions(servers map[string]domain.MCPServer, allowed map[s
 		srv := servers[serverName]
 		srv.Name = serverName
 		srv.DisabledTools = append(srv.DisabledTools, toolName)
-		sort.Strings(srv.DisabledTools)
+		slices.Sort(srv.DisabledTools)
 		servers[serverName] = srv
 	}
 	return nil
@@ -358,13 +355,4 @@ func parseMCPPermission(perm string) (string, string, bool) {
 		return "", "", false
 	}
 	return serverName, toolName, true
-}
-
-func sortedPermissionServerKeys(m map[string][]string) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

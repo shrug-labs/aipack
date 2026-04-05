@@ -13,7 +13,6 @@ import (
 )
 
 type DoctorCmd struct {
-	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	ProfilePath string `help:"Direct path to a profile YAML file" name:"profile-path" type:"path"`
 	Profile     string `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	JSON        bool   `help:"Emit machine-readable JSON report instead of human-readable text" name:"json"`
@@ -49,7 +48,7 @@ See also: init, sync, status`
 func (c *DoctorCmd) Run(ctx context.Context, g *Globals) error {
 	eng := engine.New(nil, nil)
 	rep := app.RunDoctor(ctx, eng, app.DoctorRequest{
-		ConfigDir:   c.ConfigDir,
+		ConfigDir:   g.ConfigDir,
 		ProfilePath: c.ProfilePath,
 		ProfileName: c.Profile,
 		Home:        config.HomeDir(),

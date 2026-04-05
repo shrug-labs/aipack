@@ -45,7 +45,7 @@ func ResolveProfile(eng *engine.Engine, req ResolveRequest) (ResolveResult, []do
 		return ResolveResult{}, warnings, err
 	}
 
-	scope := domain.ScopeProject
+	scope := domain.ScopeGlobal
 	if req.SyncCfg.Defaults.Scope != "" {
 		if s, serr := cmdutil.NormalizeScope(req.SyncCfg.Defaults.Scope); serr == nil {
 			scope = s
@@ -60,6 +60,7 @@ func ResolveProfile(eng *engine.Engine, req ResolveRequest) (ResolveResult, []do
 	return ResolveResult{
 		Profile: profile,
 		TargetSpec: TargetSpec{
+			ConfigDir:  req.ConfigDir,
 			Scope:      scope,
 			ProjectDir: req.ProjectDir,
 			Harnesses:  hs,
@@ -113,6 +114,7 @@ func resolvePackRoots(profile domain.Profile) map[string]string {
 
 // TargetSpec holds the common targeting fields shared across request types.
 type TargetSpec struct {
+	ConfigDir  string
 	Scope      domain.Scope
 	ProjectDir string
 	Harnesses  []domain.Harness
@@ -142,6 +144,7 @@ type SyncResult struct {
 // as warnings. Writing failures that leave inconsistent state are fatal errors.
 func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
 	var warnings []domain.Warning
+	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
@@ -155,7 +158,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 				managedRootsMap[hid] = h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
 			}
 		}
-		if n, merr := eng.MigrateOldLedgers(req.Scope, req.ProjectDir, req.Home, req.Harnesses, managedRootsMap); merr != nil {
+		if n, merr := eng.MigrateOldLedgers(req.ConfigDir, req.Scope, req.ProjectDir, req.Harnesses, managedRootsMap); merr != nil {
 			warnings = append(warnings, warningf("ledger-migration", "%v", merr))
 		} else if n > 0 {
 			fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
@@ -171,6 +174,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		}
 
 		planReq := engine.PlanRequest{
+			ConfigDir:    req.ConfigDir,
 			Scope:        req.Scope,
 			Harnesses:    []domain.Harness{hid},
 			ProjectDir:   req.ProjectDir,
@@ -233,10 +237,10 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 	}
 
 	// Post-sync tasks — run once.
-	if idxErr := updateIndex(profile, req.Home); idxErr != nil {
+	if idxErr := updateIndex(profile, req.ConfigDir); idxErr != nil {
 		warnings = append(warnings, warningf("index", "index update failed: %v", idxErr))
 	}
-	regWarnings := processEmbeddedRegistries(profile, req.Home, stderr)
+	regWarnings := processEmbeddedRegistries(profile, req.ConfigDir, stderr)
 	warnings = append(warnings, regWarnings...)
 
 	return SyncResult{Plan: aggregatePlan}, warnings, nil
@@ -317,6 +321,7 @@ func reconcileMCPLedger(ctx context.Context, eng *engine.Engine, plan domain.Pla
 }
 
 func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, w io.Writer) {
+	cfgDir := config.FallbackConfigDir(req.ConfigDir, req.Home)
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
@@ -324,7 +329,7 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 
 	ledgers := map[domain.Harness]domain.Ledger{}
 	for _, hid := range req.Harnesses {
-		path := engine.LedgerPathForScope(req.Scope, req.ProjectDir, req.Home, hid)
+		path := engine.LedgerPath(cfgDir, req.Scope, req.ProjectDir, hid)
 		if lg, _, err := eng.LoadLedger(path); err == nil {
 			ledgers[hid] = lg
 		}
@@ -438,8 +443,8 @@ func classifyCopyKind(eng *engine.Engine, cp domain.CopyAction, lg domain.Ledger
 	}
 }
 
-func updateIndex(profile domain.Profile, home string) error {
-	db, err := openIndexDB("", home)
+func updateIndex(profile domain.Profile, configDir string) error {
+	db, err := openIndexDB(configDir, "")
 	if err != nil {
 		return err
 	}
@@ -591,15 +596,15 @@ func diffIDs(manifestIDs []string, resolved map[string]bool) []string {
 // Error policy: registry load failures are warnings (degraded but functional).
 // Registry save/index failures are also warnings — a failed cache shouldn't
 // abort a successful sync.
-func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Writer) []domain.Warning {
+func processEmbeddedRegistries(profile domain.Profile, cfgDir string, stderr io.Writer) []domain.Warning {
 	var warnings []domain.Warning
 	var allEntries []config.Registry
 	for _, pack := range profile.Packs {
-		for _, regPath := range pack.Registries {
-			absPath := filepath.Join(pack.Root, regPath)
+		for _, regID := range pack.Registries {
+			absPath := filepath.Join(pack.Root, "registries", regID+".yaml")
 			reg, err := config.LoadRegistry(absPath)
 			if err != nil {
-				warnings = append(warnings, warningPathf(absPath, "registry", "loading embedded registry %s from pack %s: %v", regPath, pack.Name, err))
+				warnings = append(warnings, warningPathf(absPath, "registry", "loading embedded registry %s from pack %s: %v", regID, pack.Name, err))
 				continue
 			}
 			allEntries = append(allEntries, reg)
@@ -607,11 +612,6 @@ func processEmbeddedRegistries(profile domain.Profile, home string, stderr io.Wr
 	}
 	if len(allEntries) == 0 {
 		return warnings
-	}
-
-	cfgDir, err := config.DefaultConfigDir(home)
-	if err != nil {
-		return append(warnings, warningf("registry", "resolving config dir: %v", err))
 	}
 
 	merged := config.Registry{

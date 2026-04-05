@@ -55,9 +55,8 @@ func ParseHarnessEnv(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
+	var out []string
+	for p := range strings.SplitSeq(raw, ",") {
 		v := strings.TrimSpace(p)
 		if v == "" {
 			continue
@@ -68,7 +67,7 @@ func ParseHarnessEnv(raw string) []string {
 }
 
 // ResolveScopeDefault resolves scope using the standard precedence chain:
-// explicit flag value → sync-config default → "project".
+// explicit flag value → sync-config default → "global".
 // Pass flagValue="default" when no flag was provided.
 func ResolveScopeDefault(flagValue, syncCfgScope string) (domain.Scope, error) {
 	var raw string
@@ -77,7 +76,7 @@ func ResolveScopeDefault(flagValue, syncCfgScope string) (domain.Scope, error) {
 	} else if syncCfgScope != "" {
 		raw = syncCfgScope
 	} else {
-		raw = string(domain.ScopeProject)
+		raw = string(domain.ScopeGlobal)
 	}
 	return NormalizeScope(raw)
 }

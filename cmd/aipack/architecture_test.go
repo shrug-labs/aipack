@@ -58,7 +58,7 @@ func TestArchitecture_NoDeletedPackages(t *testing.T) {
 		"github.com/shrug-labs/aipack/internal/app/save",
 		"github.com/shrug-labs/aipack/internal/app/clean",
 		"github.com/shrug-labs/aipack/internal/app/doctor",
-		"github.com/shrug-labs/aipack/internal/app/seed",
+		"github.com/shrug-labs/aipack/internal/app/bundled",
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if strings.TrimSpace(line) == "" {

@@ -2,7 +2,7 @@ package domain
 
 import (
 	"path/filepath"
-	"sort"
+	"slices"
 )
 
 // NewProfile returns a Profile with initialized maps, safe for mutation.
@@ -35,7 +35,7 @@ type Pack struct {
 	Agents     []Agent
 	Workflows  []Workflow
 	Skills     []Skill
-	Registries []string // relative paths to embedded registry YAML files
+	Registries []string // registry IDs (files live at registries/<id>.yaml)
 }
 
 // AllRules returns all rules across all packs, in pack order.
@@ -121,6 +121,6 @@ func (p Profile) packSubdirs(subdir string, include func(Pack) bool) []string {
 			}
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

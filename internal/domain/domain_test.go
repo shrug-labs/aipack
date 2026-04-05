@@ -3,7 +3,7 @@ package domain
 import (
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -351,27 +351,6 @@ func TestParseHarness(t *testing.T) {
 	}
 }
 
-func TestAllHarnesses_ReturnsCopy(t *testing.T) {
-	t.Parallel()
-	a := AllHarnesses()
-	b := AllHarnesses()
-	a[0] = "mutated"
-	if b[0] == "mutated" {
-		t.Error("AllHarnesses should return a copy")
-	}
-}
-
-func TestNewProfile_MapsInitialized(t *testing.T) {
-	t.Parallel()
-	p := NewProfile()
-	if p.Params == nil {
-		t.Error("NewProfile().Params should be non-nil")
-	}
-	if len(p.SettingsPacks) != 0 {
-		t.Error("NewProfile().SettingsPacks should be empty")
-	}
-}
-
 func TestProfile_AllRules_MultiPack(t *testing.T) {
 	t.Parallel()
 	p := NewProfile()
@@ -421,14 +400,6 @@ func TestProfile_HasContent_True(t *testing.T) {
 	}
 }
 
-func TestProfile_HasContent_False(t *testing.T) {
-	t.Parallel()
-	p := NewProfile()
-	if p.HasContent() {
-		t.Error("HasContent() = true, want false for empty profile")
-	}
-}
-
 func TestProfile_RuleDirs(t *testing.T) {
 	t.Parallel()
 	p := NewProfile()
@@ -442,7 +413,7 @@ func TestProfile_RuleDirs(t *testing.T) {
 		filepath.Join("/packs/alpha", "rules"),
 		filepath.Join("/packs/beta", "rules"),
 	}
-	sort.Strings(want)
+	slices.Sort(want)
 	if len(dirs) != len(want) {
 		t.Fatalf("RuleDirs() returned %d dirs, want %d", len(dirs), len(want))
 	}

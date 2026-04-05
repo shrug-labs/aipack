@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -11,9 +12,16 @@ import (
 
 func TestSync_HelpReturnsOK(t *testing.T) {
 	t.Parallel()
-	_, _, code := runApp(t, "sync", "--help")
+	stdout, _, code := runApp(t, "sync", "--help")
 	if code != cmdutil.ExitOK {
 		t.Fatalf("sync --help exit=%d, want %d", code, cmdutil.ExitOK)
+	}
+	if !strings.Contains(stdout, "%APPDATA%\\aipack") ||
+		!strings.Contains(stdout, "Windows; ~/.config/aipack elsewhere") {
+		t.Fatalf("sync --help missing cross-platform config dir help:\n%s", stdout)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(stdout, "%APPDATA%\\aipack") {
+		t.Fatalf("sync --help should mention the Windows config dir on Windows:\n%s", stdout)
 	}
 }
 

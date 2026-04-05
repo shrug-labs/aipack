@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -9,12 +10,11 @@ import (
 )
 
 type InitCmd struct {
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Force     bool   `help:"Overwrite existing sync-config and default profile files"`
+	Force bool `help:"Overwrite existing sync-config and default profile files"`
 }
 
 func (c *InitCmd) Help() string {
-	return `Creates ~/.config/aipack/sync-config.yaml and ~/.config/aipack/profiles/default.yaml
+	return fmt.Sprintf(`Creates %s and %s
 with starter content. Skips files that already exist unless --force is set.
 
 Examples:
@@ -27,11 +27,14 @@ Examples:
   # Use a custom config directory
   aipack init --config-dir /path/to/config
 
-See also: doctor, sync`
+See also: doctor, sync`,
+		configPathDisplay("sync-config.yaml"),
+		configPathDisplay("profiles", "default.yaml"),
+	)
 }
 
 func (c *InitCmd) Run(ctx context.Context, g *Globals) error {
-	configDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	configDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}

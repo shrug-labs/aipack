@@ -15,7 +15,7 @@ This resolves the active profile, determines which rules, skills, workflows, age
 When multiple sources could determine the profile, scope, or harness, sync resolves in this order:
 
 - **Profile**: `--profile-path` → `--profile` → sync-config `defaults.profile` → `default`
-- **Scope**: `--scope` → sync-config `defaults.scope` → `project`
+- **Scope**: `--scope` → sync-config `defaults.scope` → `global`
 - **Harness**: `--harness` → sync-config `defaults.harnesses` → `AIPACK_DEFAULT_HARNESS`
 
 ### Common commands
@@ -27,8 +27,8 @@ aipack sync --dry-run
 # Preview with content diffs
 aipack sync --dry-run --verbose
 
-# Sync to user-level config (~/.claude/, ~/.config/opencode/, etc.)
-aipack sync --scope global
+# Sync to project-level config (current directory)
+aipack sync --scope project
 
 # Sync only one harness
 aipack sync --harness claudecode

@@ -2,7 +2,7 @@ package config
 
 import (
 	"os"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -28,15 +28,15 @@ func SelectionsToVector(inventory, selected []string) VectorSelector {
 		return VectorSelector{Include: &empty}
 	}
 	// Partial: use whichever list is shorter.
-	sorted := append([]string{}, selected...)
-	sort.Strings(sorted)
+	sorted := slices.Clone(selected)
+	slices.Sort(sorted)
 	excluded := make([]string, 0)
 	for _, id := range inventory {
 		if !selectedSet[id] {
 			excluded = append(excluded, id)
 		}
 	}
-	sort.Strings(excluded)
+	slices.Sort(excluded)
 	if len(sorted) <= len(excluded) {
 		return VectorSelector{Include: &sorted}
 	}
@@ -59,7 +59,7 @@ func ResolveCurrentVector(inventory []string, sel VectorSelector) []string {
 		}
 		return out
 	}
-	return append([]string{}, inventory...)
+	return slices.Clone(inventory)
 }
 
 // MCPToConfig converts selected MCP servers and tool allowlists back to
@@ -77,8 +77,8 @@ func MCPToConfig(manifest PackManifest, enabledServers []string, allowedTools ma
 		if StringSlicesEqual(tools, defaults.DefaultAllowedTools) {
 			out[name] = MCPServerConfig{Enabled: BoolPtr(true)}
 		} else {
-			sorted := append([]string{}, tools...)
-			sort.Strings(sorted)
+			sorted := slices.Clone(tools)
+			slices.Sort(sorted)
 			out[name] = MCPServerConfig{Enabled: BoolPtr(true), AllowedTools: sorted}
 		}
 	}
@@ -145,19 +145,11 @@ func ToStringSet(items []string) map[string]bool {
 // StringSlicesEqual returns true if two string slices contain the same
 // elements (order-insensitive).
 func StringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	aSorted := append([]string{}, a...)
-	bSorted := append([]string{}, b...)
-	sort.Strings(aSorted)
-	sort.Strings(bSorted)
-	for i := range aSorted {
-		if aSorted[i] != bSorted[i] {
-			return false
-		}
-	}
-	return true
+	aSorted := slices.Clone(a)
+	bSorted := slices.Clone(b)
+	slices.Sort(aSorted)
+	slices.Sort(bSorted)
+	return slices.Equal(aSorted, bSorted)
 }
 
 func ptrSliceEqual(a, b *[]string) bool {
@@ -194,6 +186,6 @@ func ListProfileNames(dir string) ([]string, error) {
 		}
 		names = append(names, strings.TrimSuffix(e.Name(), ".yaml"))
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names, nil
 }

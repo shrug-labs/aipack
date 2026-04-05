@@ -1,10 +1,11 @@
 package engine
 
 import (
+	"cmp"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -59,9 +60,7 @@ func (m *MemFS) ReadFile(path string) ([]byte, error) {
 	if !ok {
 		return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
 	}
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	return cp, nil
+	return slices.Clone(data), nil
 }
 
 func (m *MemFS) WriteFile(path string, data []byte, _ os.FileMode) error {
@@ -72,9 +71,7 @@ func (m *MemFS) WriteFile(path string, data []byte, _ os.FileMode) error {
 	if !m.dirExists(dir) {
 		return &os.PathError{Op: "write", Path: path, Err: os.ErrNotExist}
 	}
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	m.files[path] = cp
+	m.files[path] = slices.Clone(data)
 	return nil
 }
 
@@ -134,10 +131,10 @@ func (m *MemFS) ReadDir(path string) ([]os.DirEntry, error) {
 	var entries []os.DirEntry
 	prefix := path + string(filepath.Separator)
 	for k := range m.files {
-		if !strings.HasPrefix(k, prefix) {
+		rest, ok := strings.CutPrefix(k, prefix)
+		if !ok {
 			continue
 		}
-		rest := k[len(prefix):]
 		name := strings.SplitN(rest, string(filepath.Separator), 2)[0]
 		if seen[name] {
 			continue
@@ -159,7 +156,7 @@ func (m *MemFS) ReadDir(path string) ([]os.DirEntry, error) {
 			}
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return cmp.Compare(a.Name(), b.Name()) })
 	return entries, nil
 }
 
@@ -205,7 +202,7 @@ func (m *MemFS) WalkDir(root string, fn fs.WalkDirFunc) error {
 			paths = append(paths, d)
 		}
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 
 	skipPrefixes := map[string]bool{}
 	for _, p := range paths {

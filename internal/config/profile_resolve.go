@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -331,7 +330,7 @@ func expandSelectors(packName, label, direction string, selectors, inv []string,
 			}
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out, nil
 }
 
@@ -349,6 +348,6 @@ func normalizeList(items []string) []string {
 		set[v] = struct{}{}
 		out = append(out, v)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

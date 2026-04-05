@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -64,6 +65,14 @@ type expandedMCP struct {
 // Unresolvable refs cause the server to be skipped (Skip=true) with an optional warning.
 func expandMCPServer(params map[string]string, server domain.MCPServer, warningFn func(string)) (expandedMCP, error) {
 	expandStr := func(s string) (string, error) {
+		// Resolve {pack:root} before param/env expansion so the pack path
+		// is available for use in {env:HOME}-style composition.
+		if server.PackRoot != "" && strings.Contains(s, "{pack:root}") {
+			s = filepath.Clean(strings.ReplaceAll(s, "{pack:root}", server.PackRoot))
+		}
+		if strings.Contains(s, "{pack:root}") {
+			return "", fmt.Errorf("unresolved {pack:root} reference in %q (server not loaded from a pack)", s)
+		}
 		exp, err := ExpandRefs(params, s)
 		if err != nil {
 			if warningFn != nil {

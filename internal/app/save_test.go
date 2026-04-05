@@ -316,7 +316,7 @@ func TestRunRoundTrip_PackSideConflict_Errors(t *testing.T) {
 	}
 
 	// Write ledger.
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		harnessFile: {SourcePack: "my-pack", Digest: origDigest},
 	})
@@ -379,7 +379,7 @@ func TestRunRoundTrip_PackSideConflict_Force(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		harnessFile: {SourcePack: "my-pack", Digest: origDigest},
 	})
@@ -451,7 +451,7 @@ func TestRunRoundTrip_AgentPackAlreadyNeutral_DoesNotConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		harnessFile: {SourcePack: "my-pack", Digest: "old-digest"},
 	})
@@ -527,7 +527,7 @@ func TestRunRoundTrip_DirSave_PropagatesDeletions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		srcSkillDir: {SourcePack: "my-pack", Digest: "old-digest"},
 	})
@@ -598,7 +598,7 @@ func TestRunRoundTrip_SettingsSave_ForceWritesAndAdvancesLedger(t *testing.T) {
 
 	origDigest := domain.SingleFileDigest(origContent)
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		settingsFile: {SourcePack: "my-pack", Digest: origDigest},
 	})
@@ -724,7 +724,7 @@ func TestRunRoundTrip_SkillDir_NoFalseConflict_AfterSync(t *testing.T) {
 	// Ledger has per-file entries (as sync would create).
 	skillPath := filepath.Join(srcSkillDir, "SKILL.md")
 	helperPath := filepath.Join(srcSkillDir, "helper.md")
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		skillPath:  {SourcePack: "my-pack", Digest: domain.SingleFileDigest(skillContent)},
 		helperPath: {SourcePack: "my-pack", Digest: domain.SingleFileDigest(helperContent)},
@@ -810,7 +810,7 @@ func TestRunRoundTrip_ContentWrite_SavedDirectly(t *testing.T) {
 	// Re-rendered agent content (what capture would produce).
 	reRendered := []byte("---\nname: my-agent\n---\n\nupdated agent body\n")
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		skillFile: {SourcePack: "my-pack", Digest: origDigest},
 	})
@@ -898,7 +898,7 @@ func TestRunRoundTrip_ContentWrite_UnchangedSkipped(t *testing.T) {
 	// Ledger digest matches the on-disk SKILL.md — nothing changed.
 	sourceDigest := domain.SingleFileDigest(promotedContent)
 
-	ledgerPath := engine.LedgerPathForScope(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
 	writeLedger(t, ledgerPath, map[string]domain.Entry{
 		skillFile: {SourcePack: "my-pack", Digest: sourceDigest},
 	})

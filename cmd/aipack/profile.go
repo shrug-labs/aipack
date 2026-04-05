@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -22,21 +22,21 @@ type ProfileCmd struct {
 }
 
 func (c *ProfileCmd) Help() string {
-	return `Manage sync profiles. Profiles define which packs, content, and settings to
+	return fmt.Sprintf(`Manage sync profiles. Profiles define which packs, content, and settings to
 sync to which harnesses.
 
-Profiles are stored as YAML files under ~/.config/aipack/profiles/.`
+Profiles are stored as YAML files under %s.`,
+		configPathDisplay("profiles"),
+	)
 }
 
 // --- profile list ---
 
-type ProfileListCmd struct {
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-}
+type ProfileListCmd struct{}
 
 func (c *ProfileListCmd) Help() string {
-	return `Lists all .yaml files in ~/.config/aipack/profiles/. The default profile (from
-sync-config defaults.profile, or "default") is marked with *.
+	return fmt.Sprintf(`Lists all .yaml files in %s. The default profile (from
+sync-config defaults.profile, or "default") is marked with (active).
 
 Examples:
   # List profiles
@@ -45,11 +45,13 @@ Examples:
   # Use a custom config directory
   aipack profile list --config-dir /path/to/config
 
-See also: profile show, init`
+See also: profile show, init`,
+		configPathDisplay("profiles"),
+	)
 }
 
 func (c *ProfileListCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -90,14 +92,13 @@ func (c *ProfileListCmd) Run(ctx context.Context, g *Globals) error {
 // --- profile set ---
 
 type ProfileSetCmd struct {
-	Name      string `arg:"" help:"Profile name to activate" predictor:"profile"`
-	ConfigDir string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Install   bool   `help:"Install missing packs from registry after setting profile" name:"install"`
+	Name    string `arg:"" help:"Profile name to activate" predictor:"profile"`
+	Install bool   `help:"Install missing packs from registry after setting profile" name:"install"`
 }
 
 func (c *ProfileSetCmd) Help() string {
-	return `Sets the active profile by updating defaults.profile in sync-config.yaml.
-The named profile must already exist under ~/.config/aipack/profiles/.
+	return fmt.Sprintf(`Sets the active profile by updating defaults.profile in sync-config.yaml.
+The named profile must already exist under %s.
 
 After setting the profile, reports any packs declared in the profile that are
 not installed. Use --install to automatically install them from the registry.
@@ -109,11 +110,13 @@ Examples:
   # Activate a profile and install missing packs
   aipack profile set my-team --install
 
-See also: profile list, profile create, pack install`
+See also: profile list, profile create, pack install`,
+		configPathDisplay("profiles"),
+	)
 }
 
 func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
-	cfgDir, err := cmdutil.EnsureConfigDir(c.ConfigDir, config.HomeDir(), g.Stderr)
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -153,7 +156,6 @@ func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
 
 type ProfileShowCmd struct {
 	Name        string `arg:"" optional:"" help:"Profile name (default: sync-config defaults.profile, then 'default')" predictor:"profile"`
-	ConfigDir   string `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
 	ProfilePath string `help:"Direct path to a profile YAML file (overrides name)" name:"profile-path" type:"path"`
 	JSON        bool   `help:"Emit machine-readable JSON" name:"json"`
 }
@@ -182,7 +184,7 @@ See also: profile list, sync, doctor`
 }
 
 func (c *ProfileShowCmd) Run(ctx context.Context, g *Globals) error {
-	loaded, code := loadProfile(c.Name, c.ProfilePath, c.ConfigDir, g.Stderr)
+	loaded, code := loadProfile(c.Name, c.ProfilePath, g.ConfigDir, g.Stderr)
 	if code >= 0 {
 		return ExitError{Code: code}
 	}
@@ -202,7 +204,7 @@ func (c *ProfileShowCmd) Run(ctx context.Context, g *Globals) error {
 			mcpByPack[s.SourcePack] = append(mcpByPack[s.SourcePack], s.Name)
 		}
 		for k := range mcpByPack {
-			sort.Strings(mcpByPack[k])
+			slices.Sort(mcpByPack[k])
 		}
 
 		// Build set of enabled pack names from the resolved profile.

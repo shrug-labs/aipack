@@ -113,6 +113,7 @@ type dialogResultMsg struct {
 	id        string
 	confirmed bool
 	value     string
+	values    []string // for checklist dialogs: individually selected items
 }
 
 // profileItem holds the state for a single profile in the list.
@@ -164,8 +165,8 @@ type editorFinishedMsg struct {
 	err      error
 }
 
-// packAddedMsg is sent after a pack is added via the packs tab.
-type packAddedMsg struct {
+// packInstalledMsg is sent after a pack is installed via the packs tab.
+type packInstalledMsg struct {
 	name string
 	err  error
 }
@@ -181,6 +182,11 @@ type packUpdatedMsg struct {
 	name    string
 	results []app.PackUpdateResult
 	err     error
+}
+
+// bundledApprovedMsg is sent after the user confirms bundled content candidates via the checklist.
+type bundledApprovedMsg struct {
+	err error
 }
 
 // savePlanMsg is sent after a dry-run round-trip save completes, carrying
@@ -257,7 +263,6 @@ type packCreatedMsg struct {
 // harnessDetectedMsg delivers available harnesses for save stage 1.
 type harnessDetectedMsg struct {
 	harnesses []domain.Harness
-	err       error
 }
 
 // vectorsDiscoveredMsg delivers available content vectors for save stage 2.

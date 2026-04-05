@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"slices"
 	"strings"
 )
 
@@ -18,9 +19,7 @@ var allHarnesses = []Harness{HarnessCline, HarnessClaudeCode, HarnessCodex, Harn
 
 // AllHarnesses returns a copy of the known harness list.
 func AllHarnesses() []Harness {
-	out := make([]Harness, len(allHarnesses))
-	copy(out, allHarnesses)
-	return out
+	return slices.Clone(allHarnesses)
 }
 
 // HarnessNames returns the string names of all harnesses.
@@ -190,6 +189,78 @@ func ParseSingularLabel(s string) (PackCategory, bool) {
 		return CategorySettings, true
 	}
 	return "", false
+}
+
+// BundledCategory classifies bundled content categories in a pack. Core
+// content (rules, skills, agents, workflows, prompts, MCP, configs) is
+// always installed. Bundled content (profiles, registries, extras) requires
+// user opt-in via --with at install time.
+type BundledCategory string
+
+const (
+	BundledProfiles   BundledCategory = "profiles"
+	BundledRegistries BundledCategory = "registries"
+	BundledExtras     BundledCategory = "extras"
+)
+
+// AllBundledCategories lists the bundled content categories gated by --with.
+var AllBundledCategories = []BundledCategory{
+	BundledProfiles, BundledRegistries, BundledExtras,
+}
+
+// ParseBundledCategory parses a raw string into a BundledCategory, returning
+// false if not a recognized bundled content category.
+func ParseBundledCategory(raw string) (BundledCategory, bool) {
+	for _, c := range AllBundledCategories {
+		if string(c) == raw {
+			return c, true
+		}
+	}
+	return "", false
+}
+
+// BundledSet tracks which bundled content categories the user has approved
+// for installation. A nil set means "no categories specified" (preview mode).
+// A non-nil set with entries means only those categories should be installed.
+type BundledSet map[BundledCategory]bool
+
+// BundledAll returns a BundledSet with every category enabled.
+func BundledAll() BundledSet {
+	s := make(BundledSet, len(AllBundledCategories))
+	for _, c := range AllBundledCategories {
+		s[c] = true
+	}
+	return s
+}
+
+// Has reports whether the given category is in the set.
+func (w BundledSet) Has(cat BundledCategory) bool {
+	return w != nil && w[cat]
+}
+
+// Merge returns a new BundledSet containing all categories from both sets.
+func (w BundledSet) Merge(other BundledSet) BundledSet {
+	out := make(BundledSet, len(w)+len(other))
+	for k, v := range w {
+		if v {
+			out[k] = true
+		}
+	}
+	for k, v := range other {
+		if v {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// NewBundledSet builds a BundledSet from typed category values.
+func NewBundledSet(categories ...BundledCategory) BundledSet {
+	s := make(BundledSet, len(categories))
+	for _, c := range categories {
+		s[c] = true
+	}
+	return s
 }
 
 // CopyKind distinguishes file from directory copy actions.

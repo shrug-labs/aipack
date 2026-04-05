@@ -212,7 +212,10 @@ func (t *treeModel) updateFileSizes(sizes map[string]int64) {
 func (t *treeModel) clampOffset(visibleH int) {
 	// Map cursor to its visible-line index.
 	visIdx := 0
-	for i := 0; i < len(t.nodes) && i <= t.cursor; i++ {
+	for i := range len(t.nodes) {
+		if i > t.cursor {
+			break
+		}
 		if t.isVisible(i) {
 			if i == t.cursor {
 				break

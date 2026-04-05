@@ -43,6 +43,8 @@ type InstalledPackMeta struct {
 	SubPath      string                         `yaml:"sub_path,omitempty"`      // subdirectory within cloned repo
 	CommitHash   string                         `yaml:"commit_hash,omitempty"`   // git HEAD SHA at install/update time
 	ContentPaths map[domain.PackCategory]string `yaml:"content_paths,omitempty"` // content type -> directory path within clone (nil = standard layout)
+	Approved     []domain.BundledCategory       `yaml:"approved,omitempty"`      // bundled categories the user accepted
+	Declined     []domain.BundledCategory       `yaml:"declined,omitempty"`      // bundled categories the user declined
 }
 
 // SyncConfig is user-level configuration (one level above profiles).
@@ -79,6 +81,18 @@ func DefaultConfigDir(home string) (string, error) {
 		return filepath.Join(home, "AppData", "Roaming", "aipack"), nil
 	}
 	return filepath.Join(home, ".config", "aipack"), nil
+}
+
+// FallbackConfigDir returns configDir if non-empty, or the default config
+// directory derived from home. Returns empty string only when both inputs
+// are empty (caller should treat this as an error). Use
+// cmdutil.ResolveConfigDir at CLI boundaries where the error matters.
+func FallbackConfigDir(configDir, home string) string {
+	if configDir != "" {
+		return configDir
+	}
+	d, _ := DefaultConfigDir(home)
+	return d
 }
 
 func SyncConfigPath(configDir string) string {

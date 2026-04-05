@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -87,8 +89,8 @@ func (e *contractEnv) contentExists(marker string) bool {
 func walkDir(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	result := map[string]string{}
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, path)
@@ -182,6 +184,36 @@ func packWith(name string, opts ...profileOpt) packDef {
 	return packDef{name: name, opts: opts}
 }
 
+// withWorkflows adds workflows with default content to the pack.
+func withWorkflows(names ...string) profileOpt {
+	return func(pack *domain.Pack, _ string) {
+		for _, name := range names {
+			pack.Workflows = append(pack.Workflows, domain.Workflow{
+				Name:       name,
+				Body:       []byte(name + " workflow.\n"),
+				Raw:        []byte("---\nname: " + name + "\n---\n" + name + " workflow.\n"),
+				SourcePack: pack.Name,
+			})
+		}
+	}
+}
+
+// agentWith adds a single agent with explicit tools and optional per-harness config overrides.
+func agentWith(name string, tools []string, harnessOverrides map[string]map[string]any) profileOpt {
+	return func(pack *domain.Pack, _ string) {
+		pack.Agents = append(pack.Agents, domain.Agent{
+			Name: name,
+			Frontmatter: domain.AgentFrontmatter{
+				Name:    name,
+				Tools:   tools,
+				Harness: harnessOverrides,
+			},
+			Body:       []byte("Agent: " + name + ".\n"),
+			SourcePack: pack.Name,
+		})
+	}
+}
+
 // multiPackProfile builds a profile with multiple independently configured packs.
 func multiPackProfile(packRoot string, packs ...packDef) domain.Profile {
 	var result []domain.Pack
@@ -197,4 +229,11 @@ func multiPackProfile(packRoot string, packs ...packDef) domain.Profile {
 		result = append(result, pack)
 	}
 	return domain.Profile{Packs: result}
+}
+
+// testLedgerPath computes the ledger path from a test home directory.
+// Signature matches the removed LedgerPathForScope for easy migration.
+func testLedgerPath(scope domain.Scope, projectDir, home string, harness domain.Harness) string {
+	cfgDir, _ := config.DefaultConfigDir(home)
+	return engine.LedgerPath(cfgDir, scope, projectDir, harness)
 }

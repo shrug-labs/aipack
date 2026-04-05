@@ -19,8 +19,7 @@ import (
 type SyncCmd struct {
 	Profile      string  `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath  string  `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
-	ConfigDir    string  `help:"Config directory (default: ~/.config/aipack)" name:"config-dir" type:"path"`
-	Scope        string  `help:"Where to apply: 'project' writes to project directory, 'global' writes to ~/ config locations (default: sync-config defaults.scope, then 'project')" default:"default" enum:"project,global,default"`
+	Scope        string  `help:"Where to apply: 'project' writes to project directory, 'global' writes to ~/ config locations (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
 	ProjectDir   *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
 	Harness      string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness" predictor:"harness"`
 	Force        bool    `help:"Override file conflicts"`
@@ -39,11 +38,11 @@ files are managed. On subsequent runs, only changed files are updated and files
 no longer in the profile are removed. Use --force to override conflicts.
 
 Profile resolution: --profile-path > --profile > sync-config defaults.profile > "default"
-Scope resolution:   --scope > sync-config defaults.scope > "project"
+Scope resolution:   --scope > sync-config defaults.scope > "global"
 Harness resolution: --harness > sync-config defaults.harnesses > AIPACK_DEFAULT_HARNESS
 
 Examples:
-  # Sync default profile to the current project directory
+  # Sync default profile to all harness locations (default: global scope)
   aipack sync --profile default
 
   # Preview what would change without writing files
@@ -79,7 +78,7 @@ func (c *SyncCmd) Validate() error {
 
 func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 	watchDirsForFlags := func() []string {
-		dirs, err := resolveWatchDirs(c.Profile, c.ProfilePath, c.ConfigDir)
+		dirs, err := resolveWatchDirs(c.Profile, c.ProfilePath, g.ConfigDir)
 		if err != nil {
 			return nil
 		}
@@ -89,7 +88,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 	// resolveAndSync performs a single sync iteration (profile load + sync).
 	// Returns the pack source dirs to watch for the next iteration.
 	resolveAndSync := func() ([]string, error) {
-		loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, c.ConfigDir, g.Stderr)
+		loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
 		if exitCode >= 0 {
 			return watchDirsForFlags(), ExitError{Code: exitCode}
 		}
@@ -135,6 +134,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 		eng := engine.NewWithStderr(g.Stderr)
 		res, syncWarnings, err := app.RunSync(ctx, eng, loaded.profile, app.SyncRequest{
 			TargetSpec: app.TargetSpec{
+				ConfigDir:  loaded.configDir,
 				Scope:      scope,
 				ProjectDir: projectDirValue,
 				Harnesses:  hs,
@@ -188,7 +188,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 
 	if c.Watch {
 		// Resolve config file paths to watch for changes.
-		configDir := c.ConfigDir
+		configDir := g.ConfigDir
 		if configDir == "" {
 			if d, derr := config.DefaultConfigDir(config.HomeDir()); derr == nil {
 				configDir = d
