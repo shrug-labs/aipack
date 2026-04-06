@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.18.1]
+
+### Fixed
+
+- Disabling all MCP-providing packs could delete `.claude.json` (or other shared config files) entirely instead of stripping only the managed keys. Stale reconciliation now uses the harness `OwnedFile` strip functions for merge-mode files, preserving user-owned content. Affects all four harnesses with shared config files: Claude Code, OpenCode, Codex, and Cline.
+
 ## [0.18.0]
 
 ### Added

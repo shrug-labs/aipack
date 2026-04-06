@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -292,5 +295,165 @@ func TestReconcileStaleEntries_UserModifiedFileDeleted(t *testing.T) {
 	// File should be deleted.
 	if _, err := os.Stat(file); !os.IsNotExist(err) {
 		t.Error("user-modified file should be deleted when user confirms")
+	}
+}
+
+func TestReconcileStaleEntries_OwnedFileStrippedNotDeleted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	// Simulate .claude.json with user keys + managed mcpServers.
+	settingsFile := filepath.Join(dir, ".claude.json")
+	initial := []byte(`{
+  "verbose": true,
+  "mcpServers": {
+    "test-server": {"command": "test-mcp"}
+  },
+  "userPref": "keep-me"
+}`)
+	if err := os.MkdirAll(filepath.Dir(settingsFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsFile, initial, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First sync: record the settings file in the ledger via a settings action.
+	plan := domain.Plan{
+		Writes:  nil,
+		Desired: map[string]struct{}{filepath.Clean(settingsFile): {}},
+		Ledger:  filepath.Join(dir, ".aipack", "ledger.json"),
+		Settings: []domain.SettingsAction{{
+			Dst:       settingsFile,
+			Desired:   initial,
+			Harness:   domain.HarnessClaudeCode,
+			Label:     ".claude.json",
+			MergeMode: true,
+		}},
+	}
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := eng.ApplyPlan(context.Background(), plan, ar, []string{dir, settingsFile}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second sync: settings file is NOT in desired (all MCP packs disabled).
+	plan2 := domain.Plan{
+		Desired: map[string]struct{}{},
+		Ledger:  plan.Ledger,
+	}
+
+	// Provide a strip function that removes only mcpServers.
+	stripFn := func(content []byte) ([]byte, error) {
+		// Use the same pattern as claudecode harness: parse, strip, re-serialize.
+		var m map[string]any
+		if err := json.Unmarshal(content, &m); err != nil {
+			return nil, err
+		}
+		m["mcpServers"] = map[string]any{}
+		out, err := json.MarshalIndent(m, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return append(out, '\n'), nil
+	}
+
+	ar2 := ApplyRequest{
+		Yes:    true,
+		Quiet:  true,
+		Stderr: io.Discard,
+		StripFuncs: map[string]func([]byte) ([]byte, error){
+			filepath.Clean(settingsFile): stripFn,
+		},
+	}
+	if _, err := eng.ApplyPlan(context.Background(), plan2, ar2, []string{dir, settingsFile}); err != nil {
+		t.Fatal(err)
+	}
+
+	// File must still exist.
+	got, err := os.ReadFile(settingsFile)
+	if err != nil {
+		t.Fatalf("owned file should NOT be deleted: %v", err)
+	}
+
+	// Verify managed keys were stripped and user keys preserved.
+	var result map[string]any
+	if err := json.Unmarshal(got, &result); err != nil {
+		t.Fatalf("invalid JSON after strip: %v", err)
+	}
+	if v, ok := result["verbose"]; !ok || v != true {
+		t.Error("user key 'verbose' should be preserved")
+	}
+	if v, ok := result["userPref"]; !ok || v != "keep-me" {
+		t.Error("user key 'userPref' should be preserved")
+	}
+	servers, _ := result["mcpServers"].(map[string]any)
+	if len(servers) != 0 {
+		t.Errorf("mcpServers should be empty after strip, got %v", servers)
+	}
+
+	// Ledger entry should be removed.
+	lg, _, err := eng.LoadLedger(plan.Ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := lg.Managed[filepath.Clean(settingsFile)]; exists {
+		t.Error("ledger entry should be removed after stripping")
+	}
+}
+
+func TestReconcileStaleEntries_OwnedFileStripError_WarnsNotDeletes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	settingsFile := filepath.Join(dir, ".claude.json")
+	content := []byte(`{"mcpServers": {"x": {}}, "keep": true}`)
+	if err := os.WriteFile(settingsFile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Record in ledger.
+	plan := domain.Plan{
+		Desired:  map[string]struct{}{filepath.Clean(settingsFile): {}},
+		Ledger:   filepath.Join(dir, ".aipack", "ledger.json"),
+		Settings: []domain.SettingsAction{{Dst: settingsFile, Desired: content, Harness: domain.HarnessClaudeCode, Label: ".claude.json", MergeMode: true}},
+	}
+	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	if _, err := eng.ApplyPlan(context.Background(), plan, ar, []string{dir, settingsFile}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second sync with a strip function that always errors.
+	plan2 := domain.Plan{Desired: map[string]struct{}{}, Ledger: plan.Ledger}
+	ar2 := ApplyRequest{
+		Yes:    true,
+		Quiet:  true,
+		Stderr: io.Discard,
+		StripFuncs: map[string]func([]byte) ([]byte, error){
+			filepath.Clean(settingsFile): func([]byte) ([]byte, error) {
+				return nil, fmt.Errorf("simulated strip error")
+			},
+		},
+	}
+	warnings, err := eng.ApplyPlan(context.Background(), plan2, ar2, []string{dir, settingsFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// File must still exist (not deleted on strip error).
+	if _, err := os.Stat(settingsFile); err != nil {
+		t.Errorf("file should be preserved on strip error: %v", err)
+	}
+
+	// Should have a warning about the strip error.
+	found := false
+	for _, w := range warnings {
+		if w.Field == "stale" && strings.Contains(w.Message, "strip managed keys") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about strip failure, got: %v", warnings)
 	}
 }

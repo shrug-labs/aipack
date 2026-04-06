@@ -193,15 +193,24 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		}
 
 		h, _ := reg.Lookup(hid)
-		managedRoots := h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
+		layout := h.Layout(req.Scope, baseDir, req.Home)
+		managedRoots := layout.ValidationRoots
+
+		stripFuncs := make(map[string]func([]byte) ([]byte, error), len(layout.OwnedFiles))
+		for _, of := range layout.OwnedFiles {
+			stripFuncs[filepath.Clean(of.Path)] = func(content []byte) ([]byte, error) {
+				return harness.ApplyEdit(content, of.Format, of.Strip)
+			}
+		}
 
 		applyReq := engine.ApplyRequest{
-			Force:  req.Force,
-			Yes:    req.Yes,
-			DryRun: req.DryRun,
-			Quiet:  req.Quiet,
-			Stderr: stderr,
-			Req:    planReq,
+			Force:      req.Force,
+			Yes:        req.Yes,
+			DryRun:     req.DryRun,
+			Quiet:      req.Quiet,
+			Stderr:     stderr,
+			Req:        planReq,
+			StripFuncs: stripFuncs,
 		}
 
 		applyWarnings, err := eng.ApplyPlan(ctx, plan, applyReq, managedRoots)

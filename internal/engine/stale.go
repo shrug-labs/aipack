@@ -70,9 +70,15 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 			continue
 		}
 
-		_ = e.FS.Remove(k)
+		if stripFn, isOwned := ar.StripFuncs[filepath.Clean(k)]; isOwned {
+			if err := e.stripOwnedFile(k, stripFn); err != nil {
+				warnings = append(warnings, staleWarning(k, "strip managed keys: %v", err))
+			}
+		} else {
+			_ = e.FS.Remove(k)
+			cleanup.MaybeCleanupParents(filepath.Dir(k))
+		}
 		lg.Delete(k)
-		cleanup.MaybeCleanupParents(filepath.Dir(k))
 	}
 	cleanup.Flush()
 
@@ -83,6 +89,22 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 		})
 	}
 	return warnings
+}
+
+// stripOwnedFile reads the file at path, applies stripFn to remove only
+// the managed keys, and writes the result back. Used for shared config
+// files (e.g. .claude.json) where aipack manages specific keys but must
+// not delete the entire file.
+func (e *Engine) stripOwnedFile(path string, stripFn func([]byte) ([]byte, error)) error {
+	content, err := e.FS.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	stripped, err := stripFn(content)
+	if err != nil {
+		return err
+	}
+	return e.FS.WriteFile(path, stripped, 0o644)
 }
 
 func staleWarning(path, msg string, args ...any) domain.Warning {

@@ -20,6 +20,13 @@ type ApplyRequest struct {
 	Quiet  bool      // suppress diagnostic output (for TUI and --json)
 	Stderr io.Writer // progress diagnostics (create/update/conflict messages); callers must set this
 	Req    PlanRequest
+
+	// StripFuncs maps cleaned file paths to functions that strip only the
+	// managed keys from shared config files. When a stale ledger entry
+	// matches a path in this map, the strip function is called instead of
+	// deleting the entire file. This prevents stale reconciliation from
+	// destroying user-owned content in files like .claude.json.
+	StripFuncs map[string]func(content []byte) ([]byte, error)
 }
 
 // ApplyPlan applies a sync plan to disk.
