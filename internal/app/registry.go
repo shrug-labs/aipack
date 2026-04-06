@@ -144,8 +144,8 @@ func RegistryAddSource(req RegistryAddSourceRequest, stdout io.Writer) error {
 
 	name := req.Name
 	if name == "" {
-		derived := config.DeriveSourceName(req.URL)
-		name = config.UniqueSourceName(derived, req.URL, sc.RegistrySources)
+		derived := config.DeriveSourceName(req.URL, filePath)
+		name = config.UniqueSourceName(derived, req.URL, filePath, sc.RegistrySources)
 	}
 
 	upsertRegistrySource(&sc, config.RegistrySourceEntry{
@@ -201,7 +201,7 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 	// Backward compat: if no sources but defaults.registry_url is set, use it.
 	if len(sources) == 0 && sc.Defaults.RegistryURL != "" {
 		sources = []config.RegistrySourceEntry{{
-			Name: config.DeriveSourceName(sc.Defaults.RegistryURL),
+			Name: config.DeriveSourceName(sc.Defaults.RegistryURL, ""),
 			URL:  sc.Defaults.RegistryURL,
 		}}
 	}
@@ -218,7 +218,7 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 	}
 	if !defaultPresent {
 		sources = append(sources, config.RegistrySourceEntry{
-			Name: config.DeriveSourceName(config.DefaultRegistryRepo),
+			Name: config.DeriveSourceName(config.DefaultRegistryRepo, config.DefaultRegistryPath),
 			URL:  config.DefaultRegistryRepo,
 			Ref:  config.DefaultRegistryRef,
 			Path: config.DefaultRegistryPath,
@@ -284,8 +284,8 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	// Resolve source name.
 	name := req.Name
 	if name == "" {
-		derived := config.DeriveSourceName(url)
-		name = config.UniqueSourceName(derived, url, sc.RegistrySources)
+		derived := config.DeriveSourceName(url, filePath)
+		name = config.UniqueSourceName(derived, url, filePath, sc.RegistrySources)
 	}
 
 	// Fetch remote registry bytes.
@@ -361,9 +361,11 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 }
 
 // upsertRegistrySource adds or updates a source in the sync-config sources list.
+// A source is considered the same if the name matches, or if BOTH the URL and
+// path match. Two different files from the same repo are distinct sources.
 func upsertRegistrySource(sc *config.SyncConfig, src config.RegistrySourceEntry) {
 	for i, existing := range sc.RegistrySources {
-		if existing.Name == src.Name || existing.URL == src.URL {
+		if existing.Name == src.Name || (existing.URL == src.URL && existing.Path == src.Path) {
 			sc.RegistrySources[i] = src
 			return
 		}

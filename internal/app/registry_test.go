@@ -310,6 +310,90 @@ func TestRegistryFetch_GitArbitraryRepo(t *testing.T) {
 	}
 }
 
+func TestRegistryFetch_TwoFilesFromSameRepo(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	registryA := `schema_version: 1
+packs:
+  pack-a:
+    repo: https://github.com/org/a
+    description: Pack A
+`
+	registryB := `schema_version: 1
+packs:
+  pack-b:
+    repo: https://github.com/org/b
+    description: Pack B
+`
+	repoURL := "git@bitbucket.example.com:TEAM/my-tools.git"
+	gitFetchFn := func(repo, ref, path string) ([]byte, error) {
+		switch path {
+		case "registry.yaml":
+			return []byte(registryA), nil
+		case "non-pack-registry.yaml":
+			return []byte(registryB), nil
+		default:
+			return nil, fmt.Errorf("unexpected path: %s", path)
+		}
+	}
+
+	// Fetch first file.
+	var buf bytes.Buffer
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir:  dir,
+		URL:        repoURL,
+		Path:       "registry.yaml",
+		GitFetchFn: gitFetchFn,
+	}, &buf)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+
+	// Fetch second file from the same repo.
+	buf.Reset()
+	err = RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir:  dir,
+		URL:        repoURL,
+		Path:       "non-pack-registry.yaml",
+		GitFetchFn: gitFetchFn,
+	}, &buf)
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+
+	// Both sources should exist in sync-config.
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("loading sync-config: %v", err)
+	}
+	if len(sc.RegistrySources) != 2 {
+		t.Fatalf("expected 2 sources, got %d: %+v", len(sc.RegistrySources), sc.RegistrySources)
+	}
+
+	// Source names should be distinct.
+	if sc.RegistrySources[0].Name == sc.RegistrySources[1].Name {
+		t.Errorf("sources have the same name: %q", sc.RegistrySources[0].Name)
+	}
+
+	// Both cache files should exist with distinct content.
+	cacheA := config.SourceCachePath(dir, sc.RegistrySources[0].Name)
+	regA, err := config.LoadRegistry(cacheA)
+	if err != nil {
+		t.Fatalf("loading first cache: %v", err)
+	}
+	cacheB := config.SourceCachePath(dir, sc.RegistrySources[1].Name)
+	regB, err := config.LoadRegistry(cacheB)
+	if err != nil {
+		t.Fatalf("loading second cache: %v", err)
+	}
+
+	// Merged view should contain packs from both registries.
+	if len(regA.Packs)+len(regB.Packs) != 2 {
+		t.Errorf("expected 2 total packs across caches, got %d + %d", len(regA.Packs), len(regB.Packs))
+	}
+}
+
 func TestRegistryFetch_GitAutoDetect(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -405,7 +489,7 @@ packs:
 	}
 
 	// Default registry should also be cached.
-	defaultName := config.DeriveSourceName(config.DefaultRegistryRepo)
+	defaultName := config.DeriveSourceName(config.DefaultRegistryRepo, config.DefaultRegistryPath)
 	regDefault, err := config.LoadRegistry(config.SourceCachePath(dir, defaultName))
 	if err != nil {
 		t.Fatalf("loading default cache: %v", err)

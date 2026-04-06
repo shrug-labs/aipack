@@ -106,7 +106,7 @@ Each entry is a remote registry that `registry fetch` retrieves and caches.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Local name for this source (auto-derived from URL or `--name`) |
+| `name` | string | Local name for this source (auto-derived from URL and path, or `--name`) |
 | `url` | string | Git repository URL |
 | `ref` | string | Git ref (branch or tag) |
 | `path` | string | File path within the repo (default: `registry.yaml`) |

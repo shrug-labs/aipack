@@ -173,10 +173,20 @@ func LoadMergedRegistry(configDir string) (Registry, error) {
 	return merged, nil
 }
 
-// DeriveSourceName extracts a short source name from a URL.
-// Strips trailing .git/.yaml/.yml suffixes. If the result is "registry"
-// or a hostname, walks up the path to find a meaningful component.
-func DeriveSourceName(rawURL string) string {
+// DeriveSourceName extracts a short source name from a URL and optional
+// file path. When filePath is non-empty and not the default "registry.yaml",
+// the name is derived from the file path stem so that two different registry
+// files in the same repo produce distinct names.
+func DeriveSourceName(rawURL, filePath string) string {
+	if filePath != "" && filePath != DefaultRegistryPath {
+		stem := filepath.Base(filePath)
+		stem = strings.TrimSuffix(stem, ".yaml")
+		stem = strings.TrimSuffix(stem, ".yml")
+		if stem != "" && stem != "registry" {
+			return stem
+		}
+	}
+
 	u := strings.TrimSuffix(rawURL, "/")
 
 	// Handle SCP-style SSH URLs: git@host:org/repo.git → org/repo.git
@@ -215,11 +225,12 @@ func DeriveSourceName(rawURL string) string {
 }
 
 // UniqueSourceName returns a source name that doesn't collide with existing
-// source names (unless the URL matches). If the derived name collides with
-// a source that has a different URL, a numeric suffix is appended.
-func UniqueSourceName(derived, url string, existing []RegistrySourceEntry) string {
+// source names (unless the URL and path both match). If the derived name
+// collides with a source that has a different URL or path, a numeric suffix
+// is appended. Two files from the same repo are distinct sources.
+func UniqueSourceName(derived, url, path string, existing []RegistrySourceEntry) string {
 	for _, src := range existing {
-		if src.URL == url {
+		if src.URL == url && src.Path == path {
 			return src.Name
 		}
 	}

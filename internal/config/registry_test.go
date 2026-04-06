@@ -104,41 +104,61 @@ func TestDeriveSourceName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		url  string
+		path string
 		want string
 	}{
-		{"https://github.com/shrug-labs/packs.git", "packs"},
-		{"https://bitbucket.example.com/scm/TEAM/my-tools.git", "my-tools"},
-		{"https://example.com/my-team/registry.yaml", "my-team"},
-		{"https://example.com/registry.yaml", "example"},
-		{"https://example.com/tools.git/", "tools"},
-		{"https://registry.example.com/registry.yaml", "example"}, // hostname starting with "registry" skips that label
-		{"git@bitbucket.example.com:TEAM/my-tools.git", "my-tools"},
-		{"git@github.com:org/repo.git", "repo"},
-		{"ssh://git@github.com/org/repo.git", "repo"},
+		// Default or empty path — derive from URL.
+		{"https://github.com/shrug-labs/packs.git", "", "packs"},
+		{"https://github.com/shrug-labs/packs.git", "registry.yaml", "packs"},
+		{"https://bitbucket.example.com/scm/TEAM/my-tools.git", "", "my-tools"},
+		{"https://example.com/my-team/registry.yaml", "", "my-team"},
+		{"https://example.com/registry.yaml", "", "example"},
+		{"https://example.com/tools.git/", "", "tools"},
+		{"https://registry.example.com/registry.yaml", "", "example"}, // hostname starting with "registry" skips that label
+		{"git@bitbucket.example.com:TEAM/my-tools.git", "", "my-tools"},
+		{"git@github.com:org/repo.git", "", "repo"},
+		{"ssh://git@github.com/org/repo.git", "", "repo"},
+		// Non-default path — derive from path stem.
+		{"git@github.com:org/repo.git", "non-pack-registry.yaml", "non-pack-registry"},
+		{"git@github.com:org/repo.git", "tools/catalog.yaml", "catalog"},
+		{"git@github.com:org/repo.git", "ops-tools/custom.yml", "custom"},
+		// Path stem resolves to "registry" — falls through to URL derivation.
+		{"git@github.com:org/repo.git", "registry.yml", "repo"},
 	}
 	for _, tt := range tests {
-		if got := DeriveSourceName(tt.url); got != tt.want {
-			t.Errorf("DeriveSourceName(%q) = %q, want %q", tt.url, got, tt.want)
+		if got := DeriveSourceName(tt.url, tt.path); got != tt.want {
+			t.Errorf("DeriveSourceName(%q, %q) = %q, want %q", tt.url, tt.path, got, tt.want)
 		}
 	}
 }
 
 func TestUniqueSourceName_NoCollision(t *testing.T) {
 	t.Parallel()
-	got := UniqueSourceName("aipack", "https://github.com/org/aipack.git", nil)
+	got := UniqueSourceName("aipack", "https://github.com/org/aipack.git", "", nil)
 	if got != "aipack" {
 		t.Errorf("got %q, want aipack", got)
 	}
 }
 
-func TestUniqueSourceName_SameURL(t *testing.T) {
+func TestUniqueSourceName_SameURLAndPath(t *testing.T) {
 	t.Parallel()
 	existing := []RegistrySourceEntry{
-		{Name: "aipack", URL: "https://github.com/org/aipack.git"},
+		{Name: "aipack", URL: "https://github.com/org/aipack.git", Path: "registry.yaml"},
 	}
-	got := UniqueSourceName("aipack", "https://github.com/org/aipack.git", existing)
+	got := UniqueSourceName("aipack", "https://github.com/org/aipack.git", "registry.yaml", existing)
 	if got != "aipack" {
-		t.Errorf("got %q, want aipack (same URL should reuse name)", got)
+		t.Errorf("got %q, want aipack (same URL+path should reuse name)", got)
+	}
+}
+
+func TestUniqueSourceName_SameURLDifferentPath(t *testing.T) {
+	t.Parallel()
+	existing := []RegistrySourceEntry{
+		{Name: "aipack", URL: "https://github.com/org/aipack.git", Path: "registry.yaml"},
+	}
+	got := UniqueSourceName("other-reg", "https://github.com/org/aipack.git", "other-reg.yaml", existing)
+	if got != "other-reg" {
+		t.Errorf("got %q, want other-reg (same URL but different path is a new source)", got)
 	}
 }
 
@@ -147,7 +167,7 @@ func TestUniqueSourceName_Collision(t *testing.T) {
 	existing := []RegistrySourceEntry{
 		{Name: "aipack", URL: "https://other.com/aipack.git"},
 	}
-	got := UniqueSourceName("aipack", "https://github.com/org/aipack.git", existing)
+	got := UniqueSourceName("aipack", "https://github.com/org/aipack.git", "", existing)
 	if got != "aipack-2" {
 		t.Errorf("got %q, want aipack-2", got)
 	}

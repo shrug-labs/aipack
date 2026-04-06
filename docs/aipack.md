@@ -254,10 +254,7 @@ aipack profile show --profile-path /path/to/profile.yaml
 
 ## Registry
 
-The registry maps pack names to source repositories. The unified view merges:
-
-1. **Local entries** from `~/.config/aipack/registry.yaml` (highest priority, manual edits)
-2. **Cached remote sources** in `~/.config/aipack/registries/` (in source order from sync-config)
+The registry maps pack names to source repositories. The unified view merges all cached sources in `~/.config/aipack/registries/` in `registry_sources` order from sync-config (first-seen wins for pack name conflicts). Sources include remote registries fetched via `registry fetch` and embedded entries bundled inside installed packs.
 
 ### registry fetch
 

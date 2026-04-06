@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.18.3]
+
+### Fixed
+
+- Fetching a second registry file from the same git repo overwrote the first registry source instead of creating a separate entry. Registry source identity now uses the (URL, path) pair — two files from one repo are correctly tracked as distinct sources with independent cache files and sync-config entries.
+- Docs: corrected stale description of registry merge behavior that referenced a nonexistent `~/.config/aipack/registry.yaml` local file.
+
 ## [0.18.2]
 
 ### Fixed
