@@ -203,9 +203,8 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 		if err := applyWithFilter(staging, &extractedManifest, with); err != nil {
 			return fmt.Errorf("applying content filter: %w", err)
 		}
-		packRemoveExisting(destDir, stdout)
-		if err := os.Rename(staging, destDir); err != nil {
-			return fmt.Errorf("moving pack to %s: %w", destDir, err)
+		if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
+			return fmt.Errorf("installing pack to %s: %w", destDir, err)
 		}
 		manifest = extractedManifest
 		fmt.Fprintf(stdout, "Copied: %s -> %s\n", packDir, destDir)
@@ -436,10 +435,8 @@ func packFetchHTTPTarball(ctx context.Context, req PackInstallRequest, info sour
 	}
 
 	destDir := filepath.Join(packsDir, name)
-	packRemoveExisting(destDir, stdout)
-
-	if err := os.Rename(staging, destDir); err != nil {
-		return packInstallResult{}, fmt.Errorf("moving extracted pack to %s: %w", destDir, err)
+	if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
+		return packInstallResult{}, fmt.Errorf("installing pack to %s: %w", destDir, err)
 	}
 	fmt.Fprintf(stdout, "Installed: %s -> %s\n", req.URL, destDir)
 
@@ -498,10 +495,8 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 	}
 
 	destDir := filepath.Join(packsDir, name)
-	packRemoveExisting(destDir, stdout)
-
-	if err := os.Rename(staging, destDir); err != nil {
-		return packInstallResult{}, fmt.Errorf("moving extracted pack to %s: %w", destDir, err)
+	if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
+		return packInstallResult{}, fmt.Errorf("installing pack to %s: %w", destDir, err)
 	}
 
 	fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
@@ -586,7 +581,9 @@ func inferInstallMethod(mode os.FileMode) string {
 	return config.MethodCopy
 }
 
-// packRemoveExisting removes an already-installed pack at destDir, printing what it replaces.
+// packRemoveExisting removes an already-installed pack at destDir, printing
+// what it replaces. Used only for the symlink install path where there is no
+// staging directory to swap in.
 func packRemoveExisting(destDir string, stdout io.Writer) {
 	if st, err := os.Lstat(destDir); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {

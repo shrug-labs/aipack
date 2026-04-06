@@ -154,6 +154,12 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	// unregistered packs (warning-only, does not block subsequent checks)
 	add(doctorCheckUnregisteredPacks(configDir, syncCfg))
 
+	// orphaned sync-config entries pointing at missing pack directories
+	add(doctorCheckOrphanedInstallEntries(configDir, syncCfg, req.Fix))
+
+	// stale backup directories and temp staging left by interrupted operations
+	add(doctorCheckStaleBackups(configDir, req.Fix))
+
 	// pack version drift (warning-only)
 	add(doctorCheckPackDrift(configDir, syncCfg))
 
@@ -586,6 +592,116 @@ func doctorCheckUnregisteredPacks(configDir string, syncCfg config.SyncConfig) C
 		check.Message = "all packs registered"
 	}
 
+	return check
+}
+
+// doctorCheckOrphanedInstallEntries warns about installed_packs entries in
+// sync-config whose pack directory no longer exists on disk.
+func doctorCheckOrphanedInstallEntries(configDir string, syncCfg config.SyncConfig, fix bool) CheckResult {
+	check := CheckResult{Name: "install_entries_valid", Severity: "warning", Status: "pass", OK: true}
+
+	packsDir := PacksDir(configDir)
+	var orphaned []string
+	for name := range syncCfg.InstalledPacks {
+		packDir := filepath.Join(packsDir, name)
+		if _, err := os.Lstat(packDir); os.IsNotExist(err) {
+			orphaned = append(orphaned, name)
+		}
+	}
+	slices.Sort(orphaned)
+
+	if len(orphaned) == 0 {
+		check.Message = "all install entries have pack directories"
+		return check
+	}
+
+	if fix {
+		// syncCfg is passed by value but InstalledPacks is a map (reference
+		// type), so this delete is visible to downstream checks. This is
+		// intentional: removed entries should not trigger false positives in
+		// pack_version_drift or stale_ledgers.
+		for _, name := range orphaned {
+			delete(syncCfg.InstalledPacks, name)
+		}
+		if err := config.SaveSyncConfig(config.SyncConfigPath(configDir), syncCfg); err != nil {
+			check.Status = "fail"
+			check.OK = false
+			check.Message = fmt.Sprintf("failed to save sync-config: %s", err)
+			return check
+		}
+		check.Status = "fixed"
+		check.Fixed = true
+		check.FixAction = fmt.Sprintf("removed %d orphaned install entry/entries", len(orphaned))
+		check.Message = check.FixAction
+		check.Details = map[string]any{"removed": orphaned}
+		return check
+	}
+
+	check.Status = "warn"
+	check.OK = false
+	check.Message = fmt.Sprintf("%d installed_packs entry/entries with missing directory", len(orphaned))
+	check.Remediation = "Run 'aipack doctor --fix' to remove stale entries, or reinstall the missing packs"
+	check.Details = map[string]any{"orphaned": orphaned}
+	return check
+}
+
+// doctorCheckStaleBackups warns about leftover .bak-* directories in the
+// packs directory and orphaned temp dirs in the staging area, created by
+// interrupted install or update operations.
+func doctorCheckStaleBackups(configDir string, fix bool) CheckResult {
+	check := CheckResult{Name: "stale_backups", Severity: "warning", Status: "pass", OK: true}
+
+	type staleEntry struct {
+		dir  string // parent directory
+		name string // entry name
+	}
+	var stale []staleEntry
+
+	// Scan packs/ for backup directories (.*.bak-*).
+	packsDir := PacksDir(configDir)
+	if entries, err := os.ReadDir(packsDir); err == nil {
+		for _, e := range entries {
+			if util.IsBackupDir(e.Name()) {
+				stale = append(stale, staleEntry{packsDir, e.Name()})
+			}
+		}
+	}
+
+	// Scan temp staging area for leftover clone/archive/staging dirs.
+	stagingDir := packStagingDir(configDir)
+	if entries, err := os.ReadDir(stagingDir); err == nil {
+		for _, e := range entries {
+			stale = append(stale, staleEntry{stagingDir, e.Name()})
+		}
+	}
+
+	if len(stale) == 0 {
+		check.Message = "no stale backups or temp directories"
+		return check
+	}
+
+	names := make([]string, len(stale))
+	for i, s := range stale {
+		names[i] = filepath.Join(s.dir, s.name)
+	}
+
+	if fix {
+		for _, s := range stale {
+			_ = os.RemoveAll(filepath.Join(s.dir, s.name))
+		}
+		check.Status = "fixed"
+		check.Fixed = true
+		check.FixAction = fmt.Sprintf("removed %d stale item(s)", len(stale))
+		check.Message = check.FixAction
+		check.Details = map[string]any{"removed": names}
+		return check
+	}
+
+	check.Status = "warn"
+	check.OK = false
+	check.Message = fmt.Sprintf("%d stale backup/temp item(s)", len(stale))
+	check.Remediation = "Run 'aipack doctor --fix' to remove, or delete manually"
+	check.Details = map[string]any{"stale": names}
 	return check
 }
 

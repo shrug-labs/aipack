@@ -100,6 +100,107 @@ func TestCopyDir_RegularFiles(t *testing.T) {
 	}
 }
 
+func TestReplaceDirAtomic_FreshInstall(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	staging := filepath.Join(parent, "staging")
+	os.Mkdir(staging, 0o755)
+	os.WriteFile(filepath.Join(staging, "file.txt"), []byte("new"), 0o644)
+
+	dest := filepath.Join(parent, "dest")
+	if err := ReplaceDirAtomic(dest, staging); err != nil {
+		t.Fatalf("ReplaceDirAtomic: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "file.txt"))
+	if err != nil {
+		t.Fatalf("expected file in dest: %v", err)
+	}
+	if string(got) != "new" {
+		t.Errorf("got %q, want %q", string(got), "new")
+	}
+}
+
+func TestReplaceDirAtomic_ReplaceExisting(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+
+	dest := filepath.Join(parent, "dest")
+	os.MkdirAll(dest, 0o755)
+	os.WriteFile(filepath.Join(dest, "old.txt"), []byte("old"), 0o644)
+
+	staging := filepath.Join(parent, "staging")
+	os.Mkdir(staging, 0o755)
+	os.WriteFile(filepath.Join(staging, "new.txt"), []byte("new"), 0o644)
+
+	if err := ReplaceDirAtomic(dest, staging); err != nil {
+		t.Fatalf("ReplaceDirAtomic: %v", err)
+	}
+
+	// New content present.
+	got, err := os.ReadFile(filepath.Join(dest, "new.txt"))
+	if err != nil {
+		t.Fatalf("new.txt missing: %v", err)
+	}
+	if string(got) != "new" {
+		t.Errorf("got %q, want %q", string(got), "new")
+	}
+	// Old content gone.
+	if _, err := os.Stat(filepath.Join(dest, "old.txt")); !os.IsNotExist(err) {
+		t.Error("old.txt should not exist after replace")
+	}
+	// No leftover backup.
+	entries, _ := os.ReadDir(parent)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".bak-") {
+			t.Errorf("leftover backup: %s", e.Name())
+		}
+	}
+}
+
+func TestReplaceDirAtomic_StagingMissing_PreservesExisting(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+
+	dest := filepath.Join(parent, "dest")
+	os.MkdirAll(dest, 0o755)
+	os.WriteFile(filepath.Join(dest, "keep.txt"), []byte("keep"), 0o644)
+
+	err := ReplaceDirAtomic(dest, filepath.Join(parent, "nonexistent"))
+	if err == nil {
+		t.Fatal("expected error for missing staging dir")
+	}
+	// Original content must be restored.
+	got, rerr := os.ReadFile(filepath.Join(dest, "keep.txt"))
+	if rerr != nil {
+		t.Fatalf("dest should be restored after failed replace: %v", rerr)
+	}
+	if string(got) != "keep" {
+		t.Errorf("got %q, want %q", string(got), "keep")
+	}
+}
+
+func TestIsBackupDir(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{".my-pack.bak-20260405T120000Z-deadbeef", true},
+		{".foo.bak-20260101T000000Z-00000000", true},
+		{".hidden", false},
+		{"my-pack.bak-20260405T120000Z-deadbeef", false}, // no dot prefix
+		{"", false},
+		{".bak-only", false}, // no timestamp-hex suffix
+		{".x.bak-y", false},  // no timestamp-hex suffix
+		{".a.bak-not-a-date", false},
+	}
+	for _, tt := range tests {
+		if got := IsBackupDir(tt.name); got != tt.want {
+			t.Errorf("IsBackupDir(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestIsWithinDir(t *testing.T) {
 	tests := []struct {
 		path, dir string

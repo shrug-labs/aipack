@@ -194,6 +194,144 @@ func TestDoctorCheckUnregisteredPacks_SkipsDotDirs(t *testing.T) {
 	}
 }
 
+func TestDoctorCheckOrphanedInstallEntries_None(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packsDir := filepath.Join(dir, "packs")
+	os.MkdirAll(filepath.Join(packsDir, "my-pack"), 0o755)
+
+	syncCfg := config.SyncConfig{
+		InstalledPacks: map[string]config.InstalledPackMeta{
+			"my-pack": {Method: config.MethodCopy},
+		},
+	}
+	cr := doctorCheckOrphanedInstallEntries(dir, syncCfg, false)
+	if !cr.OK {
+		t.Errorf("OK = false, want true")
+	}
+}
+
+func TestDoctorCheckOrphanedInstallEntries_Found(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "packs"), 0o755)
+
+	syncCfg := config.SyncConfig{
+		InstalledPacks: map[string]config.InstalledPackMeta{
+			"gone-pack": {Method: config.MethodCopy},
+		},
+	}
+	cr := doctorCheckOrphanedInstallEntries(dir, syncCfg, false)
+	if cr.OK {
+		t.Errorf("OK = true, want false")
+	}
+	orphaned := cr.Details["orphaned"].([]string)
+	if len(orphaned) != 1 || orphaned[0] != "gone-pack" {
+		t.Errorf("orphaned = %v, want [gone-pack]", orphaned)
+	}
+}
+
+func TestDoctorCheckOrphanedInstallEntries_Fix(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "packs"), 0o755)
+
+	syncCfg := config.SyncConfig{
+		SchemaVersion: 1,
+		InstalledPacks: map[string]config.InstalledPackMeta{
+			"gone-pack": {Method: config.MethodCopy},
+		},
+	}
+	// Write initial sync-config so SaveSyncConfig has a valid path.
+	config.SaveSyncConfig(config.SyncConfigPath(dir), syncCfg)
+
+	cr := doctorCheckOrphanedInstallEntries(dir, syncCfg, true)
+	if cr.Status != "fixed" {
+		t.Errorf("Status = %q, want %q", cr.Status, "fixed")
+	}
+	// Verify entry was removed from persisted sync-config.
+	reloaded, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("reload sync-config: %v", err)
+	}
+	if _, ok := reloaded.InstalledPacks["gone-pack"]; ok {
+		t.Error("gone-pack should be removed from sync-config after fix")
+	}
+}
+
+func TestDoctorCheckStaleBackups_None(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packsDir := filepath.Join(dir, "packs")
+	os.MkdirAll(filepath.Join(packsDir, "my-pack"), 0o755)
+
+	cr := doctorCheckStaleBackups(dir, false)
+	if !cr.OK {
+		t.Errorf("OK = false, want true")
+	}
+	if cr.Status != "pass" {
+		t.Errorf("Status = %q, want %q", cr.Status, "pass")
+	}
+}
+
+func TestDoctorCheckStaleBackups_BackupInPacks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packsDir := filepath.Join(dir, "packs")
+	os.MkdirAll(filepath.Join(packsDir, ".my-pack.bak-20260405T120000Z-deadbeef"), 0o755)
+
+	cr := doctorCheckStaleBackups(dir, false)
+	if cr.OK {
+		t.Errorf("OK = true, want false")
+	}
+	stale := cr.Details["stale"].([]string)
+	if len(stale) != 1 {
+		t.Fatalf("expected 1 stale item, got %d", len(stale))
+	}
+}
+
+func TestDoctorCheckStaleBackups_StagingLeftover(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "packs"), 0o755)
+	stagingDir := filepath.Join(dir, ".tmp", "pack-staging")
+	os.MkdirAll(filepath.Join(stagingDir, "clone-12345"), 0o755)
+
+	cr := doctorCheckStaleBackups(dir, false)
+	if cr.OK {
+		t.Errorf("OK = true, want false")
+	}
+	stale := cr.Details["stale"].([]string)
+	if len(stale) != 1 {
+		t.Fatalf("expected 1 stale item, got %d", len(stale))
+	}
+}
+
+func TestDoctorCheckStaleBackups_Fix(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packsDir := filepath.Join(dir, "packs")
+	bakDir := filepath.Join(packsDir, ".my-pack.bak-20260405T120000Z-deadbeef")
+	os.MkdirAll(bakDir, 0o755)
+	stagingDir := filepath.Join(dir, ".tmp", "pack-staging")
+	cloneDir := filepath.Join(stagingDir, "clone-99999")
+	os.MkdirAll(cloneDir, 0o755)
+
+	cr := doctorCheckStaleBackups(dir, true)
+	if cr.Status != "fixed" {
+		t.Errorf("Status = %q, want %q", cr.Status, "fixed")
+	}
+	if !cr.Fixed {
+		t.Error("Fixed = false, want true")
+	}
+	if _, err := os.Stat(bakDir); !os.IsNotExist(err) {
+		t.Error("backup directory should be removed after fix")
+	}
+	if _, err := os.Stat(cloneDir); !os.IsNotExist(err) {
+		t.Error("staging clone dir should be removed after fix")
+	}
+}
+
 func TestDoctorCheckPackDrift_NoDrift(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

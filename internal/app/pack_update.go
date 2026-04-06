@@ -237,19 +237,9 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
 
-		// Atomic swap: rename existing pack to a backup, move staging in,
-		// then remove the backup.  If the rename-in fails we restore the backup
-		// so the user never ends up with a missing pack.
-		backup := packDir + ".bak"
-		if err := os.Rename(packDir, backup); err != nil {
+		if err := util.ReplaceDirAtomic(packDir, staging); err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
-		if err := os.Rename(staging, packDir); err != nil {
-			// Restore the backup so the installed pack is not lost.
-			_ = os.Rename(backup, packDir)
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
-		}
-		_ = os.RemoveAll(backup)
 
 		aList, dList := buildPrefsLists(effective)
 		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
@@ -286,15 +276,9 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 		if err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
-		backup := packDir + ".bak"
-		if err := os.Rename(packDir, backup); err != nil {
+		if err := util.ReplaceDirAtomic(packDir, staging); err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
-		if err := os.Rename(staging, packDir); err != nil {
-			_ = os.Rename(backup, packDir)
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
-		}
-		_ = os.RemoveAll(backup)
 
 		aList, dList := buildPrefsLists(effective)
 		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)

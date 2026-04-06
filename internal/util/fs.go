@@ -3,10 +3,13 @@ package util
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 func WriteFileAtomic(path string, content []byte) error {
@@ -35,6 +38,42 @@ func WriteFileAtomicWithPerms(path string, content []byte, dirPerm os.FileMode, 
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// ReplaceDirAtomic moves staging into destDir. If destDir already exists it
+// is renamed to a randomized backup first; on failure the backup is restored
+// so the caller never ends up with a missing directory.
+func ReplaceDirAtomic(destDir, staging string) error {
+	_, err := os.Lstat(destDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.Rename(staging, destDir)
+	}
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", destDir, err)
+	}
+	backup := filepath.Join(
+		filepath.Dir(destDir),
+		fmt.Sprintf(".%s.bak-%s-%08x", filepath.Base(destDir), time.Now().UTC().Format("20060102T150405Z"), rand.Uint32()),
+	)
+	if err := os.Rename(destDir, backup); err != nil {
+		return fmt.Errorf("backing up %s: %w", destDir, err)
+	}
+	if err := os.Rename(staging, destDir); err != nil {
+		_ = os.Rename(backup, destDir)
+		return err
+	}
+	_ = os.RemoveAll(backup)
+	return nil
+}
+
+// backupDirRe matches the naming pattern produced by ReplaceDirAtomic:
+// ".{name}.bak-{YYYYMMDDTHHMMSSZ}-{8-hex-chars}"
+var backupDirRe = regexp.MustCompile(`^\..+\.bak-\d{8}T\d{6}Z-[0-9a-f]{8}$`)
+
+// IsBackupDir reports whether a directory entry name matches the backup naming
+// pattern produced by ReplaceDirAtomic (e.g. ".my-pack.bak-20260405T120000Z-deadbeef").
+func IsBackupDir(name string) bool {
+	return backupDirRe.MatchString(name)
 }
 
 // PathExists reports whether path exists on disk (file or directory, follows symlinks).

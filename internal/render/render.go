@@ -6,7 +6,6 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -67,8 +66,7 @@ func RunToDir(ctx context.Context, profile domain.Profile, outDir string, harnes
 		}
 	}
 
-	// Swap into place (atomic within filesystem).
-	backupDir := ""
+	// Guard against replacing symlinks or non-directories.
 	if st, err := os.Lstat(outDirAbs); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to replace out-dir symlink: %s", outDirAbs)
@@ -76,23 +74,8 @@ func RunToDir(ctx context.Context, profile domain.Profile, outDir string, harnes
 		if !st.IsDir() {
 			return fmt.Errorf("out-dir exists and is not a directory: %s", outDirAbs)
 		}
-		backupDir = filepath.Join(parent, fmt.Sprintf(".%s.bak-%s-%08x", filepath.Base(outDirAbs), time.Now().UTC().Format("20060102T150405Z"), rand.Uint32()))
-		if err := os.Rename(outDirAbs, backupDir); err != nil {
-			return err
-		}
 	}
-	if err := os.Rename(tmpDir, outDirAbs); err != nil {
-		if backupDir != "" {
-			_ = os.Rename(backupDir, outDirAbs)
-		}
-		return err
-	}
-	if backupDir != "" {
-		if err := os.RemoveAll(backupDir); err != nil {
-			return err
-		}
-	}
-	return nil
+	return util.ReplaceDirAtomic(outDirAbs, tmpDir)
 }
 
 func validateOutDir(profile domain.Profile, outDirAbs string) error {

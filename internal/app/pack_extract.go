@@ -26,7 +26,7 @@ var packContentDirs = []string{
 // directory with standard layout. Two modes:
 //
 // Standard pack (contentPaths nil): loads pack.json from srcRoot, copies
-// only content directories + pack.json + declared registries. Everything
+// only content directories + pack.json + declared extras. Everything
 // else (.git, tests, docs, CI) is excluded.
 //
 // Content_paths pack (contentPaths non-nil): no pack.json expected in source.
@@ -159,29 +159,6 @@ func extractStandardPack(staging, srcRoot, symlinkBoundary string) (string, conf
 			if err := util.CopyFileResolvingSymlink(src, dst, symlinkBoundary); err != nil {
 				return cleanup(fmt.Errorf("copying extras file %s: %w", ext, err))
 			}
-		}
-	}
-
-	// Copy declared registries (may live outside content dirs).
-	for _, rel := range manifest.Registries {
-		src := filepath.Join(packRoot, rel)
-		dst := filepath.Join(staging, rel)
-		// Guard against path traversal in registry declarations.
-		if !util.IsWithinDir(src, symlinkBoundary) || !util.IsWithinDir(dst, staging) {
-			return cleanup(fmt.Errorf("registry path %q escapes boundary", rel))
-		}
-		rd, rerr := os.ReadFile(src)
-		if rerr != nil {
-			if errors.Is(rerr, os.ErrNotExist) {
-				continue
-			}
-			return cleanup(fmt.Errorf("reading registry %s: %w", rel, rerr))
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return cleanup(err)
-		}
-		if err := util.WriteFileAtomicWithPerms(dst, rd, 0o700, 0o600); err != nil {
-			return cleanup(fmt.Errorf("writing registry %s: %w", rel, err))
 		}
 	}
 

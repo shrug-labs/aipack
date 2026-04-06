@@ -213,6 +213,52 @@ func TestContentPaths_IncludesExtrasDirs(t *testing.T) {
 	}
 }
 
+func TestNormalizeIDs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		entries []string
+		ext     string
+		want    []string
+	}{
+		{"nil input", nil, ".yaml", nil},
+		{"empty slice", []string{}, ".yaml", []string{}},
+		{"bare IDs pass through", []string{"team", "ops"}, ".yaml", []string{"team", "ops"}},
+		{"strips path prefix and ext", []string{"profiles/team.yaml"}, ".yaml", []string{"team"}},
+		{"nested path stripped", []string{"a/b/c.yaml"}, ".yaml", []string{"c"}},
+		{"extension only stripped", []string{"team.yaml"}, ".yaml", []string{"team"}},
+		{"non-matching ext unchanged", []string{"team.json"}, ".yaml", []string{"team.json"}},
+		{"multiple dots", []string{"my.config.yaml"}, ".yaml", []string{"my.config"}},
+		{"path traversal sanitized", []string{"../escape.yaml"}, ".yaml", []string{"escape"}},
+		{"mixed entries", []string{"registries/popular.yaml", "local", "old/path.yaml"}, ".yaml", []string{"popular", "local", "path"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Copy input to avoid mutating test table.
+			var input []string
+			if tt.entries != nil {
+				input = make([]string, len(tt.entries))
+				copy(input, tt.entries)
+			}
+			got := normalizeIDs(input, tt.ext)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("got %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("[%d] got %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestExtrasStagingName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -36,6 +36,8 @@ Runs diagnostic checks on config, packs, and MCP servers. Overall status fails o
 | `git_available` | warning | Verifies git is installed (needed for registry fetch and pack install) |
 | `profile_validated` | warning | Validates profile YAML structure |
 | `packs_registered` | warning | Detects pack directories not in `installed_packs` |
+| `install_entries_valid` | warning | Detects `installed_packs` entries whose pack directory is missing (auto-fixable with `--fix`) |
+| `stale_backups` | warning | Finds leftover backup and temp directories from interrupted installs/updates (auto-fixable with `--fix`) |
 | `pack_version_drift` | warning | Compares installed pack versions/hashes against their origins (local checks only, no network) |
 | `stale_ledgers` | warning | Detects ledger files orphaned from a previous scope or harness configuration |
 | `ledger_health` | warning | Checks for orphaned entries and missing `source_pack` fields (auto-fixable with `--fix`) |
@@ -261,7 +263,7 @@ The registry maps pack names to source repositories. The unified view merges:
 
 Fetches remote registries and caches them locally. Each source is cached as a separate file and saved to `registry_sources` in sync-config for future fetches.
 
-With an explicit URL, fetches that single source. Without a URL, fetches all configured sources (or the compiled-in default from `shrug-labs/aipack`).
+With an explicit URL, fetches that single source. Without a URL, fetches all configured sources (or the compiled-in default from `shrug-labs/packs`).
 
 Git detection: URL ending in `.git` → git mode (defaults: `ref=main`, `path=registry.yaml`). `git@host:path` or `ssh://` → git mode. `--ref` provided → git mode. Otherwise → HTTP GET.
 

@@ -135,7 +135,7 @@ Each installed pack has an `.aipack-integrity.json` file recording SHA256 hashes
 
 Profiles live in `~/.config/aipack/profiles/<name>.yaml`. The active profile is set by `defaults.profile` in sync-config.yaml.
 
-Profile files use schema version 2 and define which packs to load, what parameters to expand, and what content to include or exclude. The profile schema is documented in the [Pack Format Specification](./pack-format.md#81-profile-structure).
+Profile files use schema version 2 and define which packs to load, what parameters to expand, and what content to include or exclude. The profile schema is documented in [Profiles](./profiles.md).
 
 `aipack init` creates a minimal `default.yaml`:
 
@@ -152,7 +152,7 @@ Registries map pack names to git repositories. Three layers merge at resolution 
 
 1. **Local entries** in `~/.config/aipack/registry.yaml` — highest priority, manually maintained
 2. **Cached remote sources** in `~/.config/aipack/registries/<source-name>.yaml` — one file per source, fetched by `registry fetch`
-3. **Compiled-in default** pointing to `shrug-labs/aipack` — used when no sources are configured
+3. **Compiled-in default** pointing to `shrug-labs/packs` — used when no sources are configured
 
 When multiple sources define the same pack name, the first source in the list wins (local > cached sources in sync-config order > default).
 

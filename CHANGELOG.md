@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.18.2]
+
+### Fixed
+
+- Pack install and update now use atomic backup-and-swap for directory replacement, preventing pack loss if the final move fails. Consolidated from per-call-site implementations into `ReplaceDirAtomic`.
+- Removed dead registry-copy code in pack extraction (superseded by extras).
+- Docs: default registry pointer corrected to `shrug-labs/packs`.
+
+### Added
+
+- `doctor` checks `install_entries_valid` and `stale_backups`: detect orphaned sync-config entries and leftover temp directories from interrupted operations. Both auto-fixable with `--fix`.
+
 ## [0.18.1]
 
 ### Fixed
@@ -25,7 +37,7 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ### Changed
 
-- **Profiles and registries are now ID-based.** *(Breaking)* Manifest fields use bare IDs (`"profiles": ["dev"]`, `"registries": ["team-tools"]`) discovered from standard `profiles/` and `registries/` directories, matching rules, skills, and other content types. Old relative-path format (`"profiles/ops.yaml"`, `"registry.yaml"`) is no longer supported — move files into the standard directories and update pack.json to use bare IDs.
+- **Profiles and registries are now ID-based.** *(Breaking)* Manifest fields use bare IDs (`"profiles": ["dev"]`, `"registries": ["team-tools"]`) discovered from standard `profiles/` and `registries/` directories, matching rules, skills, and other content types. Old relative-path format (`"profiles/ops.yaml"`, `"registry.yaml"`) is deprecated — old-format entries in pack.json are automatically normalized, but files must live in the standard directories.
 - **Default scope is now `global`.** When `--scope` is not specified and sync-config has no `defaults.scope`, CLI and TUI default to `global` instead of `project`. Fixes confusion when running from `$HOME` where project and global paths coincide. Set `defaults.scope: project` in sync-config or pass `--scope project` for the old behavior.
 - **Pack-bundled profiles are managed content.** On install or update, profiles from the pack always overwrite the local copy. Copy to a new name to preserve customizations.
 - **Content approval tracking.** Sync-config records which bundled content categories the user approved per pack. On update, previously approved categories carry forward automatically (profiles re-copied, registries re-merged); new categories surface as candidates. Pre-`--with` installs are treated as fully approved for backward compatibility.
