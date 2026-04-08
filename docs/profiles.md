@@ -207,7 +207,7 @@ aipack sync
 
 ## Layering multiple packs
 
-Profiles compose packs from different sources. Packs are processed in order (first to last). If two packs declare the same content ID — for example, both have `rules/anti-slop.md` — the sync engine raises a conflict unless the later pack explicitly declares it as an override:
+Profiles compose packs from different sources. Packs are processed in order (first to last). If two packs declare the same content ID — for example, both have `rules/anti-slop.md` — the sync engine resolves the collision based on `defaults.collision_strategy` in sync-config.yaml (default: `last-wins`). You can also resolve collisions explicitly by declaring overrides:
 
 ```yaml
 packs:
@@ -219,7 +219,7 @@ packs:
       workflows: ["deploy"]     # personal's version replaces team-ops's
 ```
 
-Without the `overrides` declaration, duplicate IDs across packs are treated as errors.
+Without the `overrides` declaration, duplicate IDs are resolved by the `defaults.collision_strategy` in sync-config.yaml. The default is `last-wins` — the later pack in profile order wins. Set it to `first-wins` for the reverse, or `error` to require explicit overrides for every collision. Explicit `overrides` always take precedence over the strategy.
 
 Packs with harness config files (`configs/` directory in `pack.json`) contribute base settings automatically. Multiple packs' settings are deep-merged in profile order — the first pack wins at leaf value conflicts, and a warning identifies the overlap. Set `settings.enabled: false` on a pack entry to opt it out of settings contribution.
 

@@ -34,6 +34,15 @@ const (
 	MethodLocal       = "local" // pack already resides in the packs directory; registered in-place
 )
 
+// CollisionStrategy controls how content ID collisions between packs are resolved.
+type CollisionStrategy string
+
+const (
+	CollisionError     CollisionStrategy = "error"      // fail with all collisions + remediation YAML
+	CollisionFirstWins CollisionStrategy = "first-wins" // earlier pack in profile order wins
+	CollisionLastWins  CollisionStrategy = "last-wins"  // later pack in profile order wins
+)
+
 // InstalledPackMeta records the origin and install method for a pack.
 type InstalledPackMeta struct {
 	Origin       string                         `yaml:"origin"`                  // abs path or URL
@@ -52,11 +61,12 @@ type InstalledPackMeta struct {
 type SyncConfig struct {
 	SchemaVersion int `yaml:"schema_version"`
 	Defaults      struct {
-		Profile     string   `yaml:"profile"`
-		Harnesses   []string `yaml:"harnesses"`
-		Scope       string   `yaml:"scope"`
-		Registry    string   `yaml:"registry,omitempty"`
-		RegistryURL string   `yaml:"registry_url,omitempty"`
+		Profile           string            `yaml:"profile"`
+		Harnesses         []string          `yaml:"harnesses"`
+		Scope             string            `yaml:"scope"`
+		Registry          string            `yaml:"registry,omitempty"`
+		RegistryURL       string            `yaml:"registry_url,omitempty"`
+		CollisionStrategy CollisionStrategy `yaml:"collision_strategy,omitempty"`
 	} `yaml:"defaults"`
 	InstalledPacks  map[string]InstalledPackMeta `yaml:"installed_packs,omitempty"`
 	RegistrySources []RegistrySourceEntry        `yaml:"registry_sources,omitempty"`
@@ -120,7 +130,28 @@ func LoadSyncConfig(path string) (SyncConfig, error) {
 		cfg.Defaults.Harnesses[i] = strings.TrimSpace(cfg.Defaults.Harnesses[i])
 	}
 	cfg.Defaults.Scope = strings.TrimSpace(cfg.Defaults.Scope)
+	if cfg.Defaults.CollisionStrategy != "" {
+		cs, err := NormalizeCollisionStrategy(string(cfg.Defaults.CollisionStrategy))
+		if err != nil {
+			return SyncConfig{}, err
+		}
+		cfg.Defaults.CollisionStrategy = cs
+	}
 	return cfg, nil
+}
+
+// NormalizeCollisionStrategy validates and normalizes a collision strategy string.
+func NormalizeCollisionStrategy(s string) (CollisionStrategy, error) {
+	switch CollisionStrategy(strings.TrimSpace(strings.ToLower(s))) {
+	case "", CollisionLastWins:
+		return CollisionLastWins, nil
+	case CollisionError:
+		return CollisionError, nil
+	case CollisionFirstWins:
+		return CollisionFirstWins, nil
+	default:
+		return "", fmt.Errorf("unknown collision_strategy %q (valid: error, first-wins, last-wins)", s)
+	}
 }
 
 // SaveSyncConfig marshals cfg to YAML and writes it atomically to path.

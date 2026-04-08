@@ -168,10 +168,10 @@ func TestPackUpdate_Clone_SubPath(t *testing.T) {
 	}, &e.out)
 
 	// Update — new content replaces old.
-	cloneCalls := 0
+	packCloneCalls := 0
 	updateGit := func(_ context.Context, args ...string) error {
-		if len(args) >= 4 && args[0] == "clone" {
-			cloneCalls++
+		if len(args) >= 4 && args[0] == "clone" && !isBareClone(args) {
+			packCloneCalls++
 			dir := args[len(args)-1]
 			packDir := filepath.Join(dir, "packs", "team")
 			writePackManifest(t, packDir, "team-pack")
@@ -189,8 +189,8 @@ func TestPackUpdate_Clone_SubPath(t *testing.T) {
 	if results[0].Status != StatusUpdated {
 		t.Fatalf("status = %q", results[0].Status)
 	}
-	if cloneCalls != 1 {
-		t.Fatalf("clone calls = %d", cloneCalls)
+	if packCloneCalls != 1 {
+		t.Fatalf("pack clone calls = %d", packCloneCalls)
 	}
 	packDir := filepath.Join(e.configDir, "packs", "team-pack")
 	if _, err := os.Stat(filepath.Join(packDir, "rules", "v2-rule.md")); err != nil {
@@ -265,6 +265,100 @@ func TestPackUpdate_Clone_UpToDate(t *testing.T) {
 	}
 	if !strings.Contains(e.out.String(), "Up-to-date") {
 		t.Fatalf("output = %s", e.out.String())
+	}
+}
+
+func TestPackUpdate_Clone_LsRemoteSkipsClone(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	cloned := false
+	results, _ := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				cloned = true
+			}
+			return nil
+		}
+		r.GitLsRemoteFn = func(context.Context, string, string) (string, error) {
+			return fakeHash1, nil // same as stored hash
+		}
+	})
+	if cloned {
+		t.Fatal("expected ls-remote to skip the clone")
+	}
+	if results[0].Status != StatusUpToDate {
+		t.Fatalf("status = %q, want up-to-date", results[0].Status)
+	}
+}
+
+func TestPackUpdate_Clone_LsRemoteFails_FallsThrough(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	cloned := false
+	results, _ := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				cloned = true
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitLsRemoteFn = func(context.Context, string, string) (string, error) {
+			return "", fmt.Errorf("network error")
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2) // different hash → update
+	})
+	if !cloned {
+		t.Fatal("expected clone when ls-remote fails")
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+}
+
+func TestPackUpdate_Clone_LsRemoteSkippedWhenWithAddsCategory(t *testing.T) {
+	t.Parallel()
+	cloneWithExtras := fakeCloneGitFnWithSetup(t, func(dir string) {
+		os.MkdirAll(filepath.Join(dir, "scripts"), 0o700)
+		os.WriteFile(filepath.Join(dir, "scripts", "helper.sh"), []byte("#!/bin/sh\n"), 0o600)
+		config.SavePackManifest(filepath.Join(dir, "pack.json"), config.PackManifest{
+			SchemaVersion: 1, Name: "my-pack", Version: "1.0.0", Root: ".",
+			Extras: []string{"scripts"},
+		})
+	})
+
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", cloneWithExtras)
+
+	cloned := false
+	lsRemoteCalled := false
+	results, _ := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.With = domain.NewBundledSet(domain.BundledExtras) // new category
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				cloned = true
+				cloneWithExtras(context.Background(), args...)
+			}
+			return nil
+		}
+		r.GitLsRemoteFn = func(context.Context, string, string) (string, error) {
+			lsRemoteCalled = true
+			return fakeHash1, nil // same hash — but should still clone
+		}
+		r.GitHashFn = fakeHashFn(fakeHash1)
+	})
+	if lsRemoteCalled {
+		t.Fatal("ls-remote should not be called when --with adds new categories")
+	}
+	if !cloned {
+		t.Fatal("expected clone when --with adds new category")
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
 	}
 }
 

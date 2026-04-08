@@ -134,7 +134,7 @@ func DiscoverSaveFiles(ctx context.Context, eng *engine.Engine, req DiscoverSave
 	if err != nil {
 		// Non-fatal: proceed without pack roots (all files will be untracked).
 		warnings = append(warnings, fmt.Sprintf("profile resolution failed (all files will appear untracked): %v", err))
-		res = ResolveResult{
+		res = SyncContext{
 			TargetSpec: TargetSpec{
 				Scope:      req.Scope,
 				ProjectDir: req.ProjectDir,

@@ -3,6 +3,8 @@ package source
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,15 +40,22 @@ func CheckGit() error {
 
 // EnsureClone clones a repo into dir (using the real git binary) if .git is not already present.
 func EnsureClone(ctx context.Context, repoURL, dir, ref string) error {
-	return ensureClone(ctx, repoURL, dir, ref, runGit)
+	return ensureClone(ctx, repoURL, dir, ref, "", runGit)
 }
 
 // EnsureCloneWith is like EnsureClone but accepts a custom git runner for testing.
 func EnsureCloneWith(ctx context.Context, repoURL, dir, ref string, runGitFn func(ctx context.Context, args ...string) error) error {
-	return ensureClone(ctx, repoURL, dir, ref, runGitFn)
+	return ensureClone(ctx, repoURL, dir, ref, "", runGitFn)
 }
 
-func ensureClone(ctx context.Context, repoURL string, dir string, ref string, runGitFn func(ctx context.Context, args ...string) error) error {
+// EnsureCloneWithRef is like EnsureCloneWith but uses referenceDir as a local
+// object cache (git --reference) to speed up the network transfer. If
+// referenceDir is empty or doesn't contain a valid bare repo, it is ignored.
+func EnsureCloneWithRef(ctx context.Context, repoURL, dir, ref, referenceDir string, runGitFn func(ctx context.Context, args ...string) error) error {
+	return ensureClone(ctx, repoURL, dir, ref, referenceDir, runGitFn)
+}
+
+func ensureClone(ctx context.Context, repoURL string, dir string, ref string, referenceDir string, runGitFn func(ctx context.Context, args ...string) error) error {
 	if err := CheckGit(); err != nil {
 		return err
 	}
@@ -59,11 +68,20 @@ func ensureClone(ctx context.Context, repoURL string, dir string, ref string, ru
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
+	// Check if the reference dir contains a usable bare repo.
+	var refArgs []string
+	if referenceDir != "" {
+		if _, err := os.Stat(filepath.Join(referenceDir, "HEAD")); err == nil {
+			refArgs = []string{"--reference", referenceDir}
+		}
+	}
 	// When a ref is specified, try --branch first (works for branches and tags,
 	// single network round-trip). Fall back to clone-then-fetch for arbitrary
 	// refs (e.g. commit SHAs) that --branch doesn't support.
 	if ref != "" {
-		err := runGitFn(ctx, "clone", "--depth", "1", "--branch", ref, repoURL, dir)
+		args := append([]string{"clone", "--depth", "1"}, refArgs...)
+		args = append(args, "--branch", ref, repoURL, dir)
+		err := runGitFn(ctx, args...)
 		if err == nil {
 			return nil
 		}
@@ -73,7 +91,9 @@ func ensureClone(ctx context.Context, repoURL string, dir string, ref string, ru
 			return mkErr
 		}
 	}
-	if err := runGitFn(ctx, "clone", "--depth", "1", repoURL, dir); err != nil {
+	args := append([]string{"clone", "--depth", "1"}, refArgs...)
+	args = append(args, repoURL, dir)
+	if err := runGitFn(ctx, args...); err != nil {
 		return err
 	}
 	if ref != "" {
@@ -87,6 +107,64 @@ func checkoutRef(ctx context.Context, dir string, ref string, runGitFn func(ctx 
 		return err
 	}
 	return runGitFn(ctx, "-C", dir, "checkout", "--force", "FETCH_HEAD")
+}
+
+// LsRemoteHead returns the commit hash for a ref on the remote without cloning.
+// When ref is empty, it returns the hash for HEAD. When ref is set, it queries
+// both refs/heads/<ref> and refs/tags/<ref> in a single network call.
+// Returns ("", nil) when the ref cannot be resolved.
+func LsRemoteHead(ctx context.Context, repoURL, ref string) (string, error) {
+	return lsRemoteHead(ctx, repoURL, ref)
+}
+
+func lsRemoteHead(ctx context.Context, repoURL, ref string) (string, error) {
+	if err := CheckGit(); err != nil {
+		return "", err
+	}
+	args := []string{"ls-remote", repoURL}
+	if ref == "" {
+		args = append(args, "HEAD")
+	} else {
+		// Query branch and tag in one round-trip.
+		args = append(args, "refs/heads/"+ref, "refs/tags/"+ref)
+	}
+	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(tctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git ls-remote %s: %w", repoURL, err)
+	}
+	return parseLsRemoteHash(out), nil
+}
+
+// parseLsRemoteHash extracts the commit hash from ls-remote output.
+// For annotated tags, ls-remote returns both the tag object hash and the
+// dereferenced commit hash (refs/tags/v1.0^{}). We prefer the ^{} line
+// because that matches what `git rev-parse HEAD` returns after checkout.
+func parseLsRemoteHash(out []byte) string {
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return ""
+	}
+	// Prefer the ^{} dereferenced line (commit SHA for annotated tags).
+	for line := range strings.SplitSeq(s, "\n") {
+		if strings.Contains(line, "^{}") {
+			if hash, _, ok := strings.Cut(line, "\t"); ok {
+				return hash
+			}
+		}
+	}
+	// Fall back to first line (branches, HEAD, lightweight tags).
+	first := s
+	if f, _, ok := strings.Cut(s, "\n"); ok {
+		first = f
+	}
+	if hash, _, ok := strings.Cut(first, "\t"); ok {
+		return hash
+	}
+	return ""
 }
 
 // GitHeadHash returns the HEAD commit SHA for the git repo at dir.
@@ -202,4 +280,85 @@ func gitErrorHint(output string, args []string) string {
 	}
 
 	return ""
+}
+
+// --- Git clone cache ---
+
+// GitCacheDir returns the directory used for bare-repo clone caches.
+func GitCacheDir(configDir string) string {
+	return filepath.Join(configDir, ".cache", "git")
+}
+
+// CacheKeyForURL returns a stable directory name for caching a repo URL.
+func CacheKeyForURL(repoURL string) string {
+	h := sha256.Sum256([]byte(normalizeRepoURL(repoURL)))
+	return hex.EncodeToString(h[:12]) // 24 hex chars — unique enough, short names
+}
+
+// CacheRefDir returns the bare-repo cache path for a given repo URL.
+func CacheRefDir(configDir, repoURL string) string {
+	return filepath.Join(GitCacheDir(configDir), CacheKeyForURL(repoURL))
+}
+
+// UpdateBareCache creates a bare-repo cache for repoURL if one doesn't
+// already exist. When localSource is non-empty and contains a .git directory,
+// it is used as the clone source instead of hitting the remote — avoiding a
+// redundant network round-trip after the caller has already cloned. If the
+// cache already exists, this is a no-op (the cache is a local object store
+// for --reference, not a tracking clone — staleness only means slightly more
+// network transfer on the next clone, not failure).
+// The cache is NOT shallow: git --reference requires a non-shallow repo.
+// Best-effort: errors are returned but callers may choose to ignore them.
+func UpdateBareCache(ctx context.Context, repoURL, localSource, cacheDir string, runGitFn func(ctx context.Context, args ...string) error) error {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	key := CacheKeyForURL(repoURL)
+	bareDir := filepath.Join(cacheDir, key)
+
+	if _, err := os.Stat(filepath.Join(bareDir, "HEAD")); err == nil {
+		return nil // Cache exists — already usable as --reference.
+	}
+	// Seed from local clone when available (avoids redundant network call).
+	src := repoURL
+	if localSource != "" {
+		if _, err := os.Stat(filepath.Join(localSource, ".git")); err == nil {
+			src = localSource
+		}
+	}
+	if err := runGitFn(ctx, "clone", "--bare", src, bareDir); err != nil {
+		// Clean up partial state so future attempts can retry.
+		_ = os.RemoveAll(bareDir)
+		return err
+	}
+	// Unshallow: the source may be a --depth 1 clone, producing a shallow
+	// bare repo. git --reference requires non-shallow repos. Remove the
+	// shallow marker so subsequent clones can borrow objects.
+	_ = os.Remove(filepath.Join(bareDir, "shallow"))
+	return nil
+}
+
+// normalizeRepoURL produces a canonical form for cache key hashing.
+// Lowercases the entire URL (scheme, host, and path), strips trailing .git,
+// and normalizes SCP-style URLs (git@host:path) to ssh://git@host/path.
+// Full lowercasing is intentional: major git hosting platforms (GitHub, GitLab,
+// Bitbucket) treat repository paths case-insensitively, so Org/Repo and
+// org/repo should share the same cache entry.
+func normalizeRepoURL(raw string) string {
+	s := strings.TrimSpace(raw)
+
+	// SCP-style: git@host:path → ssh://git@host/path
+	if !strings.Contains(s, "://") {
+		if at := strings.Index(s, "@"); at >= 0 {
+			if colon := strings.Index(s[at:], ":"); colon >= 0 {
+				host := s[:at+colon]
+				path := s[at+colon+1:]
+				s = "ssh://" + host + "/" + path
+			}
+		}
+	}
+
+	s = strings.TrimSuffix(s, ".git")
+	s = strings.ToLower(s)
+	return s
 }

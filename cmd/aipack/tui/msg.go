@@ -108,6 +108,9 @@ type syncToggleHarnessMsg struct{ harness string }
 // syncCycleScopeMsg signals rootModel to cycle the sync scope.
 type syncCycleScopeMsg struct{}
 
+// syncCycleCollisionMsg signals rootModel to cycle the collision strategy.
+type syncCycleCollisionMsg struct{}
+
 // dialogResultMsg carries the outcome of a dialog overlay.
 type dialogResultMsg struct {
 	id        string

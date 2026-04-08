@@ -20,10 +20,11 @@ type PackUpdateRequest struct {
 	ConfigDir     string
 	Name          string // empty when All=true
 	All           bool
-	With          domain.BundledSet                                     // approve these categories for new content; nil = carry forward only
-	RunGitFn      func(ctx context.Context, args ...string) error       // test injection; nil = real git
-	NowFn         func() time.Time                                      // test injection; nil = time.Now
-	GitHashFn     func(ctx context.Context, dir string) (string, error) // test injection; nil = source.GitHeadHash
+	With          domain.BundledSet                                              // approve these categories for new content; nil = carry forward only
+	RunGitFn      func(ctx context.Context, args ...string) error                // test injection; nil = real git
+	NowFn         func() time.Time                                               // test injection; nil = time.Now
+	GitHashFn     func(ctx context.Context, dir string) (string, error)          // test injection; nil = source.GitHeadHash
+	GitLsRemoteFn func(ctx context.Context, repoURL, ref string) (string, error) // test injection; nil = source.LsRemoteHead
 	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
 }
 
@@ -64,6 +65,7 @@ type packUpdateContext struct {
 	runGitFn      func(ctx context.Context, args ...string) error
 	nowFn         func() time.Time
 	gitHashFn     func(ctx context.Context, dir string) (string, error)
+	gitLsRemoteFn func(ctx context.Context, repoURL, ref string) (string, error)
 	httpTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
 	stdout        io.Writer
 }
@@ -80,6 +82,10 @@ func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io
 	if nowFn == nil {
 		nowFn = time.Now
 	}
+	lsRemoteFn := req.GitLsRemoteFn
+	if lsRemoteFn == nil {
+		lsRemoteFn = source.LsRemoteHead
+	}
 	reg, _ := config.LoadMergedRegistry(req.ConfigDir)
 
 	return packUpdateContext{
@@ -92,6 +98,7 @@ func newPackUpdateContext(req PackUpdateRequest, sc config.SyncConfig, stdout io
 		runGitFn:      runGitFn,
 		nowFn:         nowFn,
 		gitHashFn:     req.GitHashFn,
+		gitLsRemoteFn: lsRemoteFn,
 		httpTarballFn: req.HTTPTarballFn,
 		stdout:        stdout,
 	}
@@ -179,6 +186,33 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 	switch method {
 	case config.MethodClone:
 		ref := meta.Ref
+
+		// Fast path: use ls-remote to check if the remote hash changed before
+		// doing the expensive clone. Skip when --with adds new bundled
+		// categories (need the clone to extract previously-filtered content).
+		if meta.CommitHash != "" {
+			needsReExtract := false
+			if uctx.with != nil {
+				approved := metaApprovedSet(meta)
+				for cat := range uctx.with {
+					if !approved.Has(cat) {
+						needsReExtract = true
+						break
+					}
+				}
+			}
+			if !needsReExtract {
+				remoteHash, lsErr := uctx.gitLsRemoteFn(ctx, meta.Origin, ref)
+				if lsErr == nil && remoteHash != "" && remoteHash == meta.CommitHash {
+					fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, util.ShortHash(meta.CommitHash))
+					return buildUpToDateResult(name, method,
+						"already at "+util.ShortHash(meta.CommitHash), meta.CommitHash,
+						filepath.Join(packDir, "pack.json"), meta, uctx.with, hasExplicitPrefs)
+				}
+				// ls-remote failed or returned different hash — fall through to clone.
+			}
+		}
+
 		oldIntegrity, _ := loadIntegrity(packDir)
 
 		// Unified: re-clone to temp and extract clean pack (handles root,
@@ -188,9 +222,11 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
 		defer os.RemoveAll(tmpDir)
-		if err := source.EnsureCloneWith(ctx, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
+		cacheRefDir := source.CacheRefDir(uctx.configDir, meta.Origin)
+		if err := source.EnsureCloneWithRef(ctx, meta.Origin, tmpDir, ref, cacheRefDir, uctx.runGitFn); err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
+		_ = source.UpdateBareCache(ctx, meta.Origin, tmpDir, source.GitCacheDir(uctx.configDir), uctx.runGitFn)
 
 		srcRoot := tmpDir
 		if meta.SubPath != "" {
@@ -314,6 +350,15 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 
 		oldIntegrity, _ := loadIntegrity(packDir)
 
+		// Stage into a temp directory so we can filter BEFORE atomically
+		// replacing the installed pack. The install functions do their own
+		// atomic replace, so we give them a throwaway packs directory.
+		stageDir, err := makePackTempDir(uctx.configDir, "update-stage-*")
+		if err != nil {
+			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+		}
+		defer os.RemoveAll(stageDir)
+
 		installReq := PackInstallRequest{
 			URL:           origin,
 			ConfigDir:     uctx.configDir,
@@ -327,22 +372,26 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 		}
 		urlInfo := source.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
 		var result packInstallResult
-		var err error
 		if method == config.MethodHTTPTarball {
-			result, err = packFetchHTTPTarball(ctx, installReq, urlInfo, uctx.packsDir, io.Discard)
+			result, err = packFetchHTTPTarball(ctx, installReq, urlInfo, stageDir, io.Discard)
 		} else {
-			result, err = packShallowClone(ctx, installReq, urlInfo, uctx.packsDir, io.Discard)
+			result, err = packShallowClone(ctx, installReq, urlInfo, stageDir, io.Discard)
 		}
 		if err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
 
+		// Filter staged content before installing to the final location.
 		candidates, effective, err := applyPreferenceFilter(result.destDir, &result.manifest, meta, uctx.with)
 		if err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 		}
 
-		_, changed, _ := saveAndDiffIntegrity(result.destDir, oldIntegrity, uctx.stdout)
+		if err := util.ReplaceDirAtomic(packDir, result.destDir); err != nil {
+			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+		}
+
+		_, changed, _ := saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
 		if !changed && len(oldIntegrity.Files) > 0 {
 			aList, dList := buildPrefsLists(effective)
 			fmt.Fprintf(uctx.stdout, "Up-to-date (%s): %s\n", method, name)
@@ -371,8 +420,10 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 		if _, err := os.Stat(target); err != nil {
 			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: fmt.Sprintf("symlink target missing: %s", target)}
 		}
+
 		fmt.Fprintf(uctx.stdout, "OK (link): %s -> %s\n", name, target)
-		return PackUpdateResult{Name: name, Method: method, Status: StatusUpToDate, Message: "symlink target exists"}
+		return buildUpToDateResult(name, method, "symlink target exists", "",
+			filepath.Join(target, "pack.json"), meta, uctx.with, hasExplicitPrefs)
 
 	case config.MethodLocal:
 		fmt.Fprintf(uctx.stdout, "OK (local): %s\n", name)
@@ -384,4 +435,35 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 		}
 		return PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: fmt.Sprintf("unknown method %q", method)}
 	}
+}
+
+// buildUpToDateResult constructs a StatusUpToDate result with bundled content
+// metadata loaded from manifestPath. Used by the ls-remote fast path and link
+// update to avoid duplicating the manifest-load + candidate-diff + prefs logic.
+func buildUpToDateResult(name, method, message, commitHash, manifestPath string, meta config.InstalledPackMeta, with domain.BundledSet, hasExplicitPrefs bool) PackUpdateResult {
+	var manifest *config.PackManifest
+	var candidates *BundledCandidates
+	approved := metaApprovedSet(meta)
+	if m, err := config.LoadPackManifest(manifestPath); err == nil {
+		manifest = &m
+		candidates = diffBundledCandidates(m, approved)
+	}
+	effective := approved.Merge(with)
+
+	r := PackUpdateResult{
+		Name: name, Method: method, Status: StatusUpToDate,
+		Message: message, CommitHash: commitHash,
+		BundledCandidates: candidates.Filter(effective),
+		manifest:          manifest, effective: effective, explicitPrefs: hasExplicitPrefs,
+	}
+	if with != nil {
+		aList, dList := buildPrefsLists(effective)
+		r.updatedMeta = &config.InstalledPackMeta{
+			Origin: meta.Origin, Method: method, InstalledAt: meta.InstalledAt,
+			Ref: meta.Ref, SubPath: meta.SubPath, CommitHash: commitHash,
+			ContentPaths: meta.ContentPaths,
+			Approved:     aList, Declined: dList,
+		}
+	}
+	return r
 }

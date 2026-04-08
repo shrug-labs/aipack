@@ -86,6 +86,7 @@ const (
 	dialogSearchInstall     = "search-install"
 	dialogCreatePack        = "create-pack"
 	dialogDeleteSaveFile    = "delete-save-file"
+	dialogActionTree        = "action-tree"
 )
 
 type rootModel struct {
@@ -537,6 +538,10 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg.SyncCfg = cycleScope(m.cfg.SyncCfg)
 		return m, saveSyncConfig(m.cfg.ConfigDir, m.cfg.SyncCfg)
 	}
+	if _, ok := msg.(syncCycleCollisionMsg); ok {
+		m.cfg.SyncCfg = app.CycleCollisionStrategy(m.cfg.SyncCfg)
+		return m, saveSyncConfig(m.cfg.ConfigDir, m.cfg.SyncCfg)
+	}
 
 	// Handle syncConfigSavedMsg: update config, re-run sync check.
 	if msg, ok := msg.(syncConfigSavedMsg); ok {
@@ -826,6 +831,8 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 	// Action menu results.
 	case dialogActionProfile, dialogActionPack, dialogActionPackTab, dialogActionSync:
 		return m.handleActionMenuResult(msg)
+	case dialogActionTree:
+		return m.handleTreeAction(msg)
 	// Save tab dialogs.
 	case dialogActionSave:
 		return m.handleSaveActionResult(msg)
@@ -1528,6 +1535,9 @@ const (
 	actViewDiff   = "View diff"
 	actSaveToPack = "Save to pack"
 	actDeleteFile = "Delete file"
+	// Override actions (content tree).
+	actSetOverride    = "Set override"
+	actRemoveOverride = "Remove override"
 	// Edit actions (open in $EDITOR).
 	actEditFile       = "Edit file"
 	actEditManifest   = "Edit manifest"
@@ -1543,6 +1553,8 @@ func (m rootModel) openActionMenu() (tea.Model, tea.Cmd) {
 			return m.openProfileActions()
 		case panelPacks:
 			return m.openPackRosterActions()
+		case panelTree:
+			return m.openTreeActions()
 		}
 	case tabSave:
 		return m.openSaveActions()
@@ -1608,6 +1620,65 @@ func (m rootModel) openPackRosterActions() (tea.Model, tea.Cmd) {
 	}
 	d := newListSelectDialog(dialogActionPack, "Pack actions:", actions)
 	m.dialog = &d
+	return m, nil
+}
+
+func (m rootModel) openTreeActions() (tea.Model, tea.Cmd) {
+	item := m.profiles.currentItem()
+	if item == nil || item.tree == nil {
+		m.statusText = dimStyle.Render("no actions available")
+		return m, nil
+	}
+	n := item.tree.cursorNode()
+	if n == nil || n.kind != nodeItem {
+		m.statusText = dimStyle.Render("no actions available")
+		return m, nil
+	}
+	var actions []string
+	if n.conflict {
+		if n.isOverride {
+			actions = append(actions, actRemoveOverride)
+		} else {
+			actions = append(actions, actSetOverride)
+		}
+	}
+	actions = append(actions, actEditFile)
+	d := newListSelectDialog(dialogActionTree,
+		fmt.Sprintf("Actions for %s/%s:", n.category, n.id),
+		actions)
+	m.dialog = &d
+	return m, nil
+}
+
+func (m rootModel) handleTreeAction(msg dialogResultMsg) (tea.Model, tea.Cmd) {
+	if !msg.confirmed {
+		return m, nil
+	}
+	item := m.profiles.currentItem()
+	if item == nil || item.tree == nil {
+		return m, nil
+	}
+	n := item.tree.cursorNode()
+	if n == nil || n.kind != nodeItem {
+		return m, nil
+	}
+
+	switch msg.value {
+	case actSetOverride:
+		m.profiles = m.profiles.setOverride(n.packIdx, n.category, n.id)
+	case actRemoveOverride:
+		m.profiles = m.profiles.removeOverride(n.packIdx, n.category, n.id)
+	case actEditFile:
+		fp := item.tree.filePath()
+		if fp != "" {
+			return m, openFileInEditor(fp)
+		}
+		return m, nil
+	}
+	m.dirty = m.dirty || m.profiles.dirty
+	if item := m.profiles.currentItem(); item != nil && item.dirty {
+		return m, saveProfile(m.cfg.ConfigDir, item.name, item.cfg)
+	}
 	return m, nil
 }
 
@@ -1801,9 +1872,9 @@ func (m rootModel) helpText() string {
 		case panelProfiles:
 			base = "j/k:navigate  enter:packs  .:actions │ v:plan  s:sync  ctrl+s:save  r:refresh │ 1-5/tab:switch  esc:quit"
 		case panelPacks:
-			base = "j/k:navigate  space:toggle  enter:tree  .:actions │ esc:back"
+			base = "j/k:navigate  J/K:reorder  space:toggle  enter:tree  .:actions │ esc:back"
 		case panelTree:
-			base = "j/k:navigate  space:toggle  enter:preview  e:edit │ v:plan  s:sync  ctrl+s:save │ esc:back"
+			base = "j/k:navigate  space:toggle  enter:preview  e:edit  .:actions │ v:plan  s:sync  ctrl+s:save │ esc:back"
 		}
 	case tabPacks:
 		switch m.packs.focus {

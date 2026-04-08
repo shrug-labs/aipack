@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
 )
@@ -186,6 +188,16 @@ func (m profilesModel) updatePackRoster(msg tea.KeyMsg) (profilesModel, tea.Cmd)
 		if item.tree != nil {
 			m.focus = panelTree
 		}
+	case "J":
+		if m.packCursor < len(item.cfg.Packs) {
+			m = m.movePackDown(m.packCursor)
+			return m, m.computeFileSizesCmd()
+		}
+	case "K":
+		if m.packCursor < len(item.cfg.Packs) {
+			m = m.movePackUp(m.packCursor)
+			return m, m.computeFileSizesCmd()
+		}
 	case "esc", "left", "h":
 		m.focus = panelProfiles
 	}
@@ -211,6 +223,7 @@ func (m profilesModel) updateTree(msg tea.KeyMsg) (profilesModel, tea.Cmd) {
 		if item.tree.toggle() {
 			ct := item.tree.toContentTree()
 			app.ApplyContentTree(ct, item.cfg.Packs)
+			item.tree.refreshConflicts(item.cfg.Packs)
 			m.dirty = true
 			item.dirty = true
 			if item.isActive {
@@ -262,7 +275,41 @@ func (m profilesModel) togglePackEnabled(idx int) profilesModel {
 	} else {
 		pe.Enabled = nil // nil = enabled (default-true)
 	}
-	// Rebuild tree to reflect the change.
+	return m.rebuildTree()
+}
+
+// movePackUp swaps the pack at idx with the one above it, moving it earlier
+// in the precedence order. The cursor follows the moved pack.
+func (m profilesModel) movePackUp(idx int) profilesModel {
+	item := m.currentItem()
+	if item == nil || idx <= 0 || idx >= len(item.cfg.Packs) {
+		return m
+	}
+	item.cfg.Packs[idx], item.cfg.Packs[idx-1] = item.cfg.Packs[idx-1], item.cfg.Packs[idx]
+	m.packCursor = idx - 1
+	m = m.rebuildTree()
+	return m
+}
+
+// movePackDown swaps the pack at idx with the one below it, moving it later
+// in the precedence order. The cursor follows the moved pack.
+func (m profilesModel) movePackDown(idx int) profilesModel {
+	item := m.currentItem()
+	if item == nil || idx < 0 || idx >= len(item.cfg.Packs)-1 {
+		return m
+	}
+	item.cfg.Packs[idx], item.cfg.Packs[idx+1] = item.cfg.Packs[idx+1], item.cfg.Packs[idx]
+	m.packCursor = idx + 1
+	m = m.rebuildTree()
+	return m
+}
+
+// rebuildTree invalidates and rebuilds the tree, marking the profile dirty.
+func (m profilesModel) rebuildTree() profilesModel {
+	item := m.currentItem()
+	if item == nil {
+		return m
+	}
 	item.tree = nil
 	item.treeErr = ""
 	m = m.ensureTree()
@@ -387,17 +434,7 @@ func (m profilesModel) addPackToProfile(packName string) profilesModel {
 	item.cfg.Packs = append(item.cfg.Packs, config.PackEntry{
 		Name: packName,
 	})
-
-	// Rebuild tree.
-	item.tree = nil
-	item.treeErr = ""
-	m = m.ensureTree()
-	m.dirty = true
-	item.dirty = true
-	if item.isActive {
-		item.syncState = syncPending
-	}
-	return m
+	return m.rebuildTree()
 }
 
 // removePackFromProfile removes a pack from the current profile's in-memory config.
@@ -415,17 +452,7 @@ func (m profilesModel) removePackFromProfile(packName string) profilesModel {
 		}
 	}
 	item.cfg.Packs = newPacks
-
-	// Rebuild tree.
-	item.tree = nil
-	item.treeErr = ""
-	m = m.ensureTree()
-	m.dirty = true
-	item.dirty = true
-	if item.isActive {
-		item.syncState = syncPending
-	}
-	return m
+	return m.rebuildTree()
 }
 
 // profilePackNames returns pack names in the current profile.
@@ -619,6 +646,54 @@ func (m profilesModel) toggleSettingsDisabled(packName string) profilesModel {
 		item.syncState = syncPending
 	}
 	return m
+}
+
+// mutateOverride resolves the override slice for the given pack/category and
+// calls mutate to apply the change. Handles all validation and post-mutation
+// bookkeeping (conflict refresh, dirty flags).
+func (m profilesModel) mutateOverride(packIdx int, category domain.PackCategory, id string, mutate func(*[]string, string)) profilesModel {
+	item := m.currentItem()
+	if item == nil {
+		return m
+	}
+	if item.tree == nil || packIdx < 0 || packIdx >= len(item.tree.packs) {
+		return m
+	}
+	entryIdx := item.tree.packs[packIdx].Index
+	if entryIdx < 0 || entryIdx >= len(item.cfg.Packs) {
+		return m
+	}
+	pe := &item.cfg.Packs[entryIdx]
+	overrides := pe.OverridesForCategory(category)
+	if overrides == nil {
+		return m
+	}
+	mutate(overrides, id)
+	item.tree.refreshConflicts(item.cfg.Packs)
+	m.dirty = true
+	item.dirty = true
+	if item.isActive {
+		item.syncState = syncPending
+	}
+	return m
+}
+
+// setOverride adds the given content id to the override list for the pack at
+// packIdx in the current profile.
+func (m profilesModel) setOverride(packIdx int, category domain.PackCategory, id string) profilesModel {
+	return m.mutateOverride(packIdx, category, id, func(overrides *[]string, id string) {
+		if !slices.Contains(*overrides, id) {
+			*overrides = append(*overrides, id)
+		}
+	})
+}
+
+// removeOverride removes the given content id from the override list for the
+// pack at packIdx.
+func (m profilesModel) removeOverride(packIdx int, category domain.PackCategory, id string) profilesModel {
+	return m.mutateOverride(packIdx, category, id, func(overrides *[]string, id string) {
+		*overrides = slices.DeleteFunc(*overrides, func(s string) bool { return s == id })
+	})
 }
 
 // viewTreePanel renders the right panel with the content tree.

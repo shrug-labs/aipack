@@ -16,6 +16,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -23,6 +24,7 @@ import (
 type CleanRequest struct {
 	TargetSpec
 	WipeLedger bool
+	WipeCache  bool
 	Yes        bool
 	DryRun     bool
 
@@ -71,8 +73,14 @@ func RunClean(ctx context.Context, eng *engine.Engine, req CleanRequest, reg *ha
 		}
 	}
 
+	ct := cleanTarget{
+		eng: eng, configDir: req.ConfigDir, scope: req.Scope,
+		home: home, projectDir: req.ProjectDir, harnesses: hs,
+		wipeLedger: req.WipeLedger, wipeCache: req.WipeCache, reg: reg,
+	}
+
 	if req.DryRun {
-		ops := buildCleanOps(eng, req.ConfigDir, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
+		ops := buildCleanOps(ct)
 		for _, op := range ops {
 			fmt.Fprintf(stderr, "  would remove: %s\n", op.path())
 		}
@@ -83,7 +91,7 @@ func RunClean(ctx context.Context, eng *engine.Engine, req CleanRequest, reg *ha
 		return fmt.Errorf("refusing to clean without --yes (non-interactive)")
 	}
 
-	ops := buildCleanOps(eng, req.ConfigDir, req.Scope, home, req.ProjectDir, hs, req.WipeLedger, reg)
+	ops := buildCleanOps(ct)
 
 	rctx := cleanRunContext{Yes: req.Yes, Stdin: stdin, Stderr: stderr}
 	for _, op := range ops {
@@ -168,8 +176,25 @@ func (o editFileOp) run(ctx context.Context, rctx cleanRunContext) error {
 	return util.WriteFileAtomic(o.FilePath, out)
 }
 
-func buildCleanOps(eng *engine.Engine, configDir string, scope domain.Scope, home string, projectDir string, hs []domain.Harness, wipeLedger bool, reg *harness.Registry) []cleanOp {
-	configDir = config.FallbackConfigDir(configDir, home)
+// cleanTarget bundles the resolved inputs for buildCleanOps.
+type cleanTarget struct {
+	eng        *engine.Engine
+	configDir  string
+	scope      domain.Scope
+	home       string
+	projectDir string
+	harnesses  []domain.Harness
+	wipeLedger bool
+	wipeCache  bool
+	reg        *harness.Registry
+}
+
+func buildCleanOps(t cleanTarget) []cleanOp {
+	configDir := config.FallbackConfigDir(t.configDir, t.home)
+	home := t.home
+	scope := t.scope
+	projectDir := t.projectDir
+	hs := t.harnesses
 	var ops []cleanOp
 	seenRemovePaths := map[string]struct{}{}
 
@@ -179,7 +204,7 @@ func buildCleanOps(eng *engine.Engine, configDir string, scope domain.Scope, hom
 	}
 
 	for _, hid := range hs {
-		h, err := reg.Lookup(hid)
+		h, err := t.reg.Lookup(hid)
 		if err != nil {
 			continue
 		}
@@ -207,7 +232,7 @@ func buildCleanOps(eng *engine.Engine, configDir string, scope domain.Scope, hom
 		// validation roots that are not partially-owned files and not already
 		// covered by an explicit RemovePath.
 		ledgerPath := engine.LedgerPath(configDir, scope, projectDir, hid)
-		lg, _, err := eng.LoadLedger(ledgerPath)
+		lg, _, err := t.eng.LoadLedger(ledgerPath)
 		if err != nil {
 			continue
 		}
@@ -227,7 +252,7 @@ func buildCleanOps(eng *engine.Engine, configDir string, scope domain.Scope, hom
 		}
 	}
 
-	if wipeLedger && home != "" {
+	if t.wipeLedger && home != "" {
 		ledgerDir := filepath.Join(configDir, "ledger")
 		if scope == domain.ScopeProject {
 			ops = append(ops, removePathOp{Path: filepath.Join(ledgerDir, engine.EncodeProjectPath(projectDir))})
@@ -235,6 +260,10 @@ func buildCleanOps(eng *engine.Engine, configDir string, scope domain.Scope, hom
 		} else {
 			ops = append(ops, removePathOp{Path: ledgerDir})
 		}
+	}
+
+	if t.wipeCache {
+		ops = append(ops, removePathOp{Path: source.GitCacheDir(configDir)})
 	}
 
 	slices.SortStableFunc(ops, func(a, b cleanOp) int {

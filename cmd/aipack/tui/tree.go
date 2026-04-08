@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/shrug-labs/aipack/internal/app"
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -38,7 +39,19 @@ type treeNode struct {
 	parentIdx     int                 // index of parent category node (-1 for categories)
 	fileSize      int64               // bytes, -1 = not computed
 	formattedSize string              // cached formatSize(fileSize), empty if not computed
+
+	// Conflict state — set when multiple packs provide the same (category, id).
+	conflict          bool // true if this item conflicts with another pack
+	isOverride        bool // true if this item's pack declares an override for it
+	isOverridden      bool // true if another pack's override supersedes this item
+	competingOverride bool // true if multiple packs declare overrides for this id
 }
+
+// ContentRef interface — allows DetectConflicts to work on treeNode slices.
+func (n treeNode) ContentCategory() domain.PackCategory { return n.category }
+func (n treeNode) ContentID() string                    { return n.id }
+func (n treeNode) ContentPackIdx() int                  { return n.packIdx }
+func (n treeNode) ContentEnabled() bool                 { return n.enabled }
 
 // buildTreeFromContent converts an app.ContentTree into a treeModel for rendering.
 func buildTreeFromContent(ct app.ContentTree) treeModel {
@@ -67,14 +80,18 @@ func buildTreeFromContent(ct app.ContentTree) treeModel {
 		})
 		for _, it := range items {
 			nodes = append(nodes, treeNode{
-				kind:      nodeItem,
-				label:     it.ID,
-				enabled:   it.Enabled,
-				category:  cat,
-				id:        it.ID,
-				packIdx:   it.PackIdx,
-				parentIdx: catIdx,
-				fileSize:  -1,
+				kind:              nodeItem,
+				label:             it.ID,
+				enabled:           it.Enabled,
+				category:          cat,
+				id:                it.ID,
+				packIdx:           it.PackIdx,
+				parentIdx:         catIdx,
+				fileSize:          -1,
+				conflict:          len(it.ConflictPacks) > 0,
+				isOverride:        it.IsOverride,
+				isOverridden:      it.IsOverridden,
+				competingOverride: it.CompetingOverride,
 			})
 		}
 	}
@@ -101,6 +118,33 @@ func (t *treeModel) toContentTree() app.ContentTree {
 		})
 	}
 	return app.ContentTree{Packs: t.packs, Items: items}
+}
+
+// refreshConflicts recalculates conflict/override markers in-place from
+// current enabled states and the given pack entries. This avoids a full tree
+// rebuild (which re-reads manifests from disk) when toggling items.
+func (t *treeModel) refreshConflicts(entries []config.PackEntry) {
+	// Build a slice of only item nodes for DetectConflicts.
+	var itemIndices []int
+	var refs []treeNode
+	for i := range t.nodes {
+		if t.nodes[i].kind == nodeItem {
+			itemIndices = append(itemIndices, i)
+			refs = append(refs, t.nodes[i])
+		}
+	}
+
+	conflicts := app.DetectConflicts(refs, t.packs, entries)
+
+	// Apply computed state in a single pass.
+	for ci, ni := range itemIndices {
+		c := conflicts[ci]
+		n := &t.nodes[ni]
+		n.conflict = len(c.ConflictPacks) > 0
+		n.isOverride = c.IsOverride
+		n.isOverridden = c.IsOverridden
+		n.competingOverride = c.CompetingOverride
+	}
 }
 
 func (t *treeModel) packName(idx int) string {
@@ -339,17 +383,42 @@ func (t *treeModel) view(focused bool, height int) string {
 			if n.enabled {
 				check = treeCheckOn
 			}
+			overridden := n.isOverridden
+
 			label := n.label
 			if focused && i == t.cursor {
-				label = selectedStyle.Render(label)
+				if overridden {
+					label = selectedStyle.Strikethrough(true).Render(label)
+				} else {
+					label = selectedStyle.Render(label)
+				}
+			} else if overridden {
+				label = dimStyle.Strikethrough(true).Render(label)
 			}
 
-			left := fmt.Sprintf("%s  %s %s", cursor, check, label)
+			// Conflict/override marker — shown inline after the label.
+			marker := ""
+			if n.conflict {
+				if n.isOverride {
+					if n.competingOverride {
+						marker = " " + warningStyle.Render("⬡") // wins but another pack also claims override
+					} else {
+						marker = " " + treeOverrideWinner
+					}
+				} else if overridden {
+					marker = " " + dimStyle.Render("⬡")
+				} else {
+					marker = " " + warningStyle.Render("⚠")
+				}
+			}
+
+			left := fmt.Sprintf("%s  %s %s", cursor, check, label) + marker
 
 			hasPack := multiPack && n.packIdx >= 0 && n.packIdx < len(t.packs)
 			hasSize := n.fileSize >= 0
+			hasConflict := n.conflict
 
-			if !hasPack && !hasSize {
+			if !hasPack && !hasSize && !hasConflict {
 				lines = append(lines, left)
 				continue
 			}

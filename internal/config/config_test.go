@@ -45,17 +45,17 @@ func TestResolveProfile_AllowsEmptyInclude(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	r, err := ResolveProfile(cfg, profilePath, root, CollisionError)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
-	if len(packs) != 1 {
-		t.Fatalf("expected 1 pack, got %d", len(packs))
+	if len(r.Packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(r.Packs))
 	}
 	// include: [] is treated as "no filter" (include all), same as include: null.
 	// An empty allowlist is almost always a mistake from clearing the list.
-	if len(packs[0].Rules) != 1 {
-		t.Fatalf("expected 1 rule (empty include = include all), got %d", len(packs[0].Rules))
+	if len(r.Packs[0].Rules) != 1 {
+		t.Fatalf("expected 1 rule (empty include = include all), got %d", len(r.Packs[0].Rules))
 	}
 }
 
@@ -339,7 +339,7 @@ func TestResolveProfile(t *testing.T) {
 					{Name: "pack-b"},
 				},
 			},
-			wantErr: "appears in both",
+			wantErr: "collision(s)",
 		},
 		{
 			name: "collision with override resolves to winner",
@@ -517,7 +517,7 @@ func TestResolveProfile(t *testing.T) {
 			tt.setup(t, configDir)
 
 			profilePath := filepath.Join(configDir, "profile.yaml")
-			packs, settingsPacks, err := ResolveProfile(tt.cfg, profilePath, configDir)
+			r, err := ResolveProfile(tt.cfg, profilePath, configDir, CollisionError)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -531,7 +531,7 @@ func TestResolveProfile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			tt.check(t, packs, settingsPacks)
+			tt.check(t, r.Packs, r.SettingsPacks)
 		})
 	}
 }

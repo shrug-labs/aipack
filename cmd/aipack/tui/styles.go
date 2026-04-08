@@ -162,9 +162,10 @@ var (
 
 	dialogTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(clrAccent)
 
-	treeCheckOn   = lipgloss.NewStyle().Foreground(clrSuccess).Render("[x]")
-	treeExpanded  = "▼"
-	treeCollapsed = "▶"
+	treeCheckOn        = lipgloss.NewStyle().Foreground(clrSuccess).Render("[x]")
+	treeOverrideWinner = lipgloss.NewStyle().Foreground(clrSuccess).Render("⬡")
+	treeExpanded       = "▼"
+	treeCollapsed      = "▶"
 
 	errorStyle   = lipgloss.NewStyle().Foreground(clrError)
 	warningStyle = lipgloss.NewStyle().Foreground(clrWarning)

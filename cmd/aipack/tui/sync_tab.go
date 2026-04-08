@@ -41,9 +41,9 @@ func (m syncTabModel) Init() tea.Cmd {
 }
 
 // fieldCount returns the total number of navigable fields:
-// 1 (profile) + len(allHarnesses) + 1 (scope).
+// 1 (profile) + len(allHarnesses) + 1 (scope) + 1 (collision strategy).
 func (m syncTabModel) fieldCount() int {
-	return 1 + len(m.allHarnesses) + 1
+	return 1 + len(m.allHarnesses) + 2
 }
 
 func (m syncTabModel) Update(msg tea.Msg) (syncTabModel, tea.Cmd) {
@@ -103,6 +103,10 @@ func (m syncTabModel) editField() (syncTabModel, tea.Cmd) {
 
 	if m.cursor == harnessEnd {
 		return m, func() tea.Msg { return syncCycleScopeMsg{} }
+	}
+
+	if m.cursor == harnessEnd+1 {
+		return m, func() tea.Msg { return syncCycleCollisionMsg{} }
 	}
 
 	return m, nil
@@ -176,6 +180,18 @@ func (m syncTabModel) viewConfigPanel(width int) string {
 		scope = string(domain.ScopeGlobal)
 	}
 	fmt.Fprintf(&sb, "%sScope:     %s\n", indicator, scope)
+	cursor++
+
+	// Collision strategy field.
+	indicator = "  "
+	if m.cursor == cursor {
+		indicator = selectedStyle.Render("> ")
+	}
+	cs := string(m.syncCfg.Defaults.CollisionStrategy)
+	if cs == "" {
+		cs = dimStyle.Render(string(config.CollisionLastWins))
+	}
+	fmt.Fprintf(&sb, "%sCollisions: %s\n", indicator, cs)
 
 	fmt.Fprintf(&sb, "  Config:    %s\n", dimStyle.Render(shortPath(m.configDir)))
 
@@ -212,8 +228,8 @@ func (m syncTabModel) viewStatusPanel(width int) string {
 		sb.WriteString(errorStyle.Render(fmt.Sprintf("  %s", snap.syncErrText)) + "\n")
 	}
 
-	// Pending changes breakdown.
-	if snap.syncState == syncUnsynced || snap.syncState == syncSynced {
+	// Pending changes breakdown — only shown when there are actual changes.
+	if snap.syncState == syncUnsynced || (snap.syncState == syncSynced && snap.syncTarget.TotalChanges() > 0) {
 		sb.WriteString("\n")
 		sb.WriteString("Pending Changes:\n")
 		fmt.Fprintf(&sb, "  Rules:     %d\n", snap.syncTarget.NumRules)

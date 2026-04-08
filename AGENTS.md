@@ -135,6 +135,7 @@ Unit tests in each package follow standard Go conventions. `internal/app/` tests
 | Pack format or profile schema | `docs/pack-format.md` |
 | Any user-visible feature, fix, or breaking change | `CHANGELOG.md` Unreleased section |
 | Config directory layout or sync-config schema | `docs/configuration.md` |
+| Collision strategy or profile resolution behavior | `docs/configuration.md` + `docs/profiles.md` |
 | Manifest fields or content discovery | `internal/config/pack_discover.go` + `docs/pack-format.md` |
 
 ### Release process

@@ -392,6 +392,143 @@ func TestLeftPanel_TogglePackEnabled(t *testing.T) {
 	}
 }
 
+func TestLeftPanel_MovePackDown(t *testing.T) {
+	t.Parallel()
+	m := profilesModel{
+		items: []profileItem{
+			{
+				name:     "default",
+				isActive: true,
+				cfg: config.ProfileConfig{
+					Packs: []config.PackEntry{
+						{Name: "pack-a"},
+						{Name: "pack-b"},
+						{Name: "pack-c"},
+					},
+				},
+			},
+		},
+		cursor:     0,
+		packCursor: 0,
+	}
+
+	// Move pack-a down: [a,b,c] → [b,a,c], cursor follows to 1.
+	m = m.movePackDown(0)
+	if m.items[0].cfg.Packs[0].Name != "pack-b" {
+		t.Fatalf("expected pack-b at index 0, got %s", m.items[0].cfg.Packs[0].Name)
+	}
+	if m.items[0].cfg.Packs[1].Name != "pack-a" {
+		t.Fatalf("expected pack-a at index 1, got %s", m.items[0].cfg.Packs[1].Name)
+	}
+	if m.packCursor != 1 {
+		t.Fatalf("expected cursor to follow pack to 1, got %d", m.packCursor)
+	}
+	if !m.dirty {
+		t.Fatal("expected dirty after reorder")
+	}
+	if m.items[0].syncState != syncPending {
+		t.Fatal("expected sync state invalidated after reorder")
+	}
+
+	// Move at last position is a no-op.
+	m.packCursor = 2
+	m = m.movePackDown(2)
+	if m.items[0].cfg.Packs[2].Name != "pack-c" {
+		t.Fatalf("expected pack-c still at index 2, got %s", m.items[0].cfg.Packs[2].Name)
+	}
+	if m.packCursor != 2 {
+		t.Fatalf("expected cursor unchanged at 2, got %d", m.packCursor)
+	}
+}
+
+func TestLeftPanel_MovePackUp(t *testing.T) {
+	t.Parallel()
+	m := profilesModel{
+		items: []profileItem{
+			{
+				name:     "default",
+				isActive: true,
+				cfg: config.ProfileConfig{
+					Packs: []config.PackEntry{
+						{Name: "pack-a"},
+						{Name: "pack-b"},
+						{Name: "pack-c"},
+					},
+				},
+			},
+		},
+		cursor:     0,
+		packCursor: 2,
+	}
+
+	// Move pack-c up: [a,b,c] → [a,c,b], cursor follows to 1.
+	m = m.movePackUp(2)
+	if m.items[0].cfg.Packs[1].Name != "pack-c" {
+		t.Fatalf("expected pack-c at index 1, got %s", m.items[0].cfg.Packs[1].Name)
+	}
+	if m.items[0].cfg.Packs[2].Name != "pack-b" {
+		t.Fatalf("expected pack-b at index 2, got %s", m.items[0].cfg.Packs[2].Name)
+	}
+	if m.packCursor != 1 {
+		t.Fatalf("expected cursor to follow pack to 1, got %d", m.packCursor)
+	}
+
+	// Move at first position is a no-op.
+	m.packCursor = 0
+	m = m.movePackUp(0)
+	if m.items[0].cfg.Packs[0].Name != "pack-a" {
+		t.Fatalf("expected pack-a still at index 0, got %s", m.items[0].cfg.Packs[0].Name)
+	}
+	if m.packCursor != 0 {
+		t.Fatalf("expected cursor unchanged at 0, got %d", m.packCursor)
+	}
+}
+
+func TestLeftPanel_ReorderViaKeypress(t *testing.T) {
+	t.Parallel()
+	m := profilesModel{
+		items: []profileItem{
+			{
+				name: "default",
+				cfg: config.ProfileConfig{
+					Packs: []config.PackEntry{
+						{Name: "pack-a"},
+						{Name: "pack-b"},
+						{Name: "pack-c"},
+					},
+				},
+			},
+		},
+		cursor:     0,
+		packCursor: 0,
+	}
+
+	// J (shift+j) moves pack down.
+	m, _ = m.updatePackRoster(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'J'}})
+	if m.items[0].cfg.Packs[0].Name != "pack-b" {
+		t.Fatalf("expected pack-b at index 0 after J, got %s", m.items[0].cfg.Packs[0].Name)
+	}
+	if m.packCursor != 1 {
+		t.Fatalf("expected cursor at 1 after J, got %d", m.packCursor)
+	}
+
+	// K (shift+k) moves pack up.
+	m, _ = m.updatePackRoster(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'K'}})
+	if m.items[0].cfg.Packs[0].Name != "pack-a" {
+		t.Fatalf("expected pack-a at index 0 after K, got %s", m.items[0].cfg.Packs[0].Name)
+	}
+	if m.packCursor != 0 {
+		t.Fatalf("expected cursor at 0 after K, got %d", m.packCursor)
+	}
+
+	// J on "Add pack..." virtual row is a no-op.
+	m.packCursor = 3 // "Add pack..." position
+	m, _ = m.updatePackRoster(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'J'}})
+	if m.packCursor != 3 {
+		t.Fatalf("expected cursor unchanged on Add pack row, got %d", m.packCursor)
+	}
+}
+
 func TestLeftPanel_SpaceTogglesPackViaUpdateList(t *testing.T) {
 	t.Parallel()
 	m := profilesModel{

@@ -205,7 +205,8 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 
 	// packs + MCP inventory — reuse config.ResolveProfile + engine.LoadMCPInventoryForPacks
 	packsCheck := CheckResult{Name: "packs_resolved", Severity: "critical", Status: "fail", OK: false}
-	resolvedPacks, settingsPacks, rcErr := config.ResolveProfile(prof, pp, configDir)
+	resolved, rcErr := config.ResolveProfile(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy)
+	resolvedPacks := resolved.Packs
 	if rcErr != nil {
 		packsCheck.Message = rcErr.Error()
 		packsCheck.Remediation = "Fix profile sources/packs and ensure all referenced pack.json and mcp inventory files exist locally (URL sources must already be cached)"
@@ -239,7 +240,10 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	add(packsCheck)
 
 	if req.Status {
-		rep.Ecosystem = BuildEcosystemStatus(resolvedPacks, settingsPacks, profileName, pp, configDir)
+		statusProfile, _, engErr := eng.Resolve(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy)
+		if engErr == nil {
+			rep.Ecosystem = BuildEcosystemStatus(statusProfile, profileName, pp, configDir)
+		}
 	}
 
 	// required refs (params + env vars)
@@ -573,7 +577,7 @@ func doctorCheckUnregisteredPacks(configDir string, syncCfg config.SyncConfig) C
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		if !e.IsDir() {
+		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue
 		}
 		if _, ok := syncCfg.InstalledPacks[name]; !ok {
@@ -829,24 +833,29 @@ func gitHeadHash(dir string) (string, error) {
 	return "", fmt.Errorf("ref %s not found in packed-refs", ref)
 }
 
-// BuildEcosystemStatus constructs an EcosystemStatus summary from resolved packs.
-func BuildEcosystemStatus(packs []config.ResolvedPack, settingsPacks []string, profileName, profilePath, configDir string) *EcosystemStatus {
+// BuildEcosystemStatus constructs an EcosystemStatus summary from a resolved profile.
+func BuildEcosystemStatus(profile domain.Profile, profileName, profilePath, configDir string) *EcosystemStatus {
+	// Count MCP servers per pack via SourcePack provenance.
+	mcpPerPack := map[string]int{}
+	for _, srv := range profile.MCPServers {
+		mcpPerPack[srv.SourcePack]++
+	}
 	es := &EcosystemStatus{
 		Profile:       profileName,
 		ProfilePath:   profilePath,
 		ConfigDir:     configDir,
-		SettingsPacks: settingsPacks,
+		SettingsPacks: profile.SettingsPacks,
 	}
-	for _, rp := range packs {
+	for _, pk := range profile.Packs {
 		ps := PackStatus{
-			Name:       rp.Name,
-			Version:    rp.Manifest.Version,
-			Rules:      len(rp.Rules),
-			Agents:     len(rp.Agents),
-			Workflows:  len(rp.Workflows),
-			Skills:     len(rp.Skills),
-			MCPServers: len(rp.MCP),
-			Settings:   slices.Contains(settingsPacks, rp.Name),
+			Name:       pk.Name,
+			Version:    pk.Version,
+			Rules:      len(pk.Rules),
+			Agents:     len(pk.Agents),
+			Workflows:  len(pk.Workflows),
+			Skills:     len(pk.Skills),
+			MCPServers: mcpPerPack[pk.Name],
+			Settings:   slices.Contains(profile.SettingsPacks, pk.Name),
 		}
 		es.TotalRules += ps.Rules
 		es.TotalAgents += ps.Agents

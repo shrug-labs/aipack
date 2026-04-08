@@ -31,18 +31,18 @@ type ResolveRequest struct {
 	Home        string // $HOME — caller must provide
 }
 
-// ResolveResult holds the resolved profile and targeting information.
-type ResolveResult struct {
+// SyncContext holds the resolved profile and targeting information.
+type SyncContext struct {
 	Profile domain.Profile
 	TargetSpec
 }
 
 // ResolveProfile resolves a profile config into a fully-typed profile with
 // targeting information (scope, harnesses, project dir) from sync-config defaults.
-func ResolveProfile(eng *engine.Engine, req ResolveRequest) (ResolveResult, []domain.Warning, error) {
-	profile, warnings, err := eng.Resolve(req.ProfileCfg, req.ProfilePath, req.ConfigDir)
+func ResolveProfile(eng *engine.Engine, req ResolveRequest) (SyncContext, []domain.Warning, error) {
+	profile, warnings, err := eng.Resolve(req.ProfileCfg, req.ProfilePath, req.ConfigDir, req.SyncCfg.Defaults.CollisionStrategy)
 	if err != nil {
-		return ResolveResult{}, warnings, err
+		return SyncContext{}, warnings, err
 	}
 
 	scope := domain.ScopeGlobal
@@ -54,10 +54,10 @@ func ResolveProfile(eng *engine.Engine, req ResolveRequest) (ResolveResult, []do
 
 	hs, err := cmdutil.ResolveHarnesses(req.SyncCfg.Defaults.Harnesses)
 	if err != nil {
-		return ResolveResult{}, warnings, err
+		return SyncContext{}, warnings, err
 	}
 
-	return ResolveResult{
+	return SyncContext{
 		Profile: profile,
 		TargetSpec: TargetSpec{
 			ConfigDir:  req.ConfigDir,
@@ -73,16 +73,16 @@ func ResolveProfile(eng *engine.Engine, req ResolveRequest) (ResolveResult, []do
 // and resolves it into a fully-typed profile with targeting information.
 // This is the I/O boundary: it resolves ProjectDir and Home from the
 // environment so that ResolveProfile (and everything below it) stays I/O-free.
-func ResolveActiveProfile(eng *engine.Engine, configDir string) (ResolveResult, []domain.Warning, error) {
+func ResolveActiveProfile(eng *engine.Engine, configDir string) (SyncContext, []domain.Warning, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return ResolveResult{}, nil, fmt.Errorf("resolving working directory: %w", err)
+		return SyncContext{}, nil, fmt.Errorf("resolving working directory: %w", err)
 	}
 	home := config.HomeDir()
 	syncCfgPath := config.SyncConfigPath(configDir)
 	syncCfg, err := config.LoadSyncConfig(syncCfgPath)
 	if err != nil {
-		return ResolveResult{}, nil, fmt.Errorf("loading sync-config: %w", err)
+		return SyncContext{}, nil, fmt.Errorf("loading sync-config: %w", err)
 	}
 	profileName := syncCfg.Defaults.Profile
 	if profileName == "" {
@@ -91,7 +91,7 @@ func ResolveActiveProfile(eng *engine.Engine, configDir string) (ResolveResult, 
 	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
 	profileCfg, err := config.LoadProfile(profilePath)
 	if err != nil {
-		return ResolveResult{}, nil, err
+		return SyncContext{}, nil, err
 	}
 	return ResolveProfile(eng, ResolveRequest{
 		ConfigDir:   configDir,

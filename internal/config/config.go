@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 const ProfileSchemaVersion = 2
@@ -61,6 +63,25 @@ type Overrides struct {
 	Workflows []string `yaml:"workflows"`
 	Skills    []string `yaml:"skills"`
 	MCP       []string `yaml:"mcp"`
+}
+
+// OverridesForCategory returns a pointer to the override slice for the given
+// category, allowing callers to read or mutate overrides generically.
+// Returns nil for unknown categories.
+func (pe *PackEntry) OverridesForCategory(cat domain.PackCategory) *[]string {
+	switch cat {
+	case domain.CategoryRules:
+		return &pe.Overrides.Rules
+	case domain.CategoryAgents:
+		return &pe.Overrides.Agents
+	case domain.CategoryWorkflows:
+		return &pe.Overrides.Workflows
+	case domain.CategorySkills:
+		return &pe.Overrides.Skills
+	case domain.CategoryMCP:
+		return &pe.Overrides.MCP
+	}
+	return nil
 }
 
 func LoadProfile(path string) (ProfileConfig, error) {

@@ -53,7 +53,7 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 		return loadedProfile{}, cmdutil.ExitFail
 	}
 	eng := engine.New(nil, nil)
-	prof, warnings, err := eng.Resolve(profileCfg, path, configDir)
+	prof, warnings, err := eng.Resolve(profileCfg, path, configDir, syncCfg.Defaults.CollisionStrategy)
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail

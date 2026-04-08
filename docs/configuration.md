@@ -47,7 +47,7 @@ schema_version: 1
 defaults:
   profile: default        # active profile name
   harnesses:              # target harnesses for sync (list)
-    - cline
+    - codex
   scope: global           # "project" or "global" (default: global)
 
 installed_packs:          # managed by pack install/delete/update
@@ -79,8 +79,9 @@ registry_sources:         # managed by registry fetch
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `profile` | string | `default` | Active profile. Changed by `profile set`. |
-| `harnesses` | string[] | `[cline]` | Target harnesses for sync. Multiple harnesses sync in one pass. |
+| `harnesses` | string[] | `[codex]` | Target harnesses for sync. Multiple harnesses sync in one pass. |
 | `scope` | string | `global` | Default scope when `--scope` is not specified. |
+| `collision_strategy` | string | `last-wins` | How content ID collisions between packs are resolved: `last-wins` (later pack in profile order wins), `first-wins` (earlier pack wins), `error` (fail with remediation YAML). Explicit profile `overrides` always take precedence. |
 
 CLI flags override these defaults. The full resolution chain is documented in the [CLI Specification](./cli-spec.md#shared-flag-resolution).
 

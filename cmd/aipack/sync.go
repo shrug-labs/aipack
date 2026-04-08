@@ -261,10 +261,11 @@ func resolveWatchDirs(profileFlag, profilePathFlag, configDirFlag string) ([]str
 		return nil, err
 	}
 
-	resolvedPacks, _, err := config.ResolveProfile(profileCfg, profilePath, configDir)
+	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, syncCfg.Defaults.CollisionStrategy)
 	if err != nil {
 		return resolveWatchDirsFallback(profileCfg, configDir), nil
 	}
+	resolvedPacks := resolved.Packs
 
 	seen := map[string]bool{}
 	var dirs []string

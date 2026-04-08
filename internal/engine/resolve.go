@@ -18,14 +18,17 @@ func (e *Engine) Resolve(
 	profileCfg config.ProfileConfig,
 	profilePath string,
 	configDir string,
+	collisionStrategy config.CollisionStrategy,
 ) (domain.Profile, []domain.Warning, error) {
 	// Step 1: Validate profile, resolve packs, apply selectors, check overrides.
-	resolvedPacks, settingsPacks, err := config.ResolveProfile(profileCfg, profilePath, configDir)
+	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, collisionStrategy)
 	if err != nil {
 		return domain.Profile{}, nil, err
 	}
+	resolvedPacks, settingsPacks := resolved.Packs, resolved.SettingsPacks
 
 	var warnings []domain.Warning
+	warnings = append(warnings, resolved.CollisionWarnings...)
 
 	// Step 2: Parse content per pack into typed domain structs.
 	packs, contentWarnings, err := e.resolvePackContent(resolvedPacks)

@@ -146,7 +146,7 @@ func checkSyncStatus(ctx context.Context, eng *engine.Engine, configDir, profile
 }
 
 // planSummaryToTarget converts an app.PlanSummary to a TUI syncTargetInfo.
-func planSummaryToTarget(ctx app.ResolveResult, ps app.PlanSummary) syncTargetInfo {
+func planSummaryToTarget(ctx app.SyncContext, ps app.PlanSummary) syncTargetInfo {
 	harnessNames := make([]string, len(ctx.Harnesses))
 	for i, h := range ctx.Harnesses {
 		harnessNames[i] = string(h)

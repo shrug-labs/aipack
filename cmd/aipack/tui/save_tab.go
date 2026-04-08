@@ -60,7 +60,7 @@ type saveTabModel struct {
 	selCount      int                   // cached count of selected candidates
 
 	// Resolved profile context, cached after first resolution.
-	resolvedProfile *app.ResolveResult
+	resolvedProfile *app.SyncContext
 
 	// Stage 4: destination pack.
 	packOptions  []string // installed pack names + saveNewPackSentinel
@@ -407,7 +407,7 @@ func (m saveTabModel) executePipeline(packName string, createPack bool) (saveTab
 	m.stage = saveStageExecuting
 
 	// Use cached profile from advanceToFiles, or resolve fresh if not available.
-	var res app.ResolveResult
+	var res app.SyncContext
 	if m.resolvedProfile != nil {
 		res = *m.resolvedProfile
 	} else {

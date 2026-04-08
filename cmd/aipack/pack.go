@@ -660,8 +660,8 @@ type PackUpdateCmd struct {
 func (c *PackUpdateCmd) Help() string {
 	return `Updates installed pack(s) to the latest version from their origin. For
 remote packs, re-fetches from the origin (archive or clone). For symlinked
-packs, re-validates the link target. For copied packs, re-copies from the
-recorded origin.
+packs, re-validates the link target and re-installs bundled content. For
+copied packs, re-copies from the recorded origin.
 
 Exactly one of <name> or --all is required.
 
@@ -715,6 +715,7 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 	hasError := false
 	for _, r := range results {
 		if r.Status == app.StatusError {
+			fmt.Fprintf(g.Stderr, "error: %s: %s\n", r.Name, r.Message)
 			hasError = true
 		}
 		if cats := r.BundledCandidates.Categories(); len(cats) > 0 {

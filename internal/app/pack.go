@@ -456,15 +456,17 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 	}
 	defer os.RemoveAll(cloneDir)
 
-	if req.RunGitFn != nil {
-		if err := source.EnsureCloneWith(ctx, info.RepoURL, cloneDir, info.Ref, req.RunGitFn); err != nil {
-			return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
-		}
-	} else {
-		if err := source.EnsureClone(ctx, info.RepoURL, cloneDir, info.Ref); err != nil {
-			return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
-		}
+	cacheRefDir := source.CacheRefDir(req.ConfigDir, info.RepoURL)
+	gitFn := req.RunGitFn
+	if gitFn == nil {
+		gitFn = source.RunGit
 	}
+	if err := source.EnsureCloneWithRef(ctx, info.RepoURL, cloneDir, info.Ref, cacheRefDir, gitFn); err != nil {
+		return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
+	}
+	// Best-effort: seed the bare-repo cache from the local clone for future
+	// --reference reuse. No network call — uses cloneDir as source.
+	_ = source.UpdateBareCache(ctx, info.RepoURL, cloneDir, source.GitCacheDir(req.ConfigDir), gitFn)
 
 	commitHash := resolveGitHash(ctx, cloneDir, req.GitHashFn)
 

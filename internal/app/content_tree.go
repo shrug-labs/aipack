@@ -29,6 +29,13 @@ type ContentItem struct {
 	PackIdx  int // index into the ProfilePackInfo slice
 	PackName string
 	Enabled  bool
+
+	// Conflict metadata — populated by BuildContentTree when multiple packs
+	// provide the same (category, id) pair.
+	ConflictPacks     []string // names of other packs that also provide this id
+	IsOverride        bool     // this pack declares an override for this id
+	IsOverridden      bool     // another pack declares an override that supersedes this item
+	CompetingOverride bool     // multiple packs declare overrides for this id
 }
 
 // ContentTree holds the resolved content inventory for a profile.
@@ -125,7 +132,113 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 		items = append(items, categoryItems[cat]...)
 	}
 
+	// Detect conflicts and mark override state.
+	conflicts := DetectConflicts(items, packs, entries)
+	for i := range items {
+		c := conflicts[i]
+		items[i].ConflictPacks = c.ConflictPacks
+		items[i].IsOverride = c.IsOverride
+		items[i].IsOverridden = c.IsOverridden
+		items[i].CompetingOverride = c.CompetingOverride
+	}
+
 	return ContentTree{Packs: packs, Items: items}
+}
+
+// ConflictState holds the conflict/override metadata for a single content item.
+type ConflictState struct {
+	ConflictPacks     []string // names of other packs that also provide this id
+	IsOverride        bool     // this pack declares an override for this id
+	IsOverridden      bool     // another pack declares an override that supersedes this item
+	CompetingOverride bool     // multiple packs declare overrides for this id
+}
+
+// ContentRef provides the fields needed by DetectConflicts for each item.
+// Implemented by both ContentItem (BuildContentTree) and treeNode (TUI refresh).
+type ContentRef interface {
+	ContentCategory() domain.PackCategory
+	ContentID() string
+	ContentPackIdx() int
+	ContentEnabled() bool
+}
+
+func (c ContentItem) ContentCategory() domain.PackCategory { return c.Category }
+func (c ContentItem) ContentID() string                    { return c.ID }
+func (c ContentItem) ContentPackIdx() int                  { return c.PackIdx }
+func (c ContentItem) ContentEnabled() bool                 { return c.Enabled }
+
+// DetectConflicts computes conflict and override state for a set of content items.
+// Returns one ConflictState per input item (same indices). Only enabled items
+// participate in conflict detection.
+func DetectConflicts[T ContentRef](items []T, packs []ProfilePackInfo, entries []config.PackEntry) []ConflictState {
+	type contentKey struct {
+		category domain.PackCategory
+		id       string
+	}
+
+	// Group enabled items by key.
+	byKey := map[contentKey][]int{}
+	for i, item := range items {
+		if !item.ContentEnabled() {
+			continue
+		}
+		k := contentKey{item.ContentCategory(), item.ContentID()}
+		byKey[k] = append(byKey[k], i)
+	}
+
+	// Build override owner map from pack entries. When two packs both
+	// declare an override for the same key, track the conflict — the last
+	// pack in profile order wins but all participants get flagged.
+	overrideOwner := map[contentKey]int{}      // key → winning packIdx
+	competingKeys := map[contentKey]struct{}{} // keys with multiple override declarations
+	for pi, p := range packs {
+		pe := entries[p.Index]
+		for _, cat := range domain.AllPackCategories() {
+			overrides := pe.OverridesForCategory(cat)
+			if overrides == nil {
+				continue
+			}
+			for _, id := range *overrides {
+				k := contentKey{cat, id}
+				if _, exists := overrideOwner[k]; exists {
+					competingKeys[k] = struct{}{}
+				}
+				overrideOwner[k] = pi
+			}
+		}
+	}
+
+	result := make([]ConflictState, len(items))
+	for i, item := range items {
+		if !item.ContentEnabled() {
+			continue
+		}
+		k := contentKey{item.ContentCategory(), item.ContentID()}
+		indices := byKey[k]
+		hasConflict := len(indices) >= 2
+
+		if hasConflict {
+			var peers []string
+			for _, j := range indices {
+				if j != i {
+					peers = append(peers, packs[items[j].ContentPackIdx()].Name)
+				}
+			}
+			result[i].ConflictPacks = peers
+		}
+
+		if owner, ok := overrideOwner[k]; ok {
+			if _, competing := competingKeys[k]; competing {
+				result[i].CompetingOverride = true
+			}
+			if item.ContentPackIdx() == owner {
+				result[i].IsOverride = hasConflict
+			} else if hasConflict {
+				result[i].IsOverridden = true
+			}
+		}
+	}
+	return result
 }
 
 // ApplyContentTree writes toggled content selections back to profile entries.

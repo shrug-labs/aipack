@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -400,6 +401,10 @@ func writeTestSyncConfig(t *testing.T, configDir string) {
 	}
 }
 
+func isBareClone(args []string) bool {
+	return slices.Contains(args, "--bare")
+}
+
 // fakeCloneGitFn returns a RunGitFn that fakes a git clone by writing a pack.json
 // into the target directory (the last argument to "git clone ... <dir>").
 func fakeCloneGitFn(t *testing.T, packName string) func(ctx context.Context, args ...string) error {
@@ -722,7 +727,7 @@ func TestPackInstall_URL_CloudDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
 	var out bytes.Buffer
 	var cloneURL string
 	gitFn := func(_ context.Context, args ...string) error {
-		if len(args) >= 4 && args[0] == "clone" {
+		if len(args) >= 4 && args[0] == "clone" && !isBareClone(args) {
 			cloneURL = args[3]
 			writePackManifest(t, args[len(args)-1], "my-pack")
 		}

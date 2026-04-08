@@ -41,12 +41,7 @@ func (c *StatusCmd) Run(ctx context.Context, g *Globals) error {
 	}
 	cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
 
-	resolvedPacks, settingsPacks, err := config.ResolveProfile(loaded.profileCfg, loaded.profilePath, loaded.configDir)
-	if err != nil {
-		return err
-	}
-
-	es := app.BuildEcosystemStatus(resolvedPacks, settingsPacks, loaded.profileName, loaded.profilePath, loaded.configDir)
+	es := app.BuildEcosystemStatus(loaded.profile, loaded.profileName, loaded.profilePath, loaded.configDir)
 
 	if c.JSON {
 		return cmdutil.WriteJSON(g.Stdout, es)

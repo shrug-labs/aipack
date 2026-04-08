@@ -241,3 +241,132 @@ func TestGitErrorHint_AuthFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeRepoURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"https://github.com/Org/Repo.git", "https://github.com/org/repo"},
+		{"git@bitbucket.example.com:PROJ/repo.git", "ssh://git@bitbucket.example.com/proj/repo"},
+		{"ssh://git@Host.COM:7999/team/tools.git", "ssh://git@host.com:7999/team/tools"},
+		{"https://GitHub.COM/owner/REPO", "https://github.com/owner/repo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+			got := normalizeRepoURL(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizeRepoURL(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCacheKeyForURL_Stable(t *testing.T) {
+	t.Parallel()
+	// Same URL produces same key.
+	a := CacheKeyForURL("https://github.com/org/repo.git")
+	b := CacheKeyForURL("https://github.com/org/repo.git")
+	if a != b {
+		t.Fatalf("unstable: %q != %q", a, b)
+	}
+	// Normalization: trailing .git stripped, host lowercased.
+	c := CacheKeyForURL("https://GitHub.com/org/repo")
+	if a != c {
+		t.Fatalf("normalization failed: %q != %q", a, c)
+	}
+	// Different repo → different key.
+	d := CacheKeyForURL("https://github.com/org/other-repo")
+	if a == d {
+		t.Fatal("different repos should have different keys")
+	}
+}
+
+func TestEnsureCloneWithRef_UsesReference(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+
+	// Create a fake bare cache with a HEAD file.
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("creating cache dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("writing HEAD: %v", err)
+	}
+
+	var cloneArgs string
+	mock := func(_ context.Context, args ...string) error {
+		call := strings.Join(args, " ")
+		if strings.HasPrefix(call, "clone") {
+			cloneArgs = call
+			os.MkdirAll(filepath.Join(dir, ".git"), 0o755)
+		}
+		return nil
+	}
+
+	if err := EnsureCloneWithRef(context.Background(), "https://example.com/repo.git", dir, "", cacheDir, mock); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cloneArgs, "--reference") {
+		t.Fatalf("expected --reference in clone args, got: %s", cloneArgs)
+	}
+	if !strings.Contains(cloneArgs, cacheDir) {
+		t.Fatalf("expected cache dir in clone args, got: %s", cloneArgs)
+	}
+}
+
+func TestEnsureCloneWithRef_NoCacheDir(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+
+	var cloneArgs string
+	mock := func(_ context.Context, args ...string) error {
+		call := strings.Join(args, " ")
+		if strings.HasPrefix(call, "clone") {
+			cloneArgs = call
+			os.MkdirAll(filepath.Join(dir, ".git"), 0o755)
+		}
+		return nil
+	}
+
+	// Non-existent cache — should clone normally without --reference.
+	if err := EnsureCloneWithRef(context.Background(), "https://example.com/repo.git", dir, "", "/nonexistent", mock); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cloneArgs, "--reference") {
+		t.Fatalf("should not use --reference for missing cache, got: %s", cloneArgs)
+	}
+}
+
+func TestParseLsRemoteHash(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{"normal", "abc123def456\trefs/heads/main\n", "abc123def456"},
+		{"multi-line", "abc123\trefs/heads/main\ndef456\trefs/tags/v1\n", "abc123"},
+		{"empty", "", ""},
+		{"no-tab", "abc123", ""},
+		{"trailing-whitespace", "  abc123\trefs/heads/main  \n", "abc123"},
+		// Annotated tag: two lines, the ^{} line has the commit SHA.
+		{"annotated-tag", "aaa111\trefs/tags/v1.0\nbbb222\trefs/tags/v1.0^{}\n", "bbb222"},
+		// Annotated tag only (no branch match): still prefer ^{}.
+		{"annotated-tag-only-deref", "ccc333\trefs/tags/v2.0\nddd444\trefs/tags/v2.0^{}\n", "ddd444"},
+		// Branch + annotated tag mixed output: ^{} wins.
+		{"branch-and-annotated-tag", "eee555\trefs/heads/main\nfff666\trefs/tags/v1.0\nggg777\trefs/tags/v1.0^{}\n", "ggg777"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := parseLsRemoteHash([]byte(tt.out))
+			if got != tt.want {
+				t.Errorf("parseLsRemoteHash(%q) = %q, want %q", tt.out, got, tt.want)
+			}
+		})
+	}
+}

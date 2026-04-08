@@ -89,7 +89,7 @@ func TestBuildCleanOps_ProjectScope(t *testing.T) {
 	home := t.TempDir()
 
 	harnesses := domain.AllHarnesses()
-	ops := buildCleanOps(engine.New(nil, nil), "", domain.ScopeProject, home, dir, harnesses, false, testRegistry())
+	ops := buildCleanOps(cleanTarget{eng: engine.New(nil, nil), scope: domain.ScopeProject, home: home, projectDir: dir, harnesses: harnesses, reg: testRegistry()})
 
 	if len(ops) == 0 {
 		t.Fatal("expected non-empty ops for project scope with all harnesses")
@@ -193,7 +193,7 @@ func TestBuildCleanOps_OpenCodeDoesNotRemoveConfigParentDir(t *testing.T) {
 	projectDir := t.TempDir()
 	home := t.TempDir()
 
-	ops := buildCleanOps(engine.New(nil, nil), "", domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
+	ops := buildCleanOps(cleanTarget{eng: engine.New(nil, nil), scope: domain.ScopeProject, home: home, projectDir: projectDir, harnesses: []domain.Harness{domain.HarnessOpenCode}, reg: testRegistry()})
 
 	configBase := filepath.Join(projectDir, ".opencode")
 	for _, op := range ops {
@@ -235,7 +235,7 @@ func TestBuildCleanOps_OpenCodeRemovesLedgerTrackedDropInFile(t *testing.T) {
 		t.Fatalf("SaveLedger: %v", err)
 	}
 
-	ops := buildCleanOps(engine.New(nil, nil), "", domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessOpenCode}, false, testRegistry())
+	ops := buildCleanOps(cleanTarget{eng: engine.New(nil, nil), scope: domain.ScopeProject, home: home, projectDir: projectDir, harnesses: []domain.Harness{domain.HarnessOpenCode}, reg: testRegistry()})
 	found := false
 	for _, op := range ops {
 		if op.path() == dropIn {
@@ -254,7 +254,7 @@ func TestBuildCleanOps_ProjectLedgerWipeIncludesLegacyAndPerHarnessLedgers(t *te
 	projectDir := t.TempDir()
 	home := t.TempDir()
 
-	ops := buildCleanOps(engine.New(nil, nil), "", domain.ScopeProject, home, projectDir, []domain.Harness{domain.HarnessClaudeCode}, true, testRegistry())
+	ops := buildCleanOps(cleanTarget{eng: engine.New(nil, nil), scope: domain.ScopeProject, home: home, projectDir: projectDir, harnesses: []domain.Harness{domain.HarnessClaudeCode}, wipeLedger: true, reg: testRegistry()})
 	paths := map[string]bool{}
 	for _, op := range ops {
 		paths[op.path()] = true

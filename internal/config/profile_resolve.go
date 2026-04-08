@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 const (
@@ -31,10 +33,23 @@ type ResolvedMCPServer struct {
 	DisabledTools []string
 }
 
-func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]ResolvedPack, []string, error) {
-	if len(cfg.Packs) == 0 {
-		return nil, nil, errors.New("profile packs must be configured")
+// ResolveResult holds the outputs of ResolveProfile.
+type ResolveResult struct {
+	Packs             []ResolvedPack
+	SettingsPacks     []string
+	CollisionWarnings []domain.Warning
+}
+
+func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, strategy CollisionStrategy) (ResolveResult, error) {
+	if strategy == "" {
+		strategy = CollisionLastWins
 	}
+	if len(cfg.Packs) == 0 {
+		return ResolveResult{}, errors.New("profile packs must be configured")
+	}
+
+	var collisions []collisionInfo
+	var collisionWarnings []domain.Warning
 
 	var packs []ResolvedPack
 	var settingsPacks []string
@@ -78,7 +93,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 	for _, packCfg := range cfg.Packs {
 		packName := strings.TrimSpace(packCfg.Name)
 		if packName == "" {
-			return nil, nil, errors.New("profile packs entries must have name")
+			return ResolveResult{}, errors.New("profile packs entries must have name")
 		}
 		if !defaultTrue(packCfg.Enabled) {
 			continue
@@ -90,34 +105,34 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 		manifestPath := filepath.Join(packRoot, "pack.json")
 		manifest, err := LoadPackManifest(manifestPath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("pack %q manifest: %w", packName, err)
+			return ResolveResult{}, fmt.Errorf("pack %q manifest: %w", packName, err)
 		}
 		packRoot = ResolvePackRoot(manifestPath, manifest.Root)
 		if packRoot == "" {
-			return nil, nil, fmt.Errorf("pack %q root could not be resolved", packName)
+			return ResolveResult{}, fmt.Errorf("pack %q root could not be resolved", packName)
 		}
 		if err := DiscoverContent(&manifest, packRoot); err != nil {
-			return nil, nil, fmt.Errorf("pack %q content discovery: %w", packName, err)
+			return ResolveResult{}, fmt.Errorf("pack %q content discovery: %w", packName, err)
 		}
 		if err := validatePackInventory(packName, packRoot, manifest); err != nil {
-			return nil, nil, err
+			return ResolveResult{}, err
 		}
 
 		rules, err := resolveVector(packName, capRules, manifest.Rules, packCfg.Rules, quiet)
 		if err != nil {
-			return nil, nil, err
+			return ResolveResult{}, err
 		}
 		agents, err := resolveVector(packName, capAgents, manifest.Agents, packCfg.Agents, quiet)
 		if err != nil {
-			return nil, nil, err
+			return ResolveResult{}, err
 		}
 		workflows, err := resolveVector(packName, capWorkflows, manifest.Workflows, packCfg.Workflows, quiet)
 		if err != nil {
-			return nil, nil, err
+			return ResolveResult{}, err
 		}
 		skills, err := resolveVector(packName, capSkills, manifest.Skills, packCfg.Skills, quiet)
 		if err != nil {
-			return nil, nil, err
+			return ResolveResult{}, err
 		}
 
 		packResolved := ResolvedPack{
@@ -133,23 +148,55 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 
 		// Override resolution is order-independent. The owner maps built
 		// above determine winners regardless of pack ordering.
+		//
+		// We must not mutate the current pack's slice while ranging over it
+		// (slices.DeleteFunc shifts elements, causing the range to skip items).
+		// Instead, collect IDs to strip and apply after the loop.
 		for vi := range vectors {
 			v := &vectors[vi]
+			var stripFromCurrent []string
 			for _, id := range *v.field(&packResolved) {
 				if prev, ok := v.seen[id]; ok {
 					owner := v.owner[id]
 					if owner == "" {
-						return nil, nil, fmt.Errorf("%s id %q appears in both %q and %q (declare overrides.%s in the pack that should win)", v.label, id, prev, packName, v.label)
-					}
-					if owner == packName {
+						switch strategy {
+						case CollisionFirstWins:
+							stripFromCurrent = append(stripFromCurrent, id)
+							collisionWarnings = append(collisionWarnings, domain.Warning{
+								Field:   v.label,
+								Message: fmt.Sprintf("%s %q: %q wins over %q (first-wins)", v.label, id, prev, packName),
+							})
+							continue
+						case CollisionLastWins:
+							stripFromPack(packs, prev, id, v.field)
+							collisionWarnings = append(collisionWarnings, domain.Warning{
+								Field:   v.label,
+								Message: fmt.Sprintf("%s %q: %q wins over %q (last-wins)", v.label, id, packName, prev),
+							})
+							// fall through to update v.seen[id]
+						default: // CollisionError
+							collisions = append(collisions, collisionInfo{kind: v.label, id: id, packA: prev, packB: packName})
+							continue
+						}
+					} else if owner == packName {
 						stripFromPack(packs, prev, id, v.field)
 					} else {
-						f := v.field(&packResolved)
-						*f = slices.DeleteFunc(*f, func(s string) bool { return s == id })
+						stripFromCurrent = append(stripFromCurrent, id)
 						continue
 					}
 				}
 				v.seen[id] = packName
+			}
+			if len(stripFromCurrent) > 0 {
+				drop := map[string]struct{}{}
+				for _, id := range stripFromCurrent {
+					drop[id] = struct{}{}
+				}
+				f := v.field(&packResolved)
+				*f = slices.DeleteFunc(*f, func(s string) bool {
+					_, ok := drop[s]
+					return ok
+				})
 			}
 		}
 
@@ -162,7 +209,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 		}
 		for name, serverCfg := range mcpSelection {
 			if _, ok := manifest.MCP.Servers[name]; !ok {
-				return nil, nil, fmt.Errorf("pack %q references unknown mcp server %q", packName, name)
+				return ResolveResult{}, fmt.Errorf("pack %q references unknown mcp server %q", packName, name)
 			}
 			if !defaultTrue(serverCfg.Enabled) {
 				continue
@@ -179,9 +226,26 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 			if prev, ok := seenServers[name]; ok {
 				owner := overrideOwnerMCP[name]
 				if owner == "" {
-					return nil, nil, fmt.Errorf("mcp server %q appears in both %q and %q (declare overrides.mcp in the pack that should win)", name, prev, packName)
-				}
-				if owner == packName {
+					switch strategy {
+					case CollisionFirstWins:
+						delete(packResolved.MCP, name)
+						collisionWarnings = append(collisionWarnings, domain.Warning{
+							Field:   "mcp",
+							Message: fmt.Sprintf("mcp %q: %q wins over %q (first-wins)", name, prev, packName),
+						})
+						continue
+					case CollisionLastWins:
+						stripMCP(packs, prev, name)
+						collisionWarnings = append(collisionWarnings, domain.Warning{
+							Field:   "mcp",
+							Message: fmt.Sprintf("mcp %q: %q wins over %q (last-wins)", name, packName, prev),
+						})
+						// fall through to update seenServers
+					default: // CollisionError
+						collisions = append(collisions, collisionInfo{kind: "mcp", id: name, packA: prev, packB: packName})
+						continue
+					}
+				} else if owner == packName {
 					stripMCP(packs, prev, name)
 				} else {
 					delete(packResolved.MCP, name)
@@ -198,8 +262,13 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 
 		packs = append(packs, packResolved)
 	}
+
+	if len(collisions) > 0 {
+		return ResolveResult{}, formatCollisionError(collisions)
+	}
+
 	if len(packs) == 0 {
-		return nil, nil, errors.New("no enabled packs in profile")
+		return ResolveResult{}, errors.New("no enabled packs in profile")
 	}
 
 	// Post-resolution validation: every override ID must match an actual
@@ -207,17 +276,21 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string) ([]
 	for _, v := range vectors {
 		for id, owner := range v.owner {
 			if _, ok := v.seen[id]; !ok {
-				return nil, nil, fmt.Errorf("pack %q overrides.%s references %q, but no pack provides that %s", owner, v.label, id, v.label)
+				return ResolveResult{}, fmt.Errorf("pack %q overrides.%s references %q, but no pack provides that %s", owner, v.label, id, v.label)
 			}
 		}
 	}
 	for id, owner := range overrideOwnerMCP {
 		if _, ok := seenServers[id]; !ok {
-			return nil, nil, fmt.Errorf("pack %q overrides.mcp references %q, but no pack provides that server", owner, id)
+			return ResolveResult{}, fmt.Errorf("pack %q overrides.mcp references %q, but no pack provides that server", owner, id)
 		}
 	}
 
-	return packs, settingsPacks, nil
+	return ResolveResult{
+		Packs:             packs,
+		SettingsPacks:     settingsPacks,
+		CollisionWarnings: collisionWarnings,
+	}, nil
 }
 
 func stripFromPack(packs []ResolvedPack, packName, id string, field func(*ResolvedPack) *[]string) {
@@ -332,6 +405,51 @@ func expandSelectors(packName, label, direction string, selectors, inv []string,
 	}
 	slices.Sort(out)
 	return out, nil
+}
+
+type collisionInfo struct{ kind, id, packA, packB string }
+
+// formatCollisionError builds a single error listing all content collisions
+// with actionable remediation YAML the user can paste into their profile.
+func formatCollisionError(cc []collisionInfo) error {
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "%d content collision(s) between packs:\n\n", len(cc))
+	for _, c := range cc {
+		fmt.Fprintf(&buf, "  %s %q: %s vs %s\n", c.kind, c.id, c.packA, c.packB)
+	}
+
+	// Group by the later pack (packB) — the natural override candidate.
+	packOrder := []string{}
+	byPack := map[string]map[string][]string{} // pack → kind → ids
+	for _, c := range cc {
+		if _, ok := byPack[c.packB]; !ok {
+			byPack[c.packB] = map[string][]string{}
+			packOrder = append(packOrder, c.packB)
+		}
+		byPack[c.packB][c.kind] = append(byPack[c.packB][c.kind], c.id)
+	}
+
+	buf.WriteString("\nTo resolve, declare overrides in the winning pack's profile entry.\n")
+	buf.WriteString("Either pack can be the winner — add the overrides to whichever version you want to keep.\n")
+	buf.WriteString("Example (gives the colliding IDs to the later pack):\n\n")
+	for _, pack := range packOrder {
+		fmt.Fprintf(&buf, "  - name: %s\n    overrides:\n", pack)
+		kinds := byPack[pack]
+		kindOrder := make([]string, 0, len(kinds))
+		for k := range kinds {
+			kindOrder = append(kindOrder, k)
+		}
+		slices.Sort(kindOrder)
+		for _, k := range kindOrder {
+			quoted := make([]string, len(kinds[k]))
+			for i, id := range kinds[k] {
+				quoted[i] = fmt.Sprintf("%q", id)
+			}
+			fmt.Fprintf(&buf, "      %s: [%s]\n", k, strings.Join(quoted, ", "))
+		}
+	}
+	buf.WriteString("\nOr set defaults.collision_strategy in sync-config.yaml to first-wins or last-wins.")
+	return errors.New(buf.String())
 }
 
 func normalizeList(items []string) []string {

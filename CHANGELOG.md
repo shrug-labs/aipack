@@ -6,6 +6,27 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.19.0]
+
+### Added
+
+- `defaults.collision_strategy` in sync-config.yaml: `last-wins` (default), `first-wins`, or `error`. Explicit `overrides` always take precedence. In `error` mode, all collisions are reported in one message with remediation YAML.
+- Git clone cache at `configDir/.cache/git/` — `pack install` and `pack update` maintain bare-repo caches and use `--reference` to reduce network transfer on subsequent clones.
+- `pack update` uses `git ls-remote` to skip cloning when the remote HEAD is unchanged and no new `--with` categories are requested.
+- TUI profiles tab: `J`/`K` reorders packs in the roster. Content tree shows conflict markers (`⚠` unresolved, `⬡` override winner, dim strikethrough for losers) with a `.` action menu for setting/removing overrides.
+
+### Changed
+
+- Content collisions default to `last-wins` instead of erroring. Set `defaults.collision_strategy: error` to restore the previous behavior.
+- Collision errors now report all collisions in a single message with copy-pasteable remediation YAML, instead of failing on the first one.
+
+### Fixed
+
+- Init template defaults to `scope: global` and `harnesses: [codex]`, matching current conventions.
+- `pack update` for symlinked packs now re-reads the manifest and re-installs bundled content.
+- `pack update` error messages were silently swallowed — now prints to stderr.
+- Shallow bare-repo caches rejected by `git --reference` — cache now removes the shallow marker after seeding.
+
 ## [0.18.3]
 
 ### Fixed

@@ -235,6 +235,20 @@ func ToggleSyncHarness(cfg config.SyncConfig, name string) config.SyncConfig {
 	return cfg
 }
 
+// CycleCollisionStrategy returns a new SyncConfig with the collision strategy
+// cycled through last-wins → first-wins → error → last-wins.
+func CycleCollisionStrategy(cfg config.SyncConfig) config.SyncConfig {
+	switch cfg.Defaults.CollisionStrategy {
+	case "", config.CollisionLastWins:
+		cfg.Defaults.CollisionStrategy = config.CollisionFirstWins
+	case config.CollisionFirstWins:
+		cfg.Defaults.CollisionStrategy = config.CollisionError
+	default:
+		cfg.Defaults.CollisionStrategy = config.CollisionLastWins
+	}
+	return cfg
+}
+
 // CycleSyncScope returns a new SyncConfig with the scope toggled between project and global.
 // Empty scope is treated as global (the default) so the first toggle switches to project.
 func CycleSyncScope(cfg config.SyncConfig) config.SyncConfig {

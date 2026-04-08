@@ -27,6 +27,12 @@ func TestEnsureInit_CreatesAllFiles(t *testing.T) {
 	if sc.Defaults.Profile != "default" {
 		t.Errorf("defaults.profile = %q, want default", sc.Defaults.Profile)
 	}
+	if sc.Defaults.Scope != "global" {
+		t.Errorf("defaults.scope = %q, want global", sc.Defaults.Scope)
+	}
+	if len(sc.Defaults.Harnesses) != 1 || sc.Defaults.Harnesses[0] != "codex" {
+		t.Errorf("defaults.harnesses = %v, want [codex]", sc.Defaults.Harnesses)
+	}
 
 	// default profile must exist.
 	profPath := filepath.Join(configDir, "profiles", "default.yaml")

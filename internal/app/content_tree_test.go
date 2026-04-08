@@ -311,3 +311,230 @@ func TestBuildContentTree_CategoryOrdering(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DetectConflicts tests
+// ---------------------------------------------------------------------------
+
+func TestDetectConflicts_SinglePack_NoConflict(t *testing.T) {
+	t.Parallel()
+
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "core", Manifest: config.PackManifest{Rules: []string{"r1", "r2"}}},
+	}
+	entries := []config.PackEntry{{Name: "core"}}
+	items := []ContentItem{
+		{ID: "r1", Category: domain.CategoryRules, PackIdx: 0, PackName: "core", Enabled: true},
+		{ID: "r2", Category: domain.CategoryRules, PackIdx: 0, PackName: "core", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	for i, cs := range result {
+		if len(cs.ConflictPacks) > 0 {
+			t.Errorf("item[%d] (%s): unexpected ConflictPacks %v", i, items[i].ID, cs.ConflictPacks)
+		}
+		if cs.IsOverride || cs.IsOverridden {
+			t.Errorf("item[%d] (%s): unexpected override state", i, items[i].ID)
+		}
+	}
+}
+
+func TestDetectConflicts_TwoPacks_SameID_Conflict(t *testing.T) {
+	t.Parallel()
+
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "base"},
+		{Index: 1, Name: "team"},
+	}
+	entries := []config.PackEntry{{Name: "base"}, {Name: "team"}}
+	items := []ContentItem{
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 0, PackName: "base", Enabled: true},
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 1, PackName: "team", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	// Both items should report each other as conflict peers.
+	if len(result[0].ConflictPacks) != 1 || result[0].ConflictPacks[0] != "team" {
+		t.Errorf("item[0] ConflictPacks = %v, want [team]", result[0].ConflictPacks)
+	}
+	if len(result[1].ConflictPacks) != 1 || result[1].ConflictPacks[0] != "base" {
+		t.Errorf("item[1] ConflictPacks = %v, want [base]", result[1].ConflictPacks)
+	}
+	// No overrides declared — neither should have override state.
+	if result[0].IsOverride || result[0].IsOverridden {
+		t.Error("item[0] should not have override state without explicit overrides")
+	}
+	if result[1].IsOverride || result[1].IsOverridden {
+		t.Error("item[1] should not have override state without explicit overrides")
+	}
+}
+
+func TestDetectConflicts_OverrideDeclared(t *testing.T) {
+	t.Parallel()
+
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "base"},
+		{Index: 1, Name: "team"},
+	}
+	entries := []config.PackEntry{
+		{Name: "base"},
+		{Name: "team", Overrides: config.Overrides{Rules: []string{"shared"}}},
+	}
+	items := []ContentItem{
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 0, PackName: "base", Enabled: true},
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 1, PackName: "team", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	// team declares the override → IsOverride=true
+	if !result[1].IsOverride {
+		t.Error("team's 'shared' should be marked as override winner")
+	}
+	// base is overridden → IsOverridden=true
+	if !result[0].IsOverridden {
+		t.Error("base's 'shared' should be marked as overridden")
+	}
+	// Both still report conflict peers.
+	if len(result[0].ConflictPacks) != 1 {
+		t.Errorf("item[0] should still show conflict peer, got %v", result[0].ConflictPacks)
+	}
+}
+
+func TestDetectConflicts_DisabledItemExcluded(t *testing.T) {
+	t.Parallel()
+
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "base"},
+		{Index: 1, Name: "team"},
+	}
+	entries := []config.PackEntry{{Name: "base"}, {Name: "team"}}
+	items := []ContentItem{
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 0, PackName: "base", Enabled: false}, // disabled
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 1, PackName: "team", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	// Disabled item should have no conflict state.
+	if len(result[0].ConflictPacks) > 0 || result[0].IsOverride || result[0].IsOverridden {
+		t.Errorf("disabled item[0] should have no conflict state, got %+v", result[0])
+	}
+	// Enabled item has no peer (the only other provider is disabled) → no conflict.
+	if len(result[1].ConflictPacks) > 0 {
+		t.Errorf("item[1] should have no conflict (peer disabled), got %v", result[1].ConflictPacks)
+	}
+}
+
+func TestDetectConflicts_OverrideWithoutConflict_IsNoOp(t *testing.T) {
+	t.Parallel()
+
+	// Only one pack provides "unique" — declaring an override for it is harmless.
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "solo"},
+	}
+	entries := []config.PackEntry{
+		{Name: "solo", Overrides: config.Overrides{Rules: []string{"unique"}}},
+	}
+	items := []ContentItem{
+		{ID: "unique", Category: domain.CategoryRules, PackIdx: 0, PackName: "solo", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	// No conflict exists — override flag should NOT be set (gated by hasConflict).
+	if result[0].IsOverride {
+		t.Error("override without conflict should not set IsOverride")
+	}
+}
+
+func TestDetectConflicts_DifferentCategories_NoConflict(t *testing.T) {
+	t.Parallel()
+
+	// Same ID in different categories should not conflict.
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "pack-a"},
+		{Index: 1, Name: "pack-b"},
+	}
+	entries := []config.PackEntry{{Name: "pack-a"}, {Name: "pack-b"}}
+	items := []ContentItem{
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 0, PackName: "pack-a", Enabled: true},
+		{ID: "shared", Category: domain.CategoryAgents, PackIdx: 1, PackName: "pack-b", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	for i, cs := range result {
+		if len(cs.ConflictPacks) > 0 {
+			t.Errorf("item[%d]: cross-category same ID should not conflict, got %v", i, cs.ConflictPacks)
+		}
+	}
+}
+
+func TestDetectConflicts_ThreePacks_Conflict(t *testing.T) {
+	t.Parallel()
+
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "alpha"},
+		{Index: 1, Name: "beta"},
+		{Index: 2, Name: "gamma"},
+	}
+	entries := []config.PackEntry{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+	items := []ContentItem{
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 0, PackName: "alpha", Enabled: true},
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 1, PackName: "beta", Enabled: true},
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 2, PackName: "gamma", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	// Each item should list the other two as conflict peers.
+	if len(result[0].ConflictPacks) != 2 {
+		t.Errorf("alpha: expected 2 conflict peers, got %v", result[0].ConflictPacks)
+	}
+	if len(result[1].ConflictPacks) != 2 {
+		t.Errorf("beta: expected 2 conflict peers, got %v", result[1].ConflictPacks)
+	}
+	if len(result[2].ConflictPacks) != 2 {
+		t.Errorf("gamma: expected 2 conflict peers, got %v", result[2].ConflictPacks)
+	}
+}
+
+func TestDetectConflicts_CompetingOverrides(t *testing.T) {
+	t.Parallel()
+
+	// Two packs both declare overrides for "shared" — the last one wins
+	// but both items should be flagged with CompetingOverride.
+	packs := []ProfilePackInfo{
+		{Index: 0, Name: "alpha"},
+		{Index: 1, Name: "beta"},
+	}
+	entries := []config.PackEntry{
+		{Name: "alpha", Overrides: config.Overrides{Rules: []string{"shared"}}},
+		{Name: "beta", Overrides: config.Overrides{Rules: []string{"shared"}}},
+	}
+	items := []ContentItem{
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 0, PackName: "alpha", Enabled: true},
+		{ID: "shared", Category: domain.CategoryRules, PackIdx: 1, PackName: "beta", Enabled: true},
+	}
+
+	result := DetectConflicts(items, packs, entries)
+
+	// beta wins (last in profile order).
+	if !result[1].IsOverride {
+		t.Error("beta should be the override winner")
+	}
+	if !result[0].IsOverridden {
+		t.Error("alpha should be overridden")
+	}
+
+	// Both should be flagged as competing.
+	if !result[0].CompetingOverride {
+		t.Error("alpha should have CompetingOverride=true")
+	}
+	if !result[1].CompetingOverride {
+		t.Error("beta should have CompetingOverride=true")
+	}
+}

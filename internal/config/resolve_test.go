@@ -4,11 +4,19 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 )
+
+// resolveStrict calls ResolveProfile with CollisionError strategy and discards warnings.
+func resolveStrict(t *testing.T, cfg ProfileConfig, profilePath, configDir string) ([]ResolvedPack, []string, error) {
+	t.Helper()
+	r, err := ResolveProfile(cfg, profilePath, configDir, CollisionError)
+	return r.Packs, r.SettingsPacks, err
+}
 
 func TestResolveProfile_InstalledPack(t *testing.T) {
 	t.Parallel()
@@ -40,7 +48,7 @@ func TestResolveProfile_InstalledPack(t *testing.T) {
 		Packs:         []PackEntry{{Name: "snap", Enabled: BoolPtr(true)}},
 	}
 
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -60,7 +68,7 @@ func TestResolveProfile_PackNotInstalled_Error(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "nonexistent"}},
 	}
-	_, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	_, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err == nil {
 		t.Fatal("expected error for missing pack, got nil")
 	}
@@ -80,7 +88,7 @@ func TestResolveProfile_VectorSelectorErrors(t *testing.T) {
 
 	include := []string{"alpha"}
 	exclude := []string{"alpha"}
-	_, _, err := ResolveProfile(ProfileConfig{
+	_, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{{
 			Name:  "base",
@@ -92,7 +100,7 @@ func TestResolveProfile_VectorSelectorErrors(t *testing.T) {
 	}
 
 	unknown := []string{"missing"}
-	_, _, err = ResolveProfile(ProfileConfig{
+	_, _, err = resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{{
 			Name:  "base",
@@ -103,7 +111,7 @@ func TestResolveProfile_VectorSelectorErrors(t *testing.T) {
 		t.Fatalf("expected unknown include error, got %v", err)
 	}
 
-	_, _, err = ResolveProfile(ProfileConfig{
+	_, _, err = resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{{
 			Name:  "base",
@@ -135,16 +143,16 @@ func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 		MCP:           MCPPack{Servers: map[string]MCPDefaults{"jira": {}}},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n", "mcp/jira.json": `{"name":"jira"}`})
 
-	_, _, err := ResolveProfile(ProfileConfig{
+	_, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first"}, {Name: "second"}},
-	}, filepath.Join(root, "profile.yaml"), root)
-	if err == nil || !strings.Contains(err.Error(), `rules id "shared" appears in both`) {
-		t.Fatalf("expected duplicate rules error, got %v", err)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	if err == nil || !strings.Contains(err.Error(), `collision(s)`) {
+		t.Fatalf("expected collision error, got %v", err)
 	}
 
 	// Override referencing a non-existent resource is an error (catches typos).
-	_, _, err = ResolveProfile(ProfileConfig{
+	_, _, err = resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first", Overrides: Overrides{Rules: []string{"typo-rule"}}}},
 	}, filepath.Join(root, "profile.yaml"), root)
@@ -153,7 +161,7 @@ func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 	}
 
 	// Same for MCP overrides.
-	_, _, err = ResolveProfile(ProfileConfig{
+	_, _, err = resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first", Overrides: Overrides{MCP: []string{"nonexistent-server"}}}},
 	}, filepath.Join(root, "profile.yaml"), root)
@@ -184,7 +192,7 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 
 	// Neither pack has config files, so settingsPacks should be empty
 	// even with settings.enabled: true (no configs to contribute).
-	packs, settingsPacks, err := ResolveProfile(ProfileConfig{
+	packs, settingsPacks, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first"}, {Name: "second", Overrides: Overrides{Rules: []string{"shared"}}, Settings: PackSettingsConfig{Enabled: BoolPtr(true)}}},
 	}, filepath.Join(root, "profile.yaml"), root)
@@ -210,7 +218,7 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 		"configs/claudecode/settings.local.json": `{"theme": "dark"}`,
 	})
 	// Two packs with settings.enabled: true is no longer an error.
-	_, settingsPacks, err = ResolveProfile(ProfileConfig{
+	_, settingsPacks, err = resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first", Settings: PackSettingsConfig{Enabled: BoolPtr(true)}}, {Name: "third"}},
 	}, filepath.Join(root, "profile.yaml"), root)
@@ -254,7 +262,7 @@ func TestResolveProfile_OverrideStripsEarlierPack(t *testing.T) {
 	})
 
 	// org declares overrides — its version of "shared" and "tracker" should win.
-	packs, _, err := ResolveProfile(ProfileConfig{
+	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{Name: "team"},
@@ -330,7 +338,7 @@ func TestResolveProfile_OverrideWinsRegardlessOfOrder(t *testing.T) {
 	})
 
 	// team declares override but is listed FIRST — should still win.
-	packs, _, err := ResolveProfile(ProfileConfig{
+	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{Name: "team", Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"tracker"}}},
@@ -380,7 +388,7 @@ func TestResolveProfile_ExcludePreventsDuplicate(t *testing.T) {
 	}, map[string]string{"mcp/alpha.json": `{"name":"alpha"}`, "mcp/beta.json": `{"name":"beta"}`})
 
 	// org disables both via enabled:false — no conflict.
-	packs, _, err := ResolveProfile(ProfileConfig{
+	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{Name: "team"},
@@ -423,7 +431,7 @@ func TestResolveProfile_MCPSelectionErrors(t *testing.T) {
 		}},
 	}, map[string]string{"mcp/jira.json": `{"name":"jira"}`})
 
-	_, _, err := ResolveProfile(ProfileConfig{
+	_, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{{
 			Name: "base",
@@ -459,7 +467,7 @@ func TestResolveProfile_AutoDiscover(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "disco", Enabled: BoolPtr(true)}},
 	}
-	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -504,7 +512,7 @@ func TestResolveProfile_AutoDiscoverWithExclude(t *testing.T) {
 			Rules:   VectorSelector{Exclude: &exclude},
 		}},
 	}
-	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -540,7 +548,7 @@ func TestResolveProfile_GlobInclude(t *testing.T) {
 			Rules:   VectorSelector{Include: &include},
 		}},
 	}
-	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -576,7 +584,7 @@ func TestResolveProfile_GlobExclude(t *testing.T) {
 			Rules:   VectorSelector{Exclude: &exclude},
 		}},
 	}
-	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -613,7 +621,7 @@ func TestResolveProfile_GlobMixedWithExact(t *testing.T) {
 			Rules: VectorSelector{Include: &include},
 		}},
 	}
-	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -646,7 +654,7 @@ func TestResolveProfile_GlobNoMatch_NoError(t *testing.T) {
 			Rules: VectorSelector{Exclude: &exclude},
 		}},
 	}
-	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
 		t.Fatalf("expected no error for zero-match glob, got %v", err)
 	}
@@ -679,7 +687,7 @@ func TestResolveProfile_ExactUnknown_StillErrors(t *testing.T) {
 			Rules: VectorSelector{Include: &include},
 		}},
 	}
-	_, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	_, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err == nil || !strings.Contains(err.Error(), `unknown id "nonexistent"`) {
 		t.Fatalf("expected unknown id error, got %v", err)
 	}
@@ -717,7 +725,7 @@ func TestResolveProfile_DisabledPackOverridesIgnored(t *testing.T) {
 	// personal is disabled but has overrides — should not cause errors
 	// and should not participate in conflict resolution.
 	// team declares overrides so the two enabled-pack collision is resolved.
-	_, _, err := ResolveProfile(ProfileConfig{
+	_, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{
@@ -773,7 +781,7 @@ func TestResolveProfile_DisabledPackOverrideShouldNotResolveEnabledConflict(t *t
 	// disabled-resolver declares override for "shared" but is disabled.
 	// alpha and beta both provide "shared" without their own override.
 	// This should error — the disabled pack must not silently resolve the conflict.
-	_, _, err := ResolveProfile(ProfileConfig{
+	_, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{Name: "alpha"},
@@ -784,12 +792,547 @@ func TestResolveProfile_DisabledPackOverrideShouldNotResolveEnabledConflict(t *t
 				Overrides: Overrides{Rules: []string{"shared"}},
 			},
 		},
-	}, filepath.Join(root, "profile.yaml"), root)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
 	if err == nil {
 		t.Fatal("expected duplicate error when disabled pack's override should not resolve enabled-pack conflict")
 	}
-	if !strings.Contains(err.Error(), "appears in both") {
-		t.Fatalf("expected 'appears in both' error, got: %v", err)
+	if !strings.Contains(err.Error(), "collision(s)") {
+		t.Fatalf("expected 'collision(s)' error, got: %v", err)
+	}
+}
+
+func TestResolveProfile_CollisionStrategy_FirstWins(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "base", PackManifest{
+		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		Rules: []string{"shared"},
+	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbase version\n"})
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		Rules: []string{"shared"},
+	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nteam version\n"})
+
+	r, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "base"}, {Name: "team"}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.CollisionWarnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(r.CollisionWarnings))
+	}
+	if !strings.Contains(r.CollisionWarnings[0].Message, "first-wins") {
+		t.Errorf("expected first-wins in warning, got %q", r.CollisionWarnings[0].Message)
+	}
+	// First pack (base) should keep the rule.
+	if len(r.Packs) != 2 {
+		t.Fatalf("expected 2 packs, got %d", len(r.Packs))
+	}
+	if !slices.Contains(r.Packs[0].Rules, "shared") {
+		t.Error("first pack should keep 'shared' rule")
+	}
+	if slices.Contains(r.Packs[1].Rules, "shared") {
+		t.Error("second pack should NOT have 'shared' rule with first-wins")
+	}
+}
+
+func TestResolveProfile_CollisionStrategy_FirstWins_MultiID(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// base provides alpha, beta, gamma. team also provides alpha and beta.
+	// Under first-wins, both colliding IDs must be stripped from team.
+	// This exercises the deferred-deletion path: mutating the current pack's
+	// slice during range iteration would skip the second colliding ID.
+	installPackForResolveTest(t, root, "base", PackManifest{
+		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		Rules: []string{"alpha", "beta", "gamma"},
+	}, map[string]string{
+		"rules/alpha.md": "---\nname: alpha\n---\nbase version\n",
+		"rules/beta.md":  "---\nname: beta\n---\nbase version\n",
+		"rules/gamma.md": "---\nname: gamma\n---\nbase version\n",
+	})
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		Rules: []string{"alpha", "beta", "team-only"},
+	}, map[string]string{
+		"rules/alpha.md":     "---\nname: alpha\n---\nteam version\n",
+		"rules/beta.md":      "---\nname: beta\n---\nteam version\n",
+		"rules/team-only.md": "---\nname: team-only\n---\nbody\n",
+	})
+
+	r, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "base"}, {Name: "team"}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.CollisionWarnings) != 2 {
+		t.Fatalf("expected 2 warnings (alpha + beta), got %d", len(r.CollisionWarnings))
+	}
+	// base keeps both colliding rules.
+	if !slices.Contains(r.Packs[0].Rules, "alpha") || !slices.Contains(r.Packs[0].Rules, "beta") {
+		t.Errorf("base should keep both alpha and beta, got %v", r.Packs[0].Rules)
+	}
+	// team must have BOTH stripped — not just one.
+	if slices.Contains(r.Packs[1].Rules, "alpha") {
+		t.Error("team should NOT have 'alpha' with first-wins")
+	}
+	if slices.Contains(r.Packs[1].Rules, "beta") {
+		t.Error("team should NOT have 'beta' with first-wins")
+	}
+	// team-only is unique, so it stays.
+	if !slices.Contains(r.Packs[1].Rules, "team-only") {
+		t.Error("team should keep 'team-only'")
+	}
+}
+
+func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Four-pack layering: essentials → dev-starter → team → personal.
+	// Overlaps at every layer to exercise the cascade.
+	installPackForResolveTest(t, root, "essentials", PackManifest{
+		SchemaVersion: 1, Name: "essentials", Version: "1", Root: ".",
+		Rules:     []string{"anti-slop", "show-your-work", "base-only"},
+		Skills:    []string{"tdd"},
+		Workflows: []string{"deploy"},
+		MCP:       MCPPack{Servers: map[string]MCPDefaults{"jira": {}}},
+	}, map[string]string{
+		"rules/anti-slop.md":      "---\nname: anti-slop\n---\nessentials version\n",
+		"rules/show-your-work.md": "---\nname: show-your-work\n---\nessentials version\n",
+		"rules/base-only.md":      "---\nname: base-only\n---\nunique to essentials\n",
+		"skills/tdd/SKILL.md":     "---\nname: tdd\n---\nessentials tdd\n",
+		"workflows/deploy.md":     "---\nname: deploy\n---\nessentials deploy\n",
+		"mcp/jira.json":           `{"name":"jira"}`,
+	})
+	installPackForResolveTest(t, root, "dev-starter", PackManifest{
+		SchemaVersion: 1, Name: "dev-starter", Version: "1", Root: ".",
+		Rules:  []string{"anti-slop"},
+		Skills: []string{"tdd", "oncall"},
+		MCP:    MCPPack{Servers: map[string]MCPDefaults{"jira": {}, "deploy-tool": {}}},
+	}, map[string]string{
+		"rules/anti-slop.md":     "---\nname: anti-slop\n---\ndev-starter version\n",
+		"skills/tdd/SKILL.md":    "---\nname: tdd\n---\ndev-starter tdd\n",
+		"skills/oncall/SKILL.md": "---\nname: oncall\n---\ndev-starter oncall\n",
+		"mcp/jira.json":          `{"name":"jira"}`,
+		"mcp/deploy-tool.json":   `{"name":"deploy-tool"}`,
+	})
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		Rules:     []string{"anti-slop"},
+		Workflows: []string{"deploy"},
+	}, map[string]string{
+		"rules/anti-slop.md":  "---\nname: anti-slop\n---\nteam version\n",
+		"workflows/deploy.md": "---\nname: deploy\n---\nteam deploy\n",
+	})
+	installPackForResolveTest(t, root, "personal", PackManifest{
+		SchemaVersion: 1, Name: "personal", Version: "1", Root: ".",
+		Rules: []string{"show-your-work"},
+	}, map[string]string{
+		"rules/show-your-work.md": "---\nname: show-your-work\n---\npersonal version\n",
+	})
+
+	profilePath := filepath.Join(root, "profile.yaml")
+
+	t.Run("four_pack_cascade", func(t *testing.T) {
+		r, err := ResolveProfile(ProfileConfig{
+			SchemaVersion: ProfileSchemaVersion,
+			Packs: []PackEntry{
+				{Name: "essentials"},
+				{Name: "dev-starter"},
+				{Name: "team"},
+				{Name: "personal"},
+			},
+		}, profilePath, root, CollisionLastWins)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		packs, warnings := r.Packs, r.CollisionWarnings
+
+		// Expected collisions (pair-wise, each shadowing is a separate warning):
+		//   anti-slop: essentials→dev-starter, dev-starter→team (2)
+		//   tdd:       essentials→dev-starter (1)
+		//   jira:      essentials→dev-starter (1)
+		//   deploy:    essentials→team (1)
+		//   show-your-work: essentials→personal (1)
+		// Total: 6 warnings.
+		if len(warnings) != 6 {
+			t.Fatalf("expected 6 warnings, got %d:", len(warnings))
+		}
+		for _, w := range warnings {
+			if !strings.Contains(w.Message, "last-wins") {
+				t.Errorf("expected last-wins in warning, got %q", w.Message)
+			}
+		}
+
+		// anti-slop: team wins (last pack that has it).
+		if slices.Contains(packs[0].Rules, "anti-slop") {
+			t.Error("essentials should NOT have anti-slop")
+		}
+		if slices.Contains(packs[1].Rules, "anti-slop") {
+			t.Error("dev-starter should NOT have anti-slop")
+		}
+		if !slices.Contains(packs[2].Rules, "anti-slop") {
+			t.Error("team should have anti-slop (last-wins)")
+		}
+
+		// show-your-work: personal wins.
+		if slices.Contains(packs[0].Rules, "show-your-work") {
+			t.Error("essentials should NOT have show-your-work")
+		}
+		if !slices.Contains(packs[3].Rules, "show-your-work") {
+			t.Error("personal should have show-your-work")
+		}
+
+		// base-only: no collision, essentials keeps it.
+		if !slices.Contains(packs[0].Rules, "base-only") {
+			t.Error("essentials should keep base-only (no collision)")
+		}
+
+		// tdd skill: dev-starter wins over essentials.
+		if slices.Contains(packs[0].Skills, "tdd") {
+			t.Error("essentials should NOT have tdd skill")
+		}
+		if !slices.Contains(packs[1].Skills, "tdd") {
+			t.Error("dev-starter should have tdd skill")
+		}
+
+		// oncall skill: unique to dev-starter, no collision.
+		if !slices.Contains(packs[1].Skills, "oncall") {
+			t.Error("dev-starter should keep oncall (no collision)")
+		}
+
+		// deploy workflow: team wins over essentials.
+		if slices.Contains(packs[0].Workflows, "deploy") {
+			t.Error("essentials should NOT have deploy workflow")
+		}
+		if !slices.Contains(packs[2].Workflows, "deploy") {
+			t.Error("team should have deploy workflow")
+		}
+
+		// jira MCP: dev-starter wins over essentials.
+		if _, ok := packs[0].MCP["jira"]; ok {
+			t.Error("essentials should NOT have jira MCP")
+		}
+		if _, ok := packs[1].MCP["jira"]; !ok {
+			t.Error("dev-starter should have jira MCP")
+		}
+
+		// deploy-tool MCP: unique to dev-starter, no collision.
+		if _, ok := packs[1].MCP["deploy-tool"]; !ok {
+			t.Error("dev-starter should keep deploy-tool MCP (no collision)")
+		}
+	})
+
+	t.Run("no_collisions_no_warnings", func(t *testing.T) {
+		// When packs don't overlap, no warnings should be emitted.
+		r, err := ResolveProfile(ProfileConfig{
+			SchemaVersion: ProfileSchemaVersion,
+			Packs:         []PackEntry{{Name: "team"}, {Name: "personal"}},
+		}, profilePath, root, CollisionLastWins)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(r.CollisionWarnings) != 0 {
+			t.Errorf("expected 0 warnings for non-overlapping packs, got %d: %v", len(r.CollisionWarnings), r.CollisionWarnings)
+		}
+		if !slices.Contains(r.Packs[0].Rules, "anti-slop") {
+			t.Error("team should keep anti-slop")
+		}
+		if !slices.Contains(r.Packs[1].Rules, "show-your-work") {
+			t.Error("personal should keep show-your-work")
+		}
+	})
+
+	t.Run("disabled_pack_skipped", func(t *testing.T) {
+		// A disabled pack shouldn't trigger collision warnings.
+		r, err := ResolveProfile(ProfileConfig{
+			SchemaVersion: ProfileSchemaVersion,
+			Packs: []PackEntry{
+				{Name: "essentials"},
+				{Name: "dev-starter", Enabled: BoolPtr(false)},
+				{Name: "team"},
+			},
+		}, profilePath, root, CollisionLastWins)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Only essentials→team collisions: anti-slop and deploy = 2 warnings.
+		if len(r.CollisionWarnings) != 2 {
+			t.Fatalf("expected 2 warnings (disabled pack excluded), got %d: %v", len(r.CollisionWarnings), r.CollisionWarnings)
+		}
+	})
+
+	t.Run("override_suppresses_warning", func(t *testing.T) {
+		// Explicit override should NOT produce a collision warning.
+		r, err := ResolveProfile(ProfileConfig{
+			SchemaVersion: ProfileSchemaVersion,
+			Packs: []PackEntry{
+				{Name: "essentials"},
+				{Name: "team", Overrides: Overrides{Rules: []string{"anti-slop"}}},
+			},
+		}, profilePath, root, CollisionLastWins)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// deploy still collides (no override) = 1 warning. anti-slop has override = no warning.
+		if len(r.CollisionWarnings) != 1 {
+			t.Fatalf("expected 1 warning (override suppresses anti-slop), got %d: %v", len(r.CollisionWarnings), r.CollisionWarnings)
+		}
+		if !strings.Contains(r.CollisionWarnings[0].Message, "deploy") {
+			t.Errorf("expected deploy warning, got %q", r.CollisionWarnings[0].Message)
+		}
+	})
+}
+
+func TestResolveProfile_CollisionStrategy_ErrorCollectsAll(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "first", PackManifest{
+		SchemaVersion: 1, Name: "first", Version: "1", Root: ".",
+		Rules: []string{"rule-a", "rule-b"},
+		MCP:   MCPPack{Servers: map[string]MCPDefaults{"srv": {}}},
+	}, map[string]string{
+		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
+		"rules/rule-b.md": "---\nname: rule-b\n---\nbody\n",
+		"mcp/srv.json":    `{"name":"srv"}`,
+	})
+	installPackForResolveTest(t, root, "second", PackManifest{
+		SchemaVersion: 1, Name: "second", Version: "1", Root: ".",
+		Rules: []string{"rule-a", "rule-b"},
+		MCP:   MCPPack{Servers: map[string]MCPDefaults{"srv": {}}},
+	}, map[string]string{
+		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
+		"rules/rule-b.md": "---\nname: rule-b\n---\nbody\n",
+		"mcp/srv.json":    `{"name":"srv"}`,
+	})
+
+	_, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "first"}, {Name: "second"}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	if err == nil {
+		t.Fatal("expected error for collisions")
+	}
+	msg := err.Error()
+	// Should mention all 3 collisions.
+	if !strings.Contains(msg, "3 content collision(s)") {
+		t.Errorf("expected '3 content collision(s)', got:\n%s", msg)
+	}
+	if !strings.Contains(msg, `rules "rule-a"`) {
+		t.Errorf("expected rule-a collision in error, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, `rules "rule-b"`) {
+		t.Errorf("expected rule-b collision in error, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, `mcp "srv"`) {
+		t.Errorf("expected mcp srv collision in error, got:\n%s", msg)
+	}
+	// Should contain remediation YAML.
+	if !strings.Contains(msg, "overrides:") {
+		t.Errorf("expected remediation YAML in error, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "collision_strategy") {
+		t.Errorf("expected collision_strategy hint in error, got:\n%s", msg)
+	}
+}
+
+func TestResolveProfile_CollisionStrategy_MCP(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "pack-a", PackManifest{
+		SchemaVersion: 1, Name: "pack-a", Version: "1", Root: ".",
+		MCP: MCPPack{Servers: map[string]MCPDefaults{"shared-srv": {}}},
+	}, map[string]string{"mcp/shared-srv.json": `{"name":"shared-srv"}`})
+	installPackForResolveTest(t, root, "pack-b", PackManifest{
+		SchemaVersion: 1, Name: "pack-b", Version: "1", Root: ".",
+		MCP: MCPPack{Servers: map[string]MCPDefaults{"shared-srv": {}}},
+	}, map[string]string{"mcp/shared-srv.json": `{"name":"shared-srv"}`})
+
+	// first-wins: pack-a keeps server
+	r, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "pack-a"}, {Name: "pack-b"}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	if err != nil {
+		t.Fatalf("first-wins: %v", err)
+	}
+	if len(r.CollisionWarnings) != 1 {
+		t.Fatalf("first-wins: expected 1 warning, got %d", len(r.CollisionWarnings))
+	}
+	if _, ok := r.Packs[0].MCP["shared-srv"]; !ok {
+		t.Error("first-wins: pack-a should keep shared-srv")
+	}
+	if _, ok := r.Packs[1].MCP["shared-srv"]; ok {
+		t.Error("first-wins: pack-b should NOT have shared-srv")
+	}
+
+	// last-wins: pack-b keeps server
+	r, err = ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "pack-a"}, {Name: "pack-b"}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionLastWins)
+	if err != nil {
+		t.Fatalf("last-wins: %v", err)
+	}
+	if len(r.CollisionWarnings) != 1 {
+		t.Fatalf("last-wins: expected 1 warning, got %d", len(r.CollisionWarnings))
+	}
+	if _, ok := r.Packs[0].MCP["shared-srv"]; ok {
+		t.Error("last-wins: pack-a should NOT have shared-srv")
+	}
+	if _, ok := r.Packs[1].MCP["shared-srv"]; !ok {
+		t.Error("last-wins: pack-b should keep shared-srv")
+	}
+}
+
+func TestResolveProfile_OverridesOverrideStrategy(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "base", PackManifest{
+		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		Rules: []string{"shared"},
+	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbase version\n"})
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		Rules: []string{"shared"},
+	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nteam version\n"})
+
+	// With first-wins, "base" would normally win. But override declares "team" wins.
+	r, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "base"},
+			{Name: "team", Overrides: Overrides{Rules: []string{"shared"}}},
+		},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Override should produce no collision warnings — it's an explicit resolution.
+	if len(r.CollisionWarnings) != 0 {
+		t.Errorf("expected 0 warnings (override resolved it), got %d: %v", len(r.CollisionWarnings), r.CollisionWarnings)
+	}
+	if slices.Contains(r.Packs[0].Rules, "shared") {
+		t.Error("base should NOT have 'shared' — override gives it to team")
+	}
+	if !slices.Contains(r.Packs[1].Rules, "shared") {
+		t.Error("team should have 'shared' via override")
+	}
+}
+
+func TestResolveProfile_CollisionError_PartialOverrideResolution(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// Two packs, each providing two colliding rules.
+	installPackForResolveTest(t, root, "base", PackManifest{
+		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		Rules: []string{"rule-a", "rule-b"},
+	}, map[string]string{
+		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
+		"rules/rule-b.md": "---\nname: rule-b\n---\nbody\n",
+	})
+	installPackForResolveTest(t, root, "team", PackManifest{
+		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		Rules: []string{"rule-a", "rule-b"},
+	}, map[string]string{
+		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
+		"rules/rule-b.md": "---\nname: rule-b\n---\nbody\n",
+	})
+
+	// No overrides: both collisions should cause an error.
+	_, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "base"}, {Name: "team"}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	if err == nil {
+		t.Fatal("expected error for 2 unresolved collisions")
+	}
+	if !strings.Contains(err.Error(), "2 content collision(s)") {
+		t.Errorf("expected '2 content collision(s)', got:\n%s", err.Error())
+	}
+
+	// Override resolves rule-a, but rule-b remains → exactly 1 collision.
+	_, err = ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "base"},
+			{Name: "team", Overrides: Overrides{Rules: []string{"rule-a"}}},
+		},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	if err == nil {
+		t.Fatal("expected error for 1 remaining collision")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "1 content collision(s)") {
+		t.Errorf("expected '1 content collision(s)', got:\n%s", msg)
+	}
+	if strings.Contains(msg, `"rule-a"`) {
+		t.Errorf("rule-a is overridden and should not appear in error, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, `"rule-b"`) {
+		t.Errorf("rule-b should still be reported as a collision, got:\n%s", msg)
+	}
+
+	// Override resolves both → no error.
+	r, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{
+			{Name: "base"},
+			{Name: "team", Overrides: Overrides{Rules: []string{"rule-a", "rule-b"}}},
+		},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	if err != nil {
+		t.Fatalf("expected no error when all collisions resolved by overrides, got: %v", err)
+	}
+	// Fully resolved → no collision warnings either.
+	if len(r.CollisionWarnings) != 0 {
+		t.Errorf("expected 0 warnings, got %d: %v", len(r.CollisionWarnings), r.CollisionWarnings)
+	}
+	// team should have both rules, base should have neither.
+	if slices.Contains(r.Packs[0].Rules, "rule-a") || slices.Contains(r.Packs[0].Rules, "rule-b") {
+		t.Errorf("base should have no rules, got %v", r.Packs[0].Rules)
+	}
+	if !slices.Contains(r.Packs[1].Rules, "rule-a") || !slices.Contains(r.Packs[1].Rules, "rule-b") {
+		t.Errorf("team should have both rules via overrides, got %v", r.Packs[1].Rules)
+	}
+}
+
+func TestNormalizeCollisionStrategy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  CollisionStrategy
+		err   bool
+	}{
+		{"", CollisionLastWins, false},
+		{"error", CollisionError, false},
+		{"first-wins", CollisionFirstWins, false},
+		{"last-wins", CollisionLastWins, false},
+		{"FIRST-WINS", CollisionFirstWins, false},
+		{"  last-wins  ", CollisionLastWins, false},
+		{"invalid", "", true},
+	}
+	for _, tt := range tests {
+		got, err := NormalizeCollisionStrategy(tt.input)
+		if tt.err {
+			if err == nil {
+				t.Errorf("NormalizeCollisionStrategy(%q) expected error", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("NormalizeCollisionStrategy(%q) unexpected error: %v", tt.input, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("NormalizeCollisionStrategy(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 
@@ -846,7 +1389,7 @@ func TestResolveProfile_EmptyIncludeIncludesAll(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -890,7 +1433,7 @@ func TestResolveProfile_QuietPackOmittedSelectorsExcludeAll(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -934,7 +1477,7 @@ func TestResolveProfile_QuietPackWithExplicitInclude(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -975,7 +1518,7 @@ func TestResolveProfile_QuietPackEmptyIncludeExcludesAll(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -1010,7 +1553,7 @@ func TestResolveProfile_ExtractedContentPathsPack(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "ext-lib", Enabled: BoolPtr(true)}},
 	}
-	packs, _, err := ResolveProfile(cfg, filepath.Join(root, "profile.yaml"), root)
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -1050,7 +1593,7 @@ func TestResolveProfile_QuietPackExcludeReturnsNothing(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -1088,7 +1631,7 @@ func TestResolveProfile_NonQuietOmittedSelectorsIncludeAll(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -1135,7 +1678,7 @@ func TestResolveProfile_QuietPackMCPStillDelivered(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -1186,7 +1729,7 @@ func TestResolveProfile_QuietPackEmptyExcludeExcludesAll(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	packs, _, err := ResolveProfile(cfg, profilePath, root)
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -1216,11 +1759,12 @@ func TestResolveProfile_ContentPathsPackYAMLRoundTrip(t *testing.T) {
 	original := SyncConfig{
 		SchemaVersion: SyncConfigSchemaVersion,
 		Defaults: struct {
-			Profile     string   `yaml:"profile"`
-			Harnesses   []string `yaml:"harnesses"`
-			Scope       string   `yaml:"scope"`
-			Registry    string   `yaml:"registry,omitempty"`
-			RegistryURL string   `yaml:"registry_url,omitempty"`
+			Profile           string            `yaml:"profile"`
+			Harnesses         []string          `yaml:"harnesses"`
+			Scope             string            `yaml:"scope"`
+			Registry          string            `yaml:"registry,omitempty"`
+			RegistryURL       string            `yaml:"registry_url,omitempty"`
+			CollisionStrategy CollisionStrategy `yaml:"collision_strategy,omitempty"`
 		}{Profile: "default", Harnesses: []string{"claudecode"}, Scope: "global"},
 		InstalledPacks: map[string]InstalledPackMeta{
 			"ext-skills": {
@@ -1281,7 +1825,7 @@ func TestResolveProfile_TwoPacksComposeContent(t *testing.T) {
 		"rules/no-secrets.md": "---\nname: no-secrets\n---\nbody\n",
 	})
 
-	packs, _, err := ResolveProfile(ProfileConfig{
+	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{Name: "team-ops"},
@@ -1324,7 +1868,7 @@ func TestResolveProfile_QuietCatalogSelectiveInclude(t *testing.T) {
 	})
 
 	include := []string{"deploy", "triage"}
-	packs, _, err := ResolveProfile(ProfileConfig{
+	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{{
 			Name:   "catalog",
@@ -1369,7 +1913,7 @@ func TestResolveProfile_DisabledPackContributesNothing(t *testing.T) {
 		"mcp/my-server.json":             `{"name":"my-server","command":["echo"]}`,
 	})
 
-	packs, _, err := ResolveProfile(ProfileConfig{
+	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{Name: "active"},

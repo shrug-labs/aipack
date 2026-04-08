@@ -18,6 +18,7 @@ type CleanCmd struct {
 	Yes        bool    `help:"Skip confirmation prompt and proceed immediately"`
 	DryRun     bool    `help:"Preview what would be removed without deleting anything" name:"dry-run"`
 	Ledger     bool    `help:"Also delete the .aipack/ ledger directory"`
+	Cache      bool    `help:"Also delete the git clone cache (.cache/git/)"`
 	Harness    string  `help:"Optional harness filter: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then all harnesses)" name:"harness" predictor:"harness"`
 }
 
@@ -39,6 +40,9 @@ Examples:
 
   # Clean and also remove the .aipack/ ledger directory
   aipack clean --ledger --yes
+
+  # Remove the git clone cache (frees disk, next install re-downloads)
+  aipack clean --cache --yes
 
 See also: sync, save`
 }
@@ -98,6 +102,7 @@ func (c *CleanCmd) Run(ctx context.Context, g *Globals) error {
 			Home:       config.HomeDir(),
 		},
 		WipeLedger: c.Ledger,
+		WipeCache:  c.Cache,
 		Yes:        c.Yes,
 		DryRun:     c.DryRun,
 		Stdin:      g.Stdin,
