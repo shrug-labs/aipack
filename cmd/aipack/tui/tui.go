@@ -87,6 +87,9 @@ const (
 	dialogCreatePack        = "create-pack"
 	dialogDeleteSaveFile    = "delete-save-file"
 	dialogActionTree        = "action-tree"
+	dialogInstallWith       = "install-with"
+	dialogUpdateWith        = "update-with"
+	dialogPackAddToProfile  = "pack-add-to-profile"
 )
 
 type rootModel struct {
@@ -120,8 +123,9 @@ type rootModel struct {
 	runResult     RunResult
 
 	// Dialog chain state.
-	pendingSync       bool   // true when save-before-sync is in progress
-	pendingCursorHint string // name hint for cursor position after profile create
+	pendingSync           bool   // true when save-before-sync is in progress
+	pendingCursorHint     string // name hint for cursor position after profile create
+	pendingPackCursorHint string // name hint for cursor position after pack install/create/update
 
 	// Save plan state: stashed context for executing save after user confirms.
 	savePlanCtx *savePlanContext
@@ -131,6 +135,12 @@ type rootModel struct {
 
 	// Save tab delete state: harness path stashed between dialog open and confirm.
 	pendingDeletePath string
+
+	// Pack install/update --with chain state.
+	pendingInstallInput    string // stashed pack name/URL from text input for install
+	pendingUpdatePackName  string // stashed pack name for update (empty = all)
+	pendingUpdateAll       bool   // true when update-all is in progress
+	pendingCreateAddToProf bool   // true when create-pack should register in current profile
 }
 
 func newRootModel(ctx context.Context, cfg RunConfig) rootModel {
@@ -217,13 +227,8 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case requestAddPackMsg:
-		names := m.unregisteredPacks()
-		if len(names) > 0 {
-			d := newListSelectDialog(dialogAddPack, "Add pack to profile:", names)
-			m.dialog = &d
-		} else {
-			m.statusText = dimStyle.Render("no unregistered packs available")
-		}
+		d := m.addPackDialog()
+		m.dialog = &d
 		return m, nil
 	case requestSearchInstallMsg:
 		m.pendingSearchInstall = msg.packName
@@ -553,10 +558,23 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Handle pack lifecycle messages.
 	if msg, ok := msg.(packCreatedMsg); ok {
+		addToProfile := m.pendingCreateAddToProf
+		m.pendingCreateAddToProf = false
 		if msg.err != nil {
 			m.statusText = errorStyle.Render(fmt.Sprintf("create error: %v", msg.err))
 		} else {
 			m.statusText = dimStyle.Render(fmt.Sprintf("created %s", msg.name))
+			m.pendingPackCursorHint = msg.name
+			if addToProfile {
+				m.profiles = m.profiles.addPackToProfile(msg.name)
+				m.dirty = m.dirty || m.profiles.dirty
+				if item := m.profiles.currentItem(); item != nil && item.dirty {
+					return m, tea.Batch(
+						saveProfile(m.cfg.ConfigDir, item.name, item.cfg),
+						loadPacks(m.cfg.ConfigDir),
+					)
+				}
+			}
 		}
 		return m, tea.Batch(
 			loadPacks(m.cfg.ConfigDir),
@@ -568,6 +586,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusText = errorStyle.Render(fmt.Sprintf("install error: %v", msg.err))
 		} else {
 			m.statusText = dimStyle.Render(fmt.Sprintf("installed %s", msg.name))
+			m.pendingPackCursorHint = msg.name
 		}
 		// Reload both packs and profiles — installing a pack may bundle new profiles.
 		return m, tea.Batch(
@@ -591,6 +610,9 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusText = errorStyle.Render(fmt.Sprintf("update error: %v", msg.err))
 		} else if len(msg.results) > 0 {
+			if msg.name != "" {
+				m.pendingPackCursorHint = msg.name
+			}
 			summaries := make([]string, len(msg.results))
 			seen := map[domain.BundledCategory]bool{}
 			var items []checkItem
@@ -673,6 +695,18 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.packs, cmd = m.packs.Update(msg)
 		if m.packs.loadErr != "" {
 			m.statusText = errorStyle.Render(m.packs.loadErr)
+		}
+		// Apply pack cursor hint after pack list rebuilds.
+		if _, ok := msg.(packsLoadedMsg); ok && m.pendingPackCursorHint != "" {
+			for i, li := range m.packs.listItems {
+				if li.name == m.pendingPackCursorHint {
+					m.packs.listCursor = i
+					m.packs.clampListOffset()
+					m.packs.buildContentForCurrent()
+					break
+				}
+			}
+			m.pendingPackCursorHint = ""
 		}
 		return m, cmd
 	case saveFileDeletedMsg:
@@ -826,7 +860,8 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 	case dialogSaveOnExit, dialogSyncOnExit, dialogSyncScope, dialogSyncHarness, dialogSyncSelectProfile:
 		return m.handleSyncDialogResult(msg)
 	// Pack roster mutations (profile packs panel + pack tab installs).
-	case dialogAddPack, dialogRemovePack, dialogPackInstall, dialogPackRemove:
+	case dialogAddPack, dialogRemovePack, dialogPackInstall, dialogPackRemove,
+		dialogInstallWith, dialogUpdateWith, dialogPackAddToProfile:
 		return m.handlePackDialogResult(msg)
 	// Action menu results.
 	case dialogActionProfile, dialogActionPack, dialogActionPackTab, dialogActionSync:
@@ -847,6 +882,7 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 			m.statusText = dimStyle.Render(fmt.Sprintf("creating %s...", msg.value))
 			return m, createPack(m.cfg.ConfigDir, msg.value)
 		}
+		m.pendingCreateAddToProf = false
 	// Save tab file deletion.
 	case dialogDeleteSaveFile:
 		if msg.confirmed && m.pendingDeletePath != "" {
@@ -971,6 +1007,12 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 	switch msg.id {
 	case dialogAddPack:
 		if msg.confirmed && msg.value != "" {
+			if msg.value == addPackCreateSentinel {
+				m.pendingCreateAddToProf = true
+				d := newTextInputDialog(dialogCreatePack, "New pack name:")
+				m.dialog = &d
+				return m, nil
+			}
 			m.profiles = m.profiles.addPackToProfile(msg.value)
 			m.dirty = m.dirty || m.profiles.dirty
 			var cmds []tea.Cmd
@@ -992,14 +1034,64 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 		}
 	case dialogPackInstall:
 		if msg.confirmed && msg.value != "" {
-			m.statusText = dimStyle.Render("installing pack...")
-			return m, installPack(m.ctx, m.cfg.ConfigDir, msg.value)
+			// Local path installs get BundledAll automatically; skip the checklist.
+			if !isRemoteInstallInput(msg.value) {
+				m.statusText = dimStyle.Render("installing pack...")
+				return m, installPack(m.ctx, m.cfg.ConfigDir, msg.value, nil)
+			}
+			// Remote/registry install: show bundled content checklist.
+			m.pendingInstallInput = msg.value
+			d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems())
+			m.dialog = &d
+			return m, nil
 		}
+	case dialogInstallWith:
+		input := m.pendingInstallInput
+		m.pendingInstallInput = ""
+		var with domain.BundledSet
+		if msg.confirmed {
+			with = parseBundledChecklist(msg.values)
+		}
+		m.statusText = dimStyle.Render("installing pack...")
+		return m, installPack(m.ctx, m.cfg.ConfigDir, input, with)
 	case dialogPackRemove:
 		if msg.confirmed {
 			if pi := m.packs.currentItem(); pi != nil {
 				m.statusText = dimStyle.Render(fmt.Sprintf("removing %s...", pi.entry.Name))
 				return m, removePack(m.cfg.ConfigDir, pi.entry.Name)
+			}
+		}
+	case dialogUpdateWith:
+		name := m.pendingUpdatePackName
+		all := m.pendingUpdateAll
+		m.pendingUpdatePackName = ""
+		m.pendingUpdateAll = false
+		var with domain.BundledSet
+		if msg.confirmed {
+			with = parseBundledChecklist(msg.values)
+		}
+		if all {
+			m.statusText = dimStyle.Render("updating all packs...")
+		} else {
+			m.statusText = dimStyle.Render(fmt.Sprintf("updating %s...", name))
+		}
+		return m, updatePack(m.ctx, m.cfg.ConfigDir, name, all, with)
+	case dialogPackAddToProfile:
+		if msg.confirmed && msg.value != "" {
+			pi := m.packs.currentItem()
+			if pi == nil {
+				return m, nil
+			}
+			profileName := msg.value
+			for i := range m.profiles.items {
+				if m.profiles.items[i].name == profileName {
+					m.profiles.items[i].cfg.Packs = append(m.profiles.items[i].cfg.Packs,
+						config.PackEntry{Name: pi.entry.Name})
+					m.profiles.items[i].dirty = true
+					m.dirty = true
+					m.statusText = dimStyle.Render(fmt.Sprintf("added %s to %s", pi.entry.Name, profileName))
+					return m, saveProfile(m.cfg.ConfigDir, profileName, m.profiles.items[i].cfg)
+				}
 			}
 		}
 	}
@@ -1016,8 +1108,11 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 	case actEditSyncConfig:
 		return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "sync-config.yaml"))
 	case actUpdateAll:
-		m.statusText = dimStyle.Render("updating all packs...")
-		return m, updatePack(m.ctx, m.cfg.ConfigDir, "", true)
+		m.pendingUpdatePackName = ""
+		m.pendingUpdateAll = true
+		d := newChecklistDialog(dialogUpdateWith, "Include bundled content:", bundledCheckItems())
+		m.dialog = &d
+		return m, nil
 	}
 
 	switch msg.id {
@@ -1033,11 +1128,8 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 		}
 		switch msg.value {
 		case actProfileAddPack:
-			names := m.unregisteredPacks()
-			if len(names) > 0 {
-				d := newListSelectDialog(dialogAddPack, "Add pack to profile:", names)
-				m.dialog = &d
-			}
+			d := m.addPackDialog()
+			m.dialog = &d
 			return m, nil
 		case actEditFile:
 			return m, openFileInEditor(item.path)
@@ -1057,13 +1149,8 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 	case dialogActionPack:
 		switch msg.value {
 		case actProfileAddPack:
-			names := m.unregisteredPacks()
-			if len(names) > 0 {
-				d := newListSelectDialog(dialogAddPack, "Add pack to profile:", names)
-				m.dialog = &d
-			} else {
-				m.statusText = dimStyle.Render("no unregistered packs available")
-			}
+			d := m.addPackDialog()
+			m.dialog = &d
 		case actProfileRemovePack:
 			if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
 				packName := item.cfg.Packs[m.profiles.packCursor].Name
@@ -1091,9 +1178,11 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			}
 		case actUpdate:
 			if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
-				name := item.cfg.Packs[m.profiles.packCursor].Name
-				m.statusText = dimStyle.Render(fmt.Sprintf("updating %s...", name))
-				return m, updatePack(m.ctx, m.cfg.ConfigDir, name, false)
+				m.pendingUpdatePackName = item.cfg.Packs[m.profiles.packCursor].Name
+				m.pendingUpdateAll = false
+				d := newChecklistDialog(dialogUpdateWith, "Include bundled content:", bundledCheckItems())
+				m.dialog = &d
+				return m, nil
 			}
 		}
 	case dialogActionSync:
@@ -1130,8 +1219,22 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			return m, nil
 		case actUpdate:
 			if pi := m.packs.currentItem(); pi != nil {
-				m.statusText = dimStyle.Render(fmt.Sprintf("updating %s...", pi.entry.Name))
-				return m, updatePack(m.ctx, m.cfg.ConfigDir, pi.entry.Name, false)
+				m.pendingUpdatePackName = pi.entry.Name
+				m.pendingUpdateAll = false
+				d := newChecklistDialog(dialogUpdateWith, "Include bundled content:", bundledCheckItems())
+				m.dialog = &d
+				return m, nil
+			}
+		case actAddToProfile:
+			if pi := m.packs.currentItem(); pi != nil {
+				names := m.profilesWithoutPack(pi.entry.Name)
+				if len(names) == 0 {
+					m.statusText = dimStyle.Render("pack is in all profiles")
+					return m, nil
+				}
+				d := newListSelectDialog(dialogPackAddToProfile, "Add to profile:", names)
+				m.dialog = &d
+				return m, nil
 			}
 		}
 	}
@@ -1382,6 +1485,35 @@ func (m rootModel) unregisteredPacks() []string {
 	return names
 }
 
+// addPackDialog builds the "Add pack to profile" list dialog with a dimmed
+// "Create new pack..." sentinel at the bottom.
+func (m rootModel) addPackDialog() dialogModel {
+	names := append(m.unregisteredPacks(), addPackCreateSentinel)
+	d := newListSelectDialog(dialogAddPack, "Add pack to profile:", names)
+	dim := make([]bool, len(names))
+	dim[len(names)-1] = true
+	d.listDim = dim
+	return d
+}
+
+// profilesWithoutPack returns profile names that don't already contain the given pack.
+func (m rootModel) profilesWithoutPack(packName string) []string {
+	var names []string
+	for _, item := range m.profiles.items {
+		has := false
+		for _, pe := range item.cfg.Packs {
+			if pe.Name == packName {
+				has = true
+				break
+			}
+		}
+		if !has {
+			names = append(names, item.name)
+		}
+	}
+	return names
+}
+
 // anyProfileDirty returns true if any profile has unsaved changes.
 func (m rootModel) anyProfileDirty() bool {
 	for _, item := range m.profiles.items {
@@ -1524,17 +1656,19 @@ const (
 	actProfileAddPack    = "Add to profile"
 	actProfileRemovePack = "Remove from profile"
 	// Packs tab actions (pack install/delete = disk operations).
-	actInstall    = "Install"
-	actPackDelete = "Delete"
-	actUpdate     = "Update"
-	actUpdateAll  = "Update all"
+	actInstall      = "Install"
+	actPackDelete   = "Delete"
+	actUpdate       = "Update"
+	actAddToProfile = "Add to profile"
+	actUpdateAll    = "Update all"
 	// Save tab actions.
-	actCreatePack = "Create pack"
-	actMoveToPack = "Move to pack"
-	actPreview    = "Preview"
-	actViewDiff   = "View diff"
-	actSaveToPack = "Save to pack"
-	actDeleteFile = "Delete file"
+	actCreatePack         = "Create pack"
+	addPackCreateSentinel = "Create new pack..."
+	actMoveToPack         = "Move to pack"
+	actPreview            = "Preview"
+	actViewDiff           = "View diff"
+	actSaveToPack         = "Save to pack"
+	actDeleteFile         = "Delete file"
 	// Override actions (content tree).
 	actSetOverride    = "Set override"
 	actRemoveOverride = "Remove override"
@@ -1685,13 +1819,24 @@ func (m rootModel) handleTreeAction(msg dialogResultMsg) (tea.Model, tea.Cmd) {
 func (m rootModel) openPackTabActions() (tea.Model, tea.Cmd) {
 	var actions []string
 	li := m.packs.currentListItem()
-	if li != nil && li.installed {
-		actions = append(actions, actPackDelete, actUpdate, actEditManifest)
+	installed := li != nil && li.installed
+
+	if installed {
+		actions = append(actions, actUpdate)
+	} else {
+		actions = append(actions, actInstall)
 	}
-	actions = append(actions, actCreatePack, actInstall)
 	if len(m.packs.items) > 0 {
 		actions = append(actions, actUpdateAll)
 	}
+	if installed {
+		actions = append(actions, actAddToProfile)
+	}
+	actions = append(actions, actCreatePack)
+	if installed {
+		actions = append(actions, actEditManifest, actPackDelete)
+	}
+
 	d := newListSelectDialog(dialogActionPackTab, "Pack actions:", actions)
 	m.dialog = &d
 	return m, nil
@@ -1914,4 +2059,46 @@ func scheduleStatusClear(id int) tea.Cmd {
 	return tea.Tick(statusClearDuration, func(time.Time) tea.Msg {
 		return statusClearMsg{id: id}
 	})
+}
+
+// --- Bundled content helpers ---
+
+// isRemoteInstallInput returns true if the input looks like a URL or registry name
+// (as opposed to a local path). Mirrors the detection logic in installPack.
+func isRemoteInstallInput(input string) bool {
+	if strings.Contains(input, "://") ||
+		strings.HasPrefix(input, "github.com") ||
+		strings.HasPrefix(input, "bitbucket.org") {
+		return true
+	}
+	return isRegistryName(input)
+}
+
+// bundledCheckItems returns the standard checklist items for bundled content selection.
+func bundledCheckItems() []checkItem {
+	var items []checkItem
+	for _, cat := range domain.AllBundledCategories {
+		items = append(items, checkItem{
+			label:   string(cat),
+			checked: cat == domain.BundledProfiles,
+		})
+	}
+	return items
+}
+
+// parseBundledChecklist converts selected checklist values into a BundledSet.
+func parseBundledChecklist(values []string) domain.BundledSet {
+	if len(values) == 0 {
+		return nil
+	}
+	var cats []domain.BundledCategory
+	for _, v := range values {
+		if c, ok := domain.ParseBundledCategory(v); ok {
+			cats = append(cats, c)
+		}
+	}
+	if len(cats) == 0 {
+		return nil
+	}
+	return domain.NewBundledSet(cats...)
 }

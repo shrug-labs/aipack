@@ -217,7 +217,8 @@ func TestProfileSavedMsg_RerunsSyncCheck(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})
 	m.profiles.items = []profileItem{
-		{name: "test", path: "/tmp/test.yaml", isActive: true, syncState: syncUnsynced},
+		{name: "test", path: "/tmp/test.yaml", isActive: true, syncState: syncUnsynced,
+			cfg: config.ProfileConfig{Packs: []config.PackEntry{{Name: "some-pack"}}}},
 	}
 
 	result, cmd := m.Update(profileSavedMsg{profileName: "test"})

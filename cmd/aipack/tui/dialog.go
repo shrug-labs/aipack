@@ -46,6 +46,7 @@ type dialogModel struct {
 	listCursor  int
 	listLabels  []string     // per-item annotations displayed before each item
 	listActions []listAction // additional key bindings
+	listDim     []bool       // per-item dim styling (e.g., sentinels)
 
 	// For checklist dialogs.
 	checkItems []checkItem
@@ -241,6 +242,8 @@ func (d dialogModel) View() string {
 			if i == d.listCursor {
 				prefix = "> "
 				item = selectedStyle.Render(item)
+			} else if i < len(d.listDim) && d.listDim[i] {
+				item = dimStyle.Render(item)
 			}
 
 			// Prepend annotation (e.g., active dot) if available.

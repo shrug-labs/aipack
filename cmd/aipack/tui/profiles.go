@@ -331,7 +331,6 @@ func (m profilesModel) ensureTree() profilesModel {
 		return m
 	}
 	if len(item.cfg.Packs) == 0 {
-		item.treeErr = "no packs configured in this profile"
 		return m
 	}
 
@@ -387,6 +386,10 @@ func (m profilesModel) computeFileSizesCmd() tea.Cmd {
 func (m profilesModel) checkSyncCmd(syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	item := m.activeItem()
 	if item == nil || item.syncState == syncLoading {
+		return nil
+	}
+	if len(item.cfg.Packs) == 0 {
+		item.syncState = syncSynced // nothing to sync
 		return nil
 	}
 	item.syncState = syncLoading
@@ -725,6 +728,11 @@ func (m profilesModel) viewTreePanel(width, height int) string {
 		sb.WriteString(item.tree.view(m.focus == panelTree, height-1))
 	} else if item.treeErr != "" {
 		sb.WriteString(errorStyle.Render(fmt.Sprintf("error: %s", item.treeErr)))
+		sb.WriteString("\n")
+	} else if len(item.cfg.Packs) == 0 {
+		sb.WriteString(dimStyle.Render("No packs in this profile."))
+		sb.WriteString("\n")
+		sb.WriteString(dimStyle.Render("Move → to add a pack."))
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString(dimStyle.Render("(no content)"))

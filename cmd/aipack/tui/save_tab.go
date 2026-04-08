@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/shrug-labs/aipack/internal/app"
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -59,8 +60,8 @@ type saveTabModel struct {
 	fileOffset    int                   // scroll offset within the rendered file list
 	selCount      int                   // cached count of selected candidates
 
-	// Resolved profile context, cached after first resolution.
-	resolvedProfile *app.SyncContext
+	// Targeting info, resolved from sync-config defaults (no profile needed).
+	targetSpec *app.TargetSpec
 
 	// Stage 4: destination pack.
 	packOptions  []string // installed pack names + saveNewPackSentinel
@@ -80,6 +81,21 @@ type saveTabModel struct {
 
 func newSaveTabModel(ctx context.Context, eng *engine.Engine, configDir string, reg *harness.Registry) saveTabModel {
 	return saveTabModel{ctx: ctx, eng: eng, configDir: configDir, registry: reg}
+}
+
+// resolveTargetSpec builds targeting info from sync-config defaults and the
+// environment. This is the TUI's I/O boundary for the save pipeline — it
+// reads cwd and sync-config from disk but does not require profile resolution.
+func (m saveTabModel) resolveTargetSpec() (app.TargetSpec, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return app.TargetSpec{}, fmt.Errorf("resolving working directory: %w", err)
+	}
+	syncCfg, err := config.LoadSyncConfig(config.SyncConfigPath(m.configDir))
+	if err != nil {
+		return app.TargetSpec{}, fmt.Errorf("loading sync-config: %w", err)
+	}
+	return app.ResolveTargetSpec(syncCfg, m.configDir, cwd, config.HomeDir())
 }
 
 func (m saveTabModel) Update(msg tea.Msg) (saveTabModel, tea.Cmd) {
@@ -198,9 +214,15 @@ func (m saveTabModel) handleHarnessKey(msg tea.KeyMsg) (saveTabModel, tea.Cmd) {
 	case "enter":
 		if len(m.availableHarnesses) > 0 {
 			m.selectedHarness = m.availableHarnesses[m.harnessCursor]
+			ts, err := m.resolveTargetSpec()
+			if err != nil {
+				m.loadErr = fmt.Sprintf("resolve targeting: %s", err)
+				return m, nil
+			}
+			m.targetSpec = &ts
 			m.loading = true
 			m.stage = saveStageVectors
-			return m, discoverVectors(m.ctx, m.eng, m.selectedHarness, m.configDir, m.registry)
+			return m, discoverVectors(m.ctx, m.selectedHarness, ts.ProjectDir, ts.Home, m.registry)
 		}
 	}
 	return m, nil
@@ -372,21 +394,27 @@ func (m saveTabModel) advanceToFiles() (saveTabModel, tea.Cmd) {
 	m.loading = true
 	m.stage = saveStageFiles
 
-	// Resolve and cache profile context for reuse in executePipeline.
-	res, _, err := app.ResolveActiveProfile(m.eng, m.configDir)
-	if err != nil {
-		m.loadErr = fmt.Sprintf("resolve profile: %s", err)
-		m.loading = false
-		return m, nil
+	// Use cached targeting info, or resolve fresh if not available.
+	var ts app.TargetSpec
+	if m.targetSpec != nil {
+		ts = *m.targetSpec
+	} else {
+		var err error
+		ts, err = m.resolveTargetSpec()
+		if err != nil {
+			m.loadErr = fmt.Sprintf("resolve targeting: %s", err)
+			m.loading = false
+			return m, nil
+		}
+		m.targetSpec = &ts
 	}
-	m.resolvedProfile = &res
 
 	return m, discoverSaveFiles(m.ctx, m.eng, app.DiscoverSaveRequest{
 		HarnessID:  m.selectedHarness,
 		Categories: categories,
-		Scope:      res.TargetSpec.Scope,
-		ProjectDir: res.TargetSpec.ProjectDir,
-		Home:       res.TargetSpec.Home,
+		Scope:      ts.Scope,
+		ProjectDir: ts.ProjectDir,
+		Home:       ts.Home,
 		ConfigDir:  m.configDir,
 	}, m.registry)
 }
@@ -406,15 +434,15 @@ func (m saveTabModel) executePipeline(packName string, createPack bool) (saveTab
 	m.loading = true
 	m.stage = saveStageExecuting
 
-	// Use cached profile from advanceToFiles, or resolve fresh if not available.
-	var res app.SyncContext
-	if m.resolvedProfile != nil {
-		res = *m.resolvedProfile
+	// Use cached targeting info, or resolve fresh if not available.
+	var ts app.TargetSpec
+	if m.targetSpec != nil {
+		ts = *m.targetSpec
 	} else {
 		var err error
-		res, _, err = app.ResolveActiveProfile(m.eng, m.configDir)
+		ts, err = m.resolveTargetSpec()
 		if err != nil {
-			m.loadErr = fmt.Sprintf("resolve profile: %s", err)
+			m.loadErr = fmt.Sprintf("resolve targeting: %s", err)
 			m.loading = false
 			return m, nil
 		}
@@ -432,9 +460,9 @@ func (m saveTabModel) executePipeline(packName string, createPack bool) (saveTab
 		Candidates: selected,
 		PackName:   packName,
 		ConfigDir:  m.configDir,
-		Scope:      res.TargetSpec.Scope,
-		ProjectDir: res.TargetSpec.ProjectDir,
-		Home:       res.TargetSpec.Home,
+		Scope:      ts.Scope,
+		ProjectDir: ts.ProjectDir,
+		Home:       ts.Home,
 		HarnessID:  m.selectedHarness,
 		CreatePack: createPack,
 	}, m.registry)
@@ -1026,7 +1054,7 @@ func saveCandidateLabel(f app.HarnessFile) string {
 	return filepath.Base(f.HarnessPath)
 }
 
-// rediscoverFiles re-runs file discovery with the current harness/vector/profile state.
+// rediscoverFiles re-runs file discovery with the current harness/vector/targeting state.
 func (m saveTabModel) rediscoverFiles() tea.Cmd {
 	var categories []domain.PackCategory
 	for _, v := range m.availableVectors {
@@ -1034,15 +1062,15 @@ func (m saveTabModel) rediscoverFiles() tea.Cmd {
 			categories = append(categories, v)
 		}
 	}
-	if len(categories) == 0 || m.resolvedProfile == nil {
+	if len(categories) == 0 || m.targetSpec == nil {
 		return nil
 	}
 	return discoverSaveFiles(m.ctx, m.eng, app.DiscoverSaveRequest{
 		HarnessID:  m.selectedHarness,
 		Categories: categories,
-		Scope:      m.resolvedProfile.TargetSpec.Scope,
-		ProjectDir: m.resolvedProfile.TargetSpec.ProjectDir,
-		Home:       m.resolvedProfile.TargetSpec.Home,
+		Scope:      m.targetSpec.Scope,
+		ProjectDir: m.targetSpec.ProjectDir,
+		Home:       m.targetSpec.Home,
 		ConfigDir:  m.configDir,
 	}, m.registry)
 }

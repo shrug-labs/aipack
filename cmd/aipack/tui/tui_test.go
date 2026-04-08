@@ -616,7 +616,7 @@ func TestBundledCandidatesDialog_ConfirmRehydratesApprovedContent(t *testing.T) 
 	}
 
 	m := newRootModel(context.Background(), RunConfig{ConfigDir: configDir})
-	msg := updatePack(context.Background(), configDir, "copy-pack", false)()
+	msg := updatePack(context.Background(), configDir, "copy-pack", false, nil)()
 	packMsg, ok := msg.(packUpdatedMsg)
 	if !ok {
 		t.Fatalf("expected packUpdatedMsg, got %T", msg)

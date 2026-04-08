@@ -103,6 +103,30 @@ func ResolveActiveProfile(eng *engine.Engine, configDir string) (SyncContext, []
 	})
 }
 
+// ResolveTargetSpec builds a TargetSpec from sync-config defaults without
+// requiring a resolved profile. Use this when you need targeting information
+// (scope, project dir, harnesses) but not pack resolution.
+func ResolveTargetSpec(syncCfg config.SyncConfig, configDir, projectDir, home string) (TargetSpec, error) {
+	scope := domain.ScopeGlobal
+	if syncCfg.Defaults.Scope != "" {
+		if s, serr := cmdutil.NormalizeScope(syncCfg.Defaults.Scope); serr == nil {
+			scope = s
+		}
+	}
+	hs, err := cmdutil.ResolveHarnesses(syncCfg.Defaults.Harnesses)
+	if err != nil {
+		return TargetSpec{}, err
+	}
+
+	return TargetSpec{
+		ConfigDir:  configDir,
+		Scope:      scope,
+		ProjectDir: projectDir,
+		Harnesses:  hs,
+		Home:       home,
+	}, nil
+}
+
 // resolvePackRoots extracts pack name → root mappings from a resolved profile.
 func resolvePackRoots(profile domain.Profile) map[string]string {
 	roots := make(map[string]string, len(profile.Packs))

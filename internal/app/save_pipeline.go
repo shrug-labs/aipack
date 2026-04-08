@@ -129,29 +129,17 @@ func DiscoverContentVectors(ctx context.Context, harnessID domain.Harness, scope
 func DiscoverSaveFiles(ctx context.Context, eng *engine.Engine, req DiscoverSaveRequest, reg *harness.Registry) ([]SaveCandidate, []string, error) {
 	var warnings []string
 
-	// Resolve pack roots from active profile for classification.
-	res, _, err := ResolveActiveProfile(eng, req.ConfigDir)
-	if err != nil {
-		// Non-fatal: proceed without pack roots (all files will be untracked).
-		warnings = append(warnings, fmt.Sprintf("profile resolution failed (all files will appear untracked): %v", err))
-		res = SyncContext{
-			TargetSpec: TargetSpec{
-				Scope:      req.Scope,
-				ProjectDir: req.ProjectDir,
-				Harnesses:  []domain.Harness{req.HarnessID},
-				Home:       req.Home,
-			},
-		}
+	// Build pack roots from installed packs for file classification.
+	// No profile resolution needed — pack roots are just name → path.
+	packRoots := installedPackRoots(req.ConfigDir)
+
+	ts := TargetSpec{
+		ConfigDir:  req.ConfigDir,
+		Scope:      req.Scope,
+		ProjectDir: req.ProjectDir,
+		Harnesses:  []domain.Harness{req.HarnessID},
+		Home:       req.Home,
 	}
-
-	// Override scope/home from request.
-	ts := res.TargetSpec
-	ts.Scope = req.Scope
-	ts.ProjectDir = req.ProjectDir
-	ts.Home = req.Home
-	ts.Harnesses = []domain.Harness{req.HarnessID}
-
-	packRoots := resolvePackRoots(res.Profile)
 
 	inspResult, err := InspectHarness(ctx, eng, InspectRequest{
 		TargetSpec: ts,
@@ -536,6 +524,21 @@ func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.R
 	}
 
 	return result, nil
+}
+
+// installedPackRoots returns name → absolute path for all installed packs.
+// Used by the save pipeline for file classification without profile resolution.
+func installedPackRoots(configDir string) map[string]string {
+	names, err := InstalledPackNames(configDir)
+	if err != nil {
+		return nil
+	}
+	roots := make(map[string]string, len(names))
+	packsDir := filepath.Join(configDir, "packs")
+	for _, name := range names {
+		roots[name] = filepath.Join(packsDir, name)
+	}
+	return roots
 }
 
 // InstalledPackNames returns the names of all installed packs.

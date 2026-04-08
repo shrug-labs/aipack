@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.19.1]
+
+### Added
+
+- TUI pack install and update show a bundled content checklist (`--with` equivalent) for selecting profiles, registries, and extras.
+- Init template includes `collision_strategy: last-wins` in sync-config defaults, making the default visible.
+
+### Fixed
+
+- TUI save pipeline no longer requires a non-empty profile — saving to a newly created pack works even when no packs are configured.
+- TUI empty-profile UX: hint instead of red error, "Create new pack..." always available in the add-pack dialog.
+
 ## [0.19.0]
 
 ### Added

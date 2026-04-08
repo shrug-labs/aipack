@@ -234,11 +234,11 @@ func saveSyncConfig(configDir string, cfg config.SyncConfig) tea.Cmd {
 // installPack installs a pack from a path, URL, or registry name.
 // For bare names (no path separators, not an existing path), it performs a
 // registry lookup — matching the CLI's `pack install` behavior.
-func installPack(ctx context.Context, configDir, input string) tea.Cmd {
+func installPack(ctx context.Context, configDir, input string, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackInstallRequest{
 			ConfigDir: configDir,
-			// With: nil — bundled content not auto-applied for TUI installs.
+			With:      with,
 		}
 		if strings.Contains(input, "://") ||
 			strings.HasPrefix(input, "github.com") ||
@@ -323,12 +323,13 @@ func approveBundled(configDir string, results []app.PackUpdateResult, approved d
 }
 
 // updatePack updates one or all installed packs.
-func updatePack(ctx context.Context, configDir, name string, all bool) tea.Cmd {
+func updatePack(ctx context.Context, configDir, name string, all bool, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackUpdateRequest{
 			ConfigDir: configDir,
 			Name:      name,
 			All:       all,
+			With:      with,
 		}
 		results, err := app.PackUpdate(ctx, req, io.Discard)
 		return packUpdatedMsg{name: name, results: results, err: err}
@@ -525,13 +526,9 @@ func detectHarnesses(reg *harness.Registry) tea.Cmd {
 
 // discoverVectors runs capture on one harness and returns available content vectors.
 // Merges results from both project and global scopes.
-func discoverVectors(ctx context.Context, eng *engine.Engine, harnessID domain.Harness, configDir string, reg *harness.Registry) tea.Cmd {
+func discoverVectors(ctx context.Context, harnessID domain.Harness, projectDir, home string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		res, _, err := app.ResolveActiveProfile(eng, configDir)
-		if err != nil {
-			return vectorsDiscoveredMsg{err: err}
-		}
-		vectors, err := app.DiscoverContentVectorsAllScopes(ctx, harnessID, res.TargetSpec.ProjectDir, res.TargetSpec.Home, reg)
+		vectors, err := app.DiscoverContentVectorsAllScopes(ctx, harnessID, projectDir, home, reg)
 		return vectorsDiscoveredMsg{vectors: vectors, err: err}
 	}
 }

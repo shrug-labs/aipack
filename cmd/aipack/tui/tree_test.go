@@ -203,8 +203,11 @@ func TestEnsureTree_NoPacks(t *testing.T) {
 		cursor: 0,
 	}
 	m = m.ensureTree()
-	if m.items[0].treeErr == "" {
-		t.Fatal("expected treeErr for profile with no packs")
+	if m.items[0].treeErr != "" {
+		t.Fatalf("expected no treeErr for empty profile, got %q", m.items[0].treeErr)
+	}
+	if m.items[0].tree != nil {
+		t.Fatal("expected nil tree for empty profile")
 	}
 }
 
