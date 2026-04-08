@@ -155,13 +155,13 @@ func PackCreate(req PackCreateRequest) error {
 		}
 	}
 
-	// Register in sync-config.
+	// Record origin in sync-config.
 	if err := packRecordOrigin(req.ConfigDir, req.Name, config.InstalledPackMeta{
 		Origin:      contentDir,
 		Method:      method,
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
-		return fmt.Errorf("registering pack: %w", err)
+		return fmt.Errorf("recording pack origin: %w", err)
 	}
 
 	return nil

@@ -271,7 +271,8 @@ func (t *treeModel) clampOffset(visibleH int) {
 }
 
 // view renders the tree, windowed to height visible lines.
-func (t *treeModel) view(focused bool, height int) string {
+// Lines wider than width are truncated to prevent wrapping.
+func (t *treeModel) view(focused bool, width, height int) string {
 	if len(t.nodes) == 0 {
 		return dimStyle.Render("  (no content)")
 	}
@@ -452,6 +453,10 @@ func (t *treeModel) view(focused bool, height int) string {
 
 			lines = append(lines, line.String())
 		}
+	}
+
+	if width > 0 {
+		lines = truncateLines(lines, width)
 	}
 
 	var sb strings.Builder

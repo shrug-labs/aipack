@@ -15,17 +15,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// PackRemove uninstalls a pack and deregisters it from all profiles.
-// PackRemoveResult holds post-removal metadata for callers to act on.
-type PackRemoveResult struct {
+// PackDeleteResult holds post-deletion metadata for callers to act on.
+type PackDeleteResult struct {
 	// BundledProfiles lists profile names that were bundled with this pack
 	// and still exist after removal. Callers should prompt for confirmation
 	// before deleting these.
 	BundledProfiles []string
 }
 
-func PackRemove(configDir string, name string, stdout io.Writer) (PackRemoveResult, error) {
-	var result PackRemoveResult
+// PackDelete removes a pack from disk and from all profiles.
+func PackDelete(configDir string, name string, stdout io.Writer) (PackDeleteResult, error) {
+	var result PackDeleteResult
 
 	if strings.TrimSpace(name) == "" {
 		return result, fmt.Errorf("pack name is required")
@@ -50,8 +50,8 @@ func PackRemove(configDir string, name string, stdout io.Writer) (PackRemoveResu
 	// Best-effort origin cleanup.
 	_ = packClearOrigin(configDir, name)
 
-	// Best-effort deregister from all profiles.
-	packDeregisterFromAllProfiles(configDir, name, stdout)
+	// Best-effort remove from all profiles.
+	packRemoveFromAllProfiles(configDir, name, stdout)
 
 	return result, nil
 }
@@ -85,9 +85,9 @@ func RemoveBundledProfiles(configDir string, names []string, stdout io.Writer) {
 	}
 }
 
-// packDeregisterFromAllProfiles removes source and pack entries for a given pack
-// name from every profile YAML in configDir/profiles/.
-func packDeregisterFromAllProfiles(configDir, packName string, stdout io.Writer) {
+// packRemoveFromAllProfiles removes pack entries for a given pack name from
+// every profile YAML in configDir/profiles/.
+func packRemoveFromAllProfiles(configDir, packName string, stdout io.Writer) {
 	profilesDir := filepath.Join(configDir, "profiles")
 	names, err := config.ListProfileNames(profilesDir)
 	if err != nil {
@@ -95,18 +95,23 @@ func packDeregisterFromAllProfiles(configDir, packName string, stdout io.Writer)
 	}
 	for _, name := range names {
 		profilePath := filepath.Join(profilesDir, name+".yaml")
-		if packDeregister(profilePath, packName) {
-			fmt.Fprintf(stdout, "Deregistered pack %q from profile %q\n", packName, name)
+		modified, err := packRemoveFromProfile(profilePath, packName)
+		if err != nil {
+			fmt.Fprintf(stdout, "Warning: failed to update profile %q: %v\n", name, err)
+			continue
+		}
+		if modified {
+			fmt.Fprintf(stdout, "Removed pack %q from profile %q\n", packName, name)
 		}
 	}
 }
 
-// packDeregister removes pack entries matching packName from a single profile file.
+// packRemoveFromProfile removes pack entries matching packName from a single profile file.
 // Returns true if the profile was modified.
-func packDeregister(profilePath, packName string) bool {
+func packRemoveFromProfile(profilePath, packName string) (bool, error) {
 	cfg, err := config.LoadProfile(profilePath)
 	if err != nil {
-		return false
+		return false, err
 	}
 
 	modified := false
@@ -123,15 +128,10 @@ func packDeregister(profilePath, packName string) bool {
 	cfg.Packs = filteredPacks
 
 	if !modified {
-		return false
+		return false, nil
 	}
 
-	out, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return false
-	}
-	_ = util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600)
-	return true
+	return true, saveProfile(profilePath, &cfg)
 }
 
 // PackRename renames a pack across all config: directory, manifest, sync-config,
@@ -221,16 +221,21 @@ func packRenameInAllProfiles(configDir, oldName, newName string, stdout io.Write
 	}
 	for _, name := range names {
 		profilePath := filepath.Join(profilesDir, name+".yaml")
-		if packRenameInProfile(profilePath, oldName, newName) {
+		modified, err := packRenameInProfile(profilePath, oldName, newName)
+		if err != nil {
+			fmt.Fprintf(stdout, "Warning: failed to update profile %q: %v\n", name, err)
+			continue
+		}
+		if modified {
 			fmt.Fprintf(stdout, "Updated profile %q: %s → %s\n", name, oldName, newName)
 		}
 	}
 }
 
-func packRenameInProfile(profilePath, oldName, newName string) bool {
+func packRenameInProfile(profilePath, oldName, newName string) (bool, error) {
 	cfg, err := config.LoadProfile(profilePath)
 	if err != nil {
-		return false
+		return false, err
 	}
 	modified := false
 	for i := range cfg.Packs {
@@ -240,14 +245,9 @@ func packRenameInProfile(profilePath, oldName, newName string) bool {
 		}
 	}
 	if !modified {
-		return false
+		return false, nil
 	}
-	out, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return false
-	}
-	_ = util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600)
-	return true
+	return true, saveProfile(profilePath, &cfg)
 }
 
 func packRenameInAllLedgers(eng *engine.Engine, configDir, oldName, newName string, stdout io.Writer) {
@@ -323,8 +323,17 @@ func packClearOrigin(configDir, name string) error {
 	return config.SaveSyncConfig(scPath, sc)
 }
 
-// PackRegister adds a pack entry to the named profile.
-func PackRegister(configDir string, profileName string, packName string, quiet bool, stdout io.Writer) error {
+// saveProfile marshals and atomically writes a profile config.
+func saveProfile(profilePath string, cfg *config.ProfileConfig) error {
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshalling profile: %w", err)
+	}
+	return util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600)
+}
+
+// PackAdd adds a pack entry to the named profile.
+func PackAdd(configDir string, profileName string, packName string, quiet bool, stdout io.Writer) error {
 	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
 
 	cfg, err := config.LoadProfile(profilePath)
@@ -346,6 +355,7 @@ func PackRegister(configDir string, profileName string, packName string, quiet b
 			break
 		}
 	}
+	modified := false
 	if !packExists {
 		enabled := true
 		cfg.Packs = append(cfg.Packs, config.PackEntry{
@@ -353,15 +363,15 @@ func PackRegister(configDir string, profileName string, packName string, quiet b
 			Enabled: &enabled,
 			Quiet:   quiet,
 		})
+		modified = true
+	} else if quiet {
+		modified = true
 	}
 
-	out, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return fmt.Errorf("marshalling profile: %w", err)
-	}
-
-	if err := util.WriteFileAtomicWithPerms(profilePath, out, 0o700, 0o600); err != nil {
-		return err
+	if modified {
+		if err := saveProfile(profilePath, &cfg); err != nil {
+			return err
+		}
 	}
 
 	if !packExists {
@@ -369,28 +379,77 @@ func PackRegister(configDir string, profileName string, packName string, quiet b
 		if quiet {
 			label = "quiet pack"
 		}
-		fmt.Fprintf(stdout, "Registered %s %q in profile %q\n", label, packName, profileName)
+		fmt.Fprintf(stdout, "Added %s %q to profile %q\n", label, packName, profileName)
 	} else {
-		fmt.Fprintf(stdout, "Pack %q already registered in profile %q\n", packName, profileName)
+		fmt.Fprintf(stdout, "Pack %q already in profile %q\n", packName, profileName)
 	}
 	return nil
 }
 
-// PackDeregister removes a pack entry from the named profile.
-func PackDeregister(configDir string, profileName string, packName string, stdout io.Writer) error {
+// PackRemove removes a pack entry from the named profile.
+func PackRemove(configDir string, profileName string, packName string, stdout io.Writer) error {
 	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
 
-	if packDeregister(profilePath, packName) {
+	modified, err := packRemoveFromProfile(profilePath, packName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("profile %q does not exist at %s", profileName, profilePath)
+		}
+		return fmt.Errorf("updating profile: %w", err)
+	}
+	if modified {
 		fmt.Fprintf(stdout, "Removed pack %q from profile %q\n", packName, profileName)
 		return nil
 	}
 
-	// Check if profile exists at all.
-	if _, err := os.Stat(profilePath); os.IsNotExist(err) {
-		return fmt.Errorf("profile %q does not exist at %s", profileName, profilePath)
+	fmt.Fprintf(stdout, "Pack %q not found in profile %q\n", packName, profileName)
+	return nil
+}
+
+// PackEnable sets enabled: true on an existing pack entry in the named profile.
+func PackEnable(configDir string, profileName string, packName string, stdout io.Writer) error {
+	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
+	return packSetEnabled(profilePath, profileName, packName, true, stdout)
+}
+
+// PackDisable sets enabled: false on an existing pack entry in the named profile.
+func PackDisable(configDir string, profileName string, packName string, stdout io.Writer) error {
+	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
+	return packSetEnabled(profilePath, profileName, packName, false, stdout)
+}
+
+// packSetEnabled toggles the enabled field on an existing pack entry in a profile.
+func packSetEnabled(profilePath, profileName, packName string, enabled bool, stdout io.Writer) error {
+	cfg, err := config.LoadProfile(profilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("profile %q does not exist at %s", profileName, profilePath)
+		}
+		return fmt.Errorf("parsing profile: %w", err)
 	}
 
-	fmt.Fprintf(stdout, "Pack %q not found in profile %q\n", packName, profileName)
+	found := false
+	for i, p := range cfg.Packs {
+		if p.Name == packName {
+			e := enabled
+			cfg.Packs[i].Enabled = &e
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("pack %q not found in profile %q (use 'aipack pack add' first)", packName, profileName)
+	}
+
+	if err := saveProfile(profilePath, &cfg); err != nil {
+		return err
+	}
+
+	verb := "Enabled"
+	if !enabled {
+		verb = "Disabled"
+	}
+	fmt.Fprintf(stdout, "%s pack %q in profile %q\n", verb, packName, profileName)
 	return nil
 }
 
@@ -488,7 +547,7 @@ func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdo
 			Ref:          entry.Ref,
 			SubPath:      entry.Path,
 			Name:         name,
-			Register:     false,
+			Add:          false,
 			Quiet:        entry.Quiet,
 			ContentPaths: entry.ContentPaths,
 		}

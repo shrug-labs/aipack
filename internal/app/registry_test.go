@@ -586,7 +586,7 @@ func TestRegistryFetch_URLFromSyncConfig(t *testing.T) {
 	}
 }
 
-func TestRegistryRemove(t *testing.T) {
+func TestRegistryDelete(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
@@ -609,7 +609,7 @@ func TestRegistryRemove(t *testing.T) {
 
 	// Remove it.
 	buf.Reset()
-	err = RegistryRemove(RegistryRemoveRequest{
+	err = RegistryDelete(RegistryDeleteRequest{
 		ConfigDir: dir,
 		Name:      "example",
 	}, &buf)
@@ -630,11 +630,11 @@ func TestRegistryRemove(t *testing.T) {
 	}
 }
 
-func TestRegistryRemove_NotFound(t *testing.T) {
+func TestRegistryDelete_NotFound(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	err := RegistryRemove(RegistryRemoveRequest{
+	err := RegistryDelete(RegistryDeleteRequest{
 		ConfigDir: dir,
 		Name:      "nonexistent",
 	}, &bytes.Buffer{})

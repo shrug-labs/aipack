@@ -18,7 +18,7 @@ func TestPackRename_FullLifecycle(t *testing.T) {
 	// Install a pack.
 	packSrc := t.TempDir()
 	writePackManifestCmd(t, packSrc, "old-name")
-	_, _, code := runApp(t, "pack", "install", packSrc, "--config-dir", configDir, "--no-register")
+	_, _, code := runApp(t, "pack", "install", packSrc, "--config-dir", configDir)
 	if code != cmdutil.ExitOK {
 		t.Fatalf("install exit=%d", code)
 	}
@@ -136,8 +136,8 @@ func TestPackRename_TargetExists(t *testing.T) {
 	packSrc2 := t.TempDir()
 	writePackManifestCmd(t, packSrc2, "pack-b")
 
-	_, _, _ = runApp(t, "pack", "install", packSrc1, "--config-dir", configDir, "--no-register")
-	_, _, _ = runApp(t, "pack", "install", packSrc2, "--config-dir", configDir, "--no-register")
+	_, _, _ = runApp(t, "pack", "install", packSrc1, "--config-dir", configDir)
+	_, _, _ = runApp(t, "pack", "install", packSrc2, "--config-dir", configDir)
 
 	_, _, code := runApp(t, "pack", "rename", "pack-a", "pack-b", "--config-dir", configDir)
 	if code == cmdutil.ExitOK {

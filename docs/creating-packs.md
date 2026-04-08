@@ -205,10 +205,10 @@ Your pack lives in a git repo. Others install it directly:
 
 ```bash
 # From a git URL
-aipack pack install --url https://github.com/org/shared-repo.git --path my-pack
+aipack pack install --url https://github.com/org/shared-repo.git --path my-pack --add
 
 # From a local clone (symlinked by default, --copy for a full copy)
-aipack pack install /path/to/local/clone/my-pack
+aipack pack install /path/to/local/clone/my-pack --add
 
 # Then sync to their harness
 aipack sync

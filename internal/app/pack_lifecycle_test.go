@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestPackRemove(t *testing.T) {
+func TestPackDelete(t *testing.T) {
 	t.Parallel()
 
 	t.Run("removes from disk", func(t *testing.T) {
@@ -32,7 +32,7 @@ func TestPackRemove(t *testing.T) {
 		}, &out)
 
 		out.Reset()
-		if _, err := PackRemove(configDir, "test-pack", &out); err != nil {
+		if _, err := PackDelete(configDir, "test-pack", &out); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Lstat(filepath.Join(configDir, "packs", "test-pack")); !os.IsNotExist(err) {
@@ -43,7 +43,7 @@ func TestPackRemove(t *testing.T) {
 	t.Run("not installed", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		_, err := PackRemove(t.TempDir(), "nonexistent", &out)
+		_, err := PackDelete(t.TempDir(), "nonexistent", &out)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -67,14 +67,14 @@ func TestPackRemove(t *testing.T) {
 		}
 
 		out.Reset()
-		PackRemove(configDir, "test-pack", &out)
+		PackDelete(configDir, "test-pack", &out)
 		sc, _ = config.LoadSyncConfig(config.SyncConfigPath(configDir))
 		if _, ok := sc.InstalledPacks["test-pack"]; ok {
 			t.Fatal("origin should be cleared")
 		}
 	})
 
-	t.Run("deregisters from profile", func(t *testing.T) {
+	t.Run("removes from profile", func(t *testing.T) {
 		t.Parallel()
 		packDir := t.TempDir()
 		configDir := t.TempDir()
@@ -84,12 +84,12 @@ func TestPackRemove(t *testing.T) {
 		var out bytes.Buffer
 		PackInstall(context.Background(), PackInstallRequest{
 			PackPath: packDir, ConfigDir: configDir, Link: true,
-			Register: true, Profile: "default",
+			Add: true, Profile: "default",
 			NowFn: func() time.Time { return fixedNow },
 		}, &out)
 
 		out.Reset()
-		PackRemove(configDir, "test-pack", &out)
+		PackDelete(configDir, "test-pack", &out)
 
 		b, _ := os.ReadFile(filepath.Join(configDir, "profiles", "default.yaml"))
 		var cfg config.ProfileConfig
@@ -99,7 +99,7 @@ func TestPackRemove(t *testing.T) {
 				t.Fatal("pack entry should be removed from profile")
 			}
 		}
-		if !strings.Contains(out.String(), "Deregistered") {
+		if !strings.Contains(out.String(), "Removed") {
 			t.Fatalf("output = %s", out.String())
 		}
 	})
@@ -126,7 +126,7 @@ func TestPackRemove(t *testing.T) {
 		var out bytes.Buffer
 		PackInstall(context.Background(), PackInstallRequest{
 			PackPath: packDir, ConfigDir: configDir, Link: true,
-			Register: true, Profile: "default",
+			Add: true, Profile: "default",
 			NowFn: func() time.Time { return fixedNow },
 		}, &out)
 
@@ -136,7 +136,7 @@ func TestPackRemove(t *testing.T) {
 		}
 
 		out.Reset()
-		result, _ := PackRemove(configDir, "test-pack", &out)
+		result, _ := PackDelete(configDir, "test-pack", &out)
 
 		if len(result.BundledProfiles) != 1 || result.BundledProfiles[0] != "dev" {
 			t.Fatalf("BundledProfiles = %v", result.BundledProfiles)
@@ -157,13 +157,13 @@ func TestPackRemove(t *testing.T) {
 	})
 }
 
-func TestPackRegister_QuietUpdatesExistingEntry(t *testing.T) {
+func TestPackAdd_QuietUpdatesExistingEntry(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	config.EnsureInit(configDir)
 
 	var out bytes.Buffer
-	PackRegister(configDir, "default", "my-pack", false, &out)
+	PackAdd(configDir, "default", "my-pack", false, &out)
 
 	cfg, _ := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
 	for _, p := range cfg.Packs {
@@ -173,7 +173,7 @@ func TestPackRegister_QuietUpdatesExistingEntry(t *testing.T) {
 	}
 
 	out.Reset()
-	PackRegister(configDir, "default", "my-pack", true, &out)
+	PackAdd(configDir, "default", "my-pack", true, &out)
 
 	cfg, _ = config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
 	var found *config.PackEntry
@@ -183,7 +183,7 @@ func TestPackRegister_QuietUpdatesExistingEntry(t *testing.T) {
 		}
 	}
 	if found == nil || !found.Quiet {
-		t.Fatal("expected Quiet=true after re-register")
+		t.Fatal("expected Quiet=true after re-add")
 	}
 }
 
@@ -291,8 +291,8 @@ func TestPackInstallMissing(t *testing.T) {
 		if captured.URL != "https://example.com/repo.git" || captured.Ref != "main" || captured.SubPath != "packs/beta" {
 			t.Errorf("PackInstall called with URL=%q Ref=%q SubPath=%q", captured.URL, captured.Ref, captured.SubPath)
 		}
-		if captured.Register {
-			t.Error("Register should be false")
+		if captured.Add {
+			t.Error("Add should be false")
 		}
 	})
 

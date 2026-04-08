@@ -373,14 +373,14 @@ func upsertRegistrySource(sc *config.SyncConfig, src config.RegistrySourceEntry)
 	sc.RegistrySources = append(sc.RegistrySources, src)
 }
 
-// RegistryRemoveRequest holds the inputs for removing a registry source.
-type RegistryRemoveRequest struct {
+// RegistryDeleteRequest holds the inputs for deleting a registry source.
+type RegistryDeleteRequest struct {
 	ConfigDir string
-	Name      string // source name to remove
+	Name      string // source name to delete
 }
 
-// RegistryRemove removes a registry source from sync-config and deletes its cache file.
-func RegistryRemove(req RegistryRemoveRequest, stdout io.Writer) error {
+// RegistryDelete deletes a registry source from sync-config and removes its cache file.
+func RegistryDelete(req RegistryDeleteRequest, stdout io.Writer) error {
 	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
 	if err != nil {
 		return fmt.Errorf("loading sync-config: %w", err)
@@ -417,7 +417,7 @@ func RegistryRemove(req RegistryRemoveRequest, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "warning: could not remove cache file: %v\n", err)
 	}
 
-	fmt.Fprintf(stdout, "Removed registry source %q\n", req.Name)
+	fmt.Fprintf(stdout, "Deleted registry source %q\n", req.Name)
 	return nil
 }
 

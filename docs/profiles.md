@@ -128,7 +128,7 @@ Only the three named items sync. Everything else in the pack stays on disk but d
 Three ways to get `quiet: true` on a profile entry:
 
 - Set it directly in the profile YAML.
-- Install with `aipack pack install -q` or `aipack pack enable -q`.
+- Install with `aipack pack install -q --add` or `aipack pack add -q`.
 - Registry hint: a registry entry with `quiet: true` propagates to the profile entry on install.
 
 ## Role-based profiles

@@ -34,7 +34,7 @@ See also: doctor, sync`,
 }
 
 func (c *InitCmd) Run(ctx context.Context, g *Globals) error {
-	configDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	configDir, err := cmdutil.ResolveConfigDir(g.ConfigDir, config.HomeDir())
 	if err != nil {
 		return err
 	}

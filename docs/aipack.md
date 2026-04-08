@@ -5,9 +5,9 @@ Complete CLI reference for `aipack`. For first-time setup, see [Getting Started]
 ## Command map
 
 - Setup: `init`, `doctor`
-- Pack lifecycle: `pack create`, `pack install`, `pack delete`, `pack update`, `pack rename`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
+- Pack lifecycle: `pack create`, `pack install`, `pack delete`, `pack update`, `pack rename`, `pack add`, `pack remove`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
 - Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`
-- Registry: `registry fetch`, `registry list`, `registry sources`, `registry remove`
+- Registry: `registry fetch`, `registry list`, `registry sources`, `registry delete`
 - Sync/Save: `sync`, `save`, `restore`, `clean`, `render`
 - Discovery: `search`, `query`, `status`, `trace`
 - Interactive: `manage`
@@ -57,7 +57,7 @@ Packs are portable, versioned bundles of AI agent configuration installed under 
 
 ### pack create
 
-Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `mcp/`, `configs/`), then registers it so it is immediately available for profiles and sync.
+Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync.
 
 By default the pack is created in the current directory and symlinked into the packs directory. Use `--local` to create it directly inside the packs directory instead.
 
@@ -91,7 +91,7 @@ Remote packs from GitHub HTTPS URLs are fetched as HTTP tarballs (no git binary 
 
 Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts.
 
-By default, auto-registers the pack as a source in the active profile. Use `--no-register` to skip, or `--profile <name>` to target a specific profile.
+By default, the pack is installed to disk but not added to any profile. Use `--add` to also add it to the active profile, or `--add --profile <name>` to target a specific one. Use `aipack pack add <name>` to add an installed pack to a profile later.
 
 Core content (rules, skills, workflows, agents, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name.
 
@@ -116,9 +116,9 @@ aipack pack install my-team-pack
 # Apply bundled registries and profiles
 aipack pack install --url https://github.com/org/repo.git --path team-pack -w all
 
-# Profile and registration control
-aipack pack install ./my-pack --no-register
-aipack pack install ./my-pack --profile production
+# Add to profile at install time
+aipack pack install ./my-pack --add
+aipack pack install ./my-pack --add --profile my-profile
 ```
 
 Content flags extract specific directories from a URL source into a standard pack layout. The source repo needs no `pack.json`:
@@ -129,7 +129,7 @@ aipack pack install --url https://github.com/org/repo.git \
   --skills src/skills --rules docs/rules --name their-content -q
 ```
 
-Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts` (directory paths within the repo). `--quiet` / `-q` registers the pack as quiet in the profile (omitted selectors include nothing). Content flags require `--url` and `--name`.
+Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts` (directory paths within the repo). `--quiet` / `-q` marks the pack as quiet in the profile (omitted selectors include nothing). Content flags require `--url` and `--name`.
 
 For the full guide on installing from non-pack repositories, see [Installing Packs](./installing-packs.md).
 
@@ -166,7 +166,7 @@ aipack pack update my-pack -w all         # accept all new bundled content
 
 ### pack delete
 
-Deletes an installed pack from disk and deregisters it from all profiles.
+Deletes an installed pack from disk and removes it from all profiles.
 
 ```bash
 aipack pack delete my-pack
@@ -180,19 +180,30 @@ Renames an installed pack across all configuration: the pack directory, `pack.js
 aipack pack rename old-name new-name
 ```
 
-### pack enable / pack disable
+### pack add / pack remove
 
-Enables or disables a pack in the active profile without installing or deleting it from disk.
+Adds or removes a pack entry from a profile. The pack must be installed on disk first (see `pack install`).
 
 ```bash
-aipack pack enable my-pack
-aipack pack enable my-pack --profile production
-aipack pack enable my-pack -q           # register as quiet
-aipack pack disable my-pack
-aipack pack disable my-pack --profile production
+aipack pack add my-pack
+aipack pack add my-pack --profile my-profile
+aipack pack add my-pack -q              # add as quiet
+aipack pack remove my-pack
+aipack pack remove my-pack --profile my-profile
 ```
 
 `--quiet` / `-q` sets `quiet: true` on the profile entry (omitted selectors include nothing). See [Profiles — Quiet packs](./profiles.md#quiet-packs).
+
+### pack enable / pack disable
+
+Toggles a pack's `enabled` field in a profile without removing the entry. Useful for temporarily deactivating a pack while preserving its selectors and overrides.
+
+```bash
+aipack pack enable my-pack
+aipack pack enable my-pack --profile my-profile
+aipack pack disable my-pack
+aipack pack disable my-pack --profile my-profile
+```
 
 ### pack validate
 
@@ -307,12 +318,12 @@ aipack registry sources
 aipack registry sources --json
 ```
 
-### registry remove
+### registry delete
 
-Removes a registry source from sync-config and deletes its cache file.
+Deletes a registry source from sync-config and removes its cache file.
 
 ```bash
-aipack registry remove my-tools
+aipack registry delete my-tools
 ```
 
 ## Sync, Save, Restore, Clean, Render

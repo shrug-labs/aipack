@@ -95,7 +95,7 @@ func TestTreeModel_MultiPackAttribution(t *testing.T) {
 	}
 
 	// View should show pack names.
-	view := tree.view(false, 80)
+	view := tree.view(false, 200, 80)
 	if !strings.Contains(view, "pack-a") {
 		t.Fatal("expected view to contain pack-a attribution")
 	}

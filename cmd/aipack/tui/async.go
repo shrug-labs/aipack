@@ -295,7 +295,7 @@ func createPack(configDir, name string) tea.Cmd {
 // removePack removes an installed pack.
 func removePack(configDir, name string) tea.Cmd {
 	return func() tea.Msg {
-		result, err := app.PackRemove(configDir, name, io.Discard)
+		result, err := app.PackDelete(configDir, name, io.Discard)
 		if err != nil {
 			return packRemovedMsg{name: name, err: err}
 		}
@@ -473,7 +473,7 @@ func runSearch(configDir, query, kind, category, installed string) tea.Cmd {
 	}
 }
 
-// installFromSearch installs a pack by registry name and registers it in the
+// installFromSearch installs a pack by registry name and adds it to the
 // active profile so it's immediately usable after the next sync.
 func installFromSearch(ctx context.Context, configDir, name, profile string) tea.Cmd {
 	return func() tea.Msg {
@@ -487,7 +487,7 @@ func installFromSearch(ctx context.Context, configDir, name, profile string) tea
 			SubPath:   entry.Path,
 			Ref:       entry.Ref,
 			Name:      name,
-			Register:  true,
+			Add:       true,
 			Profile:   profile,
 		}
 		err = app.PackInstall(ctx, req, io.Discard)

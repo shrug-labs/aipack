@@ -307,7 +307,7 @@ func TestInstallBundledProfiles(t *testing.T) {
 			var out bytes.Buffer
 			PackInstall(context.Background(), PackInstallRequest{
 				PackPath: packDir, ConfigDir: configDir, Link: true,
-				Register: true, Profile: "default", With: tc.with,
+				Add: true, Profile: "default", With: tc.with,
 				NowFn: func() time.Time { return fixedNow },
 			}, &out)
 

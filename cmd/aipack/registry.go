@@ -14,7 +14,7 @@ type RegistryCmd struct {
 	List    RegistryListCmd    `cmd:"" help:"List all packs available in the registry"`
 	Fetch   RegistryFetchCmd   `cmd:"" help:"Fetch remote registry sources and cache them locally"`
 	Sources RegistrySourcesCmd `cmd:"" help:"List configured registry sources"`
-	Remove  RegistryRemoveCmd  `cmd:"" help:"Remove a registry source"`
+	Delete  RegistryDeleteCmd  `cmd:"" help:"Delete a registry source"`
 }
 
 func (c *RegistryCmd) Help() string {
@@ -160,32 +160,32 @@ func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 	return nil
 }
 
-// --- registry remove ---
+// --- registry delete ---
 
-type RegistryRemoveCmd struct {
-	Name string `arg:"" help:"Name of the registry source to remove" predictor:"registry-source"`
+type RegistryDeleteCmd struct {
+	Name string `arg:"" help:"Name of the registry source to delete" predictor:"registry-source"`
 }
 
-func (c *RegistryRemoveCmd) Help() string {
-	return `Removes a registry source from sync-config and deletes its cached file.
+func (c *RegistryDeleteCmd) Help() string {
+	return `Deletes a registry source from sync-config and removes its cached file.
 
 Examples:
   # List configured sources
   aipack registry sources
 
-  # Remove a source by name
-  aipack registry remove my-tools
+  # Delete a source by name
+  aipack registry delete my-tools
 
 See also: registry sources, registry fetch`
 }
 
-func (c *RegistryRemoveCmd) Run(ctx context.Context, g *Globals) error {
+func (c *RegistryDeleteCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
 	}
 
-	return app.RegistryRemove(app.RegistryRemoveRequest{
+	return app.RegistryDelete(app.RegistryDeleteRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 	}, g.Stdout)
@@ -208,7 +208,7 @@ Examples:
   # Machine-readable JSON output
   aipack registry sources --json
 
-See also: registry fetch, registry remove`
+See also: registry fetch, registry delete`
 }
 
 func (c *RegistrySourcesCmd) Run(ctx context.Context, g *Globals) error {

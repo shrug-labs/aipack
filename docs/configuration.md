@@ -112,7 +112,7 @@ Each entry is a remote registry that `registry fetch` retrieves and caches.
 | `ref` | string | Git ref (branch or tag) |
 | `path` | string | File path within the repo (default: `registry.yaml`) |
 
-Sources are added automatically by `registry fetch <url>` and removed by `registry remove`. `registry fetch` (bare) refreshes all configured sources.
+Sources are added automatically by `registry fetch <url>` and deleted by `registry delete`. `registry fetch` (bare) refreshes all configured sources.
 
 ## Installed packs
 

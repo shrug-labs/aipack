@@ -37,7 +37,7 @@ func TestInstall_DelegatesToPackInstall(t *testing.T) {
 	packDir := t.TempDir()
 	writePackManifestCmd(t, packDir, "test-install")
 
-	_, stderr, code := runApp(t, "install", packDir, "--config-dir", configDir, "--no-register")
+	_, stderr, code := runApp(t, "install", packDir, "--config-dir", configDir)
 	if code != cmdutil.ExitOK {
 		t.Fatalf("install exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}

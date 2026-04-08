@@ -29,9 +29,9 @@ type PackInstallRequest struct {
 	Name string
 	// Link creates a symlink instead of copying (path only; ignored for URL).
 	Link bool
-	// Register adds a source + pack entry to the active profile.
-	Register bool
-	// Profile is the profile to register in (defaults to sync-config's defaults.profile).
+	// Add adds a pack entry to the active profile.
+	Add bool
+	// Profile is the profile to add the pack to (defaults to sync-config's defaults.profile).
 	Profile string
 
 	// With specifies which bundled content categories to install. When nil
@@ -94,7 +94,7 @@ func extractLocalPackToStaging(configDir, packDir string) (string, config.PackMa
 	return extractPackContent(stagingDir, packDir, nil, "", boundary)
 }
 
-// PackInstall installs a pack to the canonical location and optionally registers it in a profile.
+// PackInstall installs a pack to the canonical location and optionally adds it to a profile.
 func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
 	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
@@ -107,7 +107,7 @@ func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) 
 	}
 
 	// Validate profile exists early, before doing any work.
-	if req.Register {
+	if req.Add {
 		// Auto-create default config files if missing so pack install works
 		// without an explicit 'aipack init' first.
 		if _, err := config.EnsureInit(req.ConfigDir); err != nil {
@@ -183,7 +183,7 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	}
 	if resolvedPackDir == resolvedDestDir {
 		method = config.MethodLocal
-		fmt.Fprintf(stdout, "Already installed: %s (registering in-place)\n", destDir)
+		fmt.Fprintf(stdout, "Already installed: %s (recording in-place)\n", destDir)
 	} else if req.Link {
 		method = config.MethodLink
 		packRemoveExisting(destDir, stdout)
@@ -232,9 +232,9 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 
 	installBundledContent(req.ConfigDir, destDir, manifest, with, stdout)
 
-	if req.Register {
-		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
-			return fmt.Errorf("registering pack in profile: %w", err)
+	if req.Add {
+		if err := PackAdd(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
+			return fmt.Errorf("adding pack to profile: %w", err)
 		}
 	}
 
@@ -374,9 +374,9 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 
 	installBundledContent(req.ConfigDir, result.destDir, result.manifest, effectiveWith, stdout)
 
-	if req.Register {
-		if err := PackRegister(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
-			return fmt.Errorf("registering pack in profile: %w", err)
+	if req.Add {
+		if err := PackAdd(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
+			return fmt.Errorf("adding pack to profile: %w", err)
 		}
 	}
 

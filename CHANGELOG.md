@@ -6,6 +6,19 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.20.0]
+
+### Added
+
+- `pack add` / `pack remove` commands for adding and removing pack entries from profiles. `pack install --add` combines install with profile addition.
+- `pack disable` now sets `enabled: false` in-place, preserving the entry's selectors and overrides. `pack enable` sets it back to `true`. Previously both commands added/removed the entry entirely.
+
+### Changed
+
+- **Breaking:** `pack install` no longer adds the pack to the active profile by default. Use `--add` to add at install time (e.g. `aipack pack install ./my-pack --add`), or `aipack pack add <name>` after install. The `--no-register` flag has been removed.
+- **Breaking:** `pack enable` / `pack disable` now toggle the `enabled` field on an existing profile entry instead of adding/removing it. Use `pack add` / `pack remove` for entry creation and deletion.
+- **Breaking:** `registry remove` renamed to `registry delete` for consistency with `pack delete` and `profile delete`.
+
 ## [0.19.1]
 
 ### Added

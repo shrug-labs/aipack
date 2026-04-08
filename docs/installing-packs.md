@@ -10,14 +10,16 @@ A standard pack has a `pack.json` manifest and content in conventional directori
 
 ```bash
 # From a git URL (HTTPS or SSH)
-aipack pack install --url https://github.com/org/their-pack.git
+aipack pack install --url https://github.com/org/their-pack.git --add
 
 # From a local path (symlinked by default, --copy for full copy)
-aipack pack install ./path/to/pack
+aipack pack install ./path/to/pack --add
 
 # By registry name (looked up in configured registries)
-aipack pack install their-pack
+aipack pack install their-pack --add
 ```
+
+`--add` adds the pack to the active profile. Without it, the pack is installed to disk but not active — use `aipack pack add <name>` to add it to a profile later.
 
 After installing, `aipack sync` renders the pack content into your harness config.
 
@@ -37,7 +39,7 @@ Not every repository with useful content follows the pack directory structure. A
 aipack pack install \
   --url https://github.com/org/their-repo.git \
   --skills src/skills --rules docs/rules \
-  --name their-content -q
+  --name their-content -q --add
 aipack sync
 ```
 
@@ -56,7 +58,7 @@ aipack clones the repo, copies the two mapped directories into a standard pack l
 
 No `.git/`, no test directories, no CI files — just the content you pointed at.
 
-The `-q` flag registers the pack as **quiet** in your profile: omitted content types include nothing instead of everything. Since you only mapped skills and rules, those are what you get. See [Profiles — Quiet packs](./profiles.md#quiet-packs) for the full semantics.
+The `-q` flag marks the pack as **quiet** in your profile: omitted content types include nothing instead of everything. Since you only mapped skills and rules, those are what you get. See [Profiles — Quiet packs](./profiles.md#quiet-packs) for the full semantics.
 
 Content flags require `--url` (this is a remote extraction feature) and `--name` (there's no `pack.json` to derive a name from). Available flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`. Each takes a directory path relative to the repository root.
 
@@ -109,7 +111,7 @@ packs:
 Now anyone installs by name:
 
 ```bash
-aipack pack install team-ops
+aipack pack install team-ops --add
 ```
 
 The content flags, quiet hint, and description are baked into the registry entry. `pack update` re-clones and re-extracts, picking up upstream changes.

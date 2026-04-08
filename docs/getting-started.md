@@ -44,10 +44,10 @@ This creates the config directory (`~/.config/aipack/`), a default profile, and 
 The `aipack-core` pack provides the foundation — rules for content quality, skills for agent configuration and pack authoring, and a pack review workflow:
 
 ```bash
-aipack pack install aipack-core
+aipack pack install aipack-core --add
 ```
 
-This clones the pack from the public registry, installs it under `~/.config/aipack/packs/aipack-core/`, and registers it in your active profile. See what's in it:
+This clones the pack from the public registry, installs it under `~/.config/aipack/packs/aipack-core/`, and adds it to your active profile. See what's in it:
 
 ```bash
 aipack pack show aipack-core
@@ -97,10 +97,10 @@ Profiles compose multiple packs. The public registry includes two more packs wor
 
 ```bash
 # Developer discipline — debugging, TDD, planning, code review
-aipack pack install essentials
+aipack pack install essentials --add
 
 # Persistent memory across sessions (optional)
-aipack pack install memory
+aipack pack install memory --add
 ```
 
 After installing, re-sync to pick up the new content:

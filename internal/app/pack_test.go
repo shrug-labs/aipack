@@ -65,7 +65,7 @@ func TestPackInstall_Link(t *testing.T) {
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
-		Register:  true,
+		Add:       true,
 		Profile:   "default",
 	}, &out)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestPackInstall_Copy(t *testing.T) {
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      false,
-		Register:  false,
+		Add:       false,
 	}, &out)
 	if err != nil {
 		t.Fatalf("PackInstall: %v", err)
@@ -183,7 +183,7 @@ func TestPackInstall_Copy_CopiesRepoRelativeExtras(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		With:      domain.BundledAll(),
 	}, &out)
 	if err != nil {
@@ -224,7 +224,7 @@ func TestPackInstall_InPlace(t *testing.T) {
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
-		Register:  true,
+		Add:       true,
 		Profile:   "default",
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
@@ -250,12 +250,12 @@ func TestPackInstall_InPlace(t *testing.T) {
 		t.Fatalf("method = %q, want %q", meta.Method, config.MethodLocal)
 	}
 
-	if !strings.Contains(out.String(), "registering in-place") {
+	if !strings.Contains(out.String(), "recording in-place") {
 		t.Fatalf("output = %q", out.String())
 	}
 }
 
-func TestPackInstall_NoRegister(t *testing.T) {
+func TestPackInstall_DefaultNoProfileRegistration(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
 	configDir := t.TempDir()
@@ -267,7 +267,7 @@ func TestPackInstall_NoRegister(t *testing.T) {
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
-		Register:  false,
+		Add:       false,
 	}, &out)
 	if err != nil {
 		t.Fatalf("PackInstall: %v", err)
@@ -283,7 +283,7 @@ func TestPackInstall_NoRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cfg.Packs) != 0 {
-		t.Fatalf("expected 0 packs (no register), got %d", len(cfg.Packs))
+		t.Fatalf("expected 0 packs (not added to profile), got %d", len(cfg.Packs))
 	}
 }
 
@@ -299,7 +299,7 @@ func TestPackInstall_NameOverride(t *testing.T) {
 		ConfigDir: configDir,
 		Name:      "custom-name",
 		Link:      true,
-		Register:  false,
+		Add:       false,
 	}, &out)
 	if err != nil {
 		t.Fatalf("PackInstall: %v", err)
@@ -320,9 +320,9 @@ func TestPackInstall_ReplacesExisting(t *testing.T) {
 	writePackManifest(t, packDir2, "test-pack")
 
 	var out bytes.Buffer
-	_ = PackInstall(context.Background(), PackInstallRequest{PackPath: packDir1, ConfigDir: configDir, Link: true, Register: false}, &out)
+	_ = PackInstall(context.Background(), PackInstallRequest{PackPath: packDir1, ConfigDir: configDir, Link: true, Add: false}, &out)
 	out.Reset()
-	err := PackInstall(context.Background(), PackInstallRequest{PackPath: packDir2, ConfigDir: configDir, Link: true, Register: false}, &out)
+	err := PackInstall(context.Background(), PackInstallRequest{PackPath: packDir2, ConfigDir: configDir, Link: true, Add: false}, &out)
 	if err != nil {
 		t.Fatalf("second PackInstall: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestPackInstall_Idempotent_NoDuplicateProfileEntries(t *testing.T) {
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
-		Register:  true,
+		Add:       true,
 		Profile:   "default",
 		NowFn:     func() time.Time { return fixedNow },
 	}
@@ -382,9 +382,9 @@ func TestPackInstall_Idempotent_NoDuplicateProfileEntries(t *testing.T) {
 		t.Fatalf("expected 1 pack entry, got %d", packCount)
 	}
 
-	// Verify output says "already registered" on second run.
-	if !strings.Contains(out.String(), "already registered") {
-		t.Fatalf("expected 'already registered' message on second add, got: %s", out.String())
+	// Verify output says "already in profile" on second run.
+	if !strings.Contains(out.String(), "already in profile") {
+		t.Fatalf("expected 'already in profile' message on second add, got: %s", out.String())
 	}
 }
 
@@ -438,7 +438,7 @@ func TestPackInstall_URL_ClonesIntoPacksDir(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -465,7 +465,7 @@ func TestPackInstall_URL_CloneFailure_CleansUpTempDirs(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "ssh://git@example.com/PROJ/repo.git",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn: func(_ context.Context, args ...string) error {
 			if len(args) > 0 && args[0] == "clone" {
 				return fmt.Errorf("simulated clone failure")
@@ -502,7 +502,7 @@ func TestPackInstall_URL_SubPath_CleansUpCloneDir(t *testing.T) {
 		URL:       "ssh://git@example.com/mono-repo.git",
 		SubPath:   "my-sub-pack",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  gitFn,
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
@@ -562,7 +562,7 @@ func TestPackInstall_URL_SubPath_ResolvesSymlinks(t *testing.T) {
 		URL:       "ssh://git@example.com/mono-repo.git",
 		SubPath:   "my-pack",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  gitFn,
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
@@ -642,7 +642,7 @@ func TestPackInstall_Path_ResolvesSymlinks(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -699,7 +699,7 @@ func TestPackInstall_URL_GenericRepository_SkipsPackURLProbe(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://example.com/team/my-pack.git",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn: func(context.Context, string) (bool, error) {
 			urlChecks++
@@ -736,7 +736,7 @@ func TestPackInstall_URL_CloudDevOpsDetails_UsesDerivedCloneURL(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://devops.example.internal/devops-coderepository/namespaces/demo-ns/projects/TEAM/repositories/demo-repo/details?_ctx=us-region-1%2Cdevops_scm_central",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  gitFn,
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
@@ -770,7 +770,7 @@ func TestPackInstall_CloneFallback_BadSubPath_ListsAvailablePacks(t *testing.T) 
 		URL:       "ssh://git@example.com/PROJ/repo.git",
 		SubPath:   "wrong-pack",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  gitFn,
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
@@ -809,7 +809,7 @@ func TestPackInstall_URL_GitHubBlobSubdir_InstallsExtractedPackAndRecordsSubPath
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/repo/blob/main/packs/team/pack.json",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  gitFn,
 		URLOKFn: func(_ context.Context, raw string) (bool, error) {
 			urlChecks++
@@ -850,7 +850,7 @@ func TestPackInstall_URL_GitHubBlobSubdir_InstallsExtractedPackAndRecordsSubPath
 	}
 }
 
-func TestPackInstall_URL_RegistersInProfile(t *testing.T) {
+func TestPackInstall_URL_AddsToProfile(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	writeTestSyncConfig(t, configDir)
@@ -860,7 +860,7 @@ func TestPackInstall_URL_RegistersInProfile(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Register:  true,
+		Add:       true,
 		Profile:   "default",
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
@@ -894,7 +894,7 @@ func TestPackInstall_URL_RecordsOriginInSyncConfig(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -934,7 +934,7 @@ func TestPackInstall_PathRecordsOriginInSyncConfig(t *testing.T) {
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
-		Register:  false,
+		Add:       false,
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -988,7 +988,7 @@ func TestPackInstall_NeitherURLNorPath(t *testing.T) {
 	}
 }
 
-func TestPackInstall_RegisterMissingProfile(t *testing.T) {
+func TestPackInstall_AddMissingProfile(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
 	configDir := t.TempDir()
@@ -998,7 +998,7 @@ func TestPackInstall_RegisterMissingProfile(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
-		Register:  true,
+		Add:       true,
 		Profile:   "nonexistent",
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
@@ -1017,20 +1017,20 @@ func TestPackInstall_RegisterMissingProfile(t *testing.T) {
 	}
 }
 
-func TestPackInstall_RegisterAutoCreatesDefaultProfile(t *testing.T) {
+func TestPackInstall_AddAutoCreatesDefaultProfile(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
 	configDir := t.TempDir()
 	writePackManifest(t, packDir, "test-pack")
 
 	// Config directory exists but has no sync-config or profile.
-	// PackInstall with Register=true and no explicit profile (defaults to "default")
+	// PackInstall with Add=true and no explicit profile (defaults to "default")
 	// should auto-create the default profile instead of failing.
 	var out bytes.Buffer
 	err := PackInstall(context.Background(), PackInstallRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
-		Register:  true,
+		Add:       true,
 		NowFn:     func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
@@ -1071,7 +1071,7 @@ func TestPackInstall_URL_RecordsCommitHash(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1154,7 +1154,7 @@ func TestPackWarnMCPServers_NoServers(t *testing.T) {
 
 // setupBundledConflictTest creates a pack with a "team" profile and a configDir
 // with a stale version of that profile already in place. Returns packDir, configDir.
-func TestPackInstall_URL_QuietRegistersQuietInProfile(t *testing.T) {
+func TestPackInstall_URL_QuietAddsQuietInProfile(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	writeTestSyncConfig(t, configDir)
@@ -1164,7 +1164,7 @@ func TestPackInstall_URL_QuietRegistersQuietInProfile(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/quiet-pack",
 		ConfigDir: configDir,
-		Register:  true,
+		Add:       true,
 		Profile:   "default",
 		Quiet:     true,
 		RunGitFn:  fakeCloneGitFn(t, "quiet-pack"),
@@ -1224,7 +1224,7 @@ func TestPackInstall_URL_ContentPathsRecordedInSyncConfig(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:          "https://github.com/example/ext-repo",
 		ConfigDir:    configDir,
-		Register:     false,
+		Add:          false,
 		Name:         "ext-repo",
 		ContentPaths: paths,
 		RunGitFn:     cloneFn,
@@ -1260,7 +1260,7 @@ func TestPackInstall_URL_ContentPathsRecordedInSyncConfig(t *testing.T) {
 	}
 }
 
-func TestPackInstall_Path_QuietRegistersQuietInProfile(t *testing.T) {
+func TestPackInstall_Path_QuietAddsQuietInProfile(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	config.EnsureInit(configDir)
@@ -1273,7 +1273,7 @@ func TestPackInstall_Path_QuietRegistersQuietInProfile(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
-		Register:  true,
+		Add:       true,
 		Profile:   "default",
 		Quiet:     true,
 		Link:      true,
@@ -1322,7 +1322,7 @@ func TestPackLifecycle_InstallListUpdateShowRemove(t *testing.T) {
 
 	// Install (copy, with registration)
 	if err := PackInstall(context.Background(), PackInstallRequest{
-		PackPath: packDir, ConfigDir: configDir, Register: true, Profile: "default",
+		PackPath: packDir, ConfigDir: configDir, Add: true, Profile: "default",
 		NowFn: func() time.Time { return fixedNow },
 	}, &out); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -1350,7 +1350,7 @@ func TestPackLifecycle_InstallListUpdateShowRemove(t *testing.T) {
 	}
 
 	// Remove
-	PackRemove(configDir, "lifecycle-pack", &out)
+	PackDelete(configDir, "lifecycle-pack", &out)
 	entries, _ = PackList(configDir)
 	if len(entries) != 0 {
 		t.Fatalf("List after remove: %d", len(entries))

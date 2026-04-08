@@ -35,6 +35,7 @@ func RunInit(ctx context.Context, req InitRequest, stdout io.Writer) error {
 		if err := os.MkdirAll(req.ConfigDir, 0o700); err != nil {
 			return err
 		}
+		fmt.Fprintf(stdout, "Initialized config: %s\n", req.ConfigDir)
 	} else {
 		return err
 	}

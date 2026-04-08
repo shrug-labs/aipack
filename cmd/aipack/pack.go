@@ -22,8 +22,10 @@ type PackCmd struct {
 	Delete   PackDeleteCmd  `cmd:"" help:"Delete an installed pack from the packs directory"`
 	Update   PackUpdateCmd  `cmd:"" help:"Update installed pack(s) to latest version from their origin"`
 	Rename   PackRenameCmd  `cmd:"" help:"Rename an installed pack across all config"`
-	Enable   PackEnableCmd  `cmd:"" help:"Enable an installed pack in the active profile"`
-	Disable  PackDisableCmd `cmd:"" help:"Disable a pack in the active profile (does not delete from disk)"`
+	Add      PackAddCmd     `cmd:"" help:"Add an installed pack to a profile"`
+	Remove   PackRemoveCmd  `cmd:"" help:"Remove a pack from a profile"`
+	Enable   PackEnableCmd  `cmd:"" help:"Enable a pack in a profile"`
+	Disable  PackDisableCmd `cmd:"" help:"Disable a pack in a profile without removing it"`
 	List     PackListCmd    `cmd:"" help:"List all installed packs with their install method and origin"`
 	Show     PackShowCmd    `cmd:"" help:"Show detailed metadata and content inventory for an installed pack"`
 	Validate ValidateCmd    `cmd:"" help:"Validate a pack source tree"`
@@ -127,7 +129,7 @@ type PackCreateCmd struct {
 
 func (c *PackCreateCmd) Help() string {
 	return `Scaffolds a new pack directory with a pack.json manifest and standard
-subdirectories, then installs and registers it so it is immediately available
+subdirectories, then installs and records it so it is immediately available
 for profiles, sync, and save.
 
 By default, the pack is created in the current directory and symlinked into
@@ -172,23 +174,23 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack install ---
 
 type PackInstallCmd struct {
-	Path       string   `arg:"" optional:"" help:"Local directory path or registry pack name"`
-	URL        string   `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
-	Ref        string   `help:"Git ref (branch/tag) to fetch" name:"ref"`
-	SubPath    string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
-	Name       string   `help:"Override the pack name from pack.json" name:"name"`
-	Registry   string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
-	Profile    string   `help:"Profile to register pack source in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
-	NoRegister bool     `help:"Do not auto-register pack as a source in any profile" name:"no-register"`
-	Copy       bool     `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
-	With       []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
-	Missing    bool     `help:"Install all missing packs from the active profile" short:"m"`
-	Quiet      bool     `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
-	Rules      string   `help:"Extract rules from this directory within the repo" name:"rules"`
-	Skills     string   `help:"Extract skills from this directory within the repo" name:"skills"`
-	Agents     string   `help:"Extract agents from this directory within the repo" name:"agents"`
-	Workflows  string   `help:"Extract workflows from this directory within the repo" name:"workflows"`
-	Prompts    string   `help:"Extract prompts from this directory within the repo" name:"prompts"`
+	Path      string   `arg:"" optional:"" help:"Local directory path or registry pack name"`
+	URL       string   `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
+	Ref       string   `help:"Git ref (branch/tag) to fetch" name:"ref"`
+	SubPath   string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
+	Name      string   `help:"Override the pack name from pack.json" name:"name"`
+	Registry  string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
+	Profile   string   `help:"Profile to add pack to (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Add       bool     `help:"Add pack to the active profile after installing" name:"add"`
+	Copy      bool     `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
+	With      []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
+	Missing   bool     `help:"Install all missing packs from the active profile" short:"m"`
+	Quiet     bool     `help:"Mark as quiet (omitted vector selectors include nothing)" short:"q"`
+	Rules     string   `help:"Extract rules from this directory within the repo" name:"rules"`
+	Skills    string   `help:"Extract skills from this directory within the repo" name:"skills"`
+	Agents    string   `help:"Extract agents from this directory within the repo" name:"agents"`
+	Workflows string   `help:"Extract workflows from this directory within the repo" name:"workflows"`
+	Prompts   string   `help:"Extract prompts from this directory within the repo" name:"prompts"`
 }
 
 func (c *PackInstallCmd) Help() string {
@@ -208,9 +210,9 @@ dependency packs declared in the profile.
 Both HTTPS and SSH URLs are supported. SSH URLs work with git archive on
 servers that support it (e.g. Bitbucket Server).
 
-By default, the pack is registered as a source in the profile specified by
---profile (or the sync-config default profile, or "default"). Use --no-register
-to skip auto-registration.
+By default, the pack is installed to disk but not added to any profile.
+Use --add to also add it to the active profile (or --profile to target
+a specific one). Use 'aipack pack add <name>' to add it later.
 
 Examples:
   # Install all missing packs from the active profile
@@ -218,6 +220,12 @@ Examples:
 
   # Install a local pack via symlink
   aipack pack install ./my-pack
+
+  # Install and add to the active profile
+  aipack pack install ./my-pack --add
+
+  # Install and add to a specific profile
+  aipack pack install ./my-pack --add --profile other-profile
 
   # Install a local pack via copy with a custom name
   aipack pack install ./my-pack --copy --name custom-name
@@ -233,9 +241,6 @@ Examples:
 
   # Install a pack by registry name
   aipack pack install my-team-pack
-
-  # Install without registering in any profile
-  aipack pack install ./my-pack --no-register
 
 See also: pack delete, pack list, pack update, registry list`,
 		configPathDisplay("packs", "<name>"),
@@ -305,7 +310,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 	}
 
 	profile := ""
-	if !c.NoRegister {
+	if c.Add {
 		profile = effectiveProfile(c.Profile, cfgDir)
 	}
 
@@ -317,7 +322,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 	req := app.PackInstallRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
-		Register:  !c.NoRegister,
+		Add:       c.Add,
 		Profile:   profile,
 		With:      with,
 		Quiet:     c.Quiet,
@@ -494,7 +499,7 @@ type PackDeleteCmd struct {
 
 func (c *PackDeleteCmd) Help() string {
 	return fmt.Sprintf(`Deletes an installed pack directory from %s and
-deregisters it from all profiles.
+removes it from all profiles.
 
 Examples:
   # Delete an installed pack
@@ -510,7 +515,7 @@ func (c *PackDeleteCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	result, err := app.PackRemove(cfgDir, c.Name, g.Stdout)
+	result, err := app.PackDelete(cfgDir, c.Name, g.Stdout)
 	if err != nil {
 		return err
 	}
@@ -573,31 +578,33 @@ func (c *PackRenameCmd) Run(ctx context.Context, g *Globals) error {
 	return app.PackRename(eng, cfgDir, c.OldName, c.NewName, g.Stdout)
 }
 
-// --- pack enable (profile) ---
+// --- pack add (profile) ---
 
-type PackEnableCmd struct {
-	Name    string `arg:"" help:"Name of the installed pack to enable in the profile" predictor:"pack"`
-	Profile string `help:"Profile to enable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
-	Quiet   bool   `help:"Register as quiet (omitted vector selectors include nothing)" short:"q"`
+type PackAddCmd struct {
+	Name    string `arg:"" help:"Name of the installed pack to add to the profile" predictor:"pack"`
+	Profile string `help:"Profile to add the pack to (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Quiet   bool   `help:"Add as quiet (omitted vector selectors include nothing)" short:"q"`
 }
 
-func (c *PackEnableCmd) Help() string {
-	return fmt.Sprintf(`Enables an already-installed pack in the active profile. The pack must be
-installed under %s first (see pack install).
+func (c *PackAddCmd) Help() string {
+	return fmt.Sprintf(`Adds an installed pack to a profile. The pack must be installed under
+%s first (see pack install).
+
+Use --add on pack install to combine both steps.
 
 Examples:
-  # Enable a pack in the default profile
-  aipack pack enable my-pack
+  # Add a pack to the default profile
+  aipack pack add my-pack
 
-  # Enable a pack in a specific profile
-  aipack pack enable my-pack --profile production
+  # Add a pack to a specific profile
+  aipack pack add my-pack --profile other-profile
 
-See also: pack disable, pack install, pack list`,
+See also: pack remove, pack enable, pack disable, pack install`,
 		configPathDisplay("packs", "<name>"),
 	)
 }
 
-func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
+func (c *PackAddCmd) Run(ctx context.Context, g *Globals) error {
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
@@ -610,10 +617,68 @@ func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
 		return fmt.Errorf("pack %q is not installed (run 'aipack pack install' first)", c.Name)
 	}
 
-	if err := app.PackRegister(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, c.Quiet, g.Stdout); err != nil {
+	return app.PackAdd(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, c.Quiet, g.Stdout)
+}
+
+// --- pack remove (profile) ---
+
+type PackRemoveCmd struct {
+	Name    string `arg:"" help:"Name of the pack to remove from the profile" predictor:"pack"`
+	Profile string `help:"Profile to remove the pack from (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+}
+
+func (c *PackRemoveCmd) Help() string {
+	return `Removes a pack entry from a profile. This does NOT delete the pack from
+disk — use pack delete for that. To temporarily disable a pack without
+removing it, use pack disable instead.
+
+Examples:
+  # Remove a pack from the default profile
+  aipack pack remove my-pack
+
+  # Remove from a specific profile
+  aipack pack remove my-pack --profile other-profile
+
+See also: pack add, pack disable, pack delete`
+}
+
+func (c *PackRemoveCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
 		return err
 	}
-	return nil
+
+	return app.PackRemove(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout)
+}
+
+// --- pack enable (profile) ---
+
+type PackEnableCmd struct {
+	Name    string `arg:"" help:"Name of the pack to enable in the profile" predictor:"pack"`
+	Profile string `help:"Profile to enable the pack in (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+}
+
+func (c *PackEnableCmd) Help() string {
+	return `Enables a pack in a profile. The pack must already be in the profile
+— use pack add to add it first.
+
+Examples:
+  # Enable a previously disabled pack
+  aipack pack enable my-pack
+
+  # Enable in a specific profile
+  aipack pack enable my-pack --profile other-profile
+
+See also: pack disable, pack add, pack remove`
+}
+
+func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+
+	return app.PackEnable(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout)
 }
 
 // --- pack disable (profile) ---
@@ -624,17 +689,18 @@ type PackDisableCmd struct {
 }
 
 func (c *PackDisableCmd) Help() string {
-	return `Disables a pack in the active profile. This does NOT delete the pack from
-disk — use pack delete for that.
+	return `Disables a pack in a profile without removing it. The pack entry
+stays in the profile so its selectors and overrides are preserved. Use
+pack remove to fully remove the entry.
 
 Examples:
   # Disable a pack in the default profile
   aipack pack disable my-pack
 
   # Disable in a specific profile
-  aipack pack disable my-pack --profile production
+  aipack pack disable my-pack --profile other-profile
 
-See also: pack enable, pack delete, pack list`
+See also: pack enable, pack remove, pack delete`
 }
 
 func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
@@ -643,10 +709,7 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	if err := app.PackDeregister(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout); err != nil {
-		return err
-	}
-	return nil
+	return app.PackDisable(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout)
 }
 
 // --- pack update ---

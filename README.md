@@ -115,10 +115,10 @@ Building from source requires Go 1.25+.
 # Initialize config directory, default profile, and fetch the public registry
 aipack init
 
-# Install a pack from a local directory, git URL, or registry name
-aipack pack install ./my-pack
-aipack pack install --url https://github.com/org/my-pack.git
-aipack pack install my-pack    # looks up name in registry
+# Install a pack and add it to the active profile
+aipack pack install ./my-pack --add
+aipack pack install --url https://github.com/org/my-pack.git --add
+aipack pack install my-pack --add    # looks up name in registry
 
 # Preview what would change
 aipack sync --dry-run
@@ -179,9 +179,10 @@ A **pack** is a directory of agent configuration — rules, skills, workflows, a
 | `aipack restore` | Undo the last sync's settings changes |
 | `aipack clean` | Remove all managed files from harness locations |
 | `aipack pack create/install/list/show/update/delete` | Pack lifecycle management |
-| `aipack pack rename/enable/disable/validate` | Pack configuration and validation |
+| `aipack pack add/remove/enable/disable` | Profile membership and activation |
+| `aipack pack rename/validate` | Pack configuration and validation |
 | `aipack profile create/set/show/list/delete` | Profile management |
-| `aipack registry fetch/list/sources/remove` | Discover and manage pack registries |
+| `aipack registry fetch/list/sources/delete` | Discover and manage pack registries |
 | `aipack search` | Full-text search across all installed packs |
 | `aipack query` | Run raw SQL against the pack index |
 | `aipack status` | Show ecosystem status: profile, packs, and content inventories |

@@ -604,7 +604,7 @@ func TestBundledCandidatesDialog_ConfirmRehydratesApprovedContent(t *testing.T) 
 	if err := app.PackInstall(context.Background(), app.PackInstallRequest{
 		PackPath:  srcDir,
 		ConfigDir: configDir,
-		Register:  false,
+		Add:       false,
 		With:      domain.NewBundledSet(),
 	}, os.Stdout); err != nil {
 		t.Fatalf("PackInstall: %v", err)

@@ -140,7 +140,7 @@ type rootModel struct {
 	pendingInstallInput    string // stashed pack name/URL from text input for install
 	pendingUpdatePackName  string // stashed pack name for update (empty = all)
 	pendingUpdateAll       bool   // true when update-all is in progress
-	pendingCreateAddToProf bool   // true when create-pack should register in current profile
+	pendingCreateAddToProf bool   // true when create-pack should add to current profile
 }
 
 func newRootModel(ctx context.Context, cfg RunConfig) rootModel {
@@ -232,7 +232,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case requestSearchInstallMsg:
 		m.pendingSearchInstall = msg.packName
-		d := newConfirmDialog(dialogSearchInstall, fmt.Sprintf("Install pack %q and register in active profile?", msg.packName))
+		d := newConfirmDialog(dialogSearchInstall, fmt.Sprintf("Install pack %q and add to active profile?", msg.packName))
 		m.dialog = &d
 		return m, nil
 	case searchInstallMsg:

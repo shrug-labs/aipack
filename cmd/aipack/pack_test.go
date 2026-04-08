@@ -48,7 +48,7 @@ func TestPackList_JSON_WithPack(t *testing.T) {
 		PackPath:  packDir,
 		ConfigDir: configDir,
 		Link:      true,
-		Register:  false,
+		Add:       false,
 	}, os.NewFile(0, os.DevNull))
 
 	stdout, stderr, code := runApp(t, "pack", "list", "--config-dir", configDir, "--json")

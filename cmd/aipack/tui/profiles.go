@@ -488,10 +488,10 @@ func (m profilesModel) View() string {
 		return contentStyle.Render("Loading profiles...")
 	}
 
-	// Three-column layout: profiles (20%) | packs (30%) | content tree (50%).
-	col1W := max(m.width*20/100, 20)
-	col2W := max(m.width*30/100, 25)
-	col3W := max(m.width-col1W-col2W-8, 20) // account for padding/borders
+	// Three-column layout: fit columns 1+2 to their content, give remainder to 3.
+	col1W := m.profilesMinWidth()
+	col2W := m.rosterMinWidth()
+	col3W := max(m.width-col1W-col2W-8, 20) // 8 = separators + padding
 
 	colH := max(m.height-4, 8) // account for tab bar + help bar
 
@@ -502,6 +502,60 @@ func (m profilesModel) View() string {
 
 	joined := lipgloss.JoinHorizontal(lipgloss.Top, col1, sep, col2, sep, col3)
 	return contentStyle.Render(joined)
+}
+
+// profilesMinWidth returns the minimum column width to fit all profile names
+// without wrapping: cursor(2) + dot(1) + space(1) + name + " (active)"(9) + padding(2).
+func (m profilesModel) profilesMinWidth() int {
+	const (
+		prefix = 4  // "> ● " or "  ○ "
+		pad    = 2  // breathing room
+		minW   = 18 // floor
+	)
+	w := len("Profiles") // header
+	for _, item := range m.items {
+		lineW := prefix + len(item.name)
+		if item.isActive {
+			lineW += len(" (active)")
+		}
+		if n := len(item.syncWarnings); n > 0 {
+			lineW += len(fmt.Sprintf(" %d warnings", n))
+		}
+		if lineW > w {
+			w = lineW
+		}
+	}
+	return max(w+pad, minW)
+}
+
+// rosterMinWidth returns the minimum column width to fit all pack roster entries
+// without wrapping: cursor(2) + check(3) + space(1) + name + " (settings off)"(15) + padding(2).
+func (m profilesModel) rosterMinWidth() int {
+	const (
+		prefix = 6  // "> [x] " or "  [x] "
+		pad    = 2  // breathing room
+		minW   = 22 // floor
+	)
+	item := m.currentItem()
+	if item == nil {
+		return minW
+	}
+	w := len("Add pack...") + 2 // virtual item + cursor indent
+	for _, pe := range item.cfg.Packs {
+		lineW := prefix + len(pe.Name)
+		if config.SettingsDisabled(pe.Settings.Enabled) {
+			lineW += len(" (settings off)")
+		}
+		if lineW > w {
+			w = lineW
+		}
+	}
+	// Header: "Packs (NN/NN)" — no cursor/check prefix on the header line.
+	header := len(fmt.Sprintf("Packs (%d/%d)", len(item.cfg.Packs), len(item.cfg.Packs)))
+	if header > w {
+		w = header
+	}
+	return max(w+pad, minW)
 }
 
 // viewProfileList renders the top-left panel with all profiles.
@@ -725,7 +779,7 @@ func (m profilesModel) viewTreePanel(width, height int) string {
 	}
 
 	if item.tree != nil {
-		sb.WriteString(item.tree.view(m.focus == panelTree, height-1))
+		sb.WriteString(item.tree.view(m.focus == panelTree, width, height-1))
 	} else if item.treeErr != "" {
 		sb.WriteString(errorStyle.Render(fmt.Sprintf("error: %s", item.treeErr)))
 		sb.WriteString("\n")
