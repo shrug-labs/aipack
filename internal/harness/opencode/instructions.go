@@ -4,7 +4,6 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
-	"strings"
 )
 
 // InstructionsSpec controls management of the instructions array in opencode.json.
@@ -21,68 +20,38 @@ type SkillsSpec struct {
 	Desired []string
 }
 
-// BuildInstructionsSpec builds the instructions spec from rule directories.
-func BuildInstructionsSpec(ruleDirs []string, ruleFiles []string, manage bool) InstructionsSpec {
-	if !manage || len(ruleDirs) == 0 {
+// BuildInstructionsSpec builds the instructions spec for OpenCode. Pass the
+// managed rules directory that aipack writes profile-filtered rules into;
+// pointing instructions there — rather than at each pack's source —
+// means profile enable/disable takes effect at runtime. Empty renderedDir
+// means "nothing to manage".
+func BuildInstructionsSpec(renderedDir string) InstructionsSpec {
+	if renderedDir == "" {
 		return InstructionsSpec{Manage: false}
 	}
-	var managed, desired []string
-	for _, dir := range ruleDirs {
-		glob := filepath.Join(dir, "*.md")
-		managed = append(managed, glob, dir)
-		if hasRulesInDir(ruleFiles, dir) {
-			desired = append(desired, glob)
-		}
+	glob := filepath.Join(renderedDir, "*.md")
+	return InstructionsSpec{
+		Manage:  true,
+		Managed: []string{glob, renderedDir},
+		Desired: []string{glob},
 	}
-	slices.Sort(managed)
-	slices.Sort(desired)
-	return InstructionsSpec{Manage: true, Managed: managed, Desired: desired}
 }
 
-// BuildSkillsSpec builds the skills spec from skill root directories.
-func BuildSkillsSpec(managedDirs []string, desiredDirs []string, manage bool) SkillsSpec {
-	if !manage || len(managedDirs) == 0 {
+// BuildSkillsSpec builds the skills.paths spec for OpenCode. Same contract
+// as BuildInstructionsSpec — renderedDir points at the managed skills
+// directory, empty means "nothing to manage".
+func BuildSkillsSpec(renderedDir string) SkillsSpec {
+	if renderedDir == "" {
 		return SkillsSpec{Manage: false}
 	}
 	return SkillsSpec{
 		Manage:  true,
-		Managed: uniqueSorted(managedDirs),
-		Desired: uniqueSorted(desiredDirs),
+		Managed: []string{renderedDir},
+		Desired: []string{renderedDir},
 	}
 }
 
-func hasRulesInDir(ruleFiles []string, dir string) bool {
-	for _, rf := range ruleFiles {
-		rel, err := filepath.Rel(dir, rf)
-		if err != nil {
-			continue
-		}
-		if !strings.HasPrefix(rel, "..") {
-			return true
-		}
-	}
-	return false
-}
-
-func uniqueSorted(items []string) []string {
-	set := map[string]struct{}{}
-	out := make([]string, 0, len(items))
-	for _, v := range items {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		if _, ok := set[v]; ok {
-			continue
-		}
-		set[v] = struct{}{}
-		out = append(out, v)
-	}
-	slices.Sort(out)
-	return out
-}
-
-// MergeInstructions applies instruction spec to a settings root.
+// MergeInstructions applies the instruction spec to a settings root.
 func MergeInstructions(root map[string]any, instr InstructionsSpec) {
 	if !instr.Manage {
 		return

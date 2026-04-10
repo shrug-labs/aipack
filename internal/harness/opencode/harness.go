@@ -94,19 +94,22 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	configPath := filepath.Join(ctx.TargetDir, paths.SettingsFile)
 	configBase := filepath.Join(ctx.TargetDir, paths.ConfigBase)
 
-	var ruleFilePaths []string
-	for _, r := range ctx.Profile.AllRules() {
-		if r.SourcePath != "" {
-			ruleFilePaths = append(ruleFilePaths, r.SourcePath)
+	// Point instructions/skills at the managed rendered directories, not at
+	// pack source, so profile enable/disable takes effect at runtime.
+	var renderedRulesDir, renderedSkillsDir string
+	for _, pk := range ctx.Profile.Packs {
+		if renderedRulesDir == "" && len(pk.Rules) > 0 {
+			renderedRulesDir = filepath.Join(ctx.TargetDir, paths.RulesDir)
+		}
+		if renderedSkillsDir == "" && len(pk.Skills) > 0 {
+			renderedSkillsDir = filepath.Join(ctx.TargetDir, paths.SkillsDir)
+		}
+		if renderedRulesDir != "" && renderedSkillsDir != "" {
+			break
 		}
 	}
-
-	ruleDirs := ctx.Profile.RuleDirs()
-	skillRoots := ctx.Profile.SkillRoots()
-	manageRules := len(ruleDirs) > 0
-	manageSkills := len(skillRoots) > 0
-	instr := BuildInstructionsSpec(ruleDirs, ruleFilePaths, manageRules)
-	skills := BuildSkillsSpec(skillRoots, skillRoots, manageSkills)
+	instr := BuildInstructionsSpec(renderedRulesDir)
+	skills := BuildSkillsSpec(renderedSkillsDir)
 
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 	hasManagedContent := hasMCP || instr.Manage || skills.Manage

@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.20.1]
+
+### Fixed
+
+- OpenCode profile filtering now takes effect at runtime. `opencode.json`'s `instructions` array and `skills.paths` previously pointed at each pack's source directory, so OpenCode loaded every rule and skill in the pack regardless of the profile's `rules.exclude` / `skills.exclude` selectors. They now point at aipack's rendered managed directories (`.config/opencode/rules/` + `.config/opencode/skills/` for global scope, `.opencode/rules/` + `.opencode/skills/` for project scope), which contain only profile-selected content. Existing users upgrading from 0.20.0 have their legacy pack-source entries pruned on next sync via the settings three-way merge; user-added entries are preserved.
+- TUI profiles content tree no longer clips every row with `…` at narrow pane widths. When the pane is too narrow for the full label + pack attribution + size columns, the tree drops whole optional columns (size first, then pack attribution) instead of truncating every line mid-word. Wide layouts render the full three-column attribution as before.
+
 ## [0.20.0]
 
 ### Added

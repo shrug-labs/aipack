@@ -104,6 +104,69 @@ func TestTreeModel_MultiPackAttribution(t *testing.T) {
 	}
 }
 
+// TestTreeModel_AdaptiveColumnCascade locks in the narrow-width behavior:
+// when the full (label + pack + size) layout won't fit, the tree drops the
+// size column first, then the pack column — it does NOT leave every line
+// ending in "…". Labels only get clipped when even bare labels don't fit.
+func TestTreeModel_AdaptiveColumnCascade(t *testing.T) {
+	t.Parallel()
+	packs := []app.ProfilePackInfo{
+		{Index: 0, Name: "a-long-pack-name", Root: "/tmp/a", Manifest: config.PackManifest{
+			Rules: []string{"a-fairly-long-rule-name"},
+		}},
+		{Index: 1, Name: "another-long-pack-name", Root: "/tmp/b", Manifest: config.PackManifest{
+			Rules: []string{"another-fairly-long-rule-name"},
+		}},
+	}
+	entries := []config.PackEntry{{Name: "a-long-pack-name"}, {Name: "another-long-pack-name"}}
+	ct := app.BuildContentTree(packs, entries)
+	tree := buildTreeFromContent(ct)
+
+	// Set file sizes directly so the size column wants to render.
+	for i := range tree.nodes {
+		if tree.nodes[i].kind == nodeItem {
+			tree.nodes[i].fileSize = 1234
+		}
+	}
+
+	// Wide enough for everything → pack names should appear.
+	wide := tree.view(false, 120, 20)
+	if !strings.Contains(wide, "a-long-pack-name") {
+		t.Fatalf("wide view should show pack names, got:\n%s", wide)
+	}
+
+	// Narrow: enough for label + pack, not label + pack + size.
+	//   prefixW(8) + maxLabel(29) + 2 + maxPack(22) = 61. Size adds 2+6=8 → 69 total.
+	// Pick width = 65 → drops size, keeps pack.
+	narrow := tree.view(false, 65, 20)
+	if !strings.Contains(narrow, "a-long-pack-name") {
+		t.Fatalf("narrow view should still show pack names at width=65, got:\n%s", narrow)
+	}
+	if strings.Contains(narrow, "1.2 KB") {
+		t.Fatalf("narrow view should drop size column at width=65, got:\n%s", narrow)
+	}
+	if strings.Contains(narrow, "…") {
+		t.Fatalf("narrow view must not truncate lines with … when a cleaner drop is possible, got:\n%s", narrow)
+	}
+
+	// Very narrow: not enough for label + pack. Should drop pack column too.
+	//   prefixW(8) + maxLabel(29) = 37. Pick width = 45.
+	veryNarrow := tree.view(false, 45, 20)
+	if strings.Contains(veryNarrow, "a-long-pack-name") {
+		t.Fatalf("very narrow view should drop pack column at width=45, got:\n%s", veryNarrow)
+	}
+	if strings.Contains(veryNarrow, "…") {
+		t.Fatalf("very narrow view must not end lines in …, got:\n%s", veryNarrow)
+	}
+
+	// Extreme: even bare labels don't fit → labels may be clipped with …,
+	// but no pack/size column contributes to the overflow.
+	extreme := tree.view(false, 20, 20)
+	if strings.Contains(extreme, "a-long-pack-name") {
+		t.Fatalf("extreme view should drop pack column at width=20, got:\n%s", extreme)
+	}
+}
+
 func TestTreeModel_EnterOpensPreview(t *testing.T) {
 	t.Parallel()
 	tree := testTree(

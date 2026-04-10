@@ -330,6 +330,39 @@ func (t *treeModel) view(focused bool, width, height int) string {
 		}
 	}
 
+	// When the full layout overflows the view, drop whole optional columns
+	// (size first, then pack) instead of clipping every line — otherwise
+	// every row ends in "…" and the remaining columns still don't line up.
+	alignCol := prefixW + maxLabelW + 2
+	showPack := multiPack && maxPackW > 0
+	showSize := maxSizeW > 0
+
+	widthFor := func(pack, size bool) int {
+		w := prefixW + maxLabelW
+		if pack {
+			w += 2 + maxPackW
+		}
+		if size {
+			w += 2 + maxSizeW
+		}
+		return w
+	}
+	if width > 0 {
+		if showSize && widthFor(showPack, true) > width {
+			showSize = false
+		}
+		if showPack && widthFor(true, showSize) > width {
+			showPack = false
+		}
+	}
+	rightEdge := alignCol
+	if showPack {
+		rightEdge += maxPackW
+	}
+	if showSize {
+		rightEdge += 2 + maxSizeW
+	}
+
 	// Build all visible lines, then slice to scroll window.
 	var lines []string
 
@@ -357,13 +390,11 @@ func (t *treeModel) view(focused bool, width, height int) string {
 			catLeft := fmt.Sprintf("%s%s %s (%d/%d)", cursor, arrow, n.label, enabled, total)
 
 			catSuffix := ""
-			if cs != nil && cs.hasSize {
+			if showSize && cs != nil && cs.hasSize {
 				catSuffix = fileSizeStyle.Render(formatSize(cs.sizeTotal))
 			}
 
 			if catSuffix != "" {
-				alignCol := prefixW + maxLabelW + 2
-				rightEdge := alignCol + maxPackW + 2 + maxSizeW
 				catLeftW := lipgloss.Width(catLeft)
 				catSuffixW := lipgloss.Width(catSuffix)
 				gap := max(rightEdge-catLeftW-catSuffixW, 2)
@@ -415,18 +446,16 @@ func (t *treeModel) view(focused bool, width, height int) string {
 
 			left := fmt.Sprintf("%s  %s %s", cursor, check, label) + marker
 
-			hasPack := multiPack && n.packIdx >= 0 && n.packIdx < len(t.packs)
-			hasSize := n.fileSize >= 0
-			hasConflict := n.conflict
+			hasPack := showPack && n.packIdx >= 0 && n.packIdx < len(t.packs)
+			hasSize := showSize && n.fileSize >= 0
 
-			if !hasPack && !hasSize && !hasConflict {
+			if !hasPack && !hasSize {
 				lines = append(lines, left)
 				continue
 			}
 
 			var line strings.Builder
 			leftW := lipgloss.Width(left)
-			alignCol := prefixW + maxLabelW + 2
 			gap := max(alignCol-leftW, 2)
 			line.WriteString(left + strings.Repeat(" ", gap))
 
@@ -437,7 +466,7 @@ func (t *treeModel) view(focused bool, width, height int) string {
 					line.WriteString(strings.Repeat(" ", pad))
 				}
 				line.WriteString(packColorMuted(t.packs[n.packIdx].Index).Render(name))
-			} else if maxPackW > 0 {
+			} else if showPack {
 				line.WriteString(strings.Repeat(" ", maxPackW))
 			}
 

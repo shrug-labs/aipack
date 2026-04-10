@@ -829,13 +829,34 @@ func TestOrderingIndependence(t *testing.T) {
 			if len(filesA) != len(filesB) {
 				t.Fatalf("different file counts: original=%d reordered=%d", len(filesA), len(filesB))
 			}
+			// Normalize per-run target paths in file contents before comparing.
+			// Some harnesses (e.g. OpenCode) legitimately embed the target dir
+			// in their output (instructions globs, skills.paths) — those paths
+			// differ per run because projA/homeA ≠ projB/homeB, but that's not
+			// an ordering-dependence concern.
+			//
+			// On Windows, paths embedded in JSON files get backslash-escaped
+			// (`C:\foo` → `C:\\foo`), so we replace both the raw OS form and
+			// the JSON-escaped form. On Unix the escaped form is identical to
+			// the raw form, so the extra pass is a no-op.
+			normalize := func(s, proj, home string) string {
+				projEsc := strings.ReplaceAll(proj, `\`, `\\`)
+				homeEsc := strings.ReplaceAll(home, `\`, `\\`)
+				s = strings.ReplaceAll(s, projEsc, "__PROJ__")
+				s = strings.ReplaceAll(s, homeEsc, "__HOME__")
+				s = strings.ReplaceAll(s, proj, "__PROJ__")
+				s = strings.ReplaceAll(s, home, "__HOME__")
+				return s
+			}
 			for path, contentA := range filesA {
 				contentB, ok := filesB[path]
 				if !ok {
 					t.Errorf("file missing in reordered sync: %s", path)
 					continue
 				}
-				if contentA != contentB {
+				normA := normalize(contentA, projA, homeA)
+				normB := normalize(contentB, projB, homeB)
+				if normA != normB {
 					t.Errorf("file content differs with reordered profile: %s", path)
 				}
 			}

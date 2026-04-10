@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -508,33 +509,56 @@ func TestRenderBytes_PopulatesTimeout(t *testing.T) {
 
 // --- Instructions/Skills spec tests ---
 
-func TestBuildInstructionsSpec_Disabled(t *testing.T) {
+func TestBuildInstructionsSpec_Empty(t *testing.T) {
 	t.Parallel()
-	spec := BuildInstructionsSpec([]string{"/rules"}, []string{"/rules/team.md"}, false)
+	spec := BuildInstructionsSpec("")
 	if spec.Manage {
-		t.Fatal("expected Manage=false when disabled")
+		t.Fatal("expected Manage=false for empty renderedDir")
 	}
 }
 
-func TestBuildInstructionsSpec_Enabled(t *testing.T) {
+func TestBuildInstructionsSpec_PointsAtRenderedDir(t *testing.T) {
 	t.Parallel()
-	spec := BuildInstructionsSpec([]string{"/rules"}, []string{"/rules/team.md"}, true)
+	// Use filepath.Join so the path separators match the host OS — the
+	// production code calls filepath.Join internally, and comparing against
+	// a hardcoded Unix-style string would fail on Windows.
+	renderedDir := filepath.Join(t.TempDir(), "opencode", "rules")
+	spec := BuildInstructionsSpec(renderedDir)
 	if !spec.Manage {
 		t.Fatal("expected Manage=true")
 	}
-	if len(spec.Managed) == 0 {
-		t.Fatal("expected managed entries")
+	wantGlob := filepath.Join(renderedDir, "*.md")
+	if len(spec.Desired) != 1 || spec.Desired[0] != wantGlob {
+		t.Fatalf("Desired = %v, want [%s]", spec.Desired, wantGlob)
 	}
-	if len(spec.Desired) == 0 {
-		t.Fatal("expected desired entries")
+	// Managed must include both the glob and the dir form so existing
+	// entries matching either representation get de-duplicated during
+	// the render-time merge against pack base templates.
+	if !slices.Contains(spec.Managed, wantGlob) {
+		t.Errorf("Managed missing glob %q: %v", wantGlob, spec.Managed)
+	}
+	if !slices.Contains(spec.Managed, renderedDir) {
+		t.Errorf("Managed missing dir: %v", spec.Managed)
 	}
 }
 
-func TestBuildSkillsSpec_Disabled(t *testing.T) {
+func TestBuildSkillsSpec_Empty(t *testing.T) {
 	t.Parallel()
-	spec := BuildSkillsSpec([]string{"/skills"}, []string{"/skills"}, false)
+	spec := BuildSkillsSpec("")
 	if spec.Manage {
-		t.Fatal("expected Manage=false when disabled")
+		t.Fatal("expected Manage=false for empty renderedDir")
+	}
+}
+
+func TestBuildSkillsSpec_PointsAtRenderedDir(t *testing.T) {
+	t.Parallel()
+	renderedDir := filepath.Join(t.TempDir(), "opencode", "skills")
+	spec := BuildSkillsSpec(renderedDir)
+	if !spec.Manage {
+		t.Fatal("expected Manage=true")
+	}
+	if len(spec.Desired) != 1 || spec.Desired[0] != renderedDir {
+		t.Errorf("Desired = %v, want [%s]", spec.Desired, renderedDir)
 	}
 }
 
@@ -546,6 +570,96 @@ func TestMergeInstructions_NoManage(t *testing.T) {
 	if root["instructions"] == nil {
 		t.Fatal("instructions should not be removed when not managing")
 	}
+}
+
+// TestPlan_Global_OpencodeJSONRendering asserts that for a multi-pack
+// global profile, opencode.json's managed keys collapse to a single
+// rendered entry each (instructions → [<rendered rules glob>],
+// skills.paths → [<rendered skills dir>]) and rules are materialized into
+// the rendered dir rather than referenced at pack source — the runtime
+// contract that makes profile enable/disable effective.
+func TestPlan_Global_OpencodeJSONRendering(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+
+	packARoot := filepath.Join(home, ".config", "aipack", "packs", "pack-a")
+	packBRoot := filepath.Join(home, ".config", "aipack", "packs", "pack-b")
+
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeGlobal,
+		TargetDir: home,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{
+				{
+					Name: "pack-a",
+					Root: packARoot,
+					Rules: []domain.Rule{
+						{Name: "team", Raw: []byte("# Team"), SourcePack: "pack-a", SourcePath: filepath.Join(packARoot, "rules", "team.md")},
+					},
+					Skills: []domain.Skill{
+						{Name: "deploy", DirPath: filepath.Join(packARoot, "skills", "deploy"), SourcePack: "pack-a"},
+					},
+				},
+				{
+					Name: "pack-b",
+					Root: packBRoot,
+					Rules: []domain.Rule{
+						{Name: "style", Raw: []byte("# Style"), SourcePack: "pack-b", SourcePath: filepath.Join(packBRoot, "rules", "style.md")},
+					},
+				},
+			},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	// Find the settings action for opencode.json and parse its bytes.
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	var settingsContent []byte
+	for _, s := range f.Settings {
+		if s.Dst == configPath {
+			settingsContent = s.Desired
+			break
+		}
+	}
+	if settingsContent == nil {
+		t.Fatalf("no settings action for %s; got settings: %+v", configPath, f.Settings)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(settingsContent, &got); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+
+	// instructions must be exactly [rendered rules glob]
+	wantGlob := filepath.Join(home, ".config", "opencode", "rules", "*.md")
+	instrAny, ok := got["instructions"].([]any)
+	if !ok {
+		t.Fatalf("instructions not []any: %T = %v", got["instructions"], got["instructions"])
+	}
+	if len(instrAny) != 1 || instrAny[0] != wantGlob {
+		t.Errorf("instructions = %v, want [%s]", instrAny, wantGlob)
+	}
+
+	// skills.paths must be exactly [rendered skills dir]
+	wantSkillsDir := filepath.Join(home, ".config", "opencode", "skills")
+	skillsObj, ok := got["skills"].(map[string]any)
+	if !ok {
+		t.Fatalf("skills not map: %T", got["skills"])
+	}
+	skillsPaths, ok := skillsObj["paths"].([]any)
+	if !ok {
+		t.Fatalf("skills.paths not []any: %T", skillsObj["paths"])
+	}
+	if len(skillsPaths) != 1 || skillsPaths[0] != wantSkillsDir {
+		t.Errorf("skills.paths = %v, want [%s]", skillsPaths, wantSkillsDir)
+	}
+
+	// Rules must be rendered into ~/.config/opencode/rules/, not left at pack source.
+	assertHasWriteDst(t, f.Writes, filepath.Join(home, ".config", "opencode", "rules", "team.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(home, ".config", "opencode", "rules", "style.md"))
 }
 
 // --- Capture tests ---
