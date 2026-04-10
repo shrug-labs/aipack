@@ -17,8 +17,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -35,8 +35,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -92,7 +92,7 @@ jobs:
           echo "linux_amd64_sha=${linux_amd64_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tap repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: shrug-labs/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
