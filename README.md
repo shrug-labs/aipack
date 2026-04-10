@@ -46,7 +46,7 @@ aipack is the infrastructure layer. **Packs** are portable, versioned bundles of
 On macOS, install via Homebrew:
 
 ```bash
-brew install dfoster-oracle/tap/aipack
+brew install shrug-labs/tap/aipack
 ```
 
 On macOS and Linux, you can also use the release-backed installer script:
@@ -97,7 +97,7 @@ Windows override (PowerShell):
 $env:AIPACK_VERSION = "v0.12.0"; irm https://raw.githubusercontent.com/shrug-labs/aipack/main/install.ps1 | iex
 ```
 
-Release binaries are published for `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `windows/amd64`, and `windows/arm64`. Stable releases also update the Homebrew formula in `dfoster-oracle/homebrew-tap`. If you prefer a manual install, use the matching release asset from <https://github.com/shrug-labs/aipack/releases> together with `SHA256SUMS`.
+Release binaries are published for `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `windows/amd64`, and `windows/arm64`. Stable releases also update the Homebrew formula in `shrug-labs/homebrew-tap`. If you prefer a manual install, use the matching release asset from <https://github.com/shrug-labs/aipack/releases> together with `SHA256SUMS`.
 
 ### Build from source
 
@@ -196,7 +196,7 @@ A **pack** is a directory of agent configuration — rules, skills, workflows, a
 ## Releases and Versioning
 
 - Public installs are distributed as GitHub Release binaries.
-- macOS installs are also available via `brew install dfoster-oracle/tap/aipack`.
+- macOS installs are also available via `brew install shrug-labs/tap/aipack`.
 - `install.sh` is the primary cross-platform install path for macOS and Linux.
 - CLI releases use semantic versioning tags: `vMAJOR.MINOR.PATCH` and prerelease tags such as `vMAJOR.MINOR.PATCH-rc.1`.
 - `aipack` remains in the `0.x` phase for now; breaking user-facing changes bump the minor version.

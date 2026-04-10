@@ -7,7 +7,7 @@ Install aipack, set up your first pack, and sync it to your coding assistant. Th
 On macOS:
 
 ```bash
-brew install dfoster-oracle/tap/aipack
+brew install shrug-labs/tap/aipack
 ```
 
 On macOS and Linux:

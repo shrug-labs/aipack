@@ -94,7 +94,7 @@ jobs:
       - name: Checkout tap repository
         uses: actions/checkout@v4
         with:
-          repository: dfoster-oracle/homebrew-tap
+          repository: shrug-labs/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           path: tap
 

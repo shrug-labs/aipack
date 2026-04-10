@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## Unreleased
 
+## [0.20.2]
+
+### Changed
+
+- Homebrew tap renamed from `dfoster-oracle/homebrew-tap` to `shrug-labs/homebrew-tap`. New installations: `brew install shrug-labs/tap/aipack`. Existing `dfoster-oracle/tap/aipack` installs continue working via GitHub's automatic redirect, but re-tapping is recommended: `brew untap dfoster-oracle/tap && brew tap shrug-labs/tap`.
+
 ## [0.20.1]
 
 ### Fixed

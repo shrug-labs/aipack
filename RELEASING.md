@@ -60,7 +60,7 @@ Examples:
     - build `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `windows/amd64`, and `windows/arm64` binaries
     - generate `SHA256SUMS`
     - publish GitHub Release assets
-    - update `dfoster-oracle/homebrew-tap` for stable tags (requires `HOMEBREW_TAP_GITHUB_TOKEN`)
+    - update `shrug-labs/homebrew-tap` for stable tags (requires `HOMEBREW_TAP_GITHUB_TOKEN`)
 
 ## After publish
 
@@ -95,8 +95,8 @@ Examples:
 6. For stable tags, confirm the Homebrew tap updated to the published version:
 
    ```bash
-   brew install dfoster-oracle/tap/aipack
-   brew info dfoster-oracle/tap/aipack
+   brew install shrug-labs/tap/aipack
+   brew info shrug-labs/tap/aipack
    ```
 
 7. If install instructions changed, update `README.md` in the same release-prep change.
