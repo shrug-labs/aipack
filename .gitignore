@@ -24,3 +24,6 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# Agent session debug artifacts
+.playwright-mcp/
