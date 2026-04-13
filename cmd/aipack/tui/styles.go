@@ -169,6 +169,10 @@ var (
 
 	errorStyle   = lipgloss.NewStyle().Foreground(clrError)
 	warningStyle = lipgloss.NewStyle().Foreground(clrWarning)
+	// driftStyle marks the "remote has moved" indicator on pack list rows.
+	// Reuses warning color so the eye treats it as "your attention is wanted"
+	// without escalating to error severity — drift is informational, not a fault.
+	driftStyle = lipgloss.NewStyle().Foreground(clrWarning)
 
 	previewBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).

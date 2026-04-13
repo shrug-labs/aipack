@@ -24,7 +24,6 @@ const RegistrySchemaVersion = 1
 // existing git credentials (SSH keys, credential helpers, etc.).
 const (
 	DefaultRegistryRepo = "https://github.com/shrug-labs/packs.git"
-	DefaultRegistryRef  = "main"
 	DefaultRegistryPath = "registry.yaml"
 )
 

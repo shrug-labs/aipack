@@ -518,9 +518,22 @@ Pack entries in a profile can be marked `quiet: true`, which changes the default
 
 ### 9.6 Versioning
 
-Pack versioning uses git refs. The `version` field in `pack.json` is informational. The authoritative version is the git ref (branch, tag, or commit) used at install time.
+Pack versioning uses git tags. Pack authors release new versions by tagging commits as `v1.2.3` (or `1.2.3` — the v-prefix is optional). Only tags that parse as valid semver are recognized.
 
-For remotely installed packs, the commit hash at install time is recorded, enabling update detection.
+The `version` field in `pack.json` is informational and used for display only. **Git tags are the authoritative source.** When a pack is installed with `--version 1.2.3` and the tag exists, the install proceeds; if the resulting `pack.json` `version` field disagrees with the tag, aipack prints a non-blocking warning to nudge the author.
+
+**Partial semver references.** `pack install` and `pack update` also accept partial version specifiers — `v1` matches the highest stable `v1.x.x` tag, `v1.2` matches the highest `v1.2.x`. Partial resolution queries the remote tags, picks the highest matching stable tag (prereleases skipped), and pins the lockfile to that exact version. Partial references are a discovery shortcut, not a channel: the lockfile records the resolved tag, and users move the pin by re-running with the partial specifier. Prereleases (`v1.2.0-beta.1`) only match exact specifiers.
+
+**One version per machine.** aipack installs exactly one version of a pack at a time. Every profile that references `essentials` sees the same installed version — profiles cannot declare per-profile version constraints. Users who need parallel versions install the alternate under a different name via `--name`; see [Installing Packs — Parallel versions](./installing-packs.md#parallel-versions). This is an intentional design choice: packs are content delivered to harnesses, not libraries consumed transitively, so there is no dependency graph to resolve and version pinning functions as a user safety feature (closer to `brew pin` than to an npm lockfile range).
+
+aipack records two pieces of version metadata per installed pack in the lockfile, and derives pin state from them on read:
+
+- **Git ref** (`ref`) — the normalized git ref used at clone time. A v-prefixed semver tag (`v1.2.3`) or a commit hash marks the pack as **pinned**; a branch name or empty ref tracks upstream. `pack install --version 1.2.3` normalizes to `ref: v1.2.3`, so `--ref v1.2.3` and `--version 1.2.3` produce the same on-disk state.
+- **Commit hash** (`commit_hash`) — the resolved SHA at install/update time. Enables fast-path update detection via `git ls-remote` — `pack update` can skip the clone entirely when the remote hash hasn't changed.
+
+Pin state is not stored as a separate field; it is computed from `ref`'s shape. `pack show --json` and `pack list --json` expose a derived `pin` field (omitted for unpinned installs) so downstream tooling can distinguish pinned from tracking installs without reproducing the classification logic. The same label surfaces in `pack list` text output and the TUI details panel as `v1.2.3 (pinned)` or `@abc1234 (pinned)`.
+
+Pinned packs stay at their resolved commit on `pack update` until the user explicitly moves the pin. See [Installing Packs — Versioning](./installing-packs.md#versioning).
 
 ## 10. Harness Contract
 

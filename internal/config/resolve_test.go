@@ -14,7 +14,7 @@ import (
 // resolveStrict calls ResolveProfile with CollisionError strategy and discards warnings.
 func resolveStrict(t *testing.T, cfg ProfileConfig, profilePath, configDir string) ([]ResolvedPack, []string, error) {
 	t.Helper()
-	r, err := ResolveProfile(cfg, profilePath, configDir, CollisionError)
+	r, err := ResolveProfile(cfg, profilePath, configDir, CollisionError, nil)
 	return r.Packs, r.SettingsPacks, err
 }
 
@@ -146,7 +146,7 @@ func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 	_, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first"}, {Name: "second"}},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
 	if err == nil || !strings.Contains(err.Error(), `collision(s)`) {
 		t.Fatalf("expected collision error, got %v", err)
 	}
@@ -792,7 +792,7 @@ func TestResolveProfile_DisabledPackOverrideShouldNotResolveEnabledConflict(t *t
 				Overrides: Overrides{Rules: []string{"shared"}},
 			},
 		},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
 	if err == nil {
 		t.Fatal("expected duplicate error when disabled pack's override should not resolve enabled-pack conflict")
 	}
@@ -816,7 +816,7 @@ func TestResolveProfile_CollisionStrategy_FirstWins(t *testing.T) {
 	r, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "base"}, {Name: "team"}},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -866,7 +866,7 @@ func TestResolveProfile_CollisionStrategy_FirstWins_MultiID(t *testing.T) {
 	r, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "base"}, {Name: "team"}},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -948,7 +948,7 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 				{Name: "team"},
 				{Name: "personal"},
 			},
-		}, profilePath, root, CollisionLastWins)
+		}, profilePath, root, CollisionLastWins, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1034,7 +1034,7 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 		r, err := ResolveProfile(ProfileConfig{
 			SchemaVersion: ProfileSchemaVersion,
 			Packs:         []PackEntry{{Name: "team"}, {Name: "personal"}},
-		}, profilePath, root, CollisionLastWins)
+		}, profilePath, root, CollisionLastWins, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1058,7 +1058,7 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 				{Name: "dev-starter", Enabled: BoolPtr(false)},
 				{Name: "team"},
 			},
-		}, profilePath, root, CollisionLastWins)
+		}, profilePath, root, CollisionLastWins, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1076,7 +1076,7 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 				{Name: "essentials"},
 				{Name: "team", Overrides: Overrides{Rules: []string{"anti-slop"}}},
 			},
-		}, profilePath, root, CollisionLastWins)
+		}, profilePath, root, CollisionLastWins, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1115,7 +1115,7 @@ func TestResolveProfile_CollisionStrategy_ErrorCollectsAll(t *testing.T) {
 	_, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "first"}, {Name: "second"}},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
 	if err == nil {
 		t.Fatal("expected error for collisions")
 	}
@@ -1158,7 +1158,7 @@ func TestResolveProfile_CollisionStrategy_MCP(t *testing.T) {
 	r, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "pack-a"}, {Name: "pack-b"}},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins, nil)
 	if err != nil {
 		t.Fatalf("first-wins: %v", err)
 	}
@@ -1176,7 +1176,7 @@ func TestResolveProfile_CollisionStrategy_MCP(t *testing.T) {
 	r, err = ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "pack-a"}, {Name: "pack-b"}},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionLastWins)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionLastWins, nil)
 	if err != nil {
 		t.Fatalf("last-wins: %v", err)
 	}
@@ -1210,7 +1210,7 @@ func TestResolveProfile_OverridesOverrideStrategy(t *testing.T) {
 			{Name: "base"},
 			{Name: "team", Overrides: Overrides{Rules: []string{"shared"}}},
 		},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionFirstWins, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1249,7 +1249,7 @@ func TestResolveProfile_CollisionError_PartialOverrideResolution(t *testing.T) {
 	_, err := ResolveProfile(ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs:         []PackEntry{{Name: "base"}, {Name: "team"}},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
 	if err == nil {
 		t.Fatal("expected error for 2 unresolved collisions")
 	}
@@ -1264,7 +1264,7 @@ func TestResolveProfile_CollisionError_PartialOverrideResolution(t *testing.T) {
 			{Name: "base"},
 			{Name: "team", Overrides: Overrides{Rules: []string{"rule-a"}}},
 		},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
 	if err == nil {
 		t.Fatal("expected error for 1 remaining collision")
 	}
@@ -1286,7 +1286,7 @@ func TestResolveProfile_CollisionError_PartialOverrideResolution(t *testing.T) {
 			{Name: "base"},
 			{Name: "team", Overrides: Overrides{Rules: []string{"rule-a", "rule-b"}}},
 		},
-	}, filepath.Join(root, "profile.yaml"), root, CollisionError)
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
 	if err != nil {
 		t.Fatalf("expected no error when all collisions resolved by overrides, got: %v", err)
 	}
@@ -1333,6 +1333,137 @@ func TestNormalizeCollisionStrategy(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("NormalizeCollisionStrategy(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestResolveProfile_DriftAware_RefInPrevInventoryBecomesBrokenRef(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// Current pack inventory has only "kept". The profile still references
+	// "removed", which was in the previous inventory — expect a BrokenRef,
+	// not an error.
+	installPackForResolveTest(t, root, "test-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "test-pack",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"kept"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
+
+	include := []string{"kept", "removed"}
+	prev := map[string]domain.PackInventory{
+		"test-pack": {Rules: []string{"kept", "removed"}},
+	}
+	r, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:  "test-pack",
+			Rules: VectorSelector{Include: &include},
+		}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, prev)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(r.BrokenRefs) != 1 {
+		t.Fatalf("expected 1 BrokenRef, got %d: %+v", len(r.BrokenRefs), r.BrokenRefs)
+	}
+	br := r.BrokenRefs[0]
+	if br.PackName != "test-pack" || br.Category != domain.CategoryRules || br.ID != "removed" || br.Direction != "include" {
+		t.Errorf("BrokenRef = %+v", br)
+	}
+	// The "kept" rule should still resolve.
+	if len(r.Packs) != 1 || len(r.Packs[0].Rules) != 1 || r.Packs[0].Rules[0] != "kept" {
+		t.Errorf("expected resolved rules = [kept], got %v", r.Packs)
+	}
+}
+
+func TestResolveProfile_DriftAware_TypoStillErrors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "test-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "test-pack",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"kept"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
+
+	// "typo" was never in the pack — not in current inventory, not in prev.
+	// Expect a hard error, not a BrokenRef.
+	include := []string{"typo"}
+	prev := map[string]domain.PackInventory{
+		"test-pack": {Rules: []string{"kept"}},
+	}
+	_, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:  "test-pack",
+			Rules: VectorSelector{Include: &include},
+		}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, prev)
+	if err == nil || !strings.Contains(err.Error(), `references unknown id "typo"`) {
+		t.Fatalf("expected typo error, got %v", err)
+	}
+}
+
+func TestResolveProfile_DriftAware_OverrideDriftsOut(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "first", PackManifest{
+		SchemaVersion: 1,
+		Name:          "first",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"kept"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
+
+	// Override targets "removed" — not in any current pack, but was in
+	// first's previous inventory. Becomes a BrokenRef, not an error.
+	prev := map[string]domain.PackInventory{
+		"first": {Rules: []string{"kept", "removed"}},
+	}
+	r, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:      "first",
+			Overrides: Overrides{Rules: []string{"removed"}},
+		}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, prev)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(r.BrokenRefs) != 1 || r.BrokenRefs[0].Direction != "overrides" || r.BrokenRefs[0].ID != "removed" {
+		t.Errorf("expected overrides BrokenRef for 'removed', got %+v", r.BrokenRefs)
+	}
+}
+
+func TestResolveProfile_DriftAware_NilPrevPreservesHardError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "test-pack", PackManifest{
+		SchemaVersion: 1,
+		Name:          "test-pack",
+		Version:       "1",
+		Root:          ".",
+		Rules:         []string{"kept"},
+		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
+
+	// No prevInventories map → the classic hard-error path must be preserved
+	// for fat-finger typo detection.
+	include := []string{"removed"}
+	_, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:  "test-pack",
+			Rules: VectorSelector{Include: &include},
+		}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
+	if err == nil || !strings.Contains(err.Error(), `references unknown id "removed"`) {
+		t.Fatalf("expected hard error with nil prev, got %v", err)
 	}
 }
 

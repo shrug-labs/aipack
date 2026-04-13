@@ -74,14 +74,14 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 		t.Fatalf("starter profile packs = %+v, want [{Name:my-pack}]", profileCfg.Packs)
 	}
 
-	// Verify registered in sync-config.
-	sc, err := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
+	// Verify registered in lockfile.
+	lf, err := config.LoadLockfile(config.LockfilePath(cfgDir))
 	if err != nil {
-		t.Fatalf("LoadSyncConfig: %v", err)
+		t.Fatalf("LoadLockfile: %v", err)
 	}
-	meta, ok := sc.InstalledPacks["my-pack"]
+	meta, ok := lf.Packs["my-pack"]
 	if !ok {
-		t.Fatal("pack not registered in sync-config")
+		t.Fatal("pack not registered in lockfile")
 	}
 	if meta.Method != config.MethodLocal {
 		t.Fatalf("method = %q, want %q", meta.Method, config.MethodLocal)
@@ -116,13 +116,13 @@ func TestPackCreate_Link_CreatesInCWDAndSymlinks(t *testing.T) {
 	}
 
 	// Verify registered with link method.
-	sc, err := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
+	lf, err := config.LoadLockfile(config.LockfilePath(cfgDir))
 	if err != nil {
-		t.Fatalf("LoadSyncConfig: %v", err)
+		t.Fatalf("LoadLockfile: %v", err)
 	}
-	meta, ok := sc.InstalledPacks["linked-pack"]
+	meta, ok := lf.Packs["linked-pack"]
 	if !ok {
-		t.Fatal("pack not registered in sync-config")
+		t.Fatal("pack not registered in lockfile")
 	}
 	if meta.Method != config.MethodLink {
 		t.Fatalf("method = %q, want %q", meta.Method, config.MethodLink)

@@ -50,6 +50,11 @@ type dialogModel struct {
 
 	// For checklist dialogs.
 	checkItems []checkItem
+	// confirmLabel, when non-empty, appends an action row to a checklist
+	// dialog. In this mode, space and enter both toggle the focused item;
+	// enter on the action row confirms. The label is rendered without a
+	// checkbox (e.g., "install...").
+	confirmLabel string
 }
 
 func newConfirmDialog(id, title string) dialogModel {
@@ -95,6 +100,14 @@ func newChecklistDialog(id, title string, items []checkItem) dialogModel {
 		title:      title,
 		checkItems: items,
 	}
+}
+
+// withConfirmRow appends an explicit confirm action row to a checklist dialog.
+// When set, enter toggles items (instead of confirming) and only the action
+// row at the bottom triggers confirmation.
+func (d dialogModel) withConfirmRow(label string) dialogModel {
+	d.confirmLabel = label
+	return d
 }
 
 func sendDialogResult(id string, confirmed bool, value string) tea.Cmd {
@@ -190,17 +203,33 @@ func (d dialogModel) Update(msg tea.Msg) (dialogModel, tea.Cmd) {
 			}
 
 		case dialogChecklist:
+			hasAction := d.confirmLabel != ""
+			actionIdx := len(d.checkItems) // valid only when hasAction
+			maxCursor := len(d.checkItems) - 1
+			if hasAction {
+				maxCursor = actionIdx
+			}
+			onAction := hasAction && d.listCursor == actionIdx
 			switch msg.String() {
 			case " ":
-				if len(d.checkItems) > 0 {
+				if !onAction && len(d.checkItems) > 0 {
 					d.checkItems[d.listCursor].checked = !d.checkItems[d.listCursor].checked
 				}
 			case "enter":
+				if hasAction {
+					if onAction {
+						return d, sendChecklistResult(d.id, true, d.checkItems)
+					}
+					if len(d.checkItems) > 0 {
+						d.checkItems[d.listCursor].checked = !d.checkItems[d.listCursor].checked
+					}
+					return d, nil
+				}
 				return d, sendChecklistResult(d.id, true, d.checkItems)
 			case "esc":
 				return d, sendChecklistResult(d.id, false, d.checkItems)
 			case "j", "down":
-				if d.listCursor < len(d.checkItems)-1 {
+				if d.listCursor < maxCursor {
 					d.listCursor++
 				}
 			case "k", "up":
@@ -275,6 +304,16 @@ func (d dialogModel) View() string {
 			}
 			content += prefix + check + " " + label + "\n"
 		}
+		if d.confirmLabel != "" {
+			actionIdx := len(d.checkItems)
+			prefix := "  "
+			label := d.confirmLabel
+			if d.listCursor == actionIdx {
+				prefix = "> "
+				label = selectedStyle.Render(label)
+			}
+			content += "\n" + prefix + label + "\n"
+		}
 	}
 
 	width := max(lipgloss.Width(content)+6, 30)
@@ -292,6 +331,9 @@ func (d dialogModel) helpText() string {
 		}
 		return strings.Join(parts, "  ")
 	case dialogChecklist:
+		if d.confirmLabel != "" {
+			return "space/enter:toggle  j/k:move  esc:cancel"
+		}
 		return "space:toggle  enter:confirm  esc:cancel"
 	default:
 		return "enter:confirm  esc:cancel"

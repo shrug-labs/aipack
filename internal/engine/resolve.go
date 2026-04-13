@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"fmt"
+
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
@@ -19,9 +21,10 @@ func (e *Engine) Resolve(
 	profilePath string,
 	configDir string,
 	collisionStrategy config.CollisionStrategy,
+	prevInventories map[string]domain.PackInventory,
 ) (domain.Profile, []domain.Warning, error) {
 	// Step 1: Validate profile, resolve packs, apply selectors, check overrides.
-	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, collisionStrategy)
+	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, collisionStrategy, prevInventories)
 	if err != nil {
 		return domain.Profile{}, nil, err
 	}
@@ -29,6 +32,7 @@ func (e *Engine) Resolve(
 
 	var warnings []domain.Warning
 	warnings = append(warnings, resolved.CollisionWarnings...)
+	warnings = append(warnings, brokenRefWarnings(resolved.BrokenRefs)...)
 
 	// Step 2: Parse content per pack into typed domain structs.
 	packs, contentWarnings, err := e.resolvePackContent(resolvedPacks)
@@ -58,7 +62,41 @@ func (e *Engine) Resolve(
 	p.MCPServers = mcpServers
 	p.BaseSettings = settings
 	p.SettingsPacks = settingsPacks
+	p.BrokenRefs = resolved.BrokenRefs
 	return p, warnings, nil
+}
+
+// brokenRefWarnings converts structured BrokenRef entries into user-facing
+// Warning entries so they flow through the standard warnings printer.
+// The structured BrokenRefs are also retained on domain.Profile so drift
+// detection can surface them in its "affects your profile" section
+// without re-parsing messages.
+func brokenRefWarnings(refs []domain.BrokenRef) []domain.Warning {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]domain.Warning, 0, len(refs))
+	for _, br := range refs {
+		var location string
+		switch {
+		case br.Direction == "overrides":
+			location = string(br.Category) + ".overrides"
+		case br.Category == domain.CategoryMCP:
+			location = "mcp." + br.ID
+		case br.Direction != "":
+			location = string(br.Category) + "." + br.Direction
+		default:
+			location = string(br.Category)
+		}
+		out = append(out, domain.Warning{
+			Field: "broken-ref",
+			Message: fmt.Sprintf(
+				"pack %q %s references %q — present in previous lockfile inventory but removed from current pack contents",
+				br.PackName, location, br.ID,
+			),
+		})
+	}
+	return out
 }
 
 // resolvePackContent parses all content from resolved packs into typed Pack structs.

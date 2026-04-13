@@ -16,6 +16,7 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/posener/complete v1.2.3
 	github.com/willabides/kongplete v0.4.0
+	golang.org/x/mod v0.33.0
 	golang.org/x/sys v0.37.0
 	modernc.org/sqlite v1.46.1
 )

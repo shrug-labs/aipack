@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,8 +18,10 @@ import (
 
 func newTestPacksModel(items []packItemDetail) packsModel {
 	m := packsModel{
-		items:        items,
-		installedMap: map[string]int{},
+		items:         items,
+		installedMap:  map[string]int{},
+		versionsCache: map[string]packVersionsCacheEntry{},
+		driftSet:      map[string]app.PackDrift{},
 	}
 	for i, item := range items {
 		m.installedMap[item.entry.Name] = i
@@ -289,42 +292,6 @@ func TestPacksModel_EmptyPackNoContentFocus(t *testing.T) {
 	}
 }
 
-func TestPacksModel_ViewShowsPackInfoAndInlinePreview(t *testing.T) {
-	t.Parallel()
-	m := newTestPacksModel([]packItemDetail{
-		{entry: app.PackShowEntry{
-			Name:    "test-pack",
-			Path:    "/tmp/pack",
-			Version: "2026.03.10",
-			Rules:   []string{"rule-a"},
-		}},
-	})
-	m.width = 120
-	m.height = 30
-	m.previewState = asyncLoaded
-	m.previewData = previewLoadedMsg{
-		title:    "rule-a",
-		category: domain.CategoryRules,
-		packName: "test-pack",
-		filePath: "/tmp/pack/rules/rule-a.md",
-		body:     "# Rule A\n\nBody text",
-	}
-
-	view := m.View()
-	if !strings.Contains(view, "Version") {
-		t.Fatalf("expected view to contain Version label, got:\n%s", view)
-	}
-	if !strings.Contains(view, "Content") {
-		t.Fatalf("expected view to contain Content, got:\n%s", view)
-	}
-	if !strings.Contains(view, "Preview") {
-		t.Fatalf("expected view to contain Preview, got:\n%s", view)
-	}
-	if !strings.Contains(view, "# Rule A") {
-		t.Fatalf("expected preview body in view, got:\n%s", view)
-	}
-}
-
 func TestPacksModel_ContentPanelShowsCategoryCounts(t *testing.T) {
 	t.Parallel()
 	m := newTestPacksModel([]packItemDetail{
@@ -388,6 +355,466 @@ func TestPacksModel_PackInfoIsCompact(t *testing.T) {
 	}
 	if strings.Contains(view, "1 rules") {
 		t.Fatalf("expected content counts to move out of pack info, got:\n%s", view)
+	}
+}
+
+func TestWrapWords(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		width int
+		want  string
+	}{
+		{
+			name:  "fits on one line",
+			input: "short text",
+			width: 20,
+			want:  "short text",
+		},
+		{
+			name:  "wraps on word boundaries",
+			input: "the quick brown fox",
+			width: 10,
+			want:  "the quick\nbrown fox",
+		},
+		{
+			name:  "hard-breaks unbreakable single token longer than width",
+			input: "supercalifragilistic",
+			width: 8,
+			want:  "supercal\nifragili\nstic",
+		},
+		{
+			name:  "mixes hard-break and soft-break",
+			input: "ok superlongword next",
+			width: 6,
+			want:  "ok\nsuperl\nongwor\nd next",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			width: 10,
+			want:  "",
+		},
+		{
+			name:  "zero width returns input",
+			input: "anything",
+			width: 0,
+			want:  "anything",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := wrapWords(tt.input, tt.width); got != tt.want {
+				t.Errorf("wrapWords(%q, %d):\ngot:  %q\nwant: %q", tt.input, tt.width, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPacksModel_DetailsPanelWrapsValuesUnderColumn(t *testing.T) {
+	t.Parallel()
+	// Long About description should wrap at the value column boundary,
+	// not bleed into where the next label would appear. Continuation lines
+	// must align at column labelW (12 chars), not column 0.
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:   "wide-pack",
+			Method: "clone",
+		}},
+	})
+	m.registry = []registryItem{{
+		name:        "wide-pack",
+		description: "A reasonably long description that will need to wrap across multiple lines inside the details panel value column.",
+	}}
+	m.registryState = asyncLoaded
+	m.rebuildList()
+	m.width = 140
+	m.height = 30
+	m.listCursor = 0
+
+	view := m.viewPackInfoPanel(48, 24)
+	lines := strings.Split(view, "\n")
+
+	// Find a non-first line that begins inside the wrapped About value.
+	// Every wrapped continuation should be padded to column labelW, never
+	// start at column 0 (which would visually collide with the label).
+	foundContinuation := false
+	for i, line := range lines {
+		stripped := strings.TrimRight(line, " ")
+		if i == 0 || stripped == "" {
+			continue
+		}
+		// Look for a line that starts with whitespace and contains text —
+		// that's a continuation row of a wrapped value.
+		if strings.HasPrefix(line, "  ") && strings.TrimSpace(line) != "" {
+			// All wrap-continuation rows must be indented past the label
+			// gutter. The "About" label is 5 chars, padded to labelW=12,
+			// so continuation rows must start with at least 12 spaces of
+			// indent. Verify by checking that the first non-space char is
+			// at column ≥ labelW.
+			firstNonSpace := len(line) - len(strings.TrimLeft(line, " "))
+			if strings.Contains(line, "wrap") || strings.Contains(line, "lines") || strings.Contains(line, "panel") {
+				if firstNonSpace < 12 {
+					t.Errorf("continuation line %q has first non-space at col %d, expected >= 12", line, firstNonSpace)
+				}
+				foundContinuation = true
+			}
+		}
+	}
+	if !foundContinuation {
+		t.Fatalf("expected to find a wrapped About continuation line in:\n%s", view)
+	}
+}
+
+func TestPacksModel_DetailsPanelShowsPin(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:       "pinned-pack",
+			Path:       "/tmp/pinned-pack",
+			Method:     "clone",
+			Version:    "1.2.3",
+			Pin:        "v1.2.3",
+			Ref:        "v1.2.3",
+			CommitHash: "abc1234def5678",
+			Origin:     "https://example.com/pinned-pack",
+		}},
+	})
+	m.width = 120
+	m.height = 30
+	m.listCursor = 0
+
+	view := m.viewPackInfoPanel(40, 24)
+
+	// Pin label must appear so users can see the pack is locked.
+	if !strings.Contains(view, "v1.2.3 (pinned)") {
+		t.Fatalf("expected pin label in details, got:\n%s", view)
+	}
+	// Ref row is suppressed when Pin is present (Pin already encodes the
+	// same information plus the "(pinned)" status).
+	if strings.Contains(view, "Ref     ") {
+		t.Fatalf("expected Ref row to be hidden when Pin is present, got:\n%s", view)
+	}
+	// Short commit hash, not full.
+	if !strings.Contains(view, "abc1234") {
+		t.Fatalf("expected short commit hash in details, got:\n%s", view)
+	}
+	if strings.Contains(view, "abc1234def5678") {
+		t.Fatalf("expected commit hash to be shortened, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_DetailsPanelShowsRefForUnpinned(t *testing.T) {
+	t.Parallel()
+	// Unpinned clone tracking a branch — Ref should appear since Pin is empty.
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:       "tracking-pack",
+			Path:       "/tmp/tracking-pack",
+			Method:     "clone",
+			Ref:        "main",
+			CommitHash: "deadbeef0000",
+			Origin:     "https://example.com/tracking-pack",
+		}},
+	})
+	m.width = 120
+	m.height = 30
+	m.listCursor = 0
+
+	view := m.viewPackInfoPanel(40, 24)
+	if strings.Contains(view, "(pinned)") {
+		t.Fatalf("expected no pin label for unpinned pack, got:\n%s", view)
+	}
+	if !strings.Contains(view, "main") {
+		t.Fatalf("expected branch ref in details, got:\n%s", view)
+	}
+	if !strings.Contains(view, "deadbee") {
+		t.Fatalf("expected commit hash (short form) in details, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_DetailsPanelShowsLatestForInstalledClone(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:    "behind-pack",
+			Path:    "/tmp/behind-pack",
+			Method:  "clone",
+			Version: "1.2.3",
+			Pin:     "v1.2.3",
+		}},
+	})
+	m.width = 120
+	m.height = 30
+	// Seed the version cache as if loadPackVersions had completed:
+	// remote has v2.0.0, v1.5.0, v1.2.3 — installed pin is v1.2.3.
+	m.versionsCache["behind-pack"] = packVersionsCacheEntry{
+		state: asyncLoaded,
+		versions: []app.PackVersion{
+			{Version: "v2.0.0"},
+			{Version: "v1.5.0"},
+			{Version: "v1.2.3"},
+		},
+	}
+
+	view := m.viewPackInfoPanel(50, 24)
+	if !strings.Contains(view, "Latest") {
+		t.Fatalf("expected Latest row when newer version available, got:\n%s", view)
+	}
+	if !strings.Contains(view, "v2.0.0") {
+		t.Fatalf("expected latest version label, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_DetailsPanelHidesLatestWhenOnNewest(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:    "current-pack",
+			Path:    "/tmp/current-pack",
+			Method:  "clone",
+			Version: "2.0.0",
+			Pin:     "v2.0.0",
+		}},
+	})
+	m.width = 120
+	m.height = 30
+	m.versionsCache["current-pack"] = packVersionsCacheEntry{
+		state: asyncLoaded,
+		versions: []app.PackVersion{
+			{Version: "v2.0.0"},
+			{Version: "v1.5.0"},
+		},
+	}
+
+	view := m.viewPackInfoPanel(50, 24)
+	// No drift signal — Latest row would just be noise.
+	if strings.Contains(view, "Latest") {
+		t.Fatalf("expected no Latest row when on newest version, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_RegistryPanelShowsVersions(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m.registry = []registryItem{{
+		name:        "discoverable",
+		description: "test pack",
+		owner:       "team",
+		repo:        "https://example.com/discoverable",
+		ref:         "main",
+	}}
+	m.registryState = asyncLoaded
+	m.rebuildList()
+	m.versionsCache["discoverable"] = packVersionsCacheEntry{
+		state: asyncLoaded,
+		versions: []app.PackVersion{
+			{Version: "v3.0.0"},
+			{Version: "v2.5.1"},
+			{Version: "v2.0.0"},
+			{Version: "v1.0.0"},
+		},
+	}
+	m.width = 120
+	m.height = 30
+
+	view := m.viewPackInfoPanel(60, 30)
+	if !strings.Contains(view, "Versions") {
+		t.Fatalf("expected Versions row in registry block, got:\n%s", view)
+	}
+	if !strings.Contains(view, "v3.0.0") {
+		t.Fatalf("expected newest version in inline list, got:\n%s", view)
+	}
+	// Caps at three plus a "+N more" suffix; v1.0.0 is the 4th and should
+	// not appear in the inline list itself.
+	if !strings.Contains(view, "+1 more") {
+		t.Fatalf("expected '+1 more' overflow indicator, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_RegistryPanelShowsLoadingState(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m.registry = []registryItem{{
+		name: "loading-pack",
+		repo: "https://example.com/loading-pack",
+	}}
+	m.registryState = asyncLoaded
+	m.rebuildList()
+	m.versionsCache["loading-pack"] = packVersionsCacheEntry{state: asyncLoading}
+	m.width = 120
+	m.height = 30
+
+	view := m.viewPackInfoPanel(60, 30)
+	if !strings.Contains(view, "loading") {
+		t.Fatalf("expected loading indicator while versions in flight, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_VersionsLoadedMsgPopulatesCache(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m, _ = m.Update(packVersionsLoadedMsg{
+		packName: "fresh-pack",
+		versions: []app.PackVersion{
+			{Version: "v1.0.0"},
+		},
+	})
+	cached, ok := m.versionsCacheEntry("fresh-pack")
+	if !ok {
+		t.Fatal("expected cache entry after packVersionsLoadedMsg")
+	}
+	if cached.state != asyncLoaded {
+		t.Errorf("expected state asyncLoaded, got %v", cached.state)
+	}
+	if len(cached.versions) != 1 || cached.versions[0].Version != "v1.0.0" {
+		t.Errorf("unexpected cached versions: %+v", cached.versions)
+	}
+}
+
+func TestPacksModel_VersionsLoadedMsgErrorMarksFailed(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m, _ = m.Update(packVersionsLoadedMsg{
+		packName: "broken-pack",
+		err:      fmt.Errorf("network down"),
+	})
+	cached, ok := m.versionsCacheEntry("broken-pack")
+	if !ok {
+		t.Fatal("expected cache entry to record the failure")
+	}
+	if cached.state != asyncError {
+		t.Errorf("expected state asyncError, got %v", cached.state)
+	}
+}
+
+func TestPacksModel_MaybeLoadVersionsSkipsLinkPacks(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "linked", Method: "link"}},
+	})
+	cmd := m.maybeLoadVersionsForCursor()
+	if cmd != nil {
+		t.Fatal("link-method packs should not trigger version loads")
+	}
+	if _, ok := m.versionsCacheEntry("linked"); ok {
+		t.Fatal("link-method packs should not be added to the cache")
+	}
+}
+
+func TestPacksModel_MaybeLoadVersionsClonePacksSchedule(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "remote", Method: "clone"}},
+	})
+	cmd := m.maybeLoadVersionsForCursor()
+	if cmd == nil {
+		t.Fatal("clone-method packs should trigger a version load")
+	}
+	cached, ok := m.versionsCacheEntry("remote")
+	if !ok {
+		t.Fatal("expected cache entry seeded with loading state")
+	}
+	if cached.state != asyncLoading {
+		t.Errorf("expected loading state, got %v", cached.state)
+	}
+	// A second call must NOT spawn a duplicate request — the cache entry
+	// already records the in-flight load. Without this guard, every cursor
+	// blip would re-fire the network call.
+	if again := m.maybeLoadVersionsForCursor(); again != nil {
+		t.Fatal("expected no duplicate load when one is already in flight")
+	}
+}
+
+func TestPacksModel_DriftLoadedPopulatesSet(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m, _ = m.Update(packDriftLoadedMsg{
+		drifted: []app.PackDrift{
+			{Name: "alpha", Method: "clone", Reason: "remote ref has moved since install"},
+			{Name: "bravo", Method: "clone", Reason: "remote ref has moved since install"},
+		},
+	})
+	if _, ok := m.driftSet["alpha"]; !ok {
+		t.Error("expected alpha in drift set")
+	}
+	if _, ok := m.driftSet["bravo"]; !ok {
+		t.Error("expected bravo in drift set")
+	}
+	if _, ok := m.driftSet["charlie"]; ok {
+		t.Error("charlie should not be in drift set")
+	}
+}
+
+func TestPacksModel_DriftLoadedReplacesPriorState(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	// Seed an existing entry that should disappear after a fresh scan.
+	m.driftSet["stale"] = app.PackDrift{Name: "stale"}
+
+	m, _ = m.Update(packDriftLoadedMsg{
+		drifted: []app.PackDrift{
+			{Name: "fresh"},
+		},
+	})
+	if _, ok := m.driftSet["stale"]; ok {
+		t.Error("stale entry should be cleared by fresh scan")
+	}
+	if _, ok := m.driftSet["fresh"]; !ok {
+		t.Error("fresh entry should be present")
+	}
+}
+
+func TestPacksModel_ListPanelShowsDriftIndicator(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "drifted", Method: "clone"}},
+		{entry: app.PackShowEntry{Name: "current", Method: "clone"}},
+	})
+	m.driftSet["drifted"] = app.PackDrift{Name: "drifted", Reason: "remote ref has moved"}
+	m.width = 120
+	m.height = 30
+
+	view := m.viewListPanel(40, 16)
+	// The drifted row gets the indicator; the current row doesn't.
+	for line := range strings.SplitSeq(view, "\n") {
+		if strings.Contains(line, "drifted") && !strings.Contains(line, "↑") {
+			t.Fatalf("drifted row should have ↑ indicator, got: %q", line)
+		}
+		if strings.Contains(line, "current") && strings.Contains(line, "↑") {
+			t.Fatalf("current row should not have ↑ indicator, got: %q", line)
+		}
+	}
+}
+
+func TestPacksModel_ListPanelShowsPinSuffix(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:   "pinned-pack",
+			Method: "clone",
+			Pin:    "v2.0.0",
+		}},
+		{entry: app.PackShowEntry{
+			Name:   "loose-pack",
+			Method: "clone",
+		}},
+	})
+	m.width = 120
+	m.height = 30
+
+	view := m.viewListPanel(40, 16)
+	// Pinned row gets the suffix.
+	if !strings.Contains(view, "v2.0.0 (pinned)") {
+		t.Fatalf("expected pin suffix on pinned row, got:\n%s", view)
+	}
+	// Unpinned row appears without "(pinned)" anywhere on its line.
+	for line := range strings.SplitSeq(view, "\n") {
+		if strings.Contains(line, "loose-pack") && strings.Contains(line, "pinned") {
+			t.Fatalf("loose-pack row should not have pin suffix, got line: %q", line)
+		}
 	}
 }
 
@@ -457,22 +884,6 @@ func TestPacksModel_ContentPanelDoesNotInsertGapAfterCategoryHeader(t *testing.T
 	view := m.viewContentPanel(40, 16)
 	if strings.Contains(view, "Rules (2)\n\n") {
 		t.Fatalf("expected first content item immediately after category header, got:\n%s", view)
-	}
-}
-
-func TestPacksModel_PreviewPanelShowsPlaceholderInListFocus(t *testing.T) {
-	t.Parallel()
-	m := newTestPacksModel([]packItemDetail{
-		{entry: app.PackShowEntry{
-			Name:  "test-pack",
-			Path:  "/tmp/pack",
-			Rules: []string{"rule-a"},
-		}},
-	})
-
-	view := m.viewPreviewPanel(40, 12)
-	if !strings.Contains(view, "Open content to load a preview") {
-		t.Fatalf("expected list-focus preview placeholder, got:\n%s", view)
 	}
 }
 
@@ -602,6 +1013,363 @@ func TestPackUpdatedMsg_ShowsSummary(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected loadPacks reload command")
+	}
+}
+
+// TestPackActionMenu_OffersPinVersionForClonePackWithVersions verifies the
+// Pin to version... entry only appears when (a) the selected pack is clone
+// method (link/copy/local can't be pinned) and (b) the versions cache has
+// at least one tag — without versions, the picker would be empty.
+func TestPackActionMenu_OffersPinVersionForClonePackWithVersions(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:   "pinnable",
+			Method: "clone",
+		}},
+	})
+	m.packs.versionsCache["pinnable"] = packVersionsCacheEntry{
+		state: asyncLoaded,
+		versions: []app.PackVersion{
+			{Version: "v2.0.0"},
+			{Version: "v1.5.0"},
+		},
+	}
+
+	result, _ := m.openPackTabActions()
+	rm := result.(rootModel)
+	if rm.dialog == nil {
+		t.Fatal("expected action menu dialog")
+	}
+	if !containsItem(rm.dialog.listItems, actPinVersion) {
+		t.Errorf("expected %q in action menu, got %v", actPinVersion, rm.dialog.listItems)
+	}
+}
+
+func TestPackActionMenu_HidesPinVersionWithoutCachedVersions(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "no-versions", Method: "clone"}},
+	})
+	// versionsCache empty — no Pin entry should be offered.
+
+	result, _ := m.openPackTabActions()
+	rm := result.(rootModel)
+	if rm.dialog == nil {
+		t.Fatal("expected action menu dialog")
+	}
+	if containsItem(rm.dialog.listItems, actPinVersion) {
+		t.Errorf("Pin entry should be hidden without cached versions, got %v", rm.dialog.listItems)
+	}
+}
+
+func TestPackActionMenu_HidesPinVersionForLinkPack(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "linked", Method: "link"}},
+	})
+	// Even with versions in cache, link packs can't be pinned.
+	m.packs.versionsCache["linked"] = packVersionsCacheEntry{
+		state:    asyncLoaded,
+		versions: []app.PackVersion{{Version: "v1.0.0"}},
+	}
+
+	result, _ := m.openPackTabActions()
+	rm := result.(rootModel)
+	if containsItem(rm.dialog.listItems, actPinVersion) {
+		t.Errorf("link packs should not get Pin entry, got %v", rm.dialog.listItems)
+	}
+	if containsItem(rm.dialog.listItems, actUnpin) {
+		t.Errorf("link packs should not get Unpin entry, got %v", rm.dialog.listItems)
+	}
+}
+
+func TestPackActionMenu_OffersUnpinOnlyForPinnedPack(t *testing.T) {
+	t.Parallel()
+	// Unpinned clone — Unpin entry must be hidden.
+	mUnpinned := newRootModel(context.Background(), RunConfig{})
+	mUnpinned.activeTab = tabPacks
+	mUnpinned.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "loose", Method: "clone"}},
+	})
+	result, _ := mUnpinned.openPackTabActions()
+	rm := result.(rootModel)
+	if containsItem(rm.dialog.listItems, actUnpin) {
+		t.Errorf("Unpin should be hidden for unpinned pack, got %v", rm.dialog.listItems)
+	}
+
+	// Pinned clone — Unpin entry must appear.
+	mPinned := newRootModel(context.Background(), RunConfig{})
+	mPinned.activeTab = tabPacks
+	mPinned.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "tight", Method: "clone", Pin: "v1.2.3"}},
+	})
+	result, _ = mPinned.openPackTabActions()
+	rm = result.(rootModel)
+	if !containsItem(rm.dialog.listItems, actUnpin) {
+		t.Errorf("Unpin should be offered for pinned pack, got %v", rm.dialog.listItems)
+	}
+}
+
+// containsItem reports whether s appears in items. Used by action-menu tests
+// where the menu order isn't load-bearing — only presence/absence matters.
+func containsItem(items []string, s string) bool {
+	return slices.Contains(items, s)
+}
+
+// TestPinVersionDialog_PicksOpensListSelect verifies that selecting Pin to
+// version... in the action menu transitions through to a populated list-
+// select dialog of available versions, with no "latest" sentinel (that's
+// the Unpin action's job, not the picker's).
+func TestPinVersionDialog_PicksOpensListSelect(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "my-pack", Method: "clone"}},
+	})
+	m.packs.versionsCache["my-pack"] = packVersionsCacheEntry{
+		state: asyncLoaded,
+		versions: []app.PackVersion{
+			{Version: "v2.0.0"},
+			{Version: "v1.5.0"},
+		},
+	}
+
+	result, _ := m.Update(dialogResultMsg{
+		id:        dialogActionPackTab,
+		confirmed: true,
+		value:     actPinVersion,
+	})
+	rm := result.(rootModel)
+	if rm.dialog == nil || rm.dialog.id != dialogPinVersion {
+		t.Fatalf("expected dialogPinVersion, got %v", rm.dialog)
+	}
+	// No latest sentinel — the picker is for moving the pin only.
+	for _, item := range rm.dialog.listItems {
+		if item == installVersionLatestSentinel {
+			t.Errorf("Pin picker should not include the latest sentinel")
+		}
+	}
+	if len(rm.dialog.listItems) != 2 {
+		t.Errorf("expected 2 versions in pin picker, got %v", rm.dialog.listItems)
+	}
+}
+
+// TestPinVersionDialog_ConfirmTriggersUpdate verifies that confirming the
+// pin picker dispatches a pack update with the picked version. The status
+// text should reflect the in-flight pin operation so the user knows the
+// click landed.
+func TestPinVersionDialog_ConfirmTriggersUpdate(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "my-pack", Method: "clone"}},
+	})
+
+	result, cmd := m.Update(dialogResultMsg{
+		id:        dialogPinVersion,
+		confirmed: true,
+		value:     "v1.5.0",
+	})
+	rm := result.(rootModel)
+	if cmd == nil {
+		t.Fatal("expected an update command from pin confirm")
+	}
+	if !strings.Contains(rm.statusText, "pinning my-pack") {
+		t.Errorf("expected pinning status text, got %q", rm.statusText)
+	}
+	if !strings.Contains(rm.statusText, "v1.5.0") {
+		t.Errorf("expected target version in status text, got %q", rm.statusText)
+	}
+}
+
+func TestPinVersionDialog_CancelIsNoop(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.packs = newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "my-pack", Method: "clone"}},
+	})
+	priorStatus := m.statusText
+
+	result, cmd := m.Update(dialogResultMsg{
+		id:        dialogPinVersion,
+		confirmed: false,
+	})
+	rm := result.(rootModel)
+	if cmd != nil {
+		t.Fatal("expected no command when pin picker is cancelled")
+	}
+	if rm.statusText != priorStatus {
+		t.Errorf("expected status unchanged on cancel, got %q", rm.statusText)
+	}
+}
+
+// TestInstallVersionPicker_OpensWhenVersionsCached verifies that confirming
+// the install text-input dialog with a registry name (and cached versions)
+// transitions to the version picker dialog instead of jumping straight to
+// the bundled-content checklist.
+func TestInstallVersionPicker_OpensWhenVersionsCached(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	if m.packs.versionsCache == nil {
+		m.packs.versionsCache = map[string]packVersionsCacheEntry{}
+	}
+	m.packs.versionsCache["my-team-pack"] = packVersionsCacheEntry{
+		state: asyncLoaded,
+		versions: []app.PackVersion{
+			{Version: "v2.0.0"},
+			{Version: "v1.5.0"},
+		},
+	}
+
+	result, _ := m.Update(dialogResultMsg{
+		id:        dialogPackInstall,
+		confirmed: true,
+		value:     "my-team-pack",
+	})
+	rm := result.(rootModel)
+	if rm.dialog == nil {
+		t.Fatal("expected a dialog to be opened after install confirmation")
+	}
+	if rm.dialog.id != dialogInstallVersion {
+		t.Fatalf("expected dialogInstallVersion, got %q", rm.dialog.id)
+	}
+	// First item is the latest-stable sentinel; the cached versions follow.
+	if len(rm.dialog.listItems) < 3 {
+		t.Fatalf("expected sentinel + 2 versions in picker, got %v", rm.dialog.listItems)
+	}
+	if rm.dialog.listItems[0] != installVersionLatestSentinel {
+		t.Fatalf("first picker item should be the latest sentinel, got %q", rm.dialog.listItems[0])
+	}
+	if rm.packs.versionsCache == nil || rm.pendingInstallInput != "my-team-pack" {
+		t.Fatalf("expected pendingInstallInput to be set, got %q", rm.pendingInstallInput)
+	}
+}
+
+// TestInstallVersionPicker_SkippedWhenNoCache verifies that with no cached
+// version data, the install flow falls through to the bundled-content
+// checklist directly — preserving the existing default-ref install path.
+// Without this fallback, every "install immediately without browsing" use
+// case would block on a missing dialog.
+func TestInstallVersionPicker_SkippedWhenNoCache(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	// Cache is empty — no versions for "uncharted".
+
+	result, _ := m.Update(dialogResultMsg{
+		id:        dialogPackInstall,
+		confirmed: true,
+		value:     "uncharted",
+	})
+	rm := result.(rootModel)
+	if rm.dialog == nil {
+		t.Fatal("expected a dialog to be opened after install confirmation")
+	}
+	if rm.dialog.id != dialogInstallWith {
+		t.Fatalf("expected dialogInstallWith (skip picker), got %q", rm.dialog.id)
+	}
+}
+
+// TestInstallVersionPicker_LatestSentinelClearsVersion verifies that picking
+// the "latest stable" sentinel leaves pendingInstallVersion empty so the
+// downstream install runs at the registry's default ref. Picking a literal
+// version stores it for the install request.
+func TestInstallVersionPicker_LatestSentinelClearsVersion(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.pendingInstallInput = "my-pack"
+	m.pendingInstallVersion = "stale-from-prior-attempt"
+
+	result, _ := m.Update(dialogResultMsg{
+		id:        dialogInstallVersion,
+		confirmed: true,
+		value:     installVersionLatestSentinel,
+	})
+	rm := result.(rootModel)
+	if rm.pendingInstallVersion != "" {
+		t.Fatalf("latest sentinel should clear pendingInstallVersion, got %q", rm.pendingInstallVersion)
+	}
+	if rm.dialog == nil || rm.dialog.id != dialogInstallWith {
+		t.Fatalf("expected dialogInstallWith next, got %v", rm.dialog)
+	}
+}
+
+func TestInstallVersionPicker_LiteralVersionStored(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.pendingInstallInput = "my-pack"
+
+	result, _ := m.Update(dialogResultMsg{
+		id:        dialogInstallVersion,
+		confirmed: true,
+		value:     "v1.5.0",
+	})
+	rm := result.(rootModel)
+	if rm.pendingInstallVersion != "v1.5.0" {
+		t.Fatalf("expected pendingInstallVersion=v1.5.0, got %q", rm.pendingInstallVersion)
+	}
+}
+
+// TestInstallVersionPicker_CancelAborts verifies that escaping out of the
+// version picker fully aborts the install rather than silently falling
+// through to a default-ref install — the user explicitly opted into the
+// version step and changed their mind.
+func TestInstallVersionPicker_CancelAborts(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.pendingInstallInput = "my-pack"
+	m.pendingInstallVersion = "v1.5.0"
+
+	result, _ := m.Update(dialogResultMsg{
+		id:        dialogInstallVersion,
+		confirmed: false,
+	})
+	rm := result.(rootModel)
+	if rm.pendingInstallInput != "" || rm.pendingInstallVersion != "" {
+		t.Fatalf("expected pending state cleared on cancel, got input=%q version=%q",
+			rm.pendingInstallInput, rm.pendingInstallVersion)
+	}
+}
+
+// TestPackUpdatedMsg_PrefersMessageForPinnedPacks verifies that the TUI
+// surfaces the pinned-pack hint from r.Message instead of collapsing every
+// up-to-date result to "up-to-date". Without this, a user updating a pinned
+// pack via the TUI would see no indication that the pack is pinned, no hint
+// about a newer available version — they'd think nothing happened.
+func TestPackUpdatedMsg_PrefersMessageForPinnedPacks(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+
+	result, _ := m.Update(packUpdatedMsg{
+		name: "pinned-pack",
+		results: []app.PackUpdateResult{
+			{
+				Name:    "pinned-pack",
+				Status:  "up-to-date",
+				Message: "pinned at v1.2.3 (latest: v2.0.0)",
+			},
+		},
+	})
+	rm := result.(rootModel)
+	if !strings.Contains(rm.statusText, "pinned at v1.2.3") {
+		t.Fatalf("expected pin status to surface in status text, got %q", rm.statusText)
+	}
+	if !strings.Contains(rm.statusText, "latest: v2.0.0") {
+		t.Fatalf("expected latest-version hint to surface in status text, got %q", rm.statusText)
 	}
 }
 
@@ -735,14 +1503,14 @@ func TestCreatePack_ScaffoldsAndRegisters(t *testing.T) {
 		t.Fatalf("expected rules/ dir to exist: %v", err)
 	}
 
-	// Verify registered in sync-config.
-	sc, err := config.LoadSyncConfig(scPath)
+	// Verify registered in lockfile.
+	lf, err := config.LoadLockfile(config.LockfilePath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, ok := sc.InstalledPacks["test-created"]
+	meta, ok := lf.Packs["test-created"]
 	if !ok {
-		t.Fatal("expected pack to be registered in sync-config")
+		t.Fatal("expected pack to be registered in lockfile")
 	}
 	if meta.Method != config.MethodLocal {
 		t.Fatalf("expected method %q, got %q", config.MethodLocal, meta.Method)

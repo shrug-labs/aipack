@@ -8,7 +8,8 @@ What aipack puts on your machine, how to configure it, and how to manage it. For
 
 ```
 ~/.config/aipack/
-├── sync-config.yaml          # root configuration — defaults, installed packs, registry sources
+├── sync-config.yaml          # root configuration — defaults, registry sources
+├── aipack.lock                # installed pack state (machine-managed; do not edit)
 ├── profiles/                  # profile YAML files
 │   ├── default.yaml
 │   └── oncall.yaml
@@ -39,7 +40,7 @@ Directories are created with mode `0700`, files with `0600`.
 
 ## sync-config.yaml
 
-The root configuration file. Created by `aipack init`, modified by pack install/delete, profile set, and registry fetch. You can also edit it by hand.
+The root configuration file. Created by `aipack init`, modified by `profile set` and `registry fetch`. You can also edit it by hand.
 
 ```yaml
 schema_version: 1
@@ -50,29 +51,16 @@ defaults:
     - codex
   scope: global           # "project" or "global" (default: global)
 
-installed_packs:          # managed by pack install/delete/update
-  essentials:
-    origin: "https://github.com/shrug-labs/packs.git"
-    method: http-tarball
-    installed_at: "2026-03-10T08:30:00Z"
-    ref: main
-    sub_path: essentials
-    commit_hash: abc123def456
-  local-pack:
-    origin: /Users/x/src/local-pack
-    method: link
-    installed_at: "2026-03-12T10:00:00Z"
-
 registry_sources:         # managed by registry fetch
   - name: default
     url: https://github.com/shrug-labs/packs.git
-    ref: main
     path: registry.yaml
   - name: team-tools
     url: ssh://git@bitbucket.example.com:7999/TEAM/tools.git
-    ref: main
     path: ops-tools/registry.yaml
 ```
+
+Installed pack metadata used to live here under an `installed_packs` section. It now lives in `aipack.lock` (see below). Existing installs are merged into the lockfile transparently on the first pack command (or `aipack doctor`) run after upgrade — no user action required.
 
 ### defaults
 
@@ -85,22 +73,6 @@ registry_sources:         # managed by registry fetch
 
 CLI flags override these defaults. The full resolution chain is documented in the [CLI Specification](./cli-spec.md#shared-flag-resolution).
 
-### installed_packs
-
-Each entry records how a pack was installed. Keys are pack names.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `origin` | string | Absolute local path or remote URL |
-| `method` | string | `link`, `copy`, `clone`, `http-tarball`, or `archive` (legacy) |
-| `installed_at` | string | RFC 3339 timestamp |
-| `ref` | string | Git ref used at install time (remote only) |
-| `sub_path` | string | Subdirectory within the repo (remote only) |
-| `commit_hash` | string | Git HEAD SHA at install time (remote only) |
-| `content_paths` | map | Maps content types to directory paths within the clone (see [Content path remapping](./pack-format.md#94-content-path-remapping)) |
-
-Don't edit these entries by hand — use `pack install`, `pack delete`, `pack update`, and `pack rename`.
-
 ### registry_sources
 
 Each entry is a remote registry that `registry fetch` retrieves and caches.
@@ -109,10 +81,47 @@ Each entry is a remote registry that `registry fetch` retrieves and caches.
 |-------|------|-------------|
 | `name` | string | Local name for this source (auto-derived from URL and path, or `--name`) |
 | `url` | string | Git repository URL |
-| `ref` | string | Git ref (branch or tag) |
+| `ref` | string | Git ref (branch or tag). Empty = git's default branch. |
 | `path` | string | File path within the repo (default: `registry.yaml`) |
 
 Sources are added automatically by `registry fetch <url>` and deleted by `registry delete`. `registry fetch` (bare) refreshes all configured sources.
+
+When `ref` is empty (the default for `registry add` and `registry fetch` without `--ref`), the registry repo is cloned at its default branch. Repositories using `master`, `trunk`, or any other default branch work without configuration.
+
+## aipack.lock
+
+The lockfile records the resolved state of every installed pack. Created and maintained by `pack install`, `pack update`, `pack delete`, and `pack rename`. **Do not hand-edit it** — the format is machine-managed and may change between releases.
+
+```yaml
+lock_version: 1
+packs:
+  essentials:
+    origin: https://github.com/shrug-labs/packs.git
+    method: clone
+    installed_at: "2026-04-12T08:30:00Z"
+    sub_path: essentials
+    ref: v1.2.3               # semver tag or commit hash = pinned; branch name = tracking; empty = default branch
+    commit_hash: abc123def456
+  local-pack:
+    origin: /Users/x/src/local-pack
+    method: link
+    installed_at: "2026-03-12T10:00:00Z"
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `origin` | string | Absolute local path or remote URL |
+| `method` | string | `link`, `copy`, `clone`, or `local`. Legacy `archive` and `http-tarball` entries are migrated to `clone` on next update. |
+| `installed_at` | string | RFC 3339 timestamp |
+| `ref` | string | Git ref at install time (remote only). A v-prefixed semver tag (`v1.2.3`) or commit hash marks the pack as **pinned** and is preserved across `pack update`; a branch name or empty value tracks upstream. `pack install --version 1.2.3` normalizes to `ref: v1.2.3` — there is no separate `version` field, pin state is derived from this one. |
+| `sub_path` | string | Subdirectory within the repo (remote only) |
+| `commit_hash` | string | Git HEAD SHA at install time (remote only). Enables fast-path update detection via `git ls-remote`. |
+| `content_paths` | map | Maps content types to directory paths within the clone (see [Content path remapping](./pack-format.md#94-content-path-remapping)) |
+| `approved` / `declined` | list | Bundled content categories the user accepted or declined at install time |
+
+### Migration from sync-config installed_packs
+
+The first time aipack reads pack state on a config directory that still has `installed_packs` in `sync-config.yaml` and no `aipack.lock`, it migrates the entries to the lockfile and strips `installed_packs` from sync-config. The migration is idempotent and runs from `aipack doctor` and any pack command. No user action is required — existing installs continue to work.
 
 ## Installed packs
 
@@ -123,10 +132,11 @@ Packs live under `~/.config/aipack/packs/<name>/`. Four install methods produce 
 | `link` | Symlink to source directory | Yes — edits at either location hit the same files | Re-validates symlink target |
 | `copy` | Full copy from local path | No — edits are local only | Re-copies from recorded origin |
 | `clone` | Content-extracted from git clone | No — installed content is a static snapshot | Re-clones from origin, re-extracts content |
-| `http-tarball` | Downloaded from GitHub | No — edits are local only | Re-downloads tarball, shows file-level diff |
 | `local` | Pack already in packs directory | Yes — it's the source | Registered in-place, no fetch |
 
-`link` is the default for local installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for SSH remote installs; `http-tarball` is used for GitHub HTTPS URLs.
+`link` is the default for local installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for all remote installs (SSH and HTTPS).
+
+Earlier versions of aipack also offered an `http-tarball` install method for GitHub HTTPS URLs. This method has been removed — clone is faster (with the local clone cache and `--reference`), gives every install a commit hash for fast-path updates, and produces consistent version handling. Existing tarball-installed packs are transparently migrated to clone on the next `pack update`.
 
 ### Integrity tracking
 

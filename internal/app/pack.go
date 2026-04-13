@@ -56,13 +56,17 @@ type PackInstallRequest struct {
 	// Ref is a git ref (branch/tag) to checkout after cloning.
 	// When set alongside URL, bypasses ProbePackURL and clones directly.
 	Ref string
+	// Version is a semver version to install (e.g. "1.2.3"). Resolved to the
+	// remote tag's raw spelling during install. Empty means track HEAD.
+	// Mutually exclusive with Ref.
+	Version string
 
 	// Test injection points:
-	RunGitFn      func(ctx context.Context, args ...string) error
-	HTTPTarballFn func(ctx context.Context, tarballURL, destDir, subPath string, opts source.ArchiveOpts) error
-	URLOKFn       func(ctx context.Context, raw string) (bool, error)
-	NowFn         func() time.Time
-	GitHashFn     func(ctx context.Context, dir string) (string, error) // nil = source.GitHeadHash
+	RunGitFn         func(ctx context.Context, args ...string) error
+	URLOKFn          func(ctx context.Context, raw string) (bool, error)
+	NowFn            func() time.Time
+	GitHashFn        func(ctx context.Context, dir string) (string, error)       // nil = source.GitHeadHash
+	ListRemoteTagsFn func(ctx context.Context, repoURL string) ([]string, error) // nil = source.ListRemoteTags
 }
 
 // PacksDir returns the canonical pack installation directory.
@@ -98,6 +102,9 @@ func extractLocalPackToStaging(configDir, packDir string) (string, config.PackMa
 func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
 	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
+	}
+	if err := source.ValidateVersionSpecifier(req.Version); err != nil {
+		return err
 	}
 	if req.URL != "" && req.PackPath != "" {
 		return fmt.Errorf("--url and path argument are mutually exclusive")
@@ -268,14 +275,41 @@ func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
 	fmt.Fprintln(stdout, "")
 }
 
-// packInstallFromURL implements the URL-based install flow.
-// Tries git archive (selective fetch) first; falls back to git clone if the
-// remote does not support git archive --remote.
+// packInstallFromURL implements the URL-based install flow via shallow git clone.
 func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
-	// Resolve URL info: for SSH/git URLs or when SubPath/Ref is pre-set,
-	// skip the HTTP probe (ProbePackURL) and go directly to git operations.
+	// Version resolution: translate --version to a git ref.
+	if req.Version != "" && req.Ref != "" {
+		return fmt.Errorf("--version and --ref are mutually exclusive")
+	}
+	var exactSemver bool
+	// partialSemver is true when --version is a major-only or major-minor
+	// spec like "v1" or "v1.2". Resolution is deferred until after URL
+	// probing so we can call ls-remote against the canonical repo URL.
+	var partialSemver bool
+	if req.Version != "" {
+		switch source.ClassifyVersion(req.Version) {
+		case source.VersionSemver:
+			exactSemver = true
+		case source.VersionPartialSemver:
+			partialSemver = true // resolved post-probe
+		case source.VersionCommit:
+			// Canonical short-SHA form is lowercase. Git accepts mixed case
+			// for checkout, but storing uppercase in the lockfile would
+			// disagree with what `git rev-parse` and `git log` print.
+			req.Version = strings.ToLower(req.Version)
+			req.Ref = req.Version
+		case source.VersionLatest:
+			req.Version = "" // "latest" means no pin; leave ref empty
+		}
+	}
+
+	// Resolve URL info: for SSH/git URLs or when SubPath/Ref/partial version
+	// is pre-set, skip the HTTP probe (ProbePackURL) and go directly to git
+	// operations. Partial semver is treated like an explicit ref for probe
+	// purposes — the user declared git intent and the URL is assumed to be
+	// a clone-able repo, not a GitHub blob URL that needs normalization.
 	var info source.PackURLInfo
-	if req.SubPath != "" || req.Ref != "" || config.IsGitURL(req.URL, "") {
+	if req.SubPath != "" || req.Ref != "" || partialSemver || config.IsGitURL(req.URL, "") {
 		info = source.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
 	} else {
 		var err error
@@ -299,6 +333,37 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 			}
 		}
 	}
+	// Partial semver resolution: now that info.RepoURL is known, expand
+	// exact or partial semver specs to the remote tag's raw spelling. This
+	// preserves bare-tag remotes ("1.2.3") instead of forcing "v1.2.3".
+	listFn := req.ListRemoteTagsFn
+	if listFn == nil {
+		listFn = source.ListRemoteTags
+	}
+	if exactSemver {
+		resolved, err := source.ResolveExactSemver(ctx, info.RepoURL, req.Version, listFn)
+		if err != nil {
+			return fmt.Errorf("resolving version %q: %w", req.Version, err)
+		}
+		req.Ref = resolved
+		info.Ref = resolved
+		req.Version = source.StripVersionPrefix(resolved)
+	}
+	// Partial semver resolution: now that info.RepoURL is known, expand
+	// --version "v1" or "v1.2" to the highest matching stable tag. The
+	// resolved tag is stored exactly in the lockfile — partial installs
+	// pin to a single version; they do not create a channel.
+	if partialSemver {
+		resolved, err := source.ResolvePartialSemver(ctx, info.RepoURL, req.Version, listFn)
+		if err != nil {
+			return fmt.Errorf("resolving partial version %q: %w", req.Version, err)
+		}
+		fmt.Fprintf(stdout, "Resolved %s → %s\n", source.NormalizeVersion(req.Version), resolved)
+		req.Ref = resolved
+		info.Ref = resolved
+		req.Version = source.StripVersionPrefix(resolved)
+	}
+
 	packsDir := PacksDir(req.ConfigDir)
 	if err := os.MkdirAll(packsDir, 0o700); err != nil {
 		return fmt.Errorf("creating packs directory: %w", err)
@@ -310,25 +375,16 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 		oldIntegrity, _ = loadIntegrity(filepath.Join(packsDir, req.Name))
 	}
 
-	// Select fetch strategy based on the repository URL.
-	strategy := source.SelectFetchStrategy(info.RepoURL)
-	// Existing tests inject RunGitFn to control clone behavior. Without this
-	// guard they'd be routed through HTTP tarball for GitHub URLs and call the
-	// real network. RunGitFn without HTTPTarballFn means "test wants git path".
-	if strategy == source.StrategyHTTPTarball && req.RunGitFn != nil && req.HTTPTarballFn == nil {
-		strategy = source.StrategyShallowClone
-	}
-	var result packInstallResult
-	var err error
-	switch strategy {
-	case source.StrategyHTTPTarball:
-		result, err = packFetchHTTPTarball(ctx, req, info, packsDir, stdout)
-	default:
-		result, err = packShallowClone(ctx, req, info, packsDir, stdout)
-	}
+	// All remote installs use shallow clone (commit hash + version pinning).
+	result, err := packShallowClone(ctx, req, info, packsDir, stdout)
 	if err != nil {
 		return err
 	}
+
+	// Verify pack.json version against the requested tag, if both are present.
+	// This educates pack authors when their pack.json version drifts from
+	// their git tags. Non-blocking — install proceeds either way.
+	warnPackJSONVersionMismatch(stdout, req.Version, result.manifest.Version)
 
 	now := time.Now()
 	if req.NowFn != nil {
@@ -356,7 +412,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	name := result.name
 	approvedList, declinedList := buildPrefsLists(effectiveWith)
 	if err := packRecordOrigin(req.ConfigDir, name, config.InstalledPackMeta{
-		Origin: req.URL, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
+		Origin: info.RepoURL, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
 		Ref: info.Ref, SubPath: info.SubPath, CommitHash: result.commitHash,
 		ContentPaths: req.ContentPaths,
 		Approved:     approvedList, Declined: declinedList,
@@ -395,54 +451,6 @@ type packInstallResult struct {
 	method     string
 	manifest   config.PackManifest
 	commitHash string
-}
-
-// packFetchHTTPTarball installs a pack by downloading a GitHub HTTP tarball.
-func packFetchHTTPTarball(ctx context.Context, req PackInstallRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
-	tarballURL, err := source.GitHubTarballURL(info.RepoURL, info.Ref)
-	if err != nil {
-		return packInstallResult{}, fmt.Errorf("building tarball URL: %w", err)
-	}
-
-	tmpDir, err := makePackTempDir(req.ConfigDir, "http-tarball-*")
-	if err != nil {
-		return packInstallResult{}, fmt.Errorf("creating temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	fmt.Fprintf(stdout, "Downloading %s...\n", tarballURL)
-
-	fetchFn := req.HTTPTarballFn
-	if fetchFn == nil {
-		fetchFn = source.FetchHTTPTarball
-	}
-	if err := fetchFn(ctx, tarballURL, tmpDir, info.SubPath, source.ArchiveOpts{}); err != nil {
-		return packInstallResult{}, fmt.Errorf("fetching tarball from %s: %w", tarballURL, err)
-	}
-
-	// Extract content into clean pack layout.
-	staging, manifest, err := extractPackContent(
-		packStagingDir(req.ConfigDir), tmpDir, req.ContentPaths, req.Name, "",
-	)
-	if err != nil {
-		return packInstallResult{}, err
-	}
-	defer os.RemoveAll(staging)
-
-	name, err := resolvePackName(req.Name, manifest.Name)
-	if err != nil {
-		return packInstallResult{}, err
-	}
-
-	destDir := filepath.Join(packsDir, name)
-	if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
-		return packInstallResult{}, fmt.Errorf("installing pack to %s: %w", destDir, err)
-	}
-	fmt.Fprintf(stdout, "Installed: %s -> %s\n", req.URL, destDir)
-
-	// commitHash is not available from HTTP tarballs (no .git dir). Change
-	// detection for this method uses the integrity manifest instead.
-	return packInstallResult{name: name, destDir: destDir, method: config.MethodHTTPTarball, manifest: manifest}, nil
 }
 
 // packShallowClone installs a pack via shallow git clone. The clone is
@@ -524,6 +532,51 @@ func listClonePacks(dir string) string {
 		}
 	}
 	return strings.Join(packs, ", ")
+}
+
+// isPinned reports whether a lockfile entry represents a pinned install.
+// A pin is a ref that resolves to a fixed point — a semver tag (with or
+// without a v-prefix) or a commit hash. Branch names and an
+// empty ref track upstream.
+func isPinned(meta config.InstalledPackMeta) bool {
+	return meta.Ref != "" && (source.IsSemverTag(meta.Ref) || source.IsCommitHash(meta.Ref))
+}
+
+// isLikelyTarballURL reports whether url has a shape that git can't clone.
+// Used by the legacy http-tarball/archive migration path to short-circuit
+// to a helpful error before attempting `git clone <tarball-url>`.
+func isLikelyTarballURL(url string) bool {
+	s := strings.ToLower(url)
+	if strings.HasSuffix(s, ".tar.gz") || strings.HasSuffix(s, ".tgz") ||
+		strings.HasSuffix(s, ".tar.bz2") || strings.HasSuffix(s, ".zip") {
+		return true
+	}
+	// GitHub /archive/ paths produce tarball downloads, never git clone.
+	return strings.Contains(s, "/archive/")
+}
+
+// pinLabel returns the display label for a pinned ref: the semver tag
+// as-is, or the short commit hash.
+func pinLabel(ref string) string {
+	if source.IsSemverTag(ref) {
+		return ref
+	}
+	return util.ShortHash(ref)
+}
+
+// warnPackJSONVersionMismatch prints a non-blocking warning when a pack's
+// manifest version has drifted from its git tags, so authors notice the
+// mismatch. No-op for commit hashes, "latest", or empty versions.
+func warnPackJSONVersionMismatch(stdout io.Writer, requestedVersion, manifestVersion string) {
+	if !source.IsSemverTag(requestedVersion) || manifestVersion == "" {
+		return
+	}
+	expected := source.StripVersionPrefix(source.NormalizeVersion(requestedVersion))
+	actual := source.StripVersionPrefix(source.NormalizeVersion(manifestVersion))
+	if !source.IsSemverTag(actual) || actual == expected {
+		return
+	}
+	fmt.Fprintf(stdout, "Warning: pack.json version (%s) does not match installed tag version (%s)\n", actual, expected)
 }
 
 // packProfileName returns the trimmed profile name, defaulting to "default".

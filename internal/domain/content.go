@@ -106,6 +106,11 @@ type Skill struct {
 	Body        []byte           // markdown body (after frontmatter)
 	DirPath     string           // absolute path to skill directory (for copy)
 	SourcePack  string
+	// Assets is the sorted list of files bundled in the skill directory
+	// other than SKILL.md, as paths relative to DirPath. Populated at
+	// parse time by walking DirPath; used by drift detection to surface
+	// what a skill ships.
+	Assets []string
 }
 
 // PromptFrontmatter is the parsed prompt frontmatter schema.
@@ -153,6 +158,17 @@ type MCPServer struct {
 	SourcePack    string   `json:"source_pack,omitempty"`
 	PackRoot      string   `json:"-"` // absolute path to source pack dir; resolves {pack:root}
 
+	// DefaultAllowedTools is the pack author's declared default allowed
+	// tool list from the pack manifest (MCPDefaults). Distinct from
+	// AllowedTools, which is the effective permission set after profile
+	// resolution.
+	DefaultAllowedTools []string `json:"-"`
+	// RequiredRefs is the set of {params.*} and {env:*} references in the
+	// raw (pre-expansion) Command/Env/URL/Headers strings. Both must be
+	// satisfied at render time for the server to be emitted. Populated by
+	// the resolver, read by drift detection.
+	RequiredRefs []RequiredRef `json:"-"`
+
 	// Doc-only metadata from inventory files. Not rendered to harness configs.
 	// Links: URLs to source repos, setup docs, or reference pages for this server.
 	// Auth: one-line summary of the authentication method.
@@ -172,6 +188,32 @@ type CapturedMCP struct {
 // IsStdio reports whether the server uses stdio transport (including empty, which defaults to stdio).
 func (s MCPServer) IsStdio() bool {
 	return s.Transport == "" || s.Transport == TransportStdio
+}
+
+// RefKind values for RequiredRef.Kind.
+const (
+	RefKindParam = "param"
+	RefKindEnv   = "env"
+)
+
+// RequiredRef is a reference an MCP server makes to either a profile
+// parameter ({params.X}) or an environment variable ({env:X}). Both must
+// resolve at render time for the server to be emitted.
+type RequiredRef struct {
+	Kind string `yaml:"kind" json:"kind"` // RefKindParam or RefKindEnv
+	Name string `yaml:"name" json:"name"`
+}
+
+// Display returns the canonical reference syntax a user sees in their
+// MCP server JSON ({params.X} or {env:X}).
+func (r RequiredRef) Display() string {
+	switch r.Kind {
+	case RefKindParam:
+		return "{params." + r.Name + "}"
+	case RefKindEnv:
+		return "{env:" + r.Name + "}"
+	}
+	return r.Name
 }
 
 // Warning is a non-fatal validation issue found during content parsing.

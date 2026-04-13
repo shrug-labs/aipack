@@ -261,7 +261,8 @@ func resolveWatchDirs(profileFlag, profilePathFlag, configDirFlag string) ([]str
 		return nil, err
 	}
 
-	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, syncCfg.Defaults.CollisionStrategy)
+	prevInventories, _ := loadLockfileInventories(configDir)
+	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, syncCfg.Defaults.CollisionStrategy, prevInventories)
 	if err != nil {
 		return resolveWatchDirsFallback(profileCfg, configDir), nil
 	}

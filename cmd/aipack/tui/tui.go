@@ -88,7 +88,9 @@ const (
 	dialogDeleteSaveFile    = "delete-save-file"
 	dialogActionTree        = "action-tree"
 	dialogInstallWith       = "install-with"
+	dialogInstallVersion    = "install-version"
 	dialogUpdateWith        = "update-with"
+	dialogPinVersion        = "pin-version"
 	dialogPackAddToProfile  = "pack-add-to-profile"
 )
 
@@ -138,6 +140,7 @@ type rootModel struct {
 
 	// Pack install/update --with chain state.
 	pendingInstallInput    string // stashed pack name/URL from text input for install
+	pendingInstallVersion  string // stashed semver tag picked by the version dialog ("" = default ref)
 	pendingUpdatePackName  string // stashed pack name for update (empty = all)
 	pendingUpdateAll       bool   // true when update-all is in progress
 	pendingCreateAddToProf bool   // true when create-pack should add to current profile
@@ -587,6 +590,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusText = dimStyle.Render(fmt.Sprintf("installed %s", msg.name))
 			m.pendingPackCursorHint = msg.name
+			delete(m.packs.driftSet, msg.name)
 		}
 		// Reload both packs and profiles — installing a pack may bundle new profiles.
 		return m, tea.Batch(
@@ -617,7 +621,21 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			seen := map[domain.BundledCategory]bool{}
 			var items []checkItem
 			for i, r := range msg.results {
-				summaries[i] = fmt.Sprintf("%s: %s", r.Name, r.Status)
+				// Prefer r.Message — it carries pin status ("pinned at
+				// v1.2.3 (latest: v2.0.0)") for skipped pinned packs and
+				// short hashes for normal updates. Falls back to the
+				// status enum when the underlying call provides no detail.
+				detail := r.Message
+				if detail == "" {
+					detail = string(r.Status)
+				}
+				summaries[i] = fmt.Sprintf("%s: %s", r.Name, detail)
+				// Successful update or up-to-date confirms the local commit
+				// matches the remote — clear any stale drift marker so the ↑
+				// indicator goes away without waiting for a TUI restart.
+				if r.Status == app.StatusUpdated || r.Status == app.StatusUpToDate {
+					delete(m.packs.driftSet, r.Name)
+				}
 				for _, cat := range r.BundledCandidates.Categories() {
 					if !seen[cat] {
 						seen[cat] = true
@@ -690,7 +708,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, cmd
-	case packsLoadedMsg, packSizesMsg, registryLoadedMsg:
+	case packsLoadedMsg, packSizesMsg, registryLoadedMsg, packDriftLoadedMsg, packVersionsLoadedMsg:
 		var cmd tea.Cmd
 		m.packs, cmd = m.packs.Update(msg)
 		if m.packs.loadErr != "" {
@@ -861,7 +879,8 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 		return m.handleSyncDialogResult(msg)
 	// Pack roster mutations (profile packs panel + pack tab installs).
 	case dialogAddPack, dialogRemovePack, dialogPackInstall, dialogPackRemove,
-		dialogInstallWith, dialogUpdateWith, dialogPackAddToProfile:
+		dialogInstallWith, dialogInstallVersion, dialogUpdateWith, dialogPinVersion,
+		dialogPackAddToProfile:
 		return m.handlePackDialogResult(msg)
 	// Action menu results.
 	case dialogActionProfile, dialogActionPack, dialogActionPackTab, dialogActionSync:
@@ -1037,23 +1056,61 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 			// Local path installs get BundledAll automatically; skip the checklist.
 			if !isRemoteInstallInput(msg.value) {
 				m.statusText = dimStyle.Render("installing pack...")
-				return m, installPack(m.ctx, m.cfg.ConfigDir, msg.value, nil)
+				return m, installPack(m.ctx, m.cfg.ConfigDir, msg.value, "", nil)
 			}
-			// Remote/registry install: show bundled content checklist.
 			m.pendingInstallInput = msg.value
-			d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems())
+			m.pendingInstallVersion = ""
+			// Registry-name installs with cached version data get a version
+			// picker step before the bundled-content checklist. URL installs,
+			// raw-name installs without cached versions, and packs with no
+			// semver tags fall through directly to the checklist — the
+			// existing default-ref behavior preserves muscle memory and
+			// keeps the picker from feeling like an obstacle when discovery
+			// hasn't happened.
+			if d, opened := m.maybeOpenInstallVersionDialog(msg.value); opened {
+				m.dialog = &d
+				return m, nil
+			}
+			d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems()).
+				withConfirmRow("install...")
 			m.dialog = &d
 			return m, nil
 		}
+	case dialogInstallVersion:
+		// Result from the version picker. value is the literal version
+		// string ("v1.2.3") or the "latest stable" sentinel; the sentinel
+		// maps to an empty Version on the install request, which makes the
+		// install path use the registry's default ref. Cancellation aborts
+		// the install rather than installing at default — the user clearly
+		// wanted a deliberate choice and changed their mind.
+		if !msg.confirmed {
+			m.pendingInstallInput = ""
+			m.pendingInstallVersion = ""
+			return m, nil
+		}
+		// Always assign — the sentinel maps to empty (default ref). Without
+		// the unconditional clear, a stale value from a prior aborted
+		// attempt could leak into the install request.
+		if msg.value == installVersionLatestSentinel {
+			m.pendingInstallVersion = ""
+		} else {
+			m.pendingInstallVersion = msg.value
+		}
+		d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems()).
+			withConfirmRow("install...")
+		m.dialog = &d
+		return m, nil
 	case dialogInstallWith:
 		input := m.pendingInstallInput
+		version := m.pendingInstallVersion
 		m.pendingInstallInput = ""
+		m.pendingInstallVersion = ""
 		var with domain.BundledSet
 		if msg.confirmed {
 			with = parseBundledChecklist(msg.values)
 		}
 		m.statusText = dimStyle.Render("installing pack...")
-		return m, installPack(m.ctx, m.cfg.ConfigDir, input, with)
+		return m, installPack(m.ctx, m.cfg.ConfigDir, input, version, with)
 	case dialogPackRemove:
 		if msg.confirmed {
 			if pi := m.packs.currentItem(); pi != nil {
@@ -1075,7 +1132,21 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 		} else {
 			m.statusText = dimStyle.Render(fmt.Sprintf("updating %s...", name))
 		}
-		return m, updatePack(m.ctx, m.cfg.ConfigDir, name, all, with)
+		return m, updatePack(m.ctx, m.cfg.ConfigDir, name, all, "", with)
+	case dialogPinVersion:
+		// Pin move: thread the picked version straight to PackUpdate. No
+		// bundled-content step — the user already approved bundled content
+		// at install time and a pin move doesn't change those approvals.
+		// Cancellation is a no-op (the existing pin stays in place).
+		if !msg.confirmed || msg.value == "" {
+			return m, nil
+		}
+		pi := m.packs.currentItem()
+		if pi == nil {
+			return m, nil
+		}
+		m.statusText = dimStyle.Render(fmt.Sprintf("pinning %s to %s...", pi.entry.Name, msg.value))
+		return m, updatePack(m.ctx, m.cfg.ConfigDir, pi.entry.Name, false, msg.value, nil)
 	case dialogPackAddToProfile:
 		if msg.confirmed && msg.value != "" {
 			pi := m.packs.currentItem()
@@ -1224,6 +1295,20 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 				d := newChecklistDialog(dialogUpdateWith, "Include bundled content:", bundledCheckItems())
 				m.dialog = &d
 				return m, nil
+			}
+		case actPinVersion:
+			if pi := m.packs.currentItem(); pi != nil {
+				if d, opened := m.openPinVersionDialog(pi.entry.Name); opened {
+					m.dialog = &d
+					return m, nil
+				}
+				m.statusText = dimStyle.Render("no versions available to pin")
+				return m, nil
+			}
+		case actUnpin:
+			if pi := m.packs.currentItem(); pi != nil {
+				m.statusText = dimStyle.Render(fmt.Sprintf("unpinning %s...", pi.entry.Name))
+				return m, updatePack(m.ctx, m.cfg.ConfigDir, pi.entry.Name, false, "latest", nil)
 			}
 		case actAddToProfile:
 			if pi := m.packs.currentItem(); pi != nil {
@@ -1661,6 +1746,8 @@ const (
 	actUpdate       = "Update"
 	actAddToProfile = "Add to profile"
 	actUpdateAll    = "Update all"
+	actPinVersion   = "Pin to version..."
+	actUnpin        = "Unpin"
 	// Save tab actions.
 	actCreatePack         = "Create pack"
 	addPackCreateSentinel = "Create new pack..."
@@ -1820,6 +1907,8 @@ func (m rootModel) openPackTabActions() (tea.Model, tea.Cmd) {
 	var actions []string
 	li := m.packs.currentListItem()
 	installed := li != nil && li.installed
+	item := m.packs.currentItem()
+	clonePack := installed && item != nil && item.entry.Method == config.MethodClone
 
 	if installed {
 		actions = append(actions, actUpdate)
@@ -1828,6 +1917,20 @@ func (m rootModel) openPackTabActions() (tea.Model, tea.Cmd) {
 	}
 	if len(m.packs.items) > 0 {
 		actions = append(actions, actUpdateAll)
+	}
+	// Pin / Unpin entries surface the v0.21 pin model in the action menu.
+	// Pin is offered when versions are loaded and at least one semver tag
+	// exists; without that data the picker would be empty. Unpin is only
+	// offered for packs that are actually pinned — otherwise it would be
+	// a no-op that confuses the user about what state they're in.
+	if clonePack {
+		if cached, ok := m.packs.versionsCacheEntry(li.name); ok &&
+			cached.state == asyncLoaded && len(cached.versions) > 0 {
+			actions = append(actions, actPinVersion)
+		}
+		if item.entry.PinLabel() != "" {
+			actions = append(actions, actUnpin)
+		}
 	}
 	if installed {
 		actions = append(actions, actAddToProfile)
@@ -2066,12 +2169,72 @@ func scheduleStatusClear(id int) tea.Cmd {
 // isRemoteInstallInput returns true if the input looks like a URL or registry name
 // (as opposed to a local path). Mirrors the detection logic in installPack.
 func isRemoteInstallInput(input string) bool {
-	if strings.Contains(input, "://") ||
-		strings.HasPrefix(input, "github.com") ||
-		strings.HasPrefix(input, "bitbucket.org") {
+	if isURLInstallInput(input) {
 		return true
 	}
 	return isRegistryName(input)
+}
+
+// isURLInstallInput returns true when the input is unambiguously a remote git
+// URL — used to skip the version picker for URL installs (the user is
+// expected to provide --ref via syntax we don't surface in the TUI yet).
+func isURLInstallInput(input string) bool {
+	return strings.Contains(input, "://") ||
+		strings.HasPrefix(input, "github.com") ||
+		strings.HasPrefix(input, "bitbucket.org") ||
+		strings.HasPrefix(input, "git@")
+}
+
+// installVersionLatestSentinel is the synthetic list-select item that maps to
+// "install at the registry's default ref" — i.e., no version pin. Distinct
+// from a literal "v0.0.0" tag so the picker can distinguish "user wants
+// latest stable, stay unpinned" from "user picked the v0.0.0 tag specifically".
+const installVersionLatestSentinel = "latest stable (default)"
+
+// openPinVersionDialog returns a version picker dialog for moving the pin
+// on an already-installed clone pack. Skips the "latest stable" sentinel
+// because pinning to "latest" is the responsibility of the Unpin action,
+// not the picker (the two intents are different even though they share
+// underlying machinery). Returns (zero, false) when there's nothing to
+// pick from — caller should surface a status text in that case.
+func (m *rootModel) openPinVersionDialog(name string) (dialogModel, bool) {
+	cached, ok := m.packs.versionsCacheEntry(name)
+	if !ok || cached.state != asyncLoaded || len(cached.versions) == 0 {
+		return dialogModel{}, false
+	}
+	items := make([]string, len(cached.versions))
+	for i, v := range cached.versions {
+		items[i] = v.Version
+	}
+	d := newListSelectDialog(dialogPinVersion, "Pin "+name+" to:", items)
+	return d, true
+}
+
+// maybeOpenInstallVersionDialog returns a version picker dialog when the
+// install input is a registry name AND the versions cache for that name has
+// at least one semver tag loaded. Returns (zero, false) when the picker
+// should be skipped — URL installs, raw paths, packs with no cached version
+// data, packs with no semver tags. Skipping is intentional: the picker is
+// a discovery affordance, not a hard gate, and the existing default-ref
+// install path remains the fallback.
+func (m *rootModel) maybeOpenInstallVersionDialog(input string) (dialogModel, bool) {
+	if isURLInstallInput(input) {
+		return dialogModel{}, false
+	}
+	if !isRegistryName(input) {
+		return dialogModel{}, false
+	}
+	cached, ok := m.packs.versionsCacheEntry(input)
+	if !ok || cached.state != asyncLoaded || len(cached.versions) == 0 {
+		return dialogModel{}, false
+	}
+	items := make([]string, 0, len(cached.versions)+1)
+	items = append(items, installVersionLatestSentinel)
+	for _, v := range cached.versions {
+		items = append(items, v.Version)
+	}
+	d := newListSelectDialog(dialogInstallVersion, "Pick a version:", items)
+	return d, true
 }
 
 // bundledCheckItems returns the standard checklist items for bundled content selection.

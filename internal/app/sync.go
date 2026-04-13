@@ -29,6 +29,11 @@ type ResolveRequest struct {
 	SyncCfg     config.SyncConfig
 	ProjectDir  string // working directory — caller must provide
 	Home        string // $HOME — caller must provide
+	// PrevInventories carries per-pack inventories loaded from the
+	// lockfile so the resolver can surface drifted-out refs as
+	// BrokenRefs instead of hard errors. Nil preserves the pre-drift
+	// behavior (every unknown ref errors).
+	PrevInventories map[string]domain.PackInventory
 }
 
 // SyncContext holds the resolved profile and targeting information.
@@ -40,7 +45,7 @@ type SyncContext struct {
 // ResolveProfile resolves a profile config into a fully-typed profile with
 // targeting information (scope, harnesses, project dir) from sync-config defaults.
 func ResolveProfile(eng *engine.Engine, req ResolveRequest) (SyncContext, []domain.Warning, error) {
-	profile, warnings, err := eng.Resolve(req.ProfileCfg, req.ProfilePath, req.ConfigDir, req.SyncCfg.Defaults.CollisionStrategy)
+	profile, warnings, err := eng.Resolve(req.ProfileCfg, req.ProfilePath, req.ConfigDir, req.SyncCfg.Defaults.CollisionStrategy, req.PrevInventories)
 	if err != nil {
 		return SyncContext{}, warnings, err
 	}
@@ -93,14 +98,42 @@ func ResolveActiveProfile(eng *engine.Engine, configDir string) (SyncContext, []
 	if err != nil {
 		return SyncContext{}, nil, err
 	}
+	prevInventories, _ := loadLockfileInventories(configDir)
 	return ResolveProfile(eng, ResolveRequest{
-		ConfigDir:   configDir,
-		ProfilePath: profilePath,
-		ProfileCfg:  profileCfg,
-		SyncCfg:     syncCfg,
-		ProjectDir:  cwd,
-		Home:        home,
+		ConfigDir:       configDir,
+		ProfilePath:     profilePath,
+		ProfileCfg:      profileCfg,
+		SyncCfg:         syncCfg,
+		ProjectDir:      cwd,
+		Home:            home,
+		PrevInventories: prevInventories,
 	})
+}
+
+// loadLockfileInventories returns per-pack inventories from the lockfile so
+// profile resolution can distinguish drifted-out refs from typos. Returns nil
+// on any error to preserve pre-drift behavior.
+func loadLockfileInventories(configDir string) (map[string]domain.PackInventory, error) {
+	if configDir == "" {
+		return nil, nil
+	}
+	lf, err := config.EnsureLockfileMigrated(configDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(lf.Packs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]domain.PackInventory, len(lf.Packs))
+	for name, meta := range lf.Packs {
+		if meta.Resolved != nil {
+			out[name] = *meta.Resolved
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // ResolveTargetSpec builds a TargetSpec from sync-config defaults without
@@ -173,6 +206,31 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 	if req.Scope == domain.ScopeGlobal {
 		baseDir = req.Home
 	}
+
+	// Build new pack inventories and diff against the previous lockfile
+	// state. Printed before the harness loop so the user sees drift in
+	// both dry-run and real-sync modes. The writeback happens after a
+	// successful apply further down (dry-run does not write).
+	now := time.Now
+	if req.NowFn != nil {
+		now = req.NowFn
+	}
+	newInventories, invErr := engine.BuildInventories(eng, req.ConfigDir, profile, now())
+	if invErr != nil {
+		warnings = append(warnings, warningf("inventory", "building pack inventories failed: %v", invErr))
+		newInventories = nil
+	}
+	// Stamp each new inventory with the ref currently recorded in the
+	// lockfile so the next sync can report the version transition.
+	if lf, lfErr := config.LoadLockfile(config.LockfilePath(req.ConfigDir)); lfErr == nil {
+		for name, inv := range newInventories {
+			if meta, ok := lf.Packs[name]; ok {
+				inv.CapturedAtRef = meta.Ref
+				newInventories[name] = inv
+			}
+		}
+	}
+	printDrift(stdout, req.ConfigDir, profile, newInventories)
 
 	if !req.DryRun {
 		// Migrate legacy ledgers (combined-harness or project-local) on first run.
@@ -276,7 +334,71 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 	regWarnings := processEmbeddedRegistries(profile, req.ConfigDir, stderr)
 	warnings = append(warnings, regWarnings...)
 
+	// Writeback: record the new pack inventories into the lockfile so the
+	// next sync has a fresh baseline for drift detection. Non-fatal on
+	// failure — we've already applied the plan successfully.
+	if invErr := writebackInventories(req.ConfigDir, newInventories); invErr != nil {
+		warnings = append(warnings, warningf("inventory", "lockfile inventory writeback failed: %v", invErr))
+	}
+
 	return SyncResult{Plan: aggregatePlan}, warnings, nil
+}
+
+// printDrift compares the new per-pack inventories against the previous
+// state in the lockfile and renders a drift report for each pack that
+// changed or has broken profile references. Non-fatal on any error.
+func printDrift(out io.Writer, configDir string, profile domain.Profile, newInventories map[string]domain.PackInventory) {
+	if out == nil {
+		return
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		return
+	}
+	brokenByPack := make(map[string][]domain.BrokenRef, len(profile.BrokenRefs))
+	for _, br := range profile.BrokenRefs {
+		brokenByPack[br.PackName] = append(brokenByPack[br.PackName], br)
+	}
+	packOrder := make([]string, 0, len(newInventories))
+	for _, pk := range profile.Packs {
+		packOrder = append(packOrder, pk.Name)
+	}
+	for _, name := range packOrder {
+		newInv, ok := newInventories[name]
+		if !ok {
+			continue
+		}
+		meta, hasMeta := lf.Packs[name]
+		if !hasMeta || meta.Resolved == nil {
+			continue // first sync for this pack — no baseline to diff against
+		}
+		diff := engine.DiffInventory(name, *meta.Resolved, newInv)
+		oldRef := meta.Resolved.CapturedAtRef
+		engine.FormatDriftReport(out, diff, brokenByPack[name], oldRef, meta.Ref)
+	}
+}
+
+// writebackInventories records new per-pack inventories into the lockfile.
+// Runs through mutateLockfile so the save is atomic and race-free with
+// other lockfile writes in the same process.
+func writebackInventories(configDir string, newInventories map[string]domain.PackInventory) error {
+	if len(newInventories) == 0 {
+		return nil
+	}
+	return mutateLockfile(configDir, func(lf *config.Lockfile) error {
+		for name, inv := range newInventories {
+			meta, ok := lf.Packs[name]
+			if !ok {
+				// Pack not tracked in lockfile yet (local or not-yet-installed);
+				// skip rather than creating an orphan entry.
+				continue
+			}
+			invCopy := inv
+			meta.Resolved = &invCopy
+			lf.Packs[name] = meta
+		}
+		return nil
+	})
 }
 
 func mergePlans(dst *domain.Plan, src domain.Plan) {

@@ -13,22 +13,24 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
 type PackCmd struct {
-	Create   PackCreateCmd  `cmd:"" help:"Scaffold a new pack directory with pack.json manifest"`
-	Install  PackInstallCmd `cmd:"" help:"Install a pack from a local directory path or remote URL"`
-	Delete   PackDeleteCmd  `cmd:"" help:"Delete an installed pack from the packs directory"`
-	Update   PackUpdateCmd  `cmd:"" help:"Update installed pack(s) to latest version from their origin"`
-	Rename   PackRenameCmd  `cmd:"" help:"Rename an installed pack across all config"`
-	Add      PackAddCmd     `cmd:"" help:"Add an installed pack to a profile"`
-	Remove   PackRemoveCmd  `cmd:"" help:"Remove a pack from a profile"`
-	Enable   PackEnableCmd  `cmd:"" help:"Enable a pack in a profile"`
-	Disable  PackDisableCmd `cmd:"" help:"Disable a pack in a profile without removing it"`
-	List     PackListCmd    `cmd:"" help:"List all installed packs with their install method and origin"`
-	Show     PackShowCmd    `cmd:"" help:"Show detailed metadata and content inventory for an installed pack"`
-	Validate ValidateCmd    `cmd:"" help:"Validate a pack source tree"`
+	Create   PackCreateCmd   `cmd:"" help:"Scaffold a new pack directory with pack.json manifest"`
+	Install  PackInstallCmd  `cmd:"" help:"Install a pack from a local directory path or remote URL"`
+	Delete   PackDeleteCmd   `cmd:"" help:"Delete an installed pack from the packs directory"`
+	Update   PackUpdateCmd   `cmd:"" help:"Update installed pack(s) to latest version from their origin"`
+	Rename   PackRenameCmd   `cmd:"" help:"Rename an installed pack across all config"`
+	Add      PackAddCmd      `cmd:"" help:"Add an installed pack to a profile"`
+	Remove   PackRemoveCmd   `cmd:"" help:"Remove a pack from a profile"`
+	Enable   PackEnableCmd   `cmd:"" help:"Enable a pack in a profile"`
+	Disable  PackDisableCmd  `cmd:"" help:"Disable a pack in a profile without removing it"`
+	List     PackListCmd     `cmd:"" help:"List all installed packs with their install method and origin"`
+	Show     PackShowCmd     `cmd:"" help:"Show detailed metadata and content inventory for an installed pack"`
+	Versions PackVersionsCmd `cmd:"" help:"List available semver versions for a pack from its remote origin"`
+	Validate ValidateCmd     `cmd:"" help:"Validate a pack source tree"`
 }
 
 func (c *PackCmd) Help() string {
@@ -174,9 +176,10 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack install ---
 
 type PackInstallCmd struct {
-	Path      string   `arg:"" optional:"" help:"Local directory path or registry pack name"`
+	Path      string   `arg:"" optional:"" help:"Local directory path, registry pack name, or name@version"`
 	URL       string   `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
 	Ref       string   `help:"Git ref (branch/tag) to fetch" name:"ref"`
+	Version   string   `help:"Install a specific semver version (e.g. 1.2.3) or partial (v1, v1.2)" name:"version"`
 	SubPath   string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
 	Name      string   `help:"Override the pack name from pack.json" name:"name"`
 	Registry  string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
@@ -194,29 +197,31 @@ type PackInstallCmd struct {
 }
 
 func (c *PackInstallCmd) Help() string {
-	return fmt.Sprintf(`Installs a pack into %s. Local directory packs are
-symlinked by default; use --copy to make a full copy instead. Remote packs
-are fetched via git archive (selective fetch of declared files only) with
-automatic fallback to shallow clone when the remote doesn't support archive.
+	return fmt.Sprintf(`Installs a pack into %s. Bare 'pack install' (no
+arguments) reconciles the active profile — any packs referenced by the
+profile that aren't already installed are fetched via the registry. Pass a
+path, URL, or registry name to target a specific pack instead.
 
-If the argument is not a local directory path and not a URL, it is treated as
-a registry pack name. The registry is consulted to resolve the name to a
-repository URL (and optional subdirectory path), then the pack is fetched.
+Local directory packs are symlinked by default; use --copy to make a full
+copy instead. Remote packs are fetched via shallow git clone. Both HTTPS and
+SSH URLs are supported.
 
-With -m/--missing, installs all missing packs from the active profile by
-looking them up in the registry. Useful after 'profile set' to install
-dependency packs declared in the profile.
+If the positional argument is not a local directory path and not a URL, it
+is treated as a registry pack name. The registry is consulted to resolve the
+name to a repository URL (and optional subdirectory path), then the pack is
+fetched.
 
-Both HTTPS and SSH URLs are supported. SSH URLs work with git archive on
-servers that support it (e.g. Bitbucket Server).
+-m/--missing is kept as an explicit alias for the bare form — useful in
+scripts where the intent is worth stating even when the default matches.
 
 By default, the pack is installed to disk but not added to any profile.
 Use --add to also add it to the active profile (or --profile to target
 a specific one). Use 'aipack pack add <name>' to add it later.
 
 Examples:
-  # Install all missing packs from the active profile
-  aipack pack install -m
+  # Reconcile the active profile — install any missing packs (the default)
+  aipack pack install
+  aipack pack install -m                     # explicit equivalent
 
   # Install a local pack via symlink
   aipack pack install ./my-pack
@@ -242,6 +247,14 @@ Examples:
   # Install a pack by registry name
   aipack pack install my-team-pack
 
+  # Install a specific version
+  aipack pack install my-team-pack@1.2.3
+  aipack pack install --url https://github.com/org/repo --version 1.2.3
+
+  # Install the latest stable v1.x.x (resolves to exact tag, pins to that)
+  aipack pack install my-team-pack@v1
+  aipack pack install my-team-pack --version v1.2
+
 See also: pack delete, pack list, pack update, registry list`,
 		configPathDisplay("packs", "<name>"),
 	)
@@ -251,6 +264,14 @@ func (c *PackInstallCmd) Validate() error {
 	hasPath := c.Path != ""
 	hasURL := c.URL != ""
 	hasContentFlags := c.Rules != "" || c.Skills != "" || c.Agents != "" || c.Workflows != "" || c.Prompts != ""
+
+	// Bare `pack install` with no target implies profile reconciliation —
+	// the same as passing -m/--missing. Setting Missing here lets the rest
+	// of the checks treat implicit-missing and explicit-missing identically.
+	if !hasPath && !hasURL && !c.Missing && !hasContentFlags && c.Version == "" && c.Ref == "" {
+		c.Missing = true
+	}
+
 	if hasURL && hasPath {
 		return fmt.Errorf("--url and path argument are mutually exclusive")
 	}
@@ -261,16 +282,22 @@ func (c *PackInstallCmd) Validate() error {
 		return fmt.Errorf("-m/--missing cannot be combined with a path or --url")
 	}
 	if c.Missing && len(c.With) > 0 {
-		return fmt.Errorf("-m/--missing cannot be combined with --with")
+		return fmt.Errorf("profile reconciliation (bare `pack install` or -m/--missing) cannot be combined with --with; target a specific pack to use --with")
 	}
-	if !hasPath && !hasURL && !c.Missing {
-		return fmt.Errorf("provide a pack path, --url, or -m to install missing packs from the active profile")
+	if c.Missing && c.Version != "" {
+		return fmt.Errorf("profile reconciliation cannot be combined with --version; target a specific pack to use --version")
 	}
 	if hasContentFlags && !hasURL {
 		return fmt.Errorf("content flags (--rules, --skills, --agents, --workflows, --prompts) require --url")
 	}
 	if hasContentFlags && c.Name == "" {
 		return fmt.Errorf("content flags require --name (no pack.json to derive name from)")
+	}
+	if c.Version != "" && c.Ref != "" {
+		return fmt.Errorf("--version and --ref are mutually exclusive")
+	}
+	if err := source.ValidateVersionSpecifier(c.Version); err != nil {
+		return err
 	}
 	return nil
 }
@@ -309,6 +336,24 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		return nil
 	}
 
+	// Parse name@version from the positional arg. Only applies to non-local,
+	// non-URL paths (i.e. registry names). Local paths and URLs can contain @
+	// for other reasons (e.g. git SSH URLs).
+	version := c.Version
+	path := c.Path
+	if path != "" && !c.Missing && c.URL == "" && isRegistryName(path) {
+		if name, ver, ok := strings.Cut(path, "@"); ok && ver != "" {
+			path = name
+			if version != "" {
+				return fmt.Errorf("cannot use @version in name and --version together")
+			}
+			version = ver
+		}
+	}
+	if err := source.ValidateVersionSpecifier(version); err != nil {
+		return err
+	}
+
 	profile := ""
 	if c.Add {
 		profile = effectiveProfile(c.Profile, cfgDir)
@@ -326,6 +371,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		Profile:   profile,
 		With:      with,
 		Quiet:     c.Quiet,
+		Version:   version,
 	}
 	// CLI content flags take precedence over registry entry content_paths.
 	if cp := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cp != nil {
@@ -336,13 +382,13 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		req.URL = c.URL
 		req.Ref = c.Ref
 		req.SubPath = c.SubPath
-	} else if c.Path != "" && isRegistryName(c.Path) {
+	} else if path != "" && isRegistryName(path) {
 		// Not a local path — try registry lookup.
 		regReq := app.RegistryListRequest{
 			ConfigDir:    cfgDir,
 			RegistryPath: c.Registry,
 		}
-		entry, err := app.RegistryLookup(regReq, c.Path)
+		entry, err := app.RegistryLookup(regReq, path)
 		if err != nil {
 			// Auto-fetch registry and retry once.
 			fmt.Fprintln(g.Stderr, "Fetching registry...")
@@ -350,11 +396,11 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 				ConfigDir: cfgDir,
 			}, io.Discard)
 			if fetchErr == nil {
-				entry, err = app.RegistryLookup(regReq, c.Path)
+				entry, err = app.RegistryLookup(regReq, path)
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("registry lookup for %q: %w\n\nHint: use --url for a direct URL install, or check 'aipack registry list'", c.Path, err)
+			return fmt.Errorf("registry lookup for %q: %w\n\nHint: use --url for a direct URL install, or check 'aipack registry list'", path, err)
 		}
 		req.URL = entry.Repo
 		req.SubPath = entry.Path
@@ -364,7 +410,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 			req.Ref = entry.Ref
 		}
 		if req.Name == "" {
-			req.Name = c.Path // use the registry key as the pack name
+			req.Name = path // use the registry key as the pack name
 		}
 		if entry.Quiet {
 			req.Quiet = true
@@ -373,7 +419,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 			req.ContentPaths = entry.ContentPaths
 		}
 	} else {
-		req.PackPath = c.Path
+		req.PackPath = path
 		req.Link = !c.Copy
 	}
 
@@ -423,6 +469,7 @@ func (c *PackListCmd) Run(ctx context.Context, g *Globals) error {
 			Path       string `json:"path"`
 			Method     string `json:"method"`
 			Version    string `json:"version,omitempty"`
+			Pin        string `json:"pin,omitempty"`
 			Origin     string `json:"origin,omitempty"`
 			IsLink     bool   `json:"is_link"`
 			BrokenLink bool   `json:"broken_link,omitempty"`
@@ -436,6 +483,7 @@ func (c *PackListCmd) Run(ctx context.Context, g *Globals) error {
 				Path:       e.Path,
 				Method:     e.Method,
 				Version:    e.Version,
+				Pin:        e.Pin,
 				Origin:     e.Origin,
 				IsLink:     isLink,
 				BrokenLink: brokenLink,
@@ -460,10 +508,7 @@ func printPackListEntries(w io.Writer, entries []app.PackShowEntry) {
 		if i > 0 {
 			fmt.Fprintln(w)
 		}
-		ver := ""
-		if e.Version != "" {
-			ver = " v" + e.Version
-		}
+		ver := formatVersionLabel(e)
 		broken := ""
 		if e.Method == config.MethodLink && !util.PathExists(e.Path) {
 			broken = " [BROKEN LINK]"
@@ -480,6 +525,19 @@ func printPackListEntries(w io.Writer, entries []app.PackShowEntry) {
 			fmt.Fprintf(w, "Content: %s\n", summary)
 		}
 	}
+}
+
+// formatVersionLabel returns a human-readable version label for an entry,
+// preferring the lockfile pin (with a "(pinned)" indicator) over the
+// pack.json version. Returns an empty string if neither is set.
+func formatVersionLabel(e app.PackShowEntry) string {
+	if pin := e.PinLabel(); pin != "" {
+		return " " + pin
+	}
+	if e.Version != "" {
+		return " v" + source.StripVersionPrefix(e.Version)
+	}
+	return ""
 }
 
 func packContentSummary(e app.PackShowEntry) string {
@@ -715,31 +773,43 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack update ---
 
 type PackUpdateCmd struct {
-	Name string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
-	All  bool     `help:"Update all installed packs" name:"all"`
-	With []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
+	Name    string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
+	All     bool     `help:"Update all installed packs" name:"all"`
+	Version string   `help:"Update to a specific version (semver, partial like v1, commit hash, or 'latest' to unpin)" name:"version"`
+	With    []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
 }
 
 func (c *PackUpdateCmd) Help() string {
-	return `Updates installed pack(s) to the latest version from their origin. For
-remote packs, re-fetches from the origin (archive or clone). For symlinked
+	return `Updates installed pack(s) to the latest version from their origin. By
+default, updates all installed packs. Pass a pack name to target a specific
+one. For remote packs, re-fetches from the origin (clone). For symlinked
 packs, re-validates the link target and re-installs bundled content. For
 copied packs, re-copies from the recorded origin.
 
-Exactly one of <name> or --all is required.
+Pinned packs (installed with --version) stay pinned on a bare update and
+report available newer versions. Use --version to move or clear a pin.
 
 Examples:
+  # Update all installed packs
+  aipack pack update
+
   # Update a specific pack
   aipack pack update my-pack
 
-  # Update all installed packs
+  # Update all and accept bundled content
+  aipack pack update -w all
+
+  # Update a specific pack to a version
+  aipack pack update my-pack --version 2.0.0
+
+  # Update to the latest stable v1.x.x (resolves and pins to the exact tag)
+  aipack pack update my-pack --version v1
+
+  # Unpin a pack (resume tracking HEAD)
+  aipack pack update my-pack --version latest
+
+  # --all is an explicit alias for the bare form (useful in scripts)
   aipack pack update --all
-
-  # Update and accept all bundled content
-  aipack pack update my-pack -w all
-
-  # Update and accept only profiles
-  aipack pack update --all -w p
 
 See also: pack install, pack show`
 }
@@ -748,8 +818,11 @@ func (c *PackUpdateCmd) Validate() error {
 	if c.Name != "" && c.All {
 		return fmt.Errorf("<name> and --all are mutually exclusive")
 	}
-	if c.Name == "" && !c.All {
-		return fmt.Errorf("pack update requires a name argument or --all")
+	if c.Version != "" && c.Name == "" {
+		return fmt.Errorf("--version requires a pack name argument")
+	}
+	if err := source.ValidateVersionSpecifier(c.Version); err != nil {
+		return err
 	}
 	return nil
 }
@@ -765,10 +838,15 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
+	// Bare `pack update` (no name, no --all) resolves to all packs. --all
+	// remains as an explicit alias for scripts and muscle memory.
+	all := c.All || c.Name == ""
+
 	results, err := app.PackUpdate(ctx, app.PackUpdateRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
-		All:       c.All,
+		All:       all,
+		Version:   c.Version,
 		With:      with,
 	}, g.Stdout)
 	if err != nil {
@@ -835,6 +913,9 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 
 	fmt.Fprintf(g.Stdout, "Name:        %s\n", entry.Name)
 	fmt.Fprintf(g.Stdout, "Version:     %s\n", entry.Version)
+	if pin := entry.PinLabel(); pin != "" {
+		fmt.Fprintf(g.Stdout, "Pin:         %s\n", pin)
+	}
 	fmt.Fprintf(g.Stdout, "Path:        %s\n", entry.Path)
 	fmt.Fprintf(g.Stdout, "Method:      %s\n", entry.Method)
 	if entry.Origin != "" {
@@ -872,6 +953,75 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 
 func joinComma(items []string) string {
 	return strings.Join(items, ", ")
+}
+
+// --- pack versions ---
+
+type PackVersionsCmd struct {
+	Name string `arg:"" help:"Name of the pack" predictor:"pack"`
+	JSON bool   `help:"Emit machine-readable JSON" name:"json"`
+}
+
+func (c *PackVersionsCmd) Help() string {
+	return `Lists available semver versions for a pack by querying the remote git
+repository's tags. Resolves the pack's origin URL from the lockfile (if
+installed) or from the registry (if not installed).
+
+Only tags that parse as valid semver are shown. The currently installed
+version is marked with a star when applicable.
+
+Examples:
+  # List versions for an installed pack
+  aipack pack versions my-pack
+
+  # List versions for a registry pack (not yet installed)
+  aipack pack versions some-team-pack
+
+  # Machine-readable JSON
+  aipack pack versions my-pack --json
+
+See also: pack install, pack update, pack show`
+}
+
+func (c *PackVersionsCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+
+	result, err := app.PackListVersions(ctx, app.PackListVersionsRequest{
+		ConfigDir: cfgDir,
+		Name:      c.Name,
+	})
+	if err != nil {
+		return err
+	}
+
+	if c.JSON {
+		return cmdutil.WriteJSON(g.Stdout, result)
+	}
+
+	fmt.Fprintf(g.Stdout, "Pack:    %s\n", result.Name)
+	fmt.Fprintf(g.Stdout, "Origin:  %s\n", result.Origin)
+	if result.InstalledVersion != "" {
+		fmt.Fprintf(g.Stdout, "Pinned:  %s\n", result.InstalledVersion)
+	}
+	fmt.Fprintln(g.Stdout)
+
+	if len(result.Versions) == 0 {
+		fmt.Fprintln(g.Stdout, "No semver tags found in remote.")
+		return nil
+	}
+
+	fmt.Fprintln(g.Stdout, "Available versions:")
+	for _, v := range result.Versions {
+		marker := "  "
+		if v.Installed {
+			marker = "* "
+		}
+		fmt.Fprintf(g.Stdout, "%s%s\n", marker, v.Version)
+	}
+	return nil
 }
 
 // printInstallMissingResults formats PackInstallMissing results for CLI output.

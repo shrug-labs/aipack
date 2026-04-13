@@ -68,6 +68,35 @@ func installShowPack(t *testing.T, configDir, name string) {
 	writePackManifest(t, filepath.Join(configDir, "packs", name), name)
 }
 
+func TestPackShowEntry_PinLabel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		pin  string
+		want string
+	}{
+		{"empty pin returns empty", "", ""},
+		{"semver with v prefix", "v1.2.3", "v1.2.3 (pinned)"},
+		{"semver without v prefix", "1.2.3", "v1.2.3 (pinned)"},
+		{"prerelease", "v1.0.0-beta.1", "v1.0.0-beta.1 (pinned)"},
+		{"commit hash", "abc1234", "@abc1234 (pinned)"},
+		{"long commit hash", "aabbccdd11223344556677889900aabbccddeeff", "@aabbccdd11223344556677889900aabbccddeeff (pinned)"},
+		// Anything that isn't semver or commit hash falls through — branch
+		// names shouldn't reach here in practice (isPinned filters them out
+		// before Pin is set), but defensive fallback prevents panic.
+		{"unknown format falls through", "weird-ref", "weird-ref (pinned)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := PackShowEntry{Pin: tt.pin}.PinLabel()
+			if got != tt.want {
+				t.Errorf("PinLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPackShow(t *testing.T) {
 	t.Parallel()
 

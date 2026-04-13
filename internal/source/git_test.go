@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -68,7 +70,7 @@ func TestEnsureCloneWith_FreshCloneWithRef_Fallback(t *testing.T) {
 	mock := func(_ context.Context, args ...string) error {
 		call := strings.Join(args, " ")
 		calls = append(calls, call)
-		// --branch fails (e.g. commit SHA), plain clone succeeds.
+		// --branch fails (e.g. deleted ref, unusual refname), plain clone succeeds.
 		if strings.Contains(call, "--branch") {
 			return fmt.Errorf("remote branch not found")
 		}
@@ -80,7 +82,9 @@ func TestEnsureCloneWith_FreshCloneWithRef_Fallback(t *testing.T) {
 		return nil
 	}
 
-	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "abc123", mock); err != nil {
+	// Non-hash ref: exercises the --branch-then-fetch fallback path. (Commit
+	// hashes take a different path — see TestEnsureCloneWith_CommitHashFullClone.)
+	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "some-branch", mock); err != nil {
 		t.Fatalf("EnsureCloneWith: %v", err)
 	}
 	// --branch fails + clone + fetch + checkout = 4 calls.
@@ -92,6 +96,45 @@ func TestEnsureCloneWith_FreshCloneWithRef_Fallback(t *testing.T) {
 	}
 	if !strings.Contains(calls[2], "fetch") {
 		t.Fatalf("expected fetch call, got: %s", calls[2])
+	}
+}
+
+func TestEnsureCloneWith_CommitHashFullClone(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+	var calls []string
+	mock := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) >= 1 && args[0] == "clone" {
+			if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Commit hash refs skip the --branch/--depth path entirely and use a full
+	// clone + checkout. Shallow single-ref fetch doesn't work for arbitrary
+	// commits — short hashes aren't ref names, and full-hash fetch requires
+	// server-side uploadpack.allowReachableSHA1InWant.
+	if err := EnsureCloneWith(context.Background(), "https://example.com/repo.git", dir, "abc1234", mock); err != nil {
+		t.Fatalf("EnsureCloneWith: %v", err)
+	}
+	// Exactly 2 calls: clone (full, no --depth, no --branch) + checkout.
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 git calls, got %d: %v", len(calls), calls)
+	}
+	if strings.Contains(calls[0], "--branch") {
+		t.Fatalf("should not use --branch for commit hash, got: %s", calls[0])
+	}
+	if strings.Contains(calls[0], "--depth") {
+		t.Fatalf("should not use --depth for commit hash (full history needed), got: %s", calls[0])
+	}
+	if !strings.Contains(calls[1], "checkout") {
+		t.Fatalf("expected checkout call, got: %s", calls[1])
+	}
+	if !strings.Contains(calls[1], "abc1234") {
+		t.Fatalf("expected checkout with hash, got: %s", calls[1])
 	}
 }
 
@@ -338,6 +381,101 @@ func TestEnsureCloneWithRef_NoCacheDir(t *testing.T) {
 	}
 	if strings.Contains(cloneArgs, "--reference") {
 		t.Fatalf("should not use --reference for missing cache, got: %s", cloneArgs)
+	}
+}
+
+// TestUpdateBareCache_ConcurrentSameKey verifies that concurrent callers for
+// the same origin URL serialize on the per-key mutex, so only one bare clone
+// actually runs. Without the mutex, the TOCTOU window between the HEAD stat
+// and the clone --bare invocation lets every goroutine fall through to
+// clone, which both wastes work and can corrupt partial state.
+func TestUpdateBareCache_ConcurrentSameKey(t *testing.T) {
+	// Not t.Parallel: manipulates the process-global bareCacheMus via a
+	// unique URL, and we want deterministic counts.
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	// Use a unique URL so this test doesn't share the key mutex with
+	// anything else in the process (the map is process-wide).
+	url := "https://example.com/concurrent-same-key-test.git"
+
+	var bareClones int64
+	var creating sync.Mutex // guards the in-progress HEAD write
+	mock := func(_ context.Context, args ...string) error {
+		if len(args) >= 2 && args[0] == "clone" && args[1] == "--bare" {
+			atomic.AddInt64(&bareClones, 1)
+			// Materialize the bare repo layout so the next caller's
+			// stat-of-HEAD hits an existing cache and returns early.
+			dest := args[len(args)-1]
+			creating.Lock()
+			defer creating.Unlock()
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dest, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+		}
+		return nil
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for range n {
+		wg.Go(func() {
+			// localSource is empty → mock will actually be invoked with
+			// the URL as the source (we don't care, we only inspect args).
+			errs <- UpdateBareCache(context.Background(), url, "", cacheDir, mock)
+		})
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("UpdateBareCache returned error under concurrency: %v", err)
+		}
+	}
+	if got := atomic.LoadInt64(&bareClones); got != 1 {
+		t.Fatalf("expected exactly 1 bare clone under concurrent same-key access, got %d", got)
+	}
+
+	// Cache should be populated and reusable by a subsequent caller.
+	if _, err := os.Stat(filepath.Join(cacheDir, CacheKeyForURL(url), "HEAD")); err != nil {
+		t.Fatalf("expected cache HEAD to exist after concurrent init: %v", err)
+	}
+}
+
+// TestUpdateBareCache_ConcurrentDistinctKeys verifies that concurrent callers
+// for different origins do NOT serialize on each other — each origin gets its
+// own mutex and can clone independently.
+func TestUpdateBareCache_ConcurrentDistinctKeys(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+
+	var bareClones int64
+	mock := func(_ context.Context, args ...string) error {
+		if len(args) >= 2 && args[0] == "clone" && args[1] == "--bare" {
+			atomic.AddInt64(&bareClones, 1)
+			dest := args[len(args)-1]
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dest, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+		}
+		return nil
+	}
+
+	const n = 5
+	var wg sync.WaitGroup
+	for i := range n {
+		url := fmt.Sprintf("https://example.com/distinct-%d.git", i)
+		wg.Add(1)
+		go func(u string) {
+			defer wg.Done()
+			_ = UpdateBareCache(context.Background(), u, "", cacheDir, mock)
+		}(url)
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&bareClones); got != n {
+		t.Fatalf("expected %d bare clones for %d distinct origins, got %d", n, n, got)
 	}
 }
 

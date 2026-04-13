@@ -8,12 +8,14 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/source"
 )
 
 // PackShowEntry describes detailed information about an installed pack.
 type PackShowEntry struct {
 	Name        string   `json:"name"`
-	Version     string   `json:"version"`
+	Version     string   `json:"version"`       // pack.json version (informational)
+	Pin         string   `json:"pin,omitempty"` // lockfile version pin: "1.2.3", commit hash, or "" for HEAD
 	Path        string   `json:"path"`
 	Method      string   `json:"method"`
 	Origin      string   `json:"origin"`
@@ -27,6 +29,24 @@ type PackShowEntry struct {
 	Prompts     []string `json:"prompts"`
 	MCPServers  []string `json:"mcp_servers"`
 	Extras      []string `json:"extras,omitempty"`
+}
+
+// PinLabel returns a human-readable label for the lockfile pin:
+// "v1.2.3 (pinned)" for semver pins, "@abc1234 (pinned)" for commit pins,
+// or "" when the pack is not pinned. Single source of truth shared by the
+// CLI's pack list/show output and the TUI's details panel.
+func (e PackShowEntry) PinLabel() string {
+	if e.Pin == "" {
+		return ""
+	}
+	switch source.ClassifyVersion(e.Pin) {
+	case source.VersionSemver:
+		return "v" + source.StripVersionPrefix(e.Pin) + " (pinned)"
+	case source.VersionCommit:
+		return "@" + e.Pin + " (pinned)"
+	default:
+		return e.Pin + " (pinned)"
+	}
 }
 
 // ContentIDs returns the resource IDs for the given category.
@@ -73,15 +93,25 @@ func PackShow(configDir string, name string) (PackShowEntry, error) {
 	}
 	packsDir := PacksDir(configDir)
 
-	scPath := config.SyncConfigPath(configDir)
-	sc, _ := config.LoadSyncConfig(scPath)
+	lf, err := config.EnsureLockfileMigrated(configDir)
+	if err != nil {
+		return PackShowEntry{}, fmt.Errorf("loading lockfile: %w", err)
+	}
 
-	return packShowCore(packsDir, name, sc.InstalledPacks)
+	return packShowCore(packsDir, name, lf.Packs)
 }
 
 // PackListDetailed returns detailed information for all installed packs,
-// loading sync-config once instead of per-pack.
+// loading the lockfile once instead of per-pack.
 func PackListDetailed(configDir string) ([]PackShowEntry, error) {
+	// Run migration first — this must happen whether or not packs/ exists,
+	// so that legacy installed_packs from sync-config are preserved after an
+	// upgrade even before any packs have been installed on the new layout.
+	lf, err := config.EnsureLockfileMigrated(configDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading lockfile: %w", err)
+	}
+
 	packsDir := PacksDir(configDir)
 	entries, err := os.ReadDir(packsDir)
 	if err != nil {
@@ -90,9 +120,6 @@ func PackListDetailed(configDir string) ([]PackShowEntry, error) {
 		}
 		return nil, err
 	}
-
-	scPath := config.SyncConfigPath(configDir)
-	sc, _ := config.LoadSyncConfig(scPath)
 
 	var result []PackShowEntry
 	for _, e := range entries {
@@ -103,7 +130,7 @@ func PackListDetailed(configDir string) ([]PackShowEntry, error) {
 		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue
 		}
-		entry, err := packShowCore(packsDir, name, sc.InstalledPacks)
+		entry, err := packShowCore(packsDir, name, lf.Packs)
 		if err != nil {
 			continue
 		}
@@ -163,6 +190,9 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Ref = m.Ref
 		entry.CommitHash = m.CommitHash
 		entry.InstalledAt = m.InstalledAt
+		if isPinned(m) {
+			entry.Pin = m.Ref
+		}
 	}
 
 	if entry.Method == "" {

@@ -71,6 +71,45 @@ The ledger records which pack contributed each managed file (`source_pack` field
 
 Given identical inputs and profile, sync produces byte-identical outputs across runs.
 
+### Content drift detection
+
+Each successful sync records a per-pack content inventory in `aipack.lock`:
+rule, agent, and workflow IDs; skill snapshots (description + the sorted list
+of files bundled under the skill directory other than `SKILL.md`); and MCP
+server snapshots (available tools, the `{params.*}` and `{env:*}` references
+the raw server strings make, and the pack author's `default_allowed_tools`).
+
+On the next sync, before the plan runs, aipack diffs the previous inventory
+against the freshly resolved pack contents and prints a per-pack report for
+anything that changed. Removed items that your active profile still references
+appear under **"Removed (affects your profile)"** so you see the actionable
+drift first. Other removals, additions, and per-item changes follow.
+
+Skills and MCP servers have a richer **"Changed"** section because they carry
+more than a name:
+
+- **Skills** report description changes (from the SKILL.md frontmatter) and
+  added/removed bundled assets — helper scripts, templates, data files a skill
+  ships alongside `SKILL.md`.
+- **MCP servers** report added/removed `available_tools` and added/removed
+  required references. A new required `{params.*}` or `{env:*}` that the
+  profile doesn't satisfy is the classic "pack update that would break sync"
+  signal, and drift output surfaces it before the plan runs so you can
+  reconcile before sync completes.
+
+Drift detection runs in dry-run too, so `aipack sync --dry-run` shows the
+report without writing the new inventory back. On a real sync, the new
+inventory is recorded only after the apply step succeeds — if a fatal error
+interrupts the sync, the previous inventory is preserved so the next attempt
+sees the same drift.
+
+A profile `include`, `exclude`, or `overrides` entry that no longer resolves
+against the current pack contents — but was present in the previous inventory
+— is surfaced as a `broken-ref` warning on every sync (and by the `broken_refs`
+check in `aipack doctor`). Drift detection promotes these from silent drops
+to visible, actionable output while preserving the hard-error behavior for
+typos (IDs that were never in the pack).
+
 ## Save
 
 Save captures harness content back into packs. Two modes.

@@ -4,7 +4,26 @@ All notable user-facing changes to `aipack` will be documented in this file.
 
 The format is based on Keep a Changelog, and releases use semantic versioning tags.
 
-## Unreleased
+## [Unreleased]
+
+## [0.21.0]
+
+### Added
+
+- **Pack versioning.** `pack install my-pack@1.2.3` installs and pins a specific semver tag; `@abc1234` pins a commit, `@v1`/`@v1.2` resolve to the highest matching stable. `pack versions <name>` lists available tags. `pack update <name> --version <X>` moves a pin; `--version latest` clears it. One version per pack per machine — use `--name` for parallel installs.
+- **Lockfile (`aipack.lock`)** records every installed pack and replaces the `installed_packs` block in `sync-config.yaml`. Migration is automatic.
+- **Sync-time content drift detection.** `aipack sync` now reports per-pack added/removed/changed content before applying the plan, with a separate "Removed (affects your profile)" section for items your active profile references.
+- **TUI packs tab is versioning-aware.** Pack details show pin/commit/latest, the pack list flags drift, registry packs show available tags inline with a version picker on install, and clone-pack actions gain "Pin to version..." and "Unpin".
+- **`aipack doctor` broken-refs check.** New warning when a profile references content the pack no longer ships.
+
+### Changed
+
+- **`pack install` and `pack update` work without arguments** — `install` reconciles the active profile (fetching missing referenced packs), `update` refreshes every installed pack. `-m/--missing` and `--all` are accepted as explicit aliases.
+- **`pack update` is concurrent** — up to three packs in parallel, output flushed in input order.
+- **`aipack doctor` detects clone-pack drift via `git ls-remote`** with graceful offline degradation.
+- **Profile references that drift out of a pack are warnings, not fatal errors.** Typos (IDs never in the pack) still hard-error.
+- **HTTP tarball install method removed.** All remote installs use shallow git clone; tarball-installed packs migrate on next `pack update`.
+- **Registry sources without an explicit `--ref` use the remote's default branch.**
 
 ## [0.20.2]
 

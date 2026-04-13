@@ -61,15 +61,15 @@ func TestPackDelete(t *testing.T) {
 			NowFn: func() time.Time { return fixedNow },
 		}, &out)
 
-		sc, _ := config.LoadSyncConfig(config.SyncConfigPath(configDir))
-		if _, ok := sc.InstalledPacks["test-pack"]; !ok {
+		lf, _ := config.LoadLockfile(config.LockfilePath(configDir))
+		if _, ok := lf.Packs["test-pack"]; !ok {
 			t.Fatal("origin should exist before remove")
 		}
 
 		out.Reset()
 		PackDelete(configDir, "test-pack", &out)
-		sc, _ = config.LoadSyncConfig(config.SyncConfigPath(configDir))
-		if _, ok := sc.InstalledPacks["test-pack"]; ok {
+		lf, _ = config.LoadLockfile(config.LockfilePath(configDir))
+		if _, ok := lf.Packs["test-pack"]; ok {
 			t.Fatal("origin should be cleared")
 		}
 	})

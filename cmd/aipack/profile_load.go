@@ -53,7 +53,8 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 		return loadedProfile{}, cmdutil.ExitFail
 	}
 	eng := engine.New(nil, nil)
-	prof, warnings, err := eng.Resolve(profileCfg, path, configDir, syncCfg.Defaults.CollisionStrategy)
+	prevInventories, _ := loadLockfileInventories(configDir)
+	prof, warnings, err := eng.Resolve(profileCfg, path, configDir, syncCfg.Defaults.CollisionStrategy, prevInventories)
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail
@@ -68,6 +69,33 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 		syncCfg:     syncCfg,
 		configDir:   configDir,
 	}, -1
+}
+
+// loadLockfileInventories returns the per-pack inventories from the lockfile
+// so the resolver can distinguish drifted-out refs from typos. Returns nil
+// on any error — the resolver treats nil as "no baseline, unknown refs are
+// still typo errors," which matches pre-drift behavior.
+func loadLockfileInventories(configDir string) (map[string]domain.PackInventory, error) {
+	if configDir == "" {
+		return nil, nil
+	}
+	lf, err := config.EnsureLockfileMigrated(configDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(lf.Packs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]domain.PackInventory, len(lf.Packs))
+	for name, meta := range lf.Packs {
+		if meta.Resolved != nil {
+			out[name] = *meta.Resolved
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // resolveProfileName returns the effective profile name from an explicit flag value

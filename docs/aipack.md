@@ -35,10 +35,13 @@ Runs diagnostic checks on config, packs, and MCP servers. Overall status fails o
 | `cli_update` | warning | Checks if a newer CLI version is available |
 | `git_available` | warning | Verifies git is installed (needed for registry fetch and pack install) |
 | `profile_validated` | warning | Validates profile YAML structure |
-| `packs_registered` | warning | Detects pack directories not in `installed_packs` |
-| `install_entries_valid` | warning | Detects `installed_packs` entries whose pack directory is missing (auto-fixable with `--fix`) |
+| `lockfile_migration` | warning | Reports failure if migrating legacy `installed_packs` from `sync-config.yaml` to `aipack.lock` failed |
+| `lockfile_loaded` | warning | Reports failure if `aipack.lock` exists but cannot be parsed |
+| `packs_registered` | warning | Detects pack directories not recorded in the lockfile |
+| `install_entries_valid` | warning | Detects lockfile entries whose pack directory is missing (auto-fixable with `--fix`) |
 | `stale_backups` | warning | Finds leftover backup and temp directories from interrupted installs/updates (auto-fixable with `--fix`) |
 | `pack_version_drift` | warning | Compares installed pack versions/hashes against their origins (local checks only, no network) |
+| `broken_refs` | warning | Reports profile references (includes, excludes, overrides) that were in a previous lockfile inventory but are no longer in the current pack contents — a pack update removed content the profile still references |
 | `stale_ledgers` | warning | Detects ledger files orphaned from a previous scope or harness configuration |
 | `ledger_health` | warning | Checks for orphaned entries and missing `source_pack` fields (auto-fixable with `--fix`) |
 | `manifest_drift` | warning | Detects undeclared or missing content in pack manifests (auto-fixable with `--fix`) |
@@ -77,27 +80,40 @@ Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`. Each takes
 
 ### pack install
 
-Installs a pack into `~/.config/aipack/packs/<name>/`. Supports three sources:
+Bare `aipack pack install` (no arguments) reconciles the active profile — any packs referenced by the profile that aren't already on disk are fetched via the registry. This is the easiest way to catch up after setting a profile or after a shared profile gains new pack references. Pass a path, URL, or registry name to target a specific pack instead.
+
+Supports three explicit sources:
 
 - **Local path** (symlinked by default, `--copy` for full copy)
-- **URL** (`--url` — fetched via HTTP tarball for GitHub, shallow clone for everything else)
-- **Registry name** (bare name like `my-team-pack` — looked up in registry, then fetched)
+- **URL** (`--url` — fetched via shallow git clone)
+- **Registry name** (bare name like `my-pack` — looked up in registry, then fetched)
 
-`aipack install` is a top-level alias for `aipack pack install`.
+`aipack install` is a top-level alias for `aipack pack install`. `-m`/`--missing` is an explicit alias for the bare form — useful in scripts where the intent is worth stating even when the default matches.
 
-With `-m`/`--missing`, installs all missing packs from the active profile by looking them up in the registry. This is the easiest way to catch up after setting a profile or after new packs are added to a shared profile.
+All remote installs use a shallow git clone (`git clone --depth 1`). Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts. The local clone cache (`~/.config/aipack/.cache/git/`) speeds up subsequent clones via `git --reference`.
 
-Remote packs from GitHub HTTPS URLs are fetched as HTTP tarballs (no git binary required). All other URLs use a shallow clone (`git clone --depth 1`).
+**Versioning.** Append `@version` to a pack name (or use `--version`) to install a specific semver tag or commit hash. The pack is then "pinned" — `pack update` won't change the install until you explicitly move the pin.
 
-Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts.
+```bash
+aipack pack install my-pack@1.2.3           # pin to exact semver tag v1.2.3
+aipack pack install my-pack@v1              # partial: resolves to latest stable v1.x.x, pins to that
+aipack pack install my-pack@v1.2            # partial: resolves to latest stable v1.2.x
+aipack pack install my-pack@abc1234         # pin to commit hash
+aipack pack install --url https://github.com/org/repo.git --version 1.2.3
+```
+
+Partial version references (`v1` or `v1.2`) query the remote tags, pick the highest matching stable tag, and pin to that exact version. Prereleases (`v1.2.0-beta.1`) are skipped during partial matching — pass an exact tag to install a prerelease. Partial installs are a discovery shortcut, not a channel: re-run `update --version v1` to move the pin when new v1.x.x tags land.
+
+Use `aipack pack versions <name>` to discover available semver tags. Pack authors should tag their releases as `v1.2.3` (or `1.2.3` — the v-prefix is optional). The `version` field in `pack.json` is informational; git tags are authoritative.
 
 By default, the pack is installed to disk but not added to any profile. Use `--add` to also add it to the active profile, or `--add --profile <name>` to target a specific one. Use `aipack pack add <name>` to add an installed pack to a profile later.
 
 Core content (rules, skills, workflows, agents, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name.
 
 ```bash
-# Install all missing packs from the active profile
-aipack pack install -m
+# Reconcile the active profile — install any missing packs (default)
+aipack pack install
+aipack pack install -m                      # explicit equivalent, same behavior
 
 # Local installs
 aipack pack install ./my-pack
@@ -135,7 +151,7 @@ For the full guide on installing from non-pack repositories, see [Installing Pac
 
 ### pack list
 
-Lists all installed packs with name, install method (link/copy/clone/http-tarball), version, origin, content summary, and broken-link status.
+Lists all installed packs with name, install method (link/copy/clone/local), version, origin, content summary, and broken-link status. Pinned packs show their version pin label inline (e.g. `v1.2.3 (pinned)`).
 
 ```bash
 aipack pack list
@@ -153,15 +169,36 @@ aipack pack show my-pack --json
 
 ### pack update
 
-Updates installed pack(s) to latest version from their origin. For cloned packs, re-clones from origin and re-extracts content (content path mappings from the original install are preserved). For HTTP-tarball packs, re-downloads and re-extracts. For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target. Exactly one of `<name>` or `--all` is required.
+Updates installed pack(s) to latest version from their origin. By default, updates every installed pack; pass a name to target one. For cloned packs, re-clones from origin and re-extracts content (content path mappings from the original install are preserved). For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target.
 
 When an update brings new bundled content categories that weren't previously approved, they're surfaced for review — printed in the CLI, shown as a checklist dialog in the TUI. Use `-w` to approve specific categories or `-w all` to accept everything.
 
 ```bash
-aipack pack update my-pack
-aipack pack update --all
-aipack pack update my-pack -w profiles    # also apply bundled profiles on this update
-aipack pack update my-pack -w all         # accept all new bundled content
+aipack pack update                         # update all installed packs
+aipack pack update my-pack                 # update one specific pack
+aipack pack update --all                   # explicit alias for the bare form (scripts)
+aipack pack update my-pack -w profiles     # also apply bundled profiles on this update
+aipack pack update my-pack -w all          # accept all new bundled content
+```
+
+**Pinned packs stay pinned.** A bare `pack update` on a pack that was installed with a `--version` does not change the installed version. Instead, it checks the remote and reports the latest available version. Use `--version` to explicitly move or clear the pin:
+
+```bash
+aipack pack update my-pack --version 2.0.0    # move pin to a new tag
+aipack pack update my-pack --version latest   # clear pin, track default branch HEAD again
+```
+
+Legacy packs installed via the (now-removed) `http-tarball` method are transparently migrated to the `clone` method on next update.
+
+**Concurrent updates.** When refreshing multiple packs (bare `pack update` or `--all`), up to three packs update in parallel — bounded to stay within typical git-host connection limits. Per-pack stdout is buffered and flushed in input order after the parallel phase, and bundled profile and registry installs still run sequentially, so the transcript stays coherent and last-writer-wins semantics for shared profile IDs are deterministic. Concurrent clones for the same origin URL (for example, several packs installed from the same monorepo) serialize on the local bare-clone cache at `~/.config/aipack/.cache/git/` so only one remote fetch runs per origin. Ctrl-C mid-update stops dispatching new packs while letting in-flight workers finish on their own cancellation-aware operations.
+
+### pack versions
+
+Lists available semver tags for a pack from its remote git origin. Resolves the origin from the lockfile (if installed) or the registry (if not installed). Only tags that parse as valid semver are shown. The currently installed version is marked with a star.
+
+```bash
+aipack pack versions my-team-pack
+aipack pack versions my-team-pack --json
 ```
 
 ### pack delete

@@ -329,8 +329,9 @@ Always an array. Empty `[]` when no packs are installed.
   {
     "name": "essentials",
     "path": "/Users/x/.config/aipack/packs/essentials",
-    "method": "http-tarball",
-    "version": "2026.03.07",
+    "method": "clone",
+    "version": "1.2.3",
+    "pin": "1.2.3",
     "origin": "https://github.com/shrug-labs/packs.git",
     "is_link": false
   }
@@ -342,7 +343,8 @@ Always an array. Empty `[]` when no packs are installed.
 | `name` | string | Pack name |
 | `path` | string | Absolute path to installed pack |
 | `method` | string | Install method (see [Enumerations](#enumerations)) |
-| `version` | string | Version from manifest (omitempty) |
+| `version` | string | Version from `pack.json` (informational, omitempty) |
+| `pin` | string | Lockfile version pin: semver string, commit hash, or empty/omitted when tracking HEAD |
 | `origin` | string | Source URL (omitempty for local/link installs) |
 | `is_link` | bool | Whether the pack is a symlink |
 | `broken_link` | bool | True for broken symlinks (omitempty) |
@@ -354,11 +356,12 @@ Content ID arrays are always present (empty `[]`, never null).
 ```json
 {
   "name": "essentials",
-  "version": "2026.03.07",
+  "version": "1.2.3",
+  "pin": "1.2.3",
   "path": "/Users/x/.config/aipack/packs/essentials",
-  "method": "http-tarball",
+  "method": "clone",
   "origin": "https://github.com/shrug-labs/packs.git",
-  "ref": "main",
+  "ref": "v1.2.3",
   "commit_hash": "abc123def456",
   "installed_at": "2026-03-10T08:30:00Z",
   "rules": ["anti-slop", "verification-before-completion"],
@@ -388,6 +391,32 @@ Content ID arrays are always present (empty `[]`, never null).
 | `prompts` | string[] | Prompt IDs |
 | `mcp_servers` | string[] | MCP server names |
 | `extras` | string[] | Extra bundled file paths (omitempty) |
+
+### `aipack pack versions`
+
+```json
+{
+  "name": "essentials",
+  "origin": "https://github.com/shrug-labs/packs.git",
+  "installed_version": "1.2.3",
+  "versions": [
+    {"version": "v2.0.0"},
+    {"version": "v1.2.3", "installed": true},
+    {"version": "v1.0.0"}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Pack name |
+| `origin` | string | Source URL the tags were fetched from |
+| `installed_version` | string | Current pin from the lockfile (semver, commit hash, or empty/omitted when tracking HEAD) |
+| `versions` | object[] | Available semver tags, sorted descending |
+| `versions[].version` | string | Tag name (always v-prefixed) |
+| `versions[].installed` | bool | True for the currently installed version (omitempty); only set when the pin is a semver string that matches a tag |
+
+Versions list contains only tags that parse as valid semver. When the pack has no semver tags, `versions` is an empty array. When the pin is a commit hash, no entry is marked installed.
 
 ### `aipack pack validate`
 
@@ -500,13 +529,13 @@ Several flags follow a common resolution chain across commands:
 
 **Diff kinds:** `create` (file doesn't exist on disk), `identical` (desired matches on-disk), `managed` (on-disk matches ledger — safe to update), `conflict` (user-modified since last sync), `untracked` (exists on disk but not in ledger), `error` (classification failed)
 
-**Install methods:** `clone` (shallow git clone), `http-tarball` (GitHub HTTP tarball), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place), `archive` (legacy — treated as clone on update)
+**Install methods:** `clone` (shallow git clone — default for all remote installs), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place). Legacy methods `http-tarball` and `archive` may appear in lockfile entries from pre-v0.21 installs; they are transparently migrated to `clone` on the next `pack update`.
 
 **Finding categories:** `frontmatter`, `policy`, `consistency`, `inventory`
 
 **Finding severities:** `error`, `warning`
 
-**Doctor check names:** `sync_config`, `active_profile`, `profile_validated`, `packs_resolved`, `packs_registered`, `git_available`, `ledger_health`, `manifest_drift`, `cli_update`, `pack_version_drift`, `stale_ledgers`, `mcp_refs_present`, `mcp_server_paths_exist`
+**Doctor check names:** `sync_config`, `active_profile`, `profile_validated`, `packs_resolved`, `packs_registered`, `git_available`, `ledger_health`, `manifest_drift`, `cli_update`, `pack_version_drift`, `stale_ledgers`, `mcp_refs_present`, `mcp_server_paths_exist`, `lockfile_migration`, `lockfile_loaded`
 
 **Doctor check statuses:** `pass`, `fail`, `skip`, `warn`, `fixed`
 

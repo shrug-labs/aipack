@@ -7,6 +7,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // buildMCPServers assembles typed MCPServer structs from inventory data and
@@ -50,22 +51,26 @@ func buildMCPServers(params map[string]string, packs []config.ResolvedPack, inve
 		}
 
 		entry, sourcePack := mcpPermissionsAndSource(packs, name)
+		defaultAllowed := mcpDefaultAllowedTools(packs, sourcePack, name)
+		requiredRefs := extractRequiredRefs(inv)
 
 		out = append(out, domain.MCPServer{
-			Name:           name,
-			Transport:      inv.Transport,
-			Timeout:        inv.Timeout,
-			Command:        expanded.Command,
-			URL:            expanded.URL,
-			Env:            expanded.Env,
-			Headers:        expanded.Headers,
-			AvailableTools: inv.AvailableTools,
-			AllowedTools:   sortedCopy(entry.AllowedTools),
-			DisabledTools:  sortedCopy(entry.DisabledTools),
-			SourcePack:     sourcePack,
-			Links:          inv.Links,
-			Auth:           inv.Auth,
-			Notes:          inv.Notes,
+			Name:                name,
+			Transport:           inv.Transport,
+			Timeout:             inv.Timeout,
+			Command:             expanded.Command,
+			URL:                 expanded.URL,
+			Env:                 expanded.Env,
+			Headers:             expanded.Headers,
+			AvailableTools:      inv.AvailableTools,
+			AllowedTools:        sortedCopy(entry.AllowedTools),
+			DisabledTools:       sortedCopy(entry.DisabledTools),
+			SourcePack:          sourcePack,
+			DefaultAllowedTools: sortedCopy(defaultAllowed),
+			RequiredRefs:        requiredRefs,
+			Links:               inv.Links,
+			Auth:                inv.Auth,
+			Notes:               inv.Notes,
 		})
 	}
 	return out, warnings
@@ -95,6 +100,94 @@ func mcpPermissionsAndSource(packs []config.ResolvedPack, name string) (config.R
 		}
 	}
 	return entry, sourcePack
+}
+
+// mcpDefaultAllowedTools returns the pack author's declared default
+// allowed-tool list for a server, looked up on the source pack's manifest.
+func mcpDefaultAllowedTools(packs []config.ResolvedPack, sourcePack, serverName string) []string {
+	if sourcePack == "" {
+		return nil
+	}
+	for _, p := range packs {
+		if p.Name != sourcePack {
+			continue
+		}
+		if def, ok := p.Manifest.MCP.Servers[serverName]; ok {
+			return def.DefaultAllowedTools
+		}
+		return nil
+	}
+	return nil
+}
+
+// extractRequiredRefs walks the raw pre-expansion strings on an MCP server
+// inventory entry and returns the deduped, sorted set of {params.*} and
+// {env:*} references. Strings scanned: Command args, Env values, URL,
+// and Header values. A ref with the same name in two different kinds
+// (e.g. {params.X} and {env:X}) produces two distinct entries.
+func extractRequiredRefs(inv domain.MCPServer) []domain.RequiredRef {
+	seen := map[string]struct{}{}
+	var refs []domain.RequiredRef
+	addParam := func(name string) {
+		key := "param:" + name
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, domain.RequiredRef{Kind: domain.RefKindParam, Name: name})
+	}
+	addEnv := func(name string) {
+		key := "env:" + name
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, domain.RequiredRef{Kind: domain.RefKindEnv, Name: name})
+	}
+
+	walkString := func(s string) {
+		_ = util.WalkParamRefs(s, func(ref util.ParamRef) error {
+			if ref.Name != "" {
+				addParam(ref.Name)
+			}
+			return nil
+		})
+		_ = util.WalkEnvRefs(s, func(ref util.EnvRef) error {
+			if ref.Name != "" {
+				addEnv(ref.Name)
+			}
+			return nil
+		})
+	}
+
+	for _, s := range inv.Command {
+		walkString(s)
+	}
+	for _, s := range inv.Env {
+		walkString(s)
+	}
+	walkString(inv.URL)
+	for _, s := range inv.Headers {
+		walkString(s)
+	}
+
+	slices.SortFunc(refs, func(a, b domain.RequiredRef) int {
+		if a.Kind != b.Kind {
+			// Params before env, matching {params.*} reading order.
+			if a.Kind == domain.RefKindParam {
+				return -1
+			}
+			return 1
+		}
+		if a.Name < b.Name {
+			return -1
+		}
+		if a.Name > b.Name {
+			return 1
+		}
+		return 0
+	})
+	return refs
 }
 
 // prefixTool creates a prefixed tool name (server_tool).

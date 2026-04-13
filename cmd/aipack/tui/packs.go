@@ -2,6 +2,7 @@ package tui
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,7 +12,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/shrug-labs/aipack/internal/app"
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/source"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // packPanel tracks which column has focus in the Packs tab.
@@ -97,12 +101,40 @@ type packsModel struct {
 	registry      []registryItem
 	registryErr   string
 	registryState asyncState
+
+	// Versions cache. Lazily populated by loadPackVersions when the cursor
+	// lands on an eligible pack (clone-method or registry-only). Drives the
+	// inline version display in the details panel and warms the cache for
+	// the install-time version picker. Keyed by pack name.
+	versionsCache map[string]packVersionsCacheEntry
+
+	// Drift set. Populated once by loadPackDrift when the packs tab
+	// initializes. The parent rootModel clears per-pack entries on
+	// successful install/update of that pack, but the set is never
+	// re-scanned in-session — a TUI restart re-runs the network probe.
+	// Drives the drift indicator on list rows. Empty set means "no
+	// drift detected" OR "scan hasn't run yet" — those cases render
+	// identically (no indicator). Keyed by pack name; value is the
+	// recorded drift entry for tooltip-style hover or future surfacing.
+	driftSet map[string]app.PackDrift
+}
+
+// packVersionsCacheEntry holds one pack's version-discovery state. The state
+// distinguishes "we haven't asked yet" (no entry in the map) from "we asked
+// and got nothing" (entry with empty Versions and asyncLoaded), so the UI can
+// show "loading…" vs "no semver tags" vs "lookup failed" without ambiguity.
+type packVersionsCacheEntry struct {
+	state    asyncState
+	versions []app.PackVersion
+	err      string
 }
 
 func newPacksModel(configDir string) packsModel {
 	return packsModel{
-		configDir:    configDir,
-		installedMap: map[string]int{},
+		configDir:     configDir,
+		installedMap:  map[string]int{},
+		versionsCache: map[string]packVersionsCacheEntry{},
+		driftSet:      map[string]app.PackDrift{},
 	}
 }
 
@@ -125,8 +157,60 @@ func (m packsModel) currentItem() *packItemDetail {
 	return nil
 }
 
+// versionsCacheEntry returns the cached version-discovery result for a pack,
+// or the zero value when not yet queried. The bool reports whether an entry
+// exists at all (distinguishing "not asked" from "asked and got empty").
+func (m packsModel) versionsCacheEntry(name string) (packVersionsCacheEntry, bool) {
+	if m.versionsCache == nil {
+		return packVersionsCacheEntry{}, false
+	}
+	e, ok := m.versionsCache[name]
+	return e, ok
+}
+
+// versionsEligible reports whether the current list item is one we can query
+// remote tags for. Clone-method installed packs and registry-only packs both
+// qualify; link/copy/local installs and packs with no registry record have
+// no remote git origin to query.
+func (m packsModel) versionsEligible(li *packListItem) bool {
+	if li == nil {
+		return false
+	}
+	if li.installed {
+		if item := m.currentItem(); item != nil {
+			return item.entry.Method == config.MethodClone
+		}
+		return false
+	}
+	return li.inRegistry
+}
+
+// maybeLoadVersionsForCursor returns a tea.Cmd that asynchronously fetches
+// available semver tags for the currently selected pack — but only when the
+// pack is eligible (clone or registry) and not already cached or in flight.
+// Returns nil when there's nothing to do, so callers can safely chain it
+// into tea.Batch without conditional branching.
+func (m *packsModel) maybeLoadVersionsForCursor() tea.Cmd {
+	li := m.currentListItem()
+	if !m.versionsEligible(li) {
+		return nil
+	}
+	if _, ok := m.versionsCacheEntry(li.name); ok {
+		return nil
+	}
+	if m.versionsCache == nil {
+		m.versionsCache = map[string]packVersionsCacheEntry{}
+	}
+	m.versionsCache[li.name] = packVersionsCacheEntry{state: asyncLoading}
+	return loadPackVersions(context.Background(), m.configDir, li.name)
+}
+
 func (m packsModel) Init() tea.Cmd {
-	return tea.Batch(loadPacks(m.configDir), loadRegistry(m.configDir))
+	return tea.Batch(
+		loadPacks(m.configDir),
+		loadRegistry(m.configDir),
+		loadPackDrift(context.Background(), m.configDir),
+	)
 }
 
 func (m packsModel) Update(msg tea.Msg) (packsModel, tea.Cmd) {
@@ -138,6 +222,9 @@ func (m packsModel) Update(msg tea.Msg) (packsModel, tea.Cmd) {
 		}
 		m.items = msg.items
 		m.installedMap = map[string]int{}
+		if m.versionsCache == nil {
+			m.versionsCache = map[string]packVersionsCacheEntry{}
+		}
 		for i, item := range m.items {
 			m.installedMap[item.entry.Name] = i
 		}
@@ -170,7 +257,44 @@ func (m packsModel) Update(msg tea.Msg) (packsModel, tea.Cmd) {
 		m.registry = msg.items
 		m.registryState = asyncLoaded
 		m.rebuildList()
-		return m, m.loadInlinePreview()
+		// Warm versions for the initial selection (usually the first
+		// registry pack on a fresh tab open). Subsequent cursor moves
+		// trigger their own loads via updateListPanel.
+		var cmds []tea.Cmd
+		if previewCmd := m.loadInlinePreview(); previewCmd != nil {
+			cmds = append(cmds, previewCmd)
+		}
+		if vcmd := m.maybeLoadVersionsForCursor(); vcmd != nil {
+			cmds = append(cmds, vcmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case packVersionsLoadedMsg:
+		entry := packVersionsCacheEntry{
+			state:    asyncLoaded,
+			versions: msg.versions,
+		}
+		if msg.err != nil {
+			entry.state = asyncError
+			entry.err = msg.err.Error()
+		}
+		if m.versionsCache == nil {
+			m.versionsCache = map[string]packVersionsCacheEntry{}
+		}
+		m.versionsCache[msg.packName] = entry
+		return m, nil
+
+	case packDriftLoadedMsg:
+		// Replace the drift set wholesale — the loader returns the complete
+		// state, not a delta. An error from the loader is treated as "no
+		// drift signal" rather than as a UI-blocking failure (drift is a
+		// passive hint; offline runs degrade gracefully).
+		next := make(map[string]app.PackDrift, len(msg.drifted))
+		for _, d := range msg.drifted {
+			next[d.Name] = d
+		}
+		m.driftSet = next
+		return m, nil
 
 	case previewLoadedMsg:
 		if msg.filePath != m.previewPath {
@@ -253,14 +377,14 @@ func (m packsModel) updateListPanel(msg tea.KeyMsg) (packsModel, tea.Cmd) {
 			m.listCursor++
 			m.clampListOffset()
 			m.buildContentForCurrent()
-			return m, nil
+			return m, m.maybeLoadVersionsForCursor()
 		}
 	case "k", "up":
 		if m.listCursor > 0 {
 			m.listCursor--
 			m.clampListOffset()
 			m.buildContentForCurrent()
-			return m, nil
+			return m, m.maybeLoadVersionsForCursor()
 		}
 	case "enter", "right", "l":
 		li := m.currentListItem()
@@ -389,6 +513,13 @@ func (m packsModel) visibleContentH() int {
 	return h
 }
 
+// listVisibleRows returns the number of pack rows visible in the list panel
+// for a panel of the given total height. Header (1) + count subtitle (1) +
+// blank line (1) + reserved scroll indicator (1) = 4 lines of chrome.
+func listVisibleRows(panelHeight int) int {
+	return max(panelHeight-4, 1)
+}
+
 // clampOffset adjusts offset so that cursor is within a visible window of size vis.
 func clampOffset(cursor, offset, vis int) int {
 	if cursor < offset {
@@ -419,7 +550,8 @@ func (m *packsModel) clampContentOffset() {
 
 // clampListOffset ensures the list cursor is within the visible scroll window.
 func (m *packsModel) clampListOffset() {
-	m.listOffset = clampOffset(m.listCursor, m.listOffset, m.visibleContentH())
+	panelH := max(m.height-2, 8)
+	m.listOffset = clampOffset(m.listCursor, m.listOffset, listVisibleRows(panelH))
 }
 
 // buildContentItems creates a flat navigable list of content items for a pack.
@@ -527,9 +659,9 @@ func (m packsModel) View() string {
 
 	colH := innerH
 
-	col1 := m.viewListAndInfoPanel(col1W, colH)
+	col1 := m.viewListPanel(col1W, colH)
 	col2 := m.viewContentPanel(col2W, colH)
-	col3 := m.viewPreviewPanel(col3W, colH)
+	col3 := m.viewDetailsOrPreviewPanel(col3W, colH)
 	sep1 := verticalSeparator(colH, sepW, m.focus == packPanelContent)
 	sep2 := verticalSeparator(colH, sepW, m.focus == packPanelPreview)
 
@@ -537,22 +669,14 @@ func (m packsModel) View() string {
 	return contentStyle.Render(joined)
 }
 
-func (m packsModel) viewListAndInfoPanel(width, height int) string {
-	listH := max(height*52/100, 8)
-	if listH > height-6 {
-		listH = max(height-6, 4)
+// viewDetailsOrPreviewPanel renders the right column. When the packs list is
+// focused, it shows pack details. When the user has drilled into the content
+// list (or is scrolling the preview), it shows the file preview.
+func (m packsModel) viewDetailsOrPreviewPanel(width, height int) string {
+	if m.focus == packPanelList {
+		return m.viewPackInfoPanel(width, height)
 	}
-	sepH := 1
-	infoH := max(height-listH-sepH, 6)
-	if listH+sepH+infoH > height {
-		infoH = max(height-listH-sepH, 4)
-	}
-
-	list := m.viewListPanel(width, listH)
-	sepW := min(width, 80)
-	sep := dimStyle.Render(strings.Repeat("─", sepW))
-	info := m.viewPackInfoPanel(width, infoH)
-	return lipgloss.JoinVertical(lipgloss.Left, list, sep, info)
+	return m.viewPreviewPanel(width, height)
 }
 
 // viewListPanel renders the top-left pack list.
@@ -591,20 +715,42 @@ func (m packsModel) viewListPanel(width, height int) string {
 			nameStyle = dimStyle
 		}
 
-		lines = append(lines, cursor+nameStyle.Render(li.name))
+		// Suffix pinned packs with their pin label so the list reads as
+		// a status view, not just a name list. Lookup is cheap (one map
+		// hit per row); rendered dim so it doesn't fight the pack name.
+		row := cursor + nameStyle.Render(li.name)
+		if li.installed {
+			if idx, ok := m.installedMap[li.name]; ok {
+				if pin := m.items[idx].entry.PinLabel(); pin != "" {
+					row += "  " + dimStyle.Render(pin)
+				}
+			}
+		}
+		// Drift indicator. Drawn after the pin label so users get a
+		// consistent left-to-right read: name → pin → drift. The arrow is
+		// terse on purpose — the details panel surfaces the full hash diff
+		// when the user navigates to the row. Yellow weight signals "your
+		// attention is wanted" without escalating to red error styling.
+		if _, drifted := m.driftSet[li.name]; drifted {
+			row += "  " + driftStyle.Render("↑")
+		}
+		lines = append(lines, row)
 	}
 
-	writeScrollWindow(&sb, lines, m.listOffset, max(height-4, 1))
+	writeScrollWindow(&sb, lines, m.listOffset, listVisibleRows(height))
 
 	return renderPackPanel(width, height, m.focus == packPanelList, sb.String())
 }
 
-// viewPackInfoPanel renders the lower-left pack info block.
-// Registry section sits directly below the pack details, separated by a rule.
+// viewPackInfoPanel renders the right column when the packs list is focused:
+// pack details followed by a registry block separated by a rule.
 func (m packsModel) viewPackInfoPanel(width, height int) string {
 	li := m.currentListItem()
 	if li == nil {
-		return renderPackPanel(width, height, false, dimStyle.Render("No pack selected"))
+		var sb strings.Builder
+		sb.WriteString(renderPanelHeader("Details", false) + "\n")
+		sb.WriteString(dimStyle.Render("No pack selected") + "\n")
+		return renderPackPanel(width, height, false, sb.String())
 	}
 
 	innerW := max(width-4, 20)
@@ -612,65 +758,155 @@ func (m packsModel) viewPackInfoPanel(width, height int) string {
 	registryStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
 
 	var sb strings.Builder
+	sb.WriteString(renderPanelHeader("Details", false) + "\n")
 	sb.WriteString(selectedStyle.Render(li.name) + "\n")
 
 	if item := m.currentItem(); item != nil {
 		if item.entry.Version != "" {
-			sb.WriteString(infoField("Version", "v"+item.entry.Version, labelW) + "\n")
+			sb.WriteString(infoField("Version", "v"+item.entry.Version, labelW, innerW) + "\n")
+		}
+		// Pin/Ref/Commit surface the v0.21 lockfile state. Pin wins over
+		// Ref because it carries the same information plus the "(pinned)"
+		// indicator; an unpinned clone shows the tracked branch via Ref.
+		if pin := item.entry.PinLabel(); pin != "" {
+			sb.WriteString(infoField("Pin", pin, labelW, innerW) + "\n")
+		} else if item.entry.Ref != "" {
+			sb.WriteString(infoField("Ref", item.entry.Ref, labelW, innerW) + "\n")
+		}
+		if item.entry.CommitHash != "" {
+			sb.WriteString(infoField("Commit", util.ShortHash(item.entry.CommitHash), labelW, innerW) + "\n")
+		}
+		// "Latest" surfaces drift for installed clone packs at a glance.
+		// Hidden when versions aren't loaded yet, when no semver tags exist,
+		// or when the user is already on the latest tag — those cases would
+		// only add noise to the panel.
+		if hint := m.installedLatestHint(li.name, item.entry); hint != "" {
+			sb.WriteString(infoField("Latest", hint, labelW, innerW) + "\n")
 		}
 		if item.entry.Method != "" {
 			name, style := methodDisplay(item.entry.Method)
-			sb.WriteString(infoField("Method", style.Render(name), labelW) + "\n")
+			sb.WriteString(infoField("Method", style.Render(name), labelW, innerW) + "\n")
 		}
 		if item.fileSizes != nil {
 			if total, ok := item.fileSizes["total"]; ok && total > 0 {
-				sb.WriteString(infoField("Size", formatSize(total), labelW) + "\n")
+				sb.WriteString(infoField("Size", formatSize(total), labelW, innerW) + "\n")
 			}
 		}
 		if installedAt := formatInstallDate(item.entry.InstalledAt); installedAt != "" {
-			sb.WriteString(infoField("Installed", installedAt, labelW) + "\n")
+			sb.WriteString(infoField("Installed", installedAt, labelW, innerW) + "\n")
 		}
 		src := sourceForMethod(item.entry.Method, item.entry.Origin, item.entry.Path)
-		if item.entry.Method == "link" || item.entry.Method == "copy" || item.entry.Method == "local" {
+		if item.entry.Method == config.MethodLink || item.entry.Method == config.MethodCopy || item.entry.Method == config.MethodLocal {
 			_, style := methodDisplay(item.entry.Method)
 			src = style.Render(src)
 		}
-		sb.WriteString(infoField("Source", src, labelW) + "\n")
+		sb.WriteString(infoField("Source", src, labelW, innerW) + "\n")
 	} else {
 		sb.WriteString(dimStyle.Render("Not installed locally.") + "\n")
 	}
 
 	if li.inRegistry {
 		if li.description != "" {
-			sb.WriteString(infoField("About", strings.TrimSpace(li.description), labelW) + "\n")
+			sb.WriteString(infoField("About", strings.TrimSpace(li.description), labelW, innerW) + "\n")
 		}
 		sb.WriteString("\n")
 		sb.WriteString(dimStyle.Render(strings.Repeat("─", innerW)) + "\n")
 		sb.WriteString(registryStyle.Render("Registry") + "\n")
-		sb.WriteString(infoField("Name", li.name, labelW) + "\n")
+		sb.WriteString(infoField("Name", li.name, labelW, innerW) + "\n")
 		if li.owner != "" {
-			sb.WriteString(infoField("Owner", li.owner, labelW) + "\n")
+			sb.WriteString(infoField("Owner", li.owner, labelW, innerW) + "\n")
 		}
 		if li.repo != "" {
-			sb.WriteString(infoField("Repo", repoBaseName(li.repo, li.regPath), labelW) + "\n")
+			sb.WriteString(infoField("Repo", repoBaseName(li.repo, li.regPath), labelW, innerW) + "\n")
 		}
 		if li.ref != "" {
-			sb.WriteString(infoField("Ref", li.ref, labelW) + "\n")
+			sb.WriteString(infoField("Ref", li.ref, labelW, innerW) + "\n")
+		}
+		// Inline version list for registry-only packs answers "what versions
+		// can I pick?" without leaving the browse view. Loading and error
+		// states are surfaced explicitly so users can tell why the line is
+		// missing tags.
+		if !li.installed {
+			if vline := m.registryVersionsLine(li.name); vline != "" {
+				sb.WriteString(infoField("Versions", vline, labelW, innerW) + "\n")
+			}
 		}
 	}
 
 	return renderPackPanel(width, height, false, sb.String())
 }
 
+// installedLatestHint returns a short label for the "Latest" row in the
+// details panel of an installed clone pack. Returns "" when there's nothing
+// useful to show: cache miss, in-flight load, no semver tags, or already on
+// the newest tag. The hint is intentionally cheap — it's a drift signal, not
+// a full version list (the registry block has the full list when applicable).
+func (m packsModel) installedLatestHint(name string, entry app.PackShowEntry) string {
+	if entry.Method != config.MethodClone {
+		return ""
+	}
+	cached, ok := m.versionsCacheEntry(name)
+	if !ok || cached.state == asyncLoading {
+		return ""
+	}
+	if cached.state == asyncError || len(cached.versions) == 0 {
+		return ""
+	}
+	latest := cached.versions[0].Version // FilterSemverTags returns descending
+	// Suppress when the installed pin already matches the latest — no drift,
+	// no need for the user's attention. We compare against Pin first
+	// (authoritative for clone packs) and fall back to pack.json Version.
+	current := entry.Pin
+	if current == "" {
+		current = entry.Version
+	}
+	if current != "" && source.StripVersionPrefix(current) == source.StripVersionPrefix(latest) {
+		return ""
+	}
+	return latest
+}
+
+// registryVersionsLine renders the version-discovery state for a registry-only
+// pack as a comma-separated inline string. Caps at three entries plus a "+N"
+// suffix when there are more — the goal is "show me what's available" at a
+// glance, not a full enumeration.
+func (m packsModel) registryVersionsLine(name string) string {
+	cached, ok := m.versionsCacheEntry(name)
+	if !ok {
+		return "" // not yet triggered; cursor focus loader will populate
+	}
+	switch cached.state {
+	case asyncLoading:
+		return dimStyle.Render("loading…")
+	case asyncError:
+		return dimStyle.Render("(unavailable)")
+	}
+	if len(cached.versions) == 0 {
+		return dimStyle.Render("(none)")
+	}
+	const inlineCap = 3
+	versions := cached.versions
+	tail := ""
+	if len(versions) > inlineCap {
+		tail = fmt.Sprintf(" +%d more", len(versions)-inlineCap)
+		versions = versions[:inlineCap]
+	}
+	parts := make([]string, len(versions))
+	for i, v := range versions {
+		parts[i] = v.Version
+	}
+	return strings.Join(parts, ", ") + tail
+}
+
 // sourceForMethod returns the Source value for the details pane.
 // link/copy show the origin path; clone/archive show the installed path on disk.
 func sourceForMethod(method, origin, installPath string) string {
 	switch method {
-	case "link", "copy", "local":
+	case config.MethodLink, config.MethodCopy, config.MethodLocal:
 		if origin != "" {
 			return shortPath(origin)
 		}
-	case "clone", "archive":
+	case config.MethodClone, config.MethodArchive:
 		if installPath != "" {
 			return shortPath(installPath)
 		}
@@ -687,11 +923,11 @@ func sourceForMethod(method, origin, installPath string) string {
 // methodDisplay maps a raw install method to a user-facing display name and style.
 func methodDisplay(method string) (string, lipgloss.Style) {
 	switch method {
-	case "link":
+	case config.MethodLink:
 		return "link", lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
-	case "copy", "local":
+	case config.MethodCopy, config.MethodLocal:
 		return "local", lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	case "clone", "archive":
+	case config.MethodClone, config.MethodArchive:
 		return "remote", lipgloss.NewStyle().Foreground(lipgloss.Color("114"))
 	default:
 		return method, dimStyle
@@ -721,9 +957,71 @@ func repoBaseName(rawURL, regPath string) string {
 }
 
 // infoField renders a labeled key-value pair with aligned columns.
-func infoField(label, value string, labelWidth int) string {
+// infoField renders a "label   value" pair where long values wrap inside
+// the value column instead of bleeding into the next row's label gutter.
+// The value is pre-wrapped on word boundaries (lipgloss's own Width() does
+// character-wrap, which produces ugly mid-word breaks at narrow widths),
+// then handed to lipgloss as a fixed-width block. JoinHorizontal stacks
+// the label column next to it — empty rows below the single-line label
+// keep continuation lines of the value aligned at the same x offset.
+func infoField(label, value string, labelWidth, contentW int) string {
 	padded := label + strings.Repeat(" ", max(labelWidth-len(label), 1))
-	return dimStyle.Render(padded) + value
+	valueW := max(contentW-labelWidth, 10)
+
+	// Styled values (containing ANSI escapes) skip the word-wrap step
+	// because strings.Fields would tokenize across escape sequences and
+	// break the styling. The only realistic case is the Source field for
+	// link/copy packs at narrow widths — character-wrap there is an
+	// acceptable degradation for an edge case.
+	if !strings.Contains(value, "\x1b") {
+		value = wrapWords(value, valueW)
+	}
+
+	valueCol := lipgloss.NewStyle().Width(valueW).Render(value)
+	return lipgloss.JoinHorizontal(lipgloss.Top, dimStyle.Render(padded), valueCol)
+}
+
+// wrapWords greedy-wraps a plain-text string to lines no wider than width,
+// preserving word boundaries. Words longer than width are hard-broken so
+// every line fits the column.
+func wrapWords(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return ""
+	}
+	var lines []string
+	var current string
+	for _, w := range words {
+		if len(w) > width {
+			if current != "" {
+				lines = append(lines, current)
+				current = ""
+			}
+			for len(w) > width {
+				lines = append(lines, w[:width])
+				w = w[width:]
+			}
+			current = w
+			continue
+		}
+		if current == "" {
+			current = w
+			continue
+		}
+		if len(current)+1+len(w) > width {
+			lines = append(lines, current)
+			current = w
+		} else {
+			current += " " + w
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func installedPackSummary(e app.PackShowEntry) string {
@@ -864,11 +1162,7 @@ func (m packsModel) viewPreviewPanel(width, height int) string {
 		sb.WriteString(errorStyle.Render("Error: "+errText) + "\n")
 		return renderPackPanel(width, height, m.focus == packPanelPreview, sb.String())
 	case asyncPending:
-		if m.focus == packPanelList {
-			sb.WriteString(dimStyle.Render("Open content to load a preview") + "\n")
-		} else {
-			sb.WriteString(dimStyle.Render("Select content to preview") + "\n")
-		}
+		sb.WriteString(dimStyle.Render("Select content to preview") + "\n")
 		return renderPackPanel(width, height, m.focus == packPanelPreview, sb.String())
 	}
 

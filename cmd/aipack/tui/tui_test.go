@@ -574,6 +574,124 @@ func TestChecklistDialog_HelpText(t *testing.T) {
 	}
 }
 
+func TestChecklistDialog_ConfirmRow_EnterTogglesItems(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha", checked: false},
+		{label: "beta", checked: true},
+	}
+	d := newChecklistDialog("test", "Pick:", items).withConfirmRow("install...")
+
+	// Cursor on first item — enter must toggle, not confirm.
+	d2, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("enter on a checkable item must not produce a confirm command")
+	}
+	if !d2.checkItems[0].checked {
+		t.Error("enter on first item should toggle it to checked")
+	}
+
+	// Space and enter behave identically on checkable items.
+	d3, cmd := d2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if cmd != nil {
+		t.Fatal("space on a checkable item must not produce a confirm command")
+	}
+	if d3.checkItems[0].checked {
+		t.Error("space on first item should toggle it back to unchecked")
+	}
+}
+
+func TestChecklistDialog_ConfirmRow_NavigationReachesActionRow(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha"},
+		{label: "beta"},
+	}
+	d := newChecklistDialog("test", "Pick:", items).withConfirmRow("install...")
+
+	// Two items + 1 action row = max cursor index 2.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if d.listCursor != 2 {
+		t.Fatalf("expected cursor to reach action row at index 2, got %d", d.listCursor)
+	}
+	// One past the action row should clamp.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if d.listCursor != 2 {
+		t.Fatalf("expected cursor to clamp at action row index 2, got %d", d.listCursor)
+	}
+}
+
+func TestChecklistDialog_ConfirmRow_EnterOnActionRowConfirms(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha", checked: true},
+		{label: "beta", checked: false},
+	}
+	d := newChecklistDialog("test", "Pick:", items).withConfirmRow("install...")
+
+	// Move to action row.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if d.listCursor != 2 {
+		t.Fatalf("setup: expected cursor at action row, got %d", d.listCursor)
+	}
+
+	// Space on the action row must NOT toggle anything (no item there).
+	d2, cmd := d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if cmd != nil {
+		t.Fatal("space on action row must not emit a command")
+	}
+	if !d2.checkItems[0].checked || d2.checkItems[1].checked {
+		t.Fatalf("space on action row must not change item state, got %+v", d2.checkItems)
+	}
+
+	// Enter on the action row confirms with current selection.
+	_, cmd = d2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on action row should produce a confirm command")
+	}
+	result, ok := cmd().(dialogResultMsg)
+	if !ok {
+		t.Fatalf("expected dialogResultMsg, got %T", cmd())
+	}
+	if !result.confirmed {
+		t.Fatal("expected confirmed=true on action-row enter")
+	}
+	if len(result.values) != 1 || result.values[0] != "alpha" {
+		t.Fatalf("expected [alpha], got %v", result.values)
+	}
+}
+
+func TestChecklistDialog_ConfirmRow_HelpText(t *testing.T) {
+	t.Parallel()
+	d := newChecklistDialog("test", "Pick:", nil).withConfirmRow("install...")
+	help := d.helpText()
+	if !strings.Contains(help, "space/enter:toggle") {
+		t.Fatalf("expected help to advertise space/enter toggle, got %q", help)
+	}
+	if strings.Contains(help, "enter:confirm") {
+		t.Fatalf("expected help to drop 'enter:confirm' in confirm-row mode, got %q", help)
+	}
+}
+
+func TestChecklistDialog_ConfirmRow_View(t *testing.T) {
+	t.Parallel()
+	items := []checkItem{
+		{label: "alpha", checked: true},
+		{label: "beta", checked: false},
+	}
+	d := newChecklistDialog("test", "Pick:", items).withConfirmRow("install...")
+	view := d.View()
+	if !strings.Contains(view, "install...") {
+		t.Fatalf("expected action row label in view, got:\n%s", view)
+	}
+	// Action row must not have a checkbox.
+	if strings.Contains(view, "[ ] install...") || strings.Contains(view, "[x] install...") {
+		t.Fatalf("action row should render without a checkbox, got:\n%s", view)
+	}
+}
+
 func TestBundledCandidatesDialog_ConfirmRehydratesApprovedContent(t *testing.T) {
 	t.Parallel()
 
@@ -616,7 +734,7 @@ func TestBundledCandidatesDialog_ConfirmRehydratesApprovedContent(t *testing.T) 
 	}
 
 	m := newRootModel(context.Background(), RunConfig{ConfigDir: configDir})
-	msg := updatePack(context.Background(), configDir, "copy-pack", false, nil)()
+	msg := updatePack(context.Background(), configDir, "copy-pack", false, "", nil)()
 	packMsg, ok := msg.(packUpdatedMsg)
 	if !ok {
 		t.Fatalf("expected packUpdatedMsg, got %T", msg)

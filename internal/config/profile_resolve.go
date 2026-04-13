@@ -38,9 +38,18 @@ type ResolveResult struct {
 	Packs             []ResolvedPack
 	SettingsPacks     []string
 	CollisionWarnings []domain.Warning
+	// BrokenRefs are profile references that were in a previous pack
+	// inventory (per the lockfile) but are not in the current resolve.
+	// Only populated when prevInventories is supplied.
+	BrokenRefs []domain.BrokenRef
 }
 
-func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, strategy CollisionStrategy) (ResolveResult, error) {
+// ResolveProfile resolves a profile. When prevInventories is non-nil, an
+// exact-ID reference that isn't in the current pack inventory but WAS in
+// the previous one becomes a BrokenRef instead of a hard error — the pack
+// removed content the profile still references. Typos (IDs that were
+// never in the pack) still hard-error.
+func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, strategy CollisionStrategy, prevInventories map[string]domain.PackInventory) (ResolveResult, error) {
 	if strategy == "" {
 		strategy = CollisionLastWins
 	}
@@ -50,6 +59,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 
 	var collisions []collisionInfo
 	var collisionWarnings []domain.Warning
+	var brokenRefs []domain.BrokenRef
 
 	var packs []ResolvedPack
 	var settingsPacks []string
@@ -118,22 +128,31 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 			return ResolveResult{}, err
 		}
 
-		rules, err := resolveVector(packName, capRules, manifest.Rules, packCfg.Rules, quiet)
+		var prevInv *domain.PackInventory
+		if prev, ok := prevInventories[packName]; ok {
+			prevInv = &prev
+		}
+
+		rules, broken, err := resolveVector(packName, capRules, manifest.Rules, packCfg.Rules, quiet, prevInv)
 		if err != nil {
 			return ResolveResult{}, err
 		}
-		agents, err := resolveVector(packName, capAgents, manifest.Agents, packCfg.Agents, quiet)
+		brokenRefs = append(brokenRefs, broken...)
+		agents, broken, err := resolveVector(packName, capAgents, manifest.Agents, packCfg.Agents, quiet, prevInv)
 		if err != nil {
 			return ResolveResult{}, err
 		}
-		workflows, err := resolveVector(packName, capWorkflows, manifest.Workflows, packCfg.Workflows, quiet)
+		brokenRefs = append(brokenRefs, broken...)
+		workflows, broken, err := resolveVector(packName, capWorkflows, manifest.Workflows, packCfg.Workflows, quiet, prevInv)
 		if err != nil {
 			return ResolveResult{}, err
 		}
-		skills, err := resolveVector(packName, capSkills, manifest.Skills, packCfg.Skills, quiet)
+		brokenRefs = append(brokenRefs, broken...)
+		skills, broken, err := resolveVector(packName, capSkills, manifest.Skills, packCfg.Skills, quiet, prevInv)
 		if err != nil {
 			return ResolveResult{}, err
 		}
+		brokenRefs = append(brokenRefs, broken...)
 
 		packResolved := ResolvedPack{
 			Name:      packName,
@@ -271,25 +290,49 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		return ResolveResult{}, errors.New("no enabled packs in profile")
 	}
 
-	// Post-resolution validation: every override ID must match an actual
-	// resource that appeared in some pack. Unmatched IDs are typos.
+	// Post-resolution validation: every override ID must match actual
+	// resolved content. Unmatched IDs were never in the pack (typo) unless
+	// the owner pack's previous inventory had them, in which case they
+	// drifted out and become BrokenRefs instead of fatal errors.
 	for _, v := range vectors {
+		cat := labelToCategory(v.label)
 		for id, owner := range v.owner {
-			if _, ok := v.seen[id]; !ok {
-				return ResolveResult{}, fmt.Errorf("pack %q overrides.%s references %q, but no pack provides that %s", owner, v.label, id, v.label)
+			if _, ok := v.seen[id]; ok {
+				continue
 			}
+			if prev, ok := prevInventories[owner]; ok && cat != "" && prev.Contains(cat, id) {
+				brokenRefs = append(brokenRefs, domain.BrokenRef{
+					PackName:  owner,
+					Category:  cat,
+					Direction: "overrides",
+					ID:        id,
+				})
+				continue
+			}
+			return ResolveResult{}, fmt.Errorf("pack %q overrides.%s references %q, but no pack provides that %s", owner, v.label, id, v.label)
 		}
 	}
 	for id, owner := range overrideOwnerMCP {
-		if _, ok := seenServers[id]; !ok {
-			return ResolveResult{}, fmt.Errorf("pack %q overrides.mcp references %q, but no pack provides that server", owner, id)
+		if _, ok := seenServers[id]; ok {
+			continue
 		}
+		if prev, ok := prevInventories[owner]; ok && prev.Contains(domain.CategoryMCP, id) {
+			brokenRefs = append(brokenRefs, domain.BrokenRef{
+				PackName:  owner,
+				Category:  domain.CategoryMCP,
+				Direction: "overrides",
+				ID:        id,
+			})
+			continue
+		}
+		return ResolveResult{}, fmt.Errorf("pack %q overrides.mcp references %q, but no pack provides that server", owner, id)
 	}
 
 	return ResolveResult{
 		Packs:             packs,
 		SettingsPacks:     settingsPacks,
 		CollisionWarnings: collisionWarnings,
+		BrokenRefs:        brokenRefs,
 	}, nil
 }
 
@@ -318,9 +361,27 @@ var defaultTrue = PackEnabled
 // settingsDisabled delegates to SettingsDisabled for the opt-out model.
 var settingsDisabled = SettingsDisabled
 
-func resolveVector(packName string, label string, inventory []string, sel VectorSelector, quiet bool) ([]string, error) {
+// labelToCategory maps the internal capXxx label strings to domain categories.
+// Unknown labels return empty string (BrokenRef reporting still works, the
+// resolver just can't consult prevInv — acceptable for the single call
+// site that passes the label).
+func labelToCategory(label string) domain.PackCategory {
+	switch label {
+	case capRules:
+		return domain.CategoryRules
+	case capAgents:
+		return domain.CategoryAgents
+	case capWorkflows:
+		return domain.CategoryWorkflows
+	case capSkills:
+		return domain.CategorySkills
+	}
+	return ""
+}
+
+func resolveVector(packName string, label string, inventory []string, sel VectorSelector, quiet bool, prevInv *domain.PackInventory) ([]string, []domain.BrokenRef, error) {
 	if sel.Include != nil && sel.Exclude != nil {
-		return nil, fmt.Errorf("pack %q %s cannot set both include and exclude", packName, label)
+		return nil, nil, fmt.Errorf("pack %q %s cannot set both include and exclude", packName, label)
 	}
 	inv := normalizeList(inventory)
 	invSet := map[string]struct{}{}
@@ -334,26 +395,26 @@ func resolveVector(packName string, label string, inventory []string, sel Vector
 		if sel.Include != nil {
 			include := normalizeList(*sel.Include)
 			if len(include) > 0 {
-				return expandSelectors(packName, label, "include", include, inv, invSet)
+				return expandSelectors(packName, label, "include", include, inv, invSet, prevInv)
 			}
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if sel.Include != nil {
 		include := normalizeList(*sel.Include)
 		if len(include) == 0 {
-			return inv, nil // empty include = include all (backward compat)
+			return inv, nil, nil // empty include = include all (backward compat)
 		}
-		return expandSelectors(packName, label, "include", include, inv, invSet)
+		return expandSelectors(packName, label, "include", include, inv, invSet, prevInv)
 	}
 	if sel.Exclude == nil {
-		return inv, nil
+		return inv, nil, nil
 	}
 	exclude := normalizeList(*sel.Exclude)
-	matched, err := expandSelectors(packName, label, "exclude", exclude, inv, invSet)
+	matched, broken, err := expandSelectors(packName, label, "exclude", exclude, inv, invSet, prevInv)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	matchedSet := map[string]struct{}{}
 	for _, v := range matched {
@@ -366,7 +427,7 @@ func resolveVector(packName string, label string, inventory []string, sel Vector
 		}
 		out = append(out, v)
 	}
-	return out, nil
+	return out, broken, nil
 }
 
 // isGlobPattern reports whether s contains glob metacharacters.
@@ -376,15 +437,20 @@ func isGlobPattern(s string) bool {
 
 // expandSelectors resolves a list of selectors (exact IDs or glob patterns)
 // against the inventory. Exact IDs must exist; glob patterns may match zero items.
-func expandSelectors(packName, label, direction string, selectors, inv []string, invSet map[string]struct{}) ([]string, error) {
+// When prevInv is non-nil and an exact-ID selector isn't in the current
+// inventory but WAS in prevInv, it's reported as a BrokenRef and skipped
+// instead of erroring.
+func expandSelectors(packName, label, direction string, selectors, inv []string, invSet map[string]struct{}, prevInv *domain.PackInventory) ([]string, []domain.BrokenRef, error) {
 	seen := map[string]struct{}{}
 	var out []string
+	var broken []domain.BrokenRef
+	cat := labelToCategory(label)
 	for _, sel := range selectors {
 		if isGlobPattern(sel) {
 			for _, id := range inv {
 				matched, merr := filepath.Match(sel, id)
 				if merr != nil {
-					return nil, fmt.Errorf("pack %q %s %s: invalid glob %q: %w", packName, label, direction, sel, merr)
+					return nil, nil, fmt.Errorf("pack %q %s %s: invalid glob %q: %w", packName, label, direction, sel, merr)
 				}
 				if matched {
 					if _, ok := seen[id]; !ok {
@@ -395,7 +461,16 @@ func expandSelectors(packName, label, direction string, selectors, inv []string,
 			}
 		} else {
 			if _, ok := invSet[sel]; !ok {
-				return nil, fmt.Errorf("pack %q %s %s references unknown id %q", packName, label, direction, sel)
+				if prevInv != nil && cat != "" && prevInv.Contains(cat, sel) {
+					broken = append(broken, domain.BrokenRef{
+						PackName:  packName,
+						Category:  cat,
+						Direction: direction,
+						ID:        sel,
+					})
+					continue
+				}
+				return nil, nil, fmt.Errorf("pack %q %s %s references unknown id %q", packName, label, direction, sel)
 			}
 			if _, ok := seen[sel]; !ok {
 				seen[sel] = struct{}{}
@@ -404,7 +479,7 @@ func expandSelectors(packName, label, direction string, selectors, inv []string,
 		}
 	}
 	slices.Sort(out)
-	return out, nil
+	return out, broken, nil
 }
 
 type collisionInfo struct{ kind, id, packA, packB string }

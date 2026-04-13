@@ -24,6 +24,12 @@ type Profile struct {
 	// SettingsPacks lists packs that contribute base settings, in profile order.
 	// All packs with config files contribute by default; set settings.enabled: false to opt out.
 	SettingsPacks []string
+
+	// BrokenRefs are profile references that were in a previous lockfile
+	// inventory but not in the current resolved pack — surfaced by
+	// sync-time drift detection. Populated only when the resolver is
+	// given previous inventories via engine.Resolve.
+	BrokenRefs []BrokenRef
 }
 
 // Pack is a resolved pack within a profile, carrying fully-typed content.

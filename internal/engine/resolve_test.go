@@ -86,7 +86,7 @@ func TestResolve_TypedContent(t *testing.T) {
 
 	profilePath := filepath.Join(dir, "profile.yaml")
 
-	profile, warnings, err := eng.Resolve(profileCfg, profilePath, configDir, config.CollisionError)
+	profile, warnings, err := eng.Resolve(profileCfg, profilePath, configDir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestResolve_MultiPack(t *testing.T) {
 		},
 	}
 
-	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir, config.CollisionError)
+	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestResolve_WithMCPServers(t *testing.T) {
 		},
 	}
 
-	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir, config.CollisionError)
+	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestResolve_HasContent(t *testing.T) {
 		Packs:         []config.PackEntry{{Name: "test-pack"}},
 	}
 
-	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir, config.CollisionError)
+	profile, _, err := eng.Resolve(profileCfg, filepath.Join(dir, "profile.yaml"), configDir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestResolve_MCPPackRootExpandsToAbsolutePath(t *testing.T) {
 			Name: "wrapped",
 			MCP:  map[string]config.MCPServerConfig{"proxy": {Enabled: config.BoolPtr(true)}},
 		}},
-	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError)
+	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestResolve_ProfileParamsExpandInMCPCommand(t *testing.T) {
 			Name: "parameterized",
 			MCP:  map[string]config.MCPServerConfig{"pypi": {Enabled: config.BoolPtr(true)}},
 		}},
-	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError)
+	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestResolve_UnresolvableEnvSkipsServerOthersSurvive(t *testing.T) {
 				"standalone":  {Enabled: config.BoolPtr(true)},
 			},
 		}},
-	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError)
+	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestResolve_DiscoveryNilPopulatesEmptyArrayOpts(t *testing.T) {
 	profile, _, err := eng.Resolve(config.ProfileConfig{
 		SchemaVersion: config.ProfileSchemaVersion,
 		Packs:         []config.PackEntry{{Name: "discovery"}},
-	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError)
+	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

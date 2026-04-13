@@ -23,6 +23,14 @@ import (
 // DoctorSchemaVersion is the doctor report format version.
 const DoctorSchemaVersion = 1
 
+// doctorDriftConcurrency bounds parallel ls-remote calls in the pack drift
+// check. Higher than packUpdateConcurrency because the operation is read-only
+// (no clone, no extract), interactive, and bounded by the 10-second batch
+// timeout — under-utilizing the window leaves drift unchecked on workspaces
+// with many packs. Eight is comfortable under typical git-host throttle
+// thresholds for ls-remote bursts.
+const doctorDriftConcurrency = 8
+
 // CheckResult is a single check outcome in a doctor report.
 type CheckResult struct {
 	Name        string         `json:"name"`
@@ -151,17 +159,37 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		add(wslCheck)
 	}
 
-	// unregistered packs (warning-only, does not block subsequent checks)
-	add(doctorCheckUnregisteredPacks(configDir, syncCfg))
+	// Migrate installed_packs from sync-config to lockfile if needed.
+	if err := config.MigratePackStateToLockfile(configDir); err != nil {
+		add(CheckResult{
+			Name: "lockfile_migration", Severity: "warning", Status: "fail", OK: false,
+			Message: fmt.Sprintf("lockfile migration failed: %s", err),
+		})
+	}
 
-	// orphaned sync-config entries pointing at missing pack directories
-	add(doctorCheckOrphanedInstallEntries(configDir, syncCfg, req.Fix))
+	// Load lockfile for pack metadata checks.
+	lf, lfErr := config.LoadLockfile(config.LockfilePath(configDir))
+	if lfErr != nil {
+		add(CheckResult{
+			Name: "lockfile_loaded", Severity: "warning", Status: "fail", OK: false,
+			Message: fmt.Sprintf("loading lockfile failed: %s", lfErr),
+		})
+	}
+
+	// unregistered packs (warning-only, does not block subsequent checks)
+	add(doctorCheckUnregisteredPacks(configDir, lf.Packs))
+
+	// orphaned lockfile entries pointing at missing pack directories
+	add(doctorCheckOrphanedInstallEntries(configDir, &lf, req.Fix))
 
 	// stale backup directories and temp staging left by interrupted operations
 	add(doctorCheckStaleBackups(configDir, req.Fix))
 
-	// pack version drift (warning-only)
-	add(doctorCheckPackDrift(configDir, syncCfg))
+	// pack version drift (warning-only). Performs concurrent ls-remote HEAD
+	// against each clone-method pack's origin with a shared 10s timeout —
+	// network calls fail open (treated as "no drift signal") so offline runs
+	// don't blow up the report.
+	add(doctorCheckPackDrift(ctx, configDir, lf.Packs, nil))
 
 	// profile
 	profileCheck := CheckResult{Name: "profile_loaded", Severity: "critical", Status: "fail", OK: false}
@@ -203,9 +231,14 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	// Profile structure validation (warning-level).
 	add(doctorCheckProfileValidation(prof))
 
-	// packs + MCP inventory — reuse config.ResolveProfile + engine.LoadMCPInventoryForPacks
+	// packs + MCP inventory — reuse config.ResolveProfile + engine.LoadMCPInventoryForPacks.
+	// Pass previous lockfile inventories so broken refs (profile references
+	// to pack content that drifted out) become BrokenRefs instead of a
+	// fatal resolve error — doctor surfaces them as a dedicated check
+	// below rather than blocking the whole report.
+	prevInv := doctorLoadPrevInventories(configDir)
 	packsCheck := CheckResult{Name: "packs_resolved", Severity: "critical", Status: "fail", OK: false}
-	resolved, rcErr := config.ResolveProfile(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy)
+	resolved, rcErr := config.ResolveProfile(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy, prevInv)
 	resolvedPacks := resolved.Packs
 	if rcErr != nil {
 		packsCheck.Message = rcErr.Error()
@@ -224,6 +257,12 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		add(doctorSkippedCheck("mcp_server_paths_exist", "packs not resolved"))
 		return rep
 	}
+	// broken_refs: profile references that drifted out of the pack since
+	// the last sync. Warning-level (not critical) because resolution
+	// itself succeeded with the broken refs dropped — sync still works,
+	// the user just needs to reconcile their profile.
+	add(doctorCheckBrokenRefs(resolved.BrokenRefs))
+
 	packInfos, providers := doctorBuildPackInfoAndProviders(resolvedPacks, inventories, configDir)
 	providersList := make([]ServerProvider, 0, len(providers))
 	serverNames := make([]string, 0, len(providers))
@@ -240,7 +279,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	add(packsCheck)
 
 	if req.Status {
-		statusProfile, _, engErr := eng.Resolve(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy)
+		statusProfile, _, engErr := eng.Resolve(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy, prevInv)
 		if engErr == nil {
 			rep.Ecosystem = BuildEcosystemStatus(statusProfile, profileName, pp, configDir)
 		}
@@ -358,6 +397,65 @@ func doctorCheckWSL(syncCfg config.SyncConfig) CheckResult {
 
 func doctorSkippedCheck(name string, reason string) CheckResult {
 	return CheckResult{Name: name, Severity: "critical", Status: "skip", OK: false, Message: "skipped: " + reason}
+}
+
+// doctorLoadPrevInventories returns the per-pack inventories from the
+// lockfile so the resolver can distinguish drifted-out refs (warning) from
+// typos (fatal). Returns nil on any failure — the resolver interprets nil
+// as "no baseline," matching pre-drift behavior.
+func doctorLoadPrevInventories(configDir string) map[string]domain.PackInventory {
+	lf, err := config.EnsureLockfileMigrated(configDir)
+	if err != nil {
+		return nil
+	}
+	if len(lf.Packs) == 0 {
+		return nil
+	}
+	out := make(map[string]domain.PackInventory, len(lf.Packs))
+	for name, meta := range lf.Packs {
+		if meta.Resolved != nil {
+			out[name] = *meta.Resolved
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// doctorCheckBrokenRefs reports profile references that were in a previous
+// pack inventory but are no longer in the current pack contents. These are
+// drifted-out refs — not typos — so the check is warning-level.
+func doctorCheckBrokenRefs(refs []domain.BrokenRef) CheckResult {
+	result := CheckResult{Name: "broken_refs", Severity: "warning", Status: "pass", OK: true}
+	if len(refs) == 0 {
+		result.Message = "no broken profile references"
+		return result
+	}
+	result.Status = "warn"
+	result.OK = false
+	details := make([]map[string]any, 0, len(refs))
+	for _, br := range refs {
+		location := string(br.Category)
+		switch {
+		case br.Direction == "overrides":
+			location = string(br.Category) + ".overrides"
+		case br.Category == domain.CategoryMCP:
+			location = "mcp." + br.ID
+		case br.Direction != "":
+			location = string(br.Category) + "." + br.Direction
+		}
+		details = append(details, map[string]any{
+			"pack":     br.PackName,
+			"category": string(br.Category),
+			"location": location,
+			"id":       br.ID,
+		})
+	}
+	result.Message = fmt.Sprintf("%d profile reference(s) no longer resolve against current pack contents", len(refs))
+	result.Details = map[string]any{"refs": details}
+	result.Remediation = "Edit the profile to remove the listed refs, or update the affected pack back to a version that still provides them"
+	return result
 }
 
 func doctorLoadSyncConfig(configDirFlag string, home string) (string, string, config.SyncConfig, error) {
@@ -554,8 +652,8 @@ func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[strin
 }
 
 // doctorCheckUnregisteredPacks warns about pack directories that exist in
-// configDir/packs/ but are not tracked in sync-config's installed_packs map.
-func doctorCheckUnregisteredPacks(configDir string, syncCfg config.SyncConfig) CheckResult {
+// configDir/packs/ but are not tracked in the lockfile.
+func doctorCheckUnregisteredPacks(configDir string, packs map[string]config.InstalledPackMeta) CheckResult {
 	check := CheckResult{Name: "packs_registered", Severity: "warning", Status: "pass", OK: true}
 
 	packsDir := PacksDir(configDir)
@@ -580,7 +678,7 @@ func doctorCheckUnregisteredPacks(configDir string, syncCfg config.SyncConfig) C
 		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue
 		}
-		if _, ok := syncCfg.InstalledPacks[name]; !ok {
+		if _, ok := packs[name]; !ok {
 			unregistered = append(unregistered, name)
 		}
 	}
@@ -589,7 +687,7 @@ func doctorCheckUnregisteredPacks(configDir string, syncCfg config.SyncConfig) C
 	if len(unregistered) > 0 {
 		check.Status = "warn"
 		check.OK = false
-		check.Message = fmt.Sprintf("%d pack(s) in packs/ not in installed_packs", len(unregistered))
+		check.Message = fmt.Sprintf("%d pack(s) in packs/ not in lockfile", len(unregistered))
 		check.Remediation = "Run 'aipack pack install' to register, or remove unused pack directories"
 		check.Details = map[string]any{"unregistered": unregistered}
 	} else {
@@ -599,14 +697,14 @@ func doctorCheckUnregisteredPacks(configDir string, syncCfg config.SyncConfig) C
 	return check
 }
 
-// doctorCheckOrphanedInstallEntries warns about installed_packs entries in
-// sync-config whose pack directory no longer exists on disk.
-func doctorCheckOrphanedInstallEntries(configDir string, syncCfg config.SyncConfig, fix bool) CheckResult {
+// doctorCheckOrphanedInstallEntries warns about lockfile entries whose pack
+// directory no longer exists on disk.
+func doctorCheckOrphanedInstallEntries(configDir string, lf *config.Lockfile, fix bool) CheckResult {
 	check := CheckResult{Name: "install_entries_valid", Severity: "warning", Status: "pass", OK: true}
 
 	packsDir := PacksDir(configDir)
 	var orphaned []string
-	for name := range syncCfg.InstalledPacks {
+	for name := range lf.Packs {
 		packDir := filepath.Join(packsDir, name)
 		if _, err := os.Lstat(packDir); os.IsNotExist(err) {
 			orphaned = append(orphaned, name)
@@ -620,17 +718,15 @@ func doctorCheckOrphanedInstallEntries(configDir string, syncCfg config.SyncConf
 	}
 
 	if fix {
-		// syncCfg is passed by value but InstalledPacks is a map (reference
-		// type), so this delete is visible to downstream checks. This is
-		// intentional: removed entries should not trigger false positives in
-		// pack_version_drift or stale_ledgers.
+		// Mutate the shared lockfile so downstream checks (pack_version_drift,
+		// stale_ledgers) don't flag entries we just removed.
 		for _, name := range orphaned {
-			delete(syncCfg.InstalledPacks, name)
+			delete(lf.Packs, name)
 		}
-		if err := config.SaveSyncConfig(config.SyncConfigPath(configDir), syncCfg); err != nil {
+		if err := config.SaveLockfile(config.LockfilePath(configDir), *lf); err != nil {
 			check.Status = "fail"
 			check.OK = false
-			check.Message = fmt.Sprintf("failed to save sync-config: %s", err)
+			check.Message = fmt.Sprintf("failed to save lockfile: %s", err)
 			return check
 		}
 		check.Status = "fixed"
@@ -720,41 +816,66 @@ type PackDrift struct {
 	Reason           string `json:"reason"`
 }
 
-// doctorCheckPackDrift compares installed pack versions/hashes against their
-// origins using local filesystem reads only (no network).
-func doctorCheckPackDrift(configDir string, syncCfg config.SyncConfig) CheckResult {
+// doctorCheckPackDrift wraps DetectPackDrift as a doctor CheckResult.
+func doctorCheckPackDrift(
+	ctx context.Context,
+	configDir string,
+	packs map[string]config.InstalledPackMeta,
+	lsRemoteFn func(ctx context.Context, repoURL, ref string) (string, error),
+) CheckResult {
 	check := CheckResult{Name: "pack_version_drift", Severity: "warning", Status: "pass", OK: true}
+	drifted := DetectPackDrift(ctx, configDir, packs, lsRemoteFn)
+
+	if len(drifted) > 0 {
+		check.Status = "warn"
+		check.OK = false
+		check.Message = fmt.Sprintf("%d pack(s) have version drift", len(drifted))
+		check.Remediation = "Run 'aipack pack update' to refresh, or reinstall with 'aipack pack install'"
+		check.Details = map[string]any{"drifted": drifted}
+	} else {
+		check.Message = "no version drift detected"
+	}
+	return check
+}
+
+// DetectPackDrift reports per-pack drift between the lockfile state and each
+// pack's origin. Clone-method packs use a concurrent ls-remote pass against
+// the recorded ref under a shared 10-second timeout; network failures are
+// treated as "no drift signal" so offline runs degrade gracefully. Copy-method
+// packs compare installed pack.json version against the origin path. Link
+// packs are skipped — symlinks always reflect their source.
+//
+// lsRemoteFn is the network injection point; nil resolves to source.LsRemoteHead.
+func DetectPackDrift(
+	ctx context.Context,
+	configDir string,
+	packs map[string]config.InstalledPackMeta,
+	lsRemoteFn func(ctx context.Context, repoURL, ref string) (string, error),
+) []PackDrift {
+	if lsRemoteFn == nil {
+		lsRemoteFn = source.LsRemoteHead
+	}
 
 	packsDir := PacksDir(configDir)
 	var drifted []PackDrift
+	var clonePacks []string
 
-	for name, meta := range syncCfg.InstalledPacks {
-		packDir := filepath.Join(packsDir, name)
-
+	for name, meta := range packs {
 		switch meta.Method {
 		case config.MethodClone:
-			// Compare recorded commit hash against current git HEAD in pack dir.
-			if meta.CommitHash == "" {
-				continue
-			}
-			head, err := gitHeadHash(packDir)
-			if err != nil {
-				continue
-			}
-			if head != meta.CommitHash {
-				drifted = append(drifted, PackDrift{
-					Name:          name,
-					Method:        meta.Method,
-					InstalledHash: meta.CommitHash[:min(len(meta.CommitHash), 8)],
-					CurrentHash:   head[:min(len(head), 8)],
-					Reason:        "git HEAD differs from recorded commit_hash",
-				})
+			// Defer to the concurrent ls-remote pass below. The clone install
+			// path strips .git, so a local file read against packDir/.git/HEAD
+			// is not an option here — only ls-remote answers "what does the
+			// remote ref currently point at?"
+			if meta.CommitHash != "" && meta.Origin != "" {
+				clonePacks = append(clonePacks, name)
 			}
 		case config.MethodCopy:
 			// Compare installed version against origin's pack.json version (local paths only).
 			if meta.Origin == "" || !filepath.IsAbs(meta.Origin) {
 				continue
 			}
+			packDir := filepath.Join(packsDir, name)
 			installedManifest, err := config.LoadPackManifest(filepath.Join(packDir, "pack.json"))
 			if err != nil {
 				continue // pack not readable, other checks will catch this
@@ -780,57 +901,49 @@ func doctorCheckPackDrift(configDir string, syncCfg config.SyncConfig) CheckResu
 		// link: no drift possible (symlink points to source)
 	}
 
+	if len(clonePacks) > 0 {
+		netCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		// Cap parallel ls-remote at doctorDriftConcurrency to avoid burst
+		// patterns that get throttled by stricter git hosts. Higher than
+		// packUpdateConcurrency because doctor is interactive and ls-remote
+		// is much cheaper for the server than clone — fitting more packs
+		// into the 10-second batch window matters. On netCtx cancellation
+		// the dispatch loop stops early and the report shows partial
+		// results; in-flight goroutines fail-fast on netCtx.
+		ch := make(chan *PackDrift, len(clonePacks))
+		parallelBounded(netCtx, len(clonePacks), doctorDriftConcurrency, func(i int) {
+			name := clonePacks[i]
+			meta := packs[name]
+			ref := meta.Ref
+			if source.IsCommitHash(ref) {
+				ref = ""
+			}
+			remoteHash, err := lsRemoteFn(netCtx, meta.Origin, ref)
+			if err != nil || remoteHash == "" || remoteHash == meta.CommitHash {
+				ch <- nil
+				return
+			}
+			ch <- &PackDrift{
+				Name:          name,
+				Method:        config.MethodClone,
+				InstalledHash: util.ShortHash(meta.CommitHash),
+				CurrentHash:   util.ShortHash(remoteHash),
+				Reason:        "remote ref has moved since install",
+			}
+		})
+		close(ch)
+
+		for r := range ch {
+			if r != nil {
+				drifted = append(drifted, *r)
+			}
+		}
+	}
+
 	slices.SortFunc(drifted, func(a, b PackDrift) int { return cmp.Compare(a.Name, b.Name) })
-
-	if len(drifted) > 0 {
-		check.Status = "warn"
-		check.OK = false
-		check.Message = fmt.Sprintf("%d pack(s) have version drift", len(drifted))
-		check.Remediation = "Run 'aipack pack update' to refresh, or reinstall with 'aipack pack install'"
-		check.Details = map[string]any{"drifted": drifted}
-	} else {
-		check.Message = "no version drift detected"
-	}
-	return check
-}
-
-// gitHeadHash reads the current HEAD commit hash from a git repo without shelling out.
-// Handles both loose refs (.git/refs/heads/...) and packed refs (.git/packed-refs).
-func gitHeadHash(dir string) (string, error) {
-	headPath := filepath.Join(dir, ".git", "HEAD")
-	data, err := os.ReadFile(headPath)
-	if err != nil {
-		return "", err
-	}
-	content := strings.TrimSpace(string(data))
-	// Detached HEAD: raw hash
-	if !strings.HasPrefix(content, "ref: ") {
-		return content, nil
-	}
-	// Symbolic ref: try the loose ref file first.
-	ref := strings.TrimPrefix(content, "ref: ")
-	refPath := filepath.Join(dir, ".git", ref)
-	data, err = os.ReadFile(refPath)
-	if err == nil {
-		return strings.TrimSpace(string(data)), nil
-	}
-	// Loose ref missing — check packed-refs (created by git gc / git pack-refs).
-	packedPath := filepath.Join(dir, ".git", "packed-refs")
-	packed, err := os.ReadFile(packedPath)
-	if err != nil {
-		return "", fmt.Errorf("ref %s not found in loose refs or packed-refs", ref)
-	}
-	for line := range strings.SplitSeq(string(packed), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line[0] == '#' || line[0] == '^' {
-			continue
-		}
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) == 2 && parts[1] == ref {
-			return parts[0], nil
-		}
-	}
-	return "", fmt.Errorf("ref %s not found in packed-refs", ref)
+	return drifted
 }
 
 // BuildEcosystemStatus constructs an EcosystemStatus summary from a resolved profile.

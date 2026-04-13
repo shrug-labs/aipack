@@ -414,8 +414,8 @@ func TestRegistryFetch_GitAutoDetect(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if capturedRef != "main" {
-		t.Errorf("ref = %q, want main", capturedRef)
+	if capturedRef != "" {
+		t.Errorf("ref = %q, want empty (default branch)", capturedRef)
 	}
 	if capturedPath != "registry.yaml" {
 		t.Errorf("path = %q, want registry.yaml", capturedPath)
@@ -549,8 +549,8 @@ func TestRegistryFetch_UsesDefaultGit(t *testing.T) {
 	if capturedRepo != config.DefaultRegistryRepo {
 		t.Errorf("repo = %q, want %q", capturedRepo, config.DefaultRegistryRepo)
 	}
-	if capturedRef != config.DefaultRegistryRef {
-		t.Errorf("ref = %q, want %q", capturedRef, config.DefaultRegistryRef)
+	if capturedRef != "" {
+		t.Errorf("ref = %q, want empty (default branch)", capturedRef)
 	}
 	if capturedPath != config.DefaultRegistryPath {
 		t.Errorf("path = %q, want %q", capturedPath, config.DefaultRegistryPath)
@@ -804,8 +804,8 @@ func TestRegistryAddSource_AddsToSyncConfig(t *testing.T) {
 	if src.URL != "git@github.com:org/tools.git" {
 		t.Errorf("source URL = %q", src.URL)
 	}
-	if src.Ref != "main" {
-		t.Errorf("source Ref = %q, want main (default for git URL)", src.Ref)
+	if src.Ref != "" {
+		t.Errorf("source Ref = %q, want empty (default branch)", src.Ref)
 	}
 }
 

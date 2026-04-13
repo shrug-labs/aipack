@@ -90,6 +90,24 @@ type packSizesMsg struct {
 	sizes    map[string]int64
 }
 
+// packVersionsLoadedMsg delivers the result of an async ls-remote tag query
+// for a single pack. Drives both the inline version display in the details
+// panel and the version picker shown before install.
+type packVersionsLoadedMsg struct {
+	packName string
+	versions []app.PackVersion
+	err      error
+}
+
+// packDriftLoadedMsg delivers the result of an async pack-drift scan over
+// every installed pack. Drives the drift indicator on list rows. The slice
+// is the *complete* drift state — not a delta — so the receiving model
+// rebuilds its drift set from scratch on each delivery.
+type packDriftLoadedMsg struct {
+	drifted []app.PackDrift
+	err     error
+}
+
 // registryLoadedMsg is sent after the registry finishes loading.
 type registryLoadedMsg struct {
 	items []registryItem

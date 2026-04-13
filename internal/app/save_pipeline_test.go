@@ -458,14 +458,14 @@ func TestRunSavePipeline_NewPack(t *testing.T) {
 		t.Error("expected manifest to include rule 'a'")
 	}
 
-	// Verify sync-config updated.
-	sc, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	// Verify lockfile updated.
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, ok := sc.InstalledPacks["new-pack"]
+	meta, ok := lf.Packs["new-pack"]
 	if !ok {
-		t.Fatal("pack not registered in sync-config")
+		t.Fatal("pack not registered in lockfile")
 	}
 	if meta.Method != config.MethodLocal {
 		t.Errorf("expected method %q, got %q", config.MethodLocal, meta.Method)

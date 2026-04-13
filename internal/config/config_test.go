@@ -45,7 +45,7 @@ func TestResolveProfile_AllowsEmptyInclude(t *testing.T) {
 		}},
 	}
 	profilePath := filepath.Join(root, "profile.yaml")
-	r, err := ResolveProfile(cfg, profilePath, root, CollisionError)
+	r, err := ResolveProfile(cfg, profilePath, root, CollisionError, nil)
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestResolveProfile(t *testing.T) {
 			tt.setup(t, configDir)
 
 			profilePath := filepath.Join(configDir, "profile.yaml")
-			r, err := ResolveProfile(tt.cfg, profilePath, configDir, CollisionError)
+			r, err := ResolveProfile(tt.cfg, profilePath, configDir, CollisionError, nil)
 
 			if tt.wantErr != "" {
 				if err == nil {

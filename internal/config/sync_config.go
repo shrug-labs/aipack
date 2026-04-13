@@ -44,6 +44,9 @@ const (
 )
 
 // InstalledPackMeta records the origin and install method for a pack.
+// Pinning is derived from Ref: a semver tag (raw remote spelling, with or
+// without a v-prefix) or a commit hash represents a pin; anything else
+// (branch name, empty) tracks upstream.
 type InstalledPackMeta struct {
 	Origin       string                         `yaml:"origin"`                  // abs path or URL
 	Method       string                         `yaml:"method"`                  // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodLocal
@@ -54,6 +57,7 @@ type InstalledPackMeta struct {
 	ContentPaths map[domain.PackCategory]string `yaml:"content_paths,omitempty"` // content type -> directory path within clone (nil = standard layout)
 	Approved     []domain.BundledCategory       `yaml:"approved,omitempty"`      // bundled categories the user accepted
 	Declined     []domain.BundledCategory       `yaml:"declined,omitempty"`      // bundled categories the user declined
+	Resolved     *domain.PackInventory          `yaml:"resolved,omitempty"`      // last resolved content inventory (drift detection baseline)
 }
 
 // SyncConfig is user-level configuration (one level above profiles).
@@ -68,7 +72,7 @@ type SyncConfig struct {
 		RegistryURL       string            `yaml:"registry_url,omitempty"`
 		CollisionStrategy CollisionStrategy `yaml:"collision_strategy,omitempty"`
 	} `yaml:"defaults"`
-	InstalledPacks  map[string]InstalledPackMeta `yaml:"installed_packs,omitempty"`
+	InstalledPacks  map[string]InstalledPackMeta `yaml:"installed_packs,omitempty"` // vestigial — lockfile is the SSOT; kept for migration reads
 	RegistrySources []RegistrySourceEntry        `yaml:"registry_sources,omitempty"`
 }
 

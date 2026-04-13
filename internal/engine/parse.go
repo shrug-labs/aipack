@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -131,7 +133,59 @@ func (e *Engine) parseWorkflows(packRoot string, ids []string, sourcePack string
 }
 
 func (e *Engine) parseSkills(packRoot string, ids []string, sourcePack string) ([]domain.Skill, []domain.Warning, error) {
-	return parseContent(skillSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
+	skills, warnings, err := parseContent(skillSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
+	if err != nil {
+		return skills, warnings, err
+	}
+	// Attach the bundled-asset list for each resolved skill. Anything in
+	// the skill directory other than SKILL.md is considered an asset that
+	// "ships with the skill" for drift-detection purposes.
+	for i := range skills {
+		assets, aerr := listSkillAssets(skills[i].DirPath)
+		if aerr != nil {
+			warnings = append(warnings, domain.Warning{
+				Path:    skills[i].DirPath,
+				Field:   "skill.assets",
+				Message: fmt.Sprintf("could not list skill assets: %v", aerr),
+			})
+			continue
+		}
+		skills[i].Assets = assets
+	}
+	return skills, warnings, nil
+}
+
+// listSkillAssets returns the sorted list of files under dir (recursively)
+// other than SKILL.md, as paths relative to dir with forward slashes for
+// stable cross-platform comparison.
+func listSkillAssets(dir string) ([]string, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr != nil {
+			return rerr
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "SKILL.md" {
+			return nil
+		}
+		out = append(out, rel)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------

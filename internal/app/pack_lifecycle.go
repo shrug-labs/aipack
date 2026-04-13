@@ -179,10 +179,10 @@ func PackRename(eng *engine.Engine, configDir, oldName, newName string, stdout i
 		return fmt.Errorf("saving manifest: %w", err)
 	}
 
-	// 3. Update sync-config.
-	if err := packRenameInSyncConfig(configDir, oldName, newName); err != nil {
+	// 3. Update lockfile.
+	if err := packRenameInLockfile(configDir, oldName, newName); err != nil {
 		rollback()
-		return fmt.Errorf("updating sync-config: %w", err)
+		return fmt.Errorf("updating lockfile: %w", err)
 	}
 
 	// 4. Update all profiles.
@@ -195,22 +195,16 @@ func PackRename(eng *engine.Engine, configDir, oldName, newName string, stdout i
 	return nil
 }
 
-func packRenameInSyncConfig(configDir, oldName, newName string) error {
-	scPath := config.SyncConfigPath(configDir)
-	sc, err := config.LoadSyncConfig(scPath)
-	if err != nil {
-		return err
-	}
-	if sc.InstalledPacks == nil {
+func packRenameInLockfile(configDir, oldName, newName string) error {
+	return mutateLockfile(configDir, func(lf *config.Lockfile) error {
+		meta, ok := lf.Packs[oldName]
+		if !ok {
+			return nil
+		}
+		delete(lf.Packs, oldName)
+		lf.Packs[newName] = meta
 		return nil
-	}
-	meta, ok := sc.InstalledPacks[oldName]
-	if !ok {
-		return nil
-	}
-	delete(sc.InstalledPacks, oldName)
-	sc.InstalledPacks[newName] = meta
-	return config.SaveSyncConfig(scPath, sc)
+	})
 }
 
 func packRenameInAllProfiles(configDir, oldName, newName string, stdout io.Writer) {
@@ -295,32 +289,33 @@ func packRenameInLedger(eng *engine.Engine, path, oldName, newName string) (bool
 	return true, nil
 }
 
-// packRecordOrigin saves the install metadata for a pack in sync-config.
+// packRecordOrigin saves the install metadata for a pack in the lockfile.
 func packRecordOrigin(configDir, name string, meta config.InstalledPackMeta) error {
-	scPath := config.SyncConfigPath(configDir)
-	sc, err := config.LoadSyncConfig(scPath)
-	if err != nil {
-		return err
-	}
-	if sc.InstalledPacks == nil {
-		sc.InstalledPacks = make(map[string]config.InstalledPackMeta)
-	}
-	sc.InstalledPacks[name] = meta
-	return config.SaveSyncConfig(scPath, sc)
+	return mutateLockfile(configDir, func(lf *config.Lockfile) error {
+		lf.Packs[name] = meta
+		return nil
+	})
 }
 
-// packClearOrigin removes the install metadata for a pack from sync-config.
+// packClearOrigin removes the install metadata for a pack from the lockfile.
 func packClearOrigin(configDir, name string) error {
-	scPath := config.SyncConfigPath(configDir)
-	sc, err := config.LoadSyncConfig(scPath)
+	return mutateLockfile(configDir, func(lf *config.Lockfile) error {
+		delete(lf.Packs, name)
+		return nil
+	})
+}
+
+// mutateLockfile loads the lockfile (running migration first), applies fn,
+// and saves it. If fn returns an error, the lockfile is not written.
+func mutateLockfile(configDir string, fn func(*config.Lockfile) error) error {
+	lf, err := config.EnsureLockfileMigrated(configDir)
 	if err != nil {
 		return err
 	}
-	if sc.InstalledPacks == nil {
-		return nil
+	if err := fn(&lf); err != nil {
+		return err
 	}
-	delete(sc.InstalledPacks, name)
-	return config.SaveSyncConfig(scPath, sc)
+	return config.SaveLockfile(config.LockfilePath(configDir), lf)
 }
 
 // saveProfile marshals and atomically writes a profile config.

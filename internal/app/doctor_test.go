@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,13 +119,11 @@ func TestDoctorCheckUnregisteredPacks_AllRegistered(t *testing.T) {
 	os.MkdirAll(filepath.Join(packsDir, "alpha"), 0o755)
 	os.MkdirAll(filepath.Join(packsDir, "beta"), 0o755)
 
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"alpha": {},
-			"beta":  {},
-		},
+	packs := map[string]config.InstalledPackMeta{
+		"alpha": {},
+		"beta":  {},
 	}
-	cr := doctorCheckUnregisteredPacks(dir, syncCfg)
+	cr := doctorCheckUnregisteredPacks(dir, packs)
 	if !cr.OK {
 		t.Errorf("OK = false, want true")
 	}
@@ -140,12 +140,10 @@ func TestDoctorCheckUnregisteredPacks_SomeUnregistered(t *testing.T) {
 	os.MkdirAll(filepath.Join(packsDir, "beta"), 0o755)
 	os.MkdirAll(filepath.Join(packsDir, "gamma"), 0o755)
 
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"alpha": {},
-		},
+	packs := map[string]config.InstalledPackMeta{
+		"alpha": {},
 	}
-	cr := doctorCheckUnregisteredPacks(dir, syncCfg)
+	cr := doctorCheckUnregisteredPacks(dir, packs)
 	if cr.OK {
 		t.Errorf("OK = true, want false")
 	}
@@ -168,8 +166,7 @@ func TestDoctorCheckUnregisteredPacks_NoPacks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// No packs/ directory at all.
-	syncCfg := config.SyncConfig{}
-	cr := doctorCheckUnregisteredPacks(dir, syncCfg)
+	cr := doctorCheckUnregisteredPacks(dir, nil)
 	if !cr.OK {
 		t.Errorf("OK = false, want true")
 	}
@@ -184,8 +181,7 @@ func TestDoctorCheckUnregisteredPacks_SkipsDotDirs(t *testing.T) {
 	packsDir := filepath.Join(dir, "packs")
 	os.MkdirAll(filepath.Join(packsDir, ".hidden"), 0o755)
 
-	syncCfg := config.SyncConfig{}
-	cr := doctorCheckUnregisteredPacks(dir, syncCfg)
+	cr := doctorCheckUnregisteredPacks(dir, nil)
 	if !cr.OK {
 		t.Errorf("OK = false, want true")
 	}
@@ -200,12 +196,10 @@ func TestDoctorCheckOrphanedInstallEntries_None(t *testing.T) {
 	packsDir := filepath.Join(dir, "packs")
 	os.MkdirAll(filepath.Join(packsDir, "my-pack"), 0o755)
 
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"my-pack": {Method: config.MethodCopy},
-		},
-	}
-	cr := doctorCheckOrphanedInstallEntries(dir, syncCfg, false)
+	lf := &config.Lockfile{Packs: map[string]config.InstalledPackMeta{
+		"my-pack": {Method: config.MethodCopy},
+	}}
+	cr := doctorCheckOrphanedInstallEntries(dir, lf, false)
 	if !cr.OK {
 		t.Errorf("OK = false, want true")
 	}
@@ -216,12 +210,10 @@ func TestDoctorCheckOrphanedInstallEntries_Found(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "packs"), 0o755)
 
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"gone-pack": {Method: config.MethodCopy},
-		},
-	}
-	cr := doctorCheckOrphanedInstallEntries(dir, syncCfg, false)
+	lf := &config.Lockfile{Packs: map[string]config.InstalledPackMeta{
+		"gone-pack": {Method: config.MethodCopy},
+	}}
+	cr := doctorCheckOrphanedInstallEntries(dir, lf, false)
 	if cr.OK {
 		t.Errorf("OK = true, want false")
 	}
@@ -236,26 +228,27 @@ func TestDoctorCheckOrphanedInstallEntries_Fix(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "packs"), 0o755)
 
-	syncCfg := config.SyncConfig{
-		SchemaVersion: 1,
-		InstalledPacks: map[string]config.InstalledPackMeta{
+	lf := &config.Lockfile{
+		LockVersion: 1,
+		Packs: map[string]config.InstalledPackMeta{
 			"gone-pack": {Method: config.MethodCopy},
 		},
 	}
-	// Write initial sync-config so SaveSyncConfig has a valid path.
-	config.SaveSyncConfig(config.SyncConfigPath(dir), syncCfg)
 
-	cr := doctorCheckOrphanedInstallEntries(dir, syncCfg, true)
+	cr := doctorCheckOrphanedInstallEntries(dir, lf, true)
 	if cr.Status != "fixed" {
 		t.Errorf("Status = %q, want %q", cr.Status, "fixed")
 	}
-	// Verify entry was removed from persisted sync-config.
-	reloaded, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	// Verify entry was removed from persisted lockfile and LockVersion preserved.
+	persisted, err := config.LoadLockfile(config.LockfilePath(dir))
 	if err != nil {
-		t.Fatalf("reload sync-config: %v", err)
+		t.Fatalf("reload lockfile: %v", err)
 	}
-	if _, ok := reloaded.InstalledPacks["gone-pack"]; ok {
-		t.Error("gone-pack should be removed from sync-config after fix")
+	if _, ok := persisted.Packs["gone-pack"]; ok {
+		t.Error("gone-pack should be removed from lockfile after fix")
+	}
+	if persisted.LockVersion != 1 {
+		t.Errorf("LockVersion = %d, want 1 (must be preserved through fix)", persisted.LockVersion)
 	}
 }
 
@@ -332,16 +325,22 @@ func TestDoctorCheckStaleBackups_Fix(t *testing.T) {
 	}
 }
 
+// nilLsRemote is a no-op ls-remote injection used by drift tests that exercise
+// non-clone code paths. Returning ("", nil) signals "no drift signal" — the
+// drift check treats this the same as a real network failure and skips the
+// pack rather than reporting it as drifted.
+func nilLsRemote(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+
 func TestDoctorCheckPackDrift_NoDrift(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"alpha": {Method: config.MethodLink},
-		},
+	packs := map[string]config.InstalledPackMeta{
+		"alpha": {Method: config.MethodLink},
 	}
 	// link packs never drift
-	cr := doctorCheckPackDrift(dir, syncCfg)
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, nilLsRemote)
 	if !cr.OK {
 		t.Errorf("OK = false, want true")
 	}
@@ -363,13 +362,11 @@ func TestDoctorCheckPackDrift_CopyVersionDrift(t *testing.T) {
 	originDir := t.TempDir()
 	writePackJSON(t, originDir, "2.0.0")
 
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"mypack": {Method: config.MethodCopy, Origin: originDir},
-		},
+	packs := map[string]config.InstalledPackMeta{
+		"mypack": {Method: config.MethodCopy, Origin: originDir},
 	}
 
-	cr := doctorCheckPackDrift(dir, syncCfg)
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, nilLsRemote)
 	if cr.OK {
 		t.Errorf("OK = true, want false")
 	}
@@ -396,13 +393,11 @@ func TestDoctorCheckPackDrift_CopyNoOrigin(t *testing.T) {
 	os.MkdirAll(packDir, 0o755)
 	writePackJSON(t, packDir, "1.0.0")
 
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"mypack": {Method: config.MethodCopy, Origin: "/nonexistent/path"},
-		},
+	packs := map[string]config.InstalledPackMeta{
+		"mypack": {Method: config.MethodCopy, Origin: "/nonexistent/path"},
 	}
 
-	cr := doctorCheckPackDrift(dir, syncCfg)
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, nilLsRemote)
 	if !cr.OK {
 		t.Errorf("OK = false, want true (inaccessible origin should be skipped)")
 	}
@@ -419,15 +414,216 @@ func TestDoctorCheckPackDrift_CopySameVersion(t *testing.T) {
 	originDir := t.TempDir()
 	writePackJSON(t, originDir, "1.0.0")
 
-	syncCfg := config.SyncConfig{
-		InstalledPacks: map[string]config.InstalledPackMeta{
-			"mypack": {Method: config.MethodCopy, Origin: originDir},
-		},
+	packs := map[string]config.InstalledPackMeta{
+		"mypack": {Method: config.MethodCopy, Origin: originDir},
 	}
 
-	cr := doctorCheckPackDrift(dir, syncCfg)
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, nilLsRemote)
 	if !cr.OK {
 		t.Errorf("OK = false, want true (same version = no drift)")
+	}
+}
+
+// TestDoctorCheckPackDrift_CloneRemoteMoved exercises the clone-method ls-remote
+// path: a pack whose recorded commit_hash differs from what ls-remote reports
+// for the same ref should produce a drift entry. This is the case the previous
+// implementation was unable to detect — clone installs strip .git, so any
+// drift signal has to come from the network.
+func TestDoctorCheckPackDrift_CloneRemoteMoved(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packs := map[string]config.InstalledPackMeta{
+		"my-pack": {
+			Method:     config.MethodClone,
+			Origin:     "https://github.com/example/my-pack",
+			Ref:        "main",
+			CommitHash: "aaaaaaa1",
+		},
+	}
+	calls := 0
+	lsRemote := func(_ context.Context, _, ref string) (string, error) {
+		calls++
+		if ref != "main" {
+			t.Errorf("ls-remote ref = %q, want %q", ref, "main")
+		}
+		return "bbbbbbb2", nil // remote moved
+	}
+
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, lsRemote)
+	if calls != 1 {
+		t.Errorf("ls-remote calls = %d, want 1", calls)
+	}
+	if cr.OK {
+		t.Errorf("OK = true, want false")
+	}
+	drifted, ok := cr.Details["drifted"].([]PackDrift)
+	if !ok || len(drifted) != 1 {
+		t.Fatalf("expected 1 drift entry, got %v", cr.Details["drifted"])
+	}
+	// Hashes are truncated via util.ShortHash (7 chars, matching git's
+	// standard short-SHA convention).
+	if drifted[0].InstalledHash != "aaaaaaa" || drifted[0].CurrentHash != "bbbbbbb" {
+		t.Errorf("drift hashes = %s -> %s, want aaaaaaa -> bbbbbbb",
+			drifted[0].InstalledHash, drifted[0].CurrentHash)
+	}
+	if drifted[0].Method != config.MethodClone {
+		t.Errorf("Method = %q, want clone", drifted[0].Method)
+	}
+}
+
+func TestDoctorCheckPackDrift_ClonePinnedCommitHashUsesHEAD(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packs := map[string]config.InstalledPackMeta{
+		"my-pack": {
+			Method:     config.MethodClone,
+			Origin:     "https://github.com/example/my-pack",
+			Ref:        "aabbccdd",
+			CommitHash: "aabbccdd",
+		},
+	}
+	calls := 0
+	lsRemote := func(_ context.Context, _, ref string) (string, error) {
+		calls++
+		if ref != "" {
+			t.Fatalf("ls-remote ref = %q, want default-branch HEAD lookup", ref)
+		}
+		return "bbbbbbb2", nil
+	}
+
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, lsRemote)
+	if calls != 1 {
+		t.Fatalf("ls-remote calls = %d, want 1", calls)
+	}
+	if cr.OK {
+		t.Fatalf("OK = true, want false")
+	}
+}
+
+// TestDoctorCheckPackDrift_CloneRemoteMatch verifies that a clone pack whose
+// recorded commit_hash matches the ls-remote response is not flagged as drift.
+func TestDoctorCheckPackDrift_CloneRemoteMatch(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packs := map[string]config.InstalledPackMeta{
+		"my-pack": {
+			Method:     config.MethodClone,
+			Origin:     "https://github.com/example/my-pack",
+			Ref:        "v1.2.3",
+			CommitHash: "abcdef12",
+		},
+	}
+	lsRemote := func(_ context.Context, _, _ string) (string, error) {
+		return "abcdef12", nil
+	}
+
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, lsRemote)
+	if !cr.OK {
+		t.Errorf("OK = false, want true")
+	}
+}
+
+// TestDoctorCheckPackDrift_CloneNetworkFailureSkips verifies that an
+// ls-remote failure (offline, auth error, timeout) is treated as "no drift
+// signal" rather than as drift — offline runs of `aipack doctor` should not
+// produce false positives, only the absence of one of the checks.
+func TestDoctorCheckPackDrift_CloneNetworkFailureSkips(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packs := map[string]config.InstalledPackMeta{
+		"my-pack": {
+			Method:     config.MethodClone,
+			Origin:     "https://example.invalid/my-pack",
+			Ref:        "main",
+			CommitHash: "aaaaaaa1",
+		},
+	}
+	lsRemote := func(_ context.Context, _, _ string) (string, error) {
+		return "", errors.New("dial tcp: no such host")
+	}
+
+	cr := doctorCheckPackDrift(context.Background(), dir, packs, lsRemote)
+	if !cr.OK {
+		t.Errorf("OK = false, want true (network failure should not trigger drift)")
+	}
+}
+
+// TestDoctorCheckPackDrift_PreCancelledContextSkipsLsRemote verifies that the
+// dispatch loop's fast-path ctx.Err() check fires on a pre-cancelled context
+// and produces zero ls-remote calls. Without the fast-path check, the select
+// would non-deterministically pick the semaphore branch when both cases are
+// ready, dispatching workers that would each pay one network round-trip
+// before failing.
+func TestDoctorCheckPackDrift_PreCancelledContextSkipsLsRemote(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packs := map[string]config.InstalledPackMeta{
+		"pack-a": {Method: config.MethodClone, Origin: "https://example.com/a", Ref: "main", CommitHash: "abc12345"},
+		"pack-b": {Method: config.MethodClone, Origin: "https://example.com/b", Ref: "main", CommitHash: "def67890"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	calls := 0
+	lsRemote := func(_ context.Context, _, _ string) (string, error) {
+		calls++
+		return "ffffffff", nil
+	}
+
+	cr := doctorCheckPackDrift(ctx, dir, packs, lsRemote)
+	if calls != 0 {
+		t.Errorf("ls-remote called %d times, want 0 (cancelled before dispatch)", calls)
+	}
+	if !cr.OK {
+		t.Errorf("OK = false, want true (no drift collected on cancel)")
+	}
+}
+
+// TestDoctorCheckPackDrift_CloneRunsConcurrently verifies that ls-remote calls
+// for multiple clone packs are issued concurrently rather than sequentially.
+// We do this by having each fake ls-remote block on a shared channel that's
+// only closed after all goroutines have entered the call — a sequential
+// implementation would deadlock at the first pack.
+func TestDoctorCheckPackDrift_CloneRunsConcurrently(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	const n = 4
+	packs := make(map[string]config.InstalledPackMeta, n)
+	for i := range n {
+		name := string(rune('a'+i)) + "-pack"
+		packs[name] = config.InstalledPackMeta{
+			Method:     config.MethodClone,
+			Origin:     "https://github.com/example/" + name,
+			Ref:        "main",
+			CommitHash: "abcdef00",
+		}
+	}
+
+	entered := make(chan struct{}, n)
+	release := make(chan struct{})
+	lsRemote := func(_ context.Context, _, _ string) (string, error) {
+		entered <- struct{}{}
+		<-release
+		return "abcdef00", nil
+	}
+
+	done := make(chan CheckResult, 1)
+	go func() {
+		done <- doctorCheckPackDrift(context.Background(), dir, packs, lsRemote)
+	}()
+
+	// All n goroutines should enter ls-remote before any returns. If the
+	// implementation runs sequentially, only one will enter and we deadlock
+	// on the channel send (caught by the test timeout).
+	for range n {
+		<-entered
+	}
+	close(release)
+	cr := <-done
+	if !cr.OK {
+		t.Errorf("OK = false, want true (all hashes match)")
 	}
 }
 

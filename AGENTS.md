@@ -141,3 +141,5 @@ Unit tests in each package follow standard Go conventions. `internal/app/` tests
 ### Release process
 
 `VERSION` is the source of truth. Full process in `RELEASING.md`: bump VERSION → update CHANGELOG → verify (`make fmt-check && make test && go vet ./... && make dist`) → commit → tag `vX.Y.Z` → push tag. The tag triggers CI to build and publish release assets.
+
+Run release `make` targets (`dist`, `release-tag-check`) from the repo root — they silently produce wrong output from any other directory.

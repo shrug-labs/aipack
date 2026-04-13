@@ -134,9 +134,6 @@ func RegistryAddSource(req RegistryAddSourceRequest, stdout io.Writer) error {
 	ref := req.Ref
 	filePath := req.Path
 	if isGit {
-		if ref == "" {
-			ref = config.DefaultRegistryRef
-		}
 		if filePath == "" {
 			filePath = config.DefaultRegistryPath
 		}
@@ -220,7 +217,6 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		sources = append(sources, config.RegistrySourceEntry{
 			Name: config.DeriveSourceName(config.DefaultRegistryRepo, config.DefaultRegistryPath),
 			URL:  config.DefaultRegistryRepo,
-			Ref:  config.DefaultRegistryRef,
 			Path: config.DefaultRegistryPath,
 		})
 	}
@@ -273,9 +269,6 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	// as HTTP because IsGitURL(url, "") returns false.
 	isGit := config.IsGitURL(url, ref)
 	if isGit {
-		if ref == "" {
-			ref = config.DefaultRegistryRef
-		}
 		if filePath == "" {
 			filePath = config.DefaultRegistryPath
 		}

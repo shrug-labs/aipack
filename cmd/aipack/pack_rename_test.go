@@ -68,16 +68,16 @@ func TestPackRename_FullLifecycle(t *testing.T) {
 		t.Errorf("manifest name = %q, want new-name", m.Name)
 	}
 
-	// Verify sync-config updated.
-	sc, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	// Verify lockfile updated.
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := sc.InstalledPacks["old-name"]; ok {
-		t.Error("sync-config still has old-name")
+	if _, ok := lf.Packs["old-name"]; ok {
+		t.Error("lockfile still has old-name")
 	}
-	if _, ok := sc.InstalledPacks["new-name"]; !ok {
-		t.Error("sync-config missing new-name")
+	if _, ok := lf.Packs["new-name"]; !ok {
+		t.Error("lockfile missing new-name")
 	}
 
 	// Verify profile updated.

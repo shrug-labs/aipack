@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -84,11 +85,187 @@ func TestPackUpdate_MutualExclusion(t *testing.T) {
 	}
 }
 
-func TestPackUpdate_NeitherNameNorAll(t *testing.T) {
+func TestPackInstall_VersionAndRefMutuallyExclusive(t *testing.T) {
 	t.Parallel()
-	_, _, code := runApp(t, "pack", "update")
+	_, _, code := runApp(t, "pack", "install", "--url", "https://example.com/repo", "--version", "1.0.0", "--ref", "main")
 	if code == cmdutil.ExitOK {
-		t.Fatalf("pack update (no args) should fail, got exit=%d", code)
+		t.Fatalf("--version + --ref should fail, got exit=%d", code)
+	}
+}
+
+func TestPackInstall_InvalidVersionRejected(t *testing.T) {
+	t.Parallel()
+	_, stderr, code := runApp(t, "pack", "install", "--url", "https://example.com/repo", "--version", "main")
+	if code == cmdutil.ExitOK {
+		t.Fatalf("invalid --version should fail, got exit=%d", code)
+	}
+	if !strings.Contains(stderr, "invalid version") {
+		t.Fatalf("stderr should mention invalid version, got: %s", stderr)
+	}
+}
+
+func TestPackUpdate_VersionAndAllMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	_, _, code := runApp(t, "pack", "update", "--all", "--version", "1.0.0")
+	if code == cmdutil.ExitOK {
+		t.Fatalf("--version + --all should fail, got exit=%d", code)
+	}
+}
+
+func TestPackVersions_HelpReturnsOK(t *testing.T) {
+	t.Parallel()
+	_, _, code := runApp(t, "pack", "versions", "--help")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack versions --help exit=%d, want %d", code, cmdutil.ExitOK)
+	}
+}
+
+func TestPackVersions_MissingName(t *testing.T) {
+	t.Parallel()
+	_, _, code := runApp(t, "pack", "versions")
+	if code == cmdutil.ExitOK {
+		t.Fatal("pack versions (no args) should fail")
+	}
+}
+
+// TestPackVersions_NotInstalledOrRegistered exercises the full Kong → service
+// → error wiring for `pack versions`. With an empty config dir the lockfile
+// has no entry and the registry has nothing to fall back to, so the service
+// returns the "not installed and not found in registry" error. The test
+// asserts the error reaches stderr in the expected shape.
+func TestPackVersions_NotInstalledOrRegistered(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "versions", "ghost-pack", "--config-dir", configDir)
+	if code == cmdutil.ExitOK {
+		t.Fatalf("pack versions on missing pack should fail, got exit=%d", code)
+	}
+	if !strings.Contains(stderr, "ghost-pack") || !strings.Contains(stderr, "not installed") {
+		t.Errorf("stderr should mention name and 'not installed', got: %s", stderr)
+	}
+}
+
+// TestPackVersions_CopyPackRejects verifies that running `pack versions`
+// against a copy-method install (no remote git origin) surfaces the
+// service-layer error through the CLI. Proves the lockfile lookup wiring
+// works without needing real network access.
+func TestPackVersions_CopyPackRejects(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packDir := t.TempDir()
+	writePackManifestCmd(t, packDir, "local-pack")
+
+	if err := app.PackInstall(context.Background(), app.PackInstallRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+	}, os.NewFile(0, os.DevNull)); err != nil {
+		t.Fatalf("seeding pack install: %v", err)
+	}
+
+	_, stderr, code := runApp(t, "pack", "versions", "local-pack", "--config-dir", configDir)
+	if code == cmdutil.ExitOK {
+		t.Fatalf("pack versions on copy install should fail, got exit=%d", code)
+	}
+	if !strings.Contains(stderr, "remote clone install") {
+		t.Errorf("stderr should mention 'remote clone install', got: %s", stderr)
+	}
+}
+
+// TestPackInstall_VersionInNameParses verifies the name@version positional
+// parser strips the version before registry lookup. With no registry and an
+// empty config the install fails, but the failure must reference the parsed
+// pack name ("ghost-pack") and NOT the raw input ("ghost-pack@1.2.3"). That
+// difference is the only end-to-end proof the parser ran.
+func TestPackInstall_VersionInNameParses(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "install", "ghost-pack@1.2.3", "--config-dir", configDir)
+	if code == cmdutil.ExitOK {
+		t.Fatalf("install of nonexistent registry pack should fail, got exit=%d", code)
+	}
+	if strings.Contains(stderr, "ghost-pack@1.2.3") {
+		t.Errorf("stderr leaked raw name@version (parser did not strip): %s", stderr)
+	}
+	if !strings.Contains(stderr, "ghost-pack") {
+		t.Errorf("stderr should reference parsed name 'ghost-pack', got: %s", stderr)
+	}
+}
+
+// TestPackInstall_VersionInNameAndFlagCollide verifies the @version + --version
+// collision check at the install entry point. Both forms of intent are
+// rejected with a clear error rather than silently letting one win.
+func TestPackInstall_VersionInNameAndFlagCollide(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "install", "ghost-pack@1.2.3", "--version", "2.0.0", "--config-dir", configDir)
+	if code == cmdutil.ExitOK {
+		t.Fatalf("expected collision error, got exit=%d", code)
+	}
+	if !strings.Contains(stderr, "@version") || !strings.Contains(stderr, "--version") {
+		t.Errorf("stderr should explain the @version + --version collision, got: %s", stderr)
+	}
+}
+
+func TestPackInstall_InvalidVersionInNameRejected(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "install", "ghost-pack@main", "--config-dir", configDir)
+	if code == cmdutil.ExitOK {
+		t.Fatalf("invalid @version should fail, got exit=%d", code)
+	}
+	if !strings.Contains(stderr, "invalid version") {
+		t.Fatalf("stderr should mention invalid version, got: %s", stderr)
+	}
+}
+
+func TestPackUpdate_BareUpdatesAll(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "update", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("bare pack update should succeed on empty config, got exit=%d stderr=%s", code, stderr)
+	}
+}
+
+// TestPackInstall_BareReconcilesProfile verifies the new default: `pack
+// install` with no arguments routes to profile reconciliation (equivalent to
+// -m/--missing), succeeding on an empty config instead of erroring.
+func TestPackInstall_BareReconcilesProfile(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "install", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("bare pack install should succeed on empty config, got exit=%d stderr=%s", code, stderr)
+	}
+}
+
+// TestPackInstall_BareWithWith verifies that combining bare install with
+// --with still triggers the profile-reconciliation + --with error — implicit
+// and explicit missing should behave identically.
+func TestPackInstall_BareWithWith(t *testing.T) {
+	t.Parallel()
+	_, _, code := runApp(t, "pack", "install", "-w", "all")
+	if code == cmdutil.ExitOK {
+		t.Fatal("bare pack install with --with should error (reconciliation + --with conflict)")
+	}
+}
+
+func TestPackUpdate_VersionWithoutName(t *testing.T) {
+	t.Parallel()
+	_, _, code := runApp(t, "pack", "update", "--version", "1.0.0")
+	if code == cmdutil.ExitOK {
+		t.Fatal("pack update --version without a name should fail")
+	}
+}
+
+func TestPackUpdate_InvalidVersionRejected(t *testing.T) {
+	t.Parallel()
+	_, stderr, code := runApp(t, "pack", "update", "my-pack", "--version", "main")
+	if code == cmdutil.ExitOK {
+		t.Fatal("pack update with invalid --version should fail")
+	}
+	if !strings.Contains(stderr, "invalid version") {
+		t.Fatalf("stderr should mention invalid version, got: %s", stderr)
 	}
 }
 

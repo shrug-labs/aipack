@@ -233,12 +233,16 @@ func saveSyncConfig(configDir string, cfg config.SyncConfig) tea.Cmd {
 
 // installPack installs a pack from a path, URL, or registry name.
 // For bare names (no path separators, not an existing path), it performs a
-// registry lookup — matching the CLI's `pack install` behavior.
-func installPack(ctx context.Context, configDir, input string, with domain.BundledSet) tea.Cmd {
+// registry lookup — matching the CLI's `pack install` behavior. version is
+// the user-picked semver tag (e.g. "1.2.3"); empty installs at the registry
+// default ref. Only honored for registry-name installs — URL/path installs
+// ignore version because they take whatever ref the user already specified.
+func installPack(ctx context.Context, configDir, input, version string, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackInstallRequest{
 			ConfigDir: configDir,
 			With:      with,
+			Version:   version,
 		}
 		if strings.Contains(input, "://") ||
 			strings.HasPrefix(input, "github.com") ||
@@ -322,13 +326,52 @@ func approveBundled(configDir string, results []app.PackUpdateResult, approved d
 	}
 }
 
-// updatePack updates one or all installed packs.
-func updatePack(ctx context.Context, configDir, name string, all bool, with domain.BundledSet) tea.Cmd {
+// loadPackDrift runs app.DetectPackDrift over every installed pack and
+// delivers the drifted entries as a packDriftLoadedMsg. Used by the packs
+// tab to decorate list rows with a drift indicator on tab open. Errors
+// loading the lockfile collapse to an empty drift set — drift is a
+// passive UX hint, not a hard signal worth surfacing as an error.
+func loadPackDrift(ctx context.Context, configDir string) tea.Cmd {
+	return func() tea.Msg {
+		lf, err := config.EnsureLockfileMigrated(configDir)
+		if err != nil {
+			return packDriftLoadedMsg{err: err}
+		}
+		drifted := app.DetectPackDrift(ctx, configDir, lf.Packs, nil)
+		return packDriftLoadedMsg{drifted: drifted}
+	}
+}
+
+// loadPackVersions queries the remote tags for a pack via app.PackListVersions
+// and delivers the result as a packVersionsLoadedMsg. Used by the packs tab to
+// populate the inline version list in the details panel and warm the cache for
+// the install-time version picker. The call is bounded by app.PackListVersions's
+// own timeout (inherited from the ls-remote subprocess); a failed lookup is
+// reported back to the cache as a failed state, not as a TUI-wide error.
+func loadPackVersions(ctx context.Context, configDir, name string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := app.PackListVersions(ctx, app.PackListVersionsRequest{
+			ConfigDir: configDir,
+			Name:      name,
+		})
+		if err != nil {
+			return packVersionsLoadedMsg{packName: name, err: err}
+		}
+		return packVersionsLoadedMsg{packName: name, versions: result.Versions}
+	}
+}
+
+// updatePack updates one or all installed packs. version is the value passed
+// to PackUpdateRequest.Version: empty preserves the current pin (default
+// update behavior), a literal semver tag moves the pin, and "latest" clears
+// the pin entirely (the unpin sentinel honored by app.PackUpdate).
+func updatePack(ctx context.Context, configDir, name string, all bool, version string, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackUpdateRequest{
 			ConfigDir: configDir,
 			Name:      name,
 			All:       all,
+			Version:   version,
 			With:      with,
 		}
 		results, err := app.PackUpdate(ctx, req, io.Discard)

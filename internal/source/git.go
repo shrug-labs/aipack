@@ -18,6 +18,20 @@ import (
 var checkGitOnce sync.Once
 var checkGitErr error
 
+// bareCacheMus serializes UpdateBareCache writes per cache key so two
+// concurrent pack updates sharing the same origin URL don't race on the
+// stat-then-clone sequence. Keyed by CacheKeyForURL(repoURL).
+var bareCacheMus sync.Map // map[string]*sync.Mutex
+
+func bareCacheMutexFor(key string) *sync.Mutex {
+	if v, ok := bareCacheMus.Load(key); ok {
+		return v.(*sync.Mutex)
+	}
+	m := &sync.Mutex{}
+	actual, _ := bareCacheMus.LoadOrStore(key, m)
+	return actual.(*sync.Mutex)
+}
+
 // CheckGit verifies that the git binary is available and returns an actionable
 // error when it is missing (e.g. Xcode CLT not installed on macOS).
 // The result is cached after the first call.
@@ -75,9 +89,23 @@ func ensureClone(ctx context.Context, repoURL string, dir string, ref string, re
 			refArgs = []string{"--reference", referenceDir}
 		}
 	}
+
+	// Commit hashes need full history — shallow clone + single-ref fetch
+	// doesn't work for arbitrary commits (short hashes aren't ref names, and
+	// full-hash fetch requires server-side uploadpack.allowReachableSHA1InWant).
+	// Do a full clone and then checkout the commit locally.
+	if ref != "" && IsCommitHash(ref) {
+		args := append([]string{"clone"}, refArgs...)
+		args = append(args, repoURL, dir)
+		if err := runGitFn(ctx, args...); err != nil {
+			return err
+		}
+		return runGitFn(ctx, "-C", dir, "checkout", "--force", ref)
+	}
+
 	// When a ref is specified, try --branch first (works for branches and tags,
 	// single network round-trip). Fall back to clone-then-fetch for arbitrary
-	// refs (e.g. commit SHAs) that --branch doesn't support.
+	// refs that --branch doesn't support.
 	if ref != "" {
 		args := append([]string{"clone", "--depth", "1"}, refArgs...)
 		args = append(args, "--branch", ref, repoURL, dir)
@@ -118,25 +146,53 @@ func LsRemoteHead(ctx context.Context, repoURL, ref string) (string, error) {
 }
 
 func lsRemoteHead(ctx context.Context, repoURL, ref string) (string, error) {
-	if err := CheckGit(); err != nil {
-		return "", err
-	}
-	args := []string{"ls-remote", repoURL}
+	var args []string
 	if ref == "" {
-		args = append(args, "HEAD")
+		args = []string{"HEAD"}
 	} else {
 		// Query branch and tag in one round-trip.
-		args = append(args, "refs/heads/"+ref, "refs/tags/"+ref)
+		args = []string{"refs/heads/" + ref, "refs/tags/" + ref}
+	}
+	out, err := gitLsRemoteRaw(ctx, repoURL, args...)
+	if err != nil {
+		return "", err
+	}
+	return parseLsRemoteHash(out), nil
+}
+
+// gitLsRemoteRaw runs `git ls-remote [flags] <repoURL> [refspecs]` with the
+// standard 30s timeout and credential-prompt suppression. Returns raw stdout.
+// Used by lsRemoteHead and listRemoteTags to share scaffolding.
+//
+// Args starting with "-" are treated as flags and placed before the repoURL;
+// other args are treated as refspecs and placed after. This matches git's
+// expected order — `--tags` and `--heads` are silently mis-parsed as refspec
+// patterns when they appear after the URL.
+func gitLsRemoteRaw(ctx context.Context, repoURL string, args ...string) ([]byte, error) {
+	if err := CheckGit(); err != nil {
+		return nil, err
 	}
 	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(tctx, "git", args...)
+	var flags, refspecs []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+		} else {
+			refspecs = append(refspecs, a)
+		}
+	}
+	cmdArgs := []string{"ls-remote"}
+	cmdArgs = append(cmdArgs, flags...)
+	cmdArgs = append(cmdArgs, repoURL)
+	cmdArgs = append(cmdArgs, refspecs...)
+	cmd := exec.CommandContext(tctx, "git", cmdArgs...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git ls-remote %s: %w", repoURL, err)
+		return nil, fmt.Errorf("git ls-remote %s: %w", repoURL, err)
 	}
-	return parseLsRemoteHash(out), nil
+	return out, nil
 }
 
 // parseLsRemoteHash extracts the commit hash from ls-remote output.
@@ -315,6 +371,15 @@ func UpdateBareCache(ctx context.Context, repoURL, localSource, cacheDir string,
 	}
 	key := CacheKeyForURL(repoURL)
 	bareDir := filepath.Join(cacheDir, key)
+
+	// Serialize writes for this cache key. Concurrent callers for the same
+	// origin block here, then the second caller observes the populated cache
+	// and returns nil on its own existence check. Independent origins don't
+	// contend. Read paths (EnsureCloneWithRef --reference) are unaffected —
+	// git handles concurrent readers of a bare repo safely.
+	mu := bareCacheMutexFor(key)
+	mu.Lock()
+	defer mu.Unlock()
 
 	if _, err := os.Stat(filepath.Join(bareDir, "HEAD")); err == nil {
 		return nil // Cache exists — already usable as --reference.

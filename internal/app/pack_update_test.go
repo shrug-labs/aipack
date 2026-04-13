@@ -75,6 +75,22 @@ func TestPackUpdate_Link_VerifiesTarget(t *testing.T) {
 	}
 }
 
+func TestPackUpdate_InvalidVersionRejected(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	_, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Version = "main"
+	})
+	if err == nil {
+		t.Fatal("expected invalid version error")
+	}
+	if !strings.Contains(err.Error(), "invalid version") {
+		t.Fatalf("expected invalid version error, got: %v", err)
+	}
+}
+
 func TestPackUpdate_Copy_ReCopies(t *testing.T) {
 	t.Parallel()
 	// Set up a source pack with a rule file.
@@ -216,12 +232,129 @@ func TestPackUpdate_All(t *testing.T) {
 	}
 }
 
+// TestPackUpdate_All_PreservesOrder pins the user-visible ordering contract
+// of the parallel update loop: regardless of which goroutine finishes first,
+// (1) results[] must match os.ReadDir's alphabetical order and (2) each
+// pack's stdout output must appear in that same order in the combined
+// writer. The race detector running over the normal suite catches any loose
+// shared-state access in the parallel phase.
+//
+// Five packs against the production packUpdateConcurrency cap of 3 forces
+// at least two packs to wait on the semaphore, so the test exercises the
+// queue path even when individual mock-git calls return instantly.
+func TestPackUpdate_All_PreservesOrder(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	// Five clone packs with distinct names. os.ReadDir returns these in
+	// alphabetical order, so that's what results[] must match.
+	names := []string{"pack-a", "pack-b", "pack-c", "pack-d", "pack-e"}
+	installCount := len(names)
+	for _, n := range names {
+		e.addClone(t, n, fakeCloneGitFn(t, n))
+	}
+
+	updateGit := func(_ context.Context, args ...string) error {
+		if len(args) >= 1 && args[0] == "clone" && !isBareClone(args) {
+			dir := args[len(args)-1]
+			url := args[len(args)-2]
+			writePackManifest(t, dir, filepath.Base(url))
+		}
+		return nil
+	}
+
+	results, err := e.update(t, "", func(r *PackUpdateRequest) {
+		r.All = true
+		r.Name = ""
+		r.RunGitFn = updateGit
+		r.GitHashFn = fakeHashFn(fakeHash2)
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(results) != installCount {
+		t.Fatalf("expected %d results, got %d", installCount, len(results))
+	}
+
+	// Input order is alphabetical (os.ReadDir guarantee).
+	for i, want := range names {
+		if results[i].Name != want {
+			t.Errorf("results[%d].Name = %q, want %q (full order: %v)",
+				i, results[i].Name, want, packNames(results))
+		}
+	}
+
+	// Stdout lines for each pack should appear in input order. Each
+	// clone pack update prints one "Updated (clone): <name>" line.
+	out := e.out.String()
+	var positions []int
+	for _, n := range names {
+		idx := strings.Index(out, "Updated (clone): "+n)
+		if idx < 0 {
+			t.Errorf("missing 'Updated (clone): %s' in output:\n%s", n, out)
+			continue
+		}
+		positions = append(positions, idx)
+	}
+	for i := 1; i < len(positions); i++ {
+		if positions[i] < positions[i-1] {
+			t.Errorf("stdout for %s appears before %s (positions=%v):\n%s",
+				names[i], names[i-1], positions, out)
+		}
+	}
+}
+
+// packNames extracts result names for diagnostic output.
+func packNames(rs []PackUpdateResult) []string {
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		out[i] = r.Name
+	}
+	return out
+}
+
 func TestPackUpdate_NotInstalled(t *testing.T) {
 	t.Parallel()
 	e := newUpdateEnv(t)
 	results, _ := e.update(t, "nonexistent")
 	if results[0].Status != StatusError {
 		t.Fatalf("status = %q, want error", results[0].Status)
+	}
+}
+
+// TestPackUpdate_All_PreCancelledContextMarksAllCancelled verifies that the
+// dispatch loop's fast-path ctx.Err() check fires on a pre-cancelled context
+// and produces a "cancelled" PackUpdateResult for every pack instead of
+// dispatching workers that would just fail-fast on the first ctx-aware op.
+// Pre-cancelling makes the test deterministic — no goroutine scheduling races.
+func TestPackUpdate_All_PreCancelledContextMarksAllCancelled(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addLink(t, "pack-a")
+	e.addLink(t, "pack-b")
+	e.addLink(t, "pack-c")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	e.out.Reset()
+	results, err := PackUpdate(ctx, PackUpdateRequest{
+		ConfigDir: e.configDir,
+		All:       true,
+	}, &e.out)
+	if err != nil {
+		t.Fatalf("PackUpdate: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Status != StatusError {
+			t.Errorf("pack %s: status = %q, want %q", r.Name, r.Status, StatusError)
+		}
+		if r.Message != "cancelled" {
+			t.Errorf("pack %s: message = %q, want %q", r.Name, r.Message, "cancelled")
+		}
 	}
 }
 
@@ -242,9 +375,9 @@ func TestPackUpdate_Clone_TracksCommitHash(t *testing.T) {
 	if results[0].Status != StatusUpdated || results[0].CommitHash != fakeHash2 {
 		t.Fatalf("status=%q hash=%q", results[0].Status, results[0].CommitHash)
 	}
-	sc, _ := config.LoadSyncConfig(config.SyncConfigPath(e.configDir))
-	if sc.InstalledPacks["my-pack"].CommitHash != fakeHash2 {
-		t.Fatalf("stored hash = %q", sc.InstalledPacks["my-pack"].CommitHash)
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	if lf.Packs["my-pack"].CommitHash != fakeHash2 {
+		t.Fatalf("stored hash = %q", lf.Packs["my-pack"].CommitHash)
 	}
 	if !strings.Contains(e.out.String(), "aabbccd") || !strings.Contains(e.out.String(), "1122334") {
 		t.Fatalf("expected hash transition in output: %s", e.out.String())
@@ -457,8 +590,8 @@ func TestPackUpdate_Copy_PreferencesCarryForward(t *testing.T) {
 	}
 
 	// Prefs persisted.
-	sc, _ := config.LoadSyncConfig(config.SyncConfigPath(configDir))
-	meta := sc.InstalledPacks["pref-pack"]
+	lf, _ := config.LoadLockfile(config.LockfilePath(configDir))
+	meta := lf.Packs["pref-pack"]
 	approvedSet := map[domain.BundledCategory]bool{}
 	for _, a := range meta.Approved {
 		approvedSet[a] = true
@@ -520,5 +653,608 @@ func TestPackUpdate_Copy_CopiesRepoRelativeExtras(t *testing.T) {
 	installed, _ := config.LoadPackManifest(filepath.Join(packDir, "pack.json"))
 	if len(installed.Extras) != 1 || installed.Extras[0] != "shared-scripts" {
 		t.Fatalf("extras = %v, want [shared-scripts]", installed.Extras)
+	}
+}
+
+// --- Version-aware update tests ---
+
+// patchLockfileRef sets the Ref field for a pack in the lockfile. Passing a
+// semver tag like "v1.0.0" or a commit hash marks the pack as pinned.
+func patchLockfileRef(t *testing.T, configDir, name, ref string) {
+	t.Helper()
+	lfPath := config.LockfilePath(configDir)
+	lf, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := lf.Packs[name]
+	m.Ref = ref
+	lf.Packs[name] = m
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPackUpdate_Clone_PinnedSkipsUpdate(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	// Pin the pack at a semver version.
+	patchLockfileRef(t, e.configDir, "my-pack", "v1.0.0")
+
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.RunGitFn = func(context.Context, ...string) error { return nil }
+		r.GitHashFn = fakeHashFn(fakeHash2) // different hash — would update if not pinned
+		r.GitLsRemoteFn = func(_ context.Context, _, _ string) (string, error) {
+			return fakeHash2, nil // remote has moved
+		}
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{"v1.0.0", "v2.0.0"}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpToDate {
+		t.Fatalf("status = %q, want up-to-date (pinned pack should skip)", results[0].Status)
+	}
+	if !strings.Contains(e.out.String(), "Pinned") {
+		t.Fatalf("output should mention Pinned: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "v2.0.0") {
+		t.Fatalf("output should mention latest available version: %s", e.out.String())
+	}
+}
+
+func TestPackUpdate_Clone_PinnedCommitHashSkipsUpdate(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	// Pin at a commit hash.
+	patchLockfileRef(t, e.configDir, "my-pack", "aabbccdd")
+
+	var lsRemoteRef string
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.GitLsRemoteFn = func(_ context.Context, _, ref string) (string, error) {
+			lsRemoteRef = ref
+			return fakeHash2, nil // remote has moved
+		}
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return nil, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpToDate {
+		t.Fatalf("status = %q, want up-to-date", results[0].Status)
+	}
+	if lsRemoteRef != "" {
+		t.Fatalf("ls-remote ref = %q, want default-branch HEAD lookup", lsRemoteRef)
+	}
+	if !strings.Contains(e.out.String(), "remote has moved") {
+		t.Fatalf("output should mention remote drift: %s", e.out.String())
+	}
+}
+
+func TestPackUpdate_Clone_VersionFlagMovesSemverPin(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	patchLockfileRef(t, e.configDir, "my-pack", "v1.0.0")
+
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Version = "2.0.0"
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{"v2.0.0"}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	meta := lf.Packs["my-pack"]
+	if meta.Ref != "v2.0.0" {
+		t.Errorf("ref = %q, want v2.0.0", meta.Ref)
+	}
+	if !isPinned(meta) {
+		t.Errorf("expected pin to be recorded after version move")
+	}
+}
+
+func TestPackUpdate_Clone_VersionLatestUnpins(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	patchLockfileRef(t, e.configDir, "my-pack", "v1.0.0")
+
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Version = "latest"
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	meta := lf.Packs["my-pack"]
+	if meta.Ref != "" {
+		t.Errorf("ref = %q, want empty (default branch)", meta.Ref)
+	}
+	if isPinned(meta) {
+		t.Errorf("expected latest to unpin the pack")
+	}
+}
+
+func TestPackUpdate_Clone_UnpinnedCarriesForwardEmptyVersion(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	// Verify no pin set initially.
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	if isPinned(lf.Packs["my-pack"]) {
+		t.Fatalf("expected no pin initially, got ref=%q", lf.Packs["my-pack"].Ref)
+	}
+
+	results, _ := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+	})
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q", results[0].Status)
+	}
+
+	lf, _ = config.LoadLockfile(config.LockfilePath(e.configDir))
+	if isPinned(lf.Packs["my-pack"]) {
+		t.Errorf("unpinned pack became pinned after update: ref=%q", lf.Packs["my-pack"].Ref)
+	}
+}
+
+// TestPackUpdate_HTTPTarballMigratesToClone verifies that legacy packs
+// installed via the (now-removed) HTTP tarball method are transparently
+// re-installed via clone on the next update, with their lockfile entry
+// migrated to method=clone.
+func TestPackUpdate_HTTPTarballMigratesToClone(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	// Manually seed the lockfile with a legacy http-tarball entry. We can't
+	// install via tarball anymore — that path is gone — so simulate the
+	// pre-migration state by writing the entry directly.
+	packDir := filepath.Join(PacksDir(e.configDir), "legacy-pack")
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifest(t, packDir, "legacy-pack")
+
+	lfPath := config.LockfilePath(e.configDir)
+	lf := config.Lockfile{
+		LockVersion: config.LockfileVersion,
+		Packs: map[string]config.InstalledPackMeta{
+			"legacy-pack": {
+				Origin:      "https://github.com/example/legacy-pack",
+				Method:      config.MethodHTTPTarball,
+				InstalledAt: fixedNow.UTC().Format(time.RFC3339),
+				// no commit hash — tarball installs never had one
+			},
+		},
+	}
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update should clone (not download tarball) and migrate the method.
+	cloned := false
+	results, err := e.update(t, "legacy-pack", func(r *PackUpdateRequest) {
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				cloned = true
+				writePackManifest(t, args[len(args)-1], "legacy-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !cloned {
+		t.Fatal("expected git clone to be called for migration")
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	if results[0].Method != config.MethodClone {
+		t.Errorf("result.Method = %q, want %q", results[0].Method, config.MethodClone)
+	}
+	if !strings.Contains(e.out.String(), "migrated") {
+		t.Errorf("expected 'migrated' in output, got: %s", e.out.String())
+	}
+
+	// Verify lockfile reflects the migration.
+	lf, _ = config.LoadLockfile(lfPath)
+	got := lf.Packs["legacy-pack"]
+	if got.Method != config.MethodClone {
+		t.Errorf("lockfile method = %q, want %q", got.Method, config.MethodClone)
+	}
+	if got.CommitHash != fakeHash2 {
+		t.Errorf("lockfile commit_hash = %q, want %q", got.CommitHash, fakeHash2)
+	}
+}
+
+// TestPackUpdate_HTTPTarballURLFailsHelpfully verifies that legacy packs
+// whose Origin is an actual tarball URL (`.tar.gz`, `/archive/`, etc.)
+// return a targeted error instead of falling through to `git clone
+// <tarball-url>`, which would produce an opaque "not a git repository"
+// failure. Without a registry remap there is no path forward, so the
+// error message points at manual reinstall.
+func TestPackUpdate_HTTPTarballURLFailsHelpfully(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		origin string
+	}{
+		{"tar.gz suffix", "https://example.com/pack.tar.gz"},
+		{"github archive path", "https://github.com/example/pack/archive/refs/tags/v1.0.tar.gz"},
+		{"zip suffix", "https://example.com/pack.zip"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newUpdateEnv(t)
+			packDir := filepath.Join(PacksDir(e.configDir), "tarball-pack")
+			if err := os.MkdirAll(packDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writePackManifest(t, packDir, "tarball-pack")
+			lfPath := config.LockfilePath(e.configDir)
+			lf := config.Lockfile{
+				LockVersion: config.LockfileVersion,
+				Packs: map[string]config.InstalledPackMeta{
+					"tarball-pack": {
+						Origin:      tc.origin,
+						Method:      config.MethodHTTPTarball,
+						InstalledAt: fixedNow.UTC().Format(time.RFC3339),
+					},
+				},
+			}
+			if err := config.SaveLockfile(lfPath, lf); err != nil {
+				t.Fatal(err)
+			}
+
+			results, err := e.update(t, "tarball-pack", func(r *PackUpdateRequest) {
+				r.RunGitFn = func(context.Context, ...string) error {
+					t.Fatal("git should not be called when origin is a tarball URL")
+					return nil
+				}
+			})
+			if err != nil {
+				t.Fatalf("update returned error: %v", err)
+			}
+			if results[0].Status != StatusError {
+				t.Fatalf("status = %q, want error", results[0].Status)
+			}
+			if !strings.Contains(results[0].Message, "tarball URL") {
+				t.Errorf("error message should mention tarball URL: %s", results[0].Message)
+			}
+			if !strings.Contains(results[0].Message, "pack delete") {
+				t.Errorf("error message should suggest manual reinstall: %s", results[0].Message)
+			}
+		})
+	}
+}
+
+// TestPackUpdate_HTTPTarballRegistryRepoint verifies that when a registry
+// entry remaps a legacy tarball origin to a different git URL, the
+// migration prints the URL transition before cloning. This is a
+// deliberate observability hook so users notice unintentional repoints.
+func TestPackUpdate_HTTPTarballRegistryRepoint(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	packDir := filepath.Join(PacksDir(e.configDir), "moved-pack")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifest(t, packDir, "moved-pack")
+
+	lfPath := config.LockfilePath(e.configDir)
+	lf := config.Lockfile{
+		LockVersion: config.LockfileVersion,
+		Packs: map[string]config.InstalledPackMeta{
+			"moved-pack": {
+				Origin:      "https://github.com/old-org/moved-pack",
+				Method:      config.MethodHTTPTarball,
+				InstalledAt: fixedNow.UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a registry entry that remaps the origin to a new git URL.
+	regYAML := `schema_version: 1
+packs:
+  moved-pack:
+    repo: https://github.com/new-org/moved-pack
+    description: relocated
+`
+	cacheDir := config.RegistriesCacheDir(e.configDir)
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "test.yaml"), []byte(regYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scPath := config.SyncConfigPath(e.configDir)
+	sc, _ := config.LoadSyncConfig(scPath)
+	sc.RegistrySources = []config.RegistrySourceEntry{{Name: "test", URL: "https://example.com/r.yaml"}}
+	if err := config.SaveSyncConfig(scPath, sc); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := e.update(t, "moved-pack", func(r *PackUpdateRequest) {
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				writePackManifest(t, args[len(args)-1], "moved-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	out := e.out.String()
+	if !strings.Contains(out, "old-org") || !strings.Contains(out, "new-org") {
+		t.Errorf("expected URL transition in output, got: %s", out)
+	}
+	if !strings.Contains(out, "Migrating") {
+		t.Errorf("expected 'Migrating' header in output, got: %s", out)
+	}
+}
+
+// TestPackUpdate_Clone_PinnedDriftCheckUnavailable verifies that a network
+// failure during `pack update` of a pinned pack surfaces as an explicit
+// "(drift check unavailable)" hint rather than collapsing silently into the
+// "pinned at X" line. Offline users get to distinguish "up-to-date" from
+// "we don't know."
+func TestPackUpdate_Clone_PinnedDriftCheckUnavailable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("semver pin", func(t *testing.T) {
+		t.Parallel()
+		e := newUpdateEnv(t)
+		e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+		patchLockfileRef(t, e.configDir, "my-pack", "v1.0.0")
+
+		_, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+			r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+				return nil, fmt.Errorf("simulated network failure")
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(e.out.String(), "drift check unavailable") {
+			t.Errorf("expected drift-check-unavailable hint, got: %s", e.out.String())
+		}
+		if !strings.Contains(e.out.String(), "pinned at v1.0.0") {
+			t.Errorf("expected pin label in output, got: %s", e.out.String())
+		}
+	})
+
+	t.Run("commit hash pin", func(t *testing.T) {
+		t.Parallel()
+		e := newUpdateEnv(t)
+		e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+		patchLockfileRef(t, e.configDir, "my-pack", "aabbccdd")
+
+		_, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+			r.GitLsRemoteFn = func(context.Context, string, string) (string, error) {
+				return "", fmt.Errorf("simulated network failure")
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(e.out.String(), "drift check unavailable") {
+			t.Errorf("expected drift-check-unavailable hint, got: %s", e.out.String())
+		}
+	})
+}
+
+// TestPackUpdate_Clone_PinMoveSameCommit guards against a fast-path bug:
+// moving a pin between two tags that happen to resolve to the same commit
+// hash must still persist the new ref/version. Without the guard, the
+// ls-remote fast path would return "up-to-date" from the old metadata and
+// silently drop the pin move.
+func TestPackUpdate_Clone_PinMoveSameCommit(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	// Seed the lockfile as if the pack were already pinned at v1.0.0 with
+	// a known commit hash.
+	lfPath := config.LockfilePath(e.configDir)
+	lf, _ := config.LoadLockfile(lfPath)
+	m := lf.Packs["my-pack"]
+	m.Ref = "v1.0.0"
+	m.CommitHash = fakeHash1
+	lf.Packs["my-pack"] = m
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Move pin to v2.0.0 while ls-remote reports that tag resolves to the
+	// same commit hash as the current pin.
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Version = "2.0.0"
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash1) // identical commit hash
+		r.GitLsRemoteFn = func(_ context.Context, _, _ string) (string, error) {
+			return fakeHash1, nil
+		}
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{"v2.0.0"}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results", len(results))
+	}
+
+	// The lockfile must reflect the new pin even though the commit hash
+	// didn't change.
+	lf, _ = config.LoadLockfile(lfPath)
+	got := lf.Packs["my-pack"]
+	if got.Ref != "v2.0.0" {
+		t.Errorf("ref = %q, want v2.0.0 (pin move must persist)", got.Ref)
+	}
+}
+
+func TestPackUpdate_Clone_VersionFlagPreservesRemoteBareSemverTag(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	var clonedRef string
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Version = "v2.0.0"
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				for i := 0; i < len(args)-1; i++ {
+					if args[i] == "--branch" {
+						clonedRef = args[i+1]
+						break
+					}
+				}
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{"2.0.0"}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	if clonedRef != "2.0.0" {
+		t.Fatalf("clone ref = %q, want raw remote tag", clonedRef)
+	}
+
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	meta := lf.Packs["my-pack"]
+	if meta.Ref != "2.0.0" {
+		t.Fatalf("ref = %q, want raw remote tag", meta.Ref)
+	}
+}
+
+// TestPackUpdate_Clone_PartialSemverResolvesAndPins exercises partial
+// version refs on update — the user wants "latest v1.x.x" without typing
+// the exact patch version. The resolved tag lands in the lockfile, not the
+// partial — `update --version v1` is a shortcut, not a channel.
+func TestPackUpdate_Clone_PartialSemverResolvesAndPins(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Version = "v1"
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{"v1.0.0", "v1.4.0", "v2.0.0", "v1.5.0-beta.1"}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	if !strings.Contains(e.out.String(), "Resolved v1 → v1.4.0") {
+		t.Errorf("expected resolution message, got: %s", e.out.String())
+	}
+
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	meta := lf.Packs["my-pack"]
+	if meta.Ref != "v1.4.0" {
+		t.Errorf("ref = %q, want v1.4.0 (highest stable v1.x.x)", meta.Ref)
+	}
+}
+
+// TestPackUpdate_Clone_PartialSemverNoMatch verifies the error path when
+// `update --version vN` has no matching stable tag in the remote.
+func TestPackUpdate_Clone_PartialSemverNoMatch(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Version = "v3"
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{"v1.0.0", "v2.0.0"}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusError {
+		t.Fatalf("status = %q, want error", results[0].Status)
+	}
+	if !strings.Contains(results[0].Message, "resolving partial version") {
+		t.Errorf("message should mention partial resolution: %q", results[0].Message)
 	}
 }
