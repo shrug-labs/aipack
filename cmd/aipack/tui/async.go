@@ -409,7 +409,7 @@ func computePackSizes(entry app.PackShowEntry) tea.Cmd {
 		sizes := map[string]int64{}
 		var total int64
 
-		for _, cat := range domain.AllPackCategories() {
+		for _, cat := range packTabCategories() {
 			for _, id := range entry.ContentIDs(cat) {
 				sz := app.PackContentSize(entry.Path, cat, id)
 				sizes[cat.DirName()+"/"+id] = sz

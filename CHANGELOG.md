@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.21.1]
+
+### Fixed
+
+- **`aipack prompt list` / `show` / `copy` autodiscover prompts from `prompts/`** even when the manifest omits the `prompts` field, matching every other content type. The install-time and sync-time search indexers get the same fix.
+- **`aipack manage` Packs tab and `aipack pack show` list prompts** alongside rules, agents, workflows, skills, and MCP servers.
+
 ## [0.21.0]
 
 ### Added

@@ -575,10 +575,27 @@ func buildContentItemsFromEntry(entry app.PackShowEntry) []contentItem {
 		}
 	}
 
-	for _, cat := range domain.AllPackCategories() {
+	for _, cat := range packTabCategories() {
 		addCategory(cat, entry.ContentIDs(cat))
 	}
 	return items
+}
+
+// packTabCategories returns the category display order for the Packs tab.
+// Unlike domain.AllPackCategories (which enumerates categories that sync/save
+// processes), this list also includes prompts so pack-shipped slash commands
+// surface alongside rules, agents, workflows, skills, and MCP servers in the
+// pack content browser. Prompts are not captured by harness save pipelines,
+// so they stay out of the global category list.
+func packTabCategories() []domain.PackCategory {
+	return []domain.PackCategory{
+		domain.CategoryRules,
+		domain.CategoryAgents,
+		domain.CategoryWorkflows,
+		domain.CategorySkills,
+		domain.CategoryPrompts,
+		domain.CategoryMCP,
+	}
 }
 
 // contentFilePath resolves the absolute file path for a content item.

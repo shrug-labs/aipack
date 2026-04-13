@@ -61,6 +61,38 @@ func TestPacksModel_EnterOpensContentPanel(t *testing.T) {
 	}
 }
 
+func TestBuildContentItemsFromEntry_IncludesPrompts(t *testing.T) {
+	t.Parallel()
+	items := buildContentItemsFromEntry(app.PackShowEntry{
+		Name:    "pack-with-prompts",
+		Rules:   []string{"rule-a"},
+		Prompts: []string{"brainstorm", "review"},
+	})
+
+	var rulesHeader, promptsHeader bool
+	var promptIDs []string
+	for _, it := range items {
+		if it.isHeader && it.category == domain.CategoryRules {
+			rulesHeader = true
+		}
+		if it.isHeader && it.category == domain.CategoryPrompts {
+			promptsHeader = true
+		}
+		if !it.isHeader && it.category == domain.CategoryPrompts {
+			promptIDs = append(promptIDs, it.id)
+		}
+	}
+	if !rulesHeader {
+		t.Error("expected Rules header in content items")
+	}
+	if !promptsHeader {
+		t.Error("expected Prompts header in content items")
+	}
+	if len(promptIDs) != 2 || promptIDs[0] != "brainstorm" || promptIDs[1] != "review" {
+		t.Errorf("expected prompt ids [brainstorm review], got %v", promptIDs)
+	}
+}
+
 func TestPacksModel_ListSortedInstalledThenAlphabetical(t *testing.T) {
 	t.Parallel()
 	m := packsModel{

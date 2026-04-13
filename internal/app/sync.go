@@ -616,6 +616,7 @@ func updateIndex(profile domain.Profile, configDir string) error {
 			if packRoot == "" {
 				packRoot = pack.Root
 			}
+			_ = config.DiscoverContent(&m, packRoot)
 
 			// Index manifest content not already provided by the resolved
 			// pack. Resolved resources have richer parsed data; manifest
@@ -663,6 +664,7 @@ func indexInstalledPack(configDir, packName, packRoot string) error {
 	if root == "" {
 		root = packRoot
 	}
+	_ = config.DiscoverContent(&m, root)
 
 	info := index.PackInfo{
 		Name:      packName,

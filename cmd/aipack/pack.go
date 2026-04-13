@@ -942,6 +942,9 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 	if len(entry.Skills) > 0 {
 		fmt.Fprintf(g.Stdout, "Skills:      %s\n", joinComma(entry.Skills))
 	}
+	if len(entry.Prompts) > 0 {
+		fmt.Fprintf(g.Stdout, "Prompts:     %s\n", joinComma(entry.Prompts))
+	}
 	if len(entry.MCPServers) > 0 {
 		fmt.Fprintf(g.Stdout, "MCP:         %s\n", joinComma(entry.MCPServers))
 	}

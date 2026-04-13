@@ -53,6 +53,7 @@ func PromptList(configDir string) ([]PromptEntry, error) {
 			continue // skip packs with invalid manifests
 		}
 		packRoot := config.ResolvePackRoot(manifestPath, m.Root)
+		_ = config.DiscoverContent(&m, packRoot)
 		prompts = append(prompts, PromptListForPack(m.Name, m, packRoot)...)
 	}
 
