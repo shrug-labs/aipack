@@ -53,13 +53,13 @@ type PackInstallRequest struct {
 	// SubPath is the subdirectory within a cloned repo where pack.json lives.
 	// Set when installing from a registry entry that specifies a path.
 	SubPath string
-	// Ref is a git ref (branch/tag) to checkout after cloning.
-	// When set alongside URL, bypasses ProbePackURL and clones directly.
+	// Ref is the git ref spec to checkout. Any ref shape is legitimate —
+	// exact semver ("1.2.3", "v1.2.3"), partial semver ("v1", "v1.2"),
+	// namespaced semver ("my-pack/v1.2.3"), commit hash, "latest" sentinel
+	// (unpin), branch name, or any other git ref. The classifier
+	// (source.ClassifyRef) dispatches on the ref's shape to pick between
+	// semver resolution and literal checkout. Empty tracks upstream HEAD.
 	Ref string
-	// Version is a semver version to install (e.g. "1.2.3"). Resolved to the
-	// remote tag's raw spelling during install. Empty means track HEAD.
-	// Mutually exclusive with Ref.
-	Version string
 
 	// Test injection points:
 	RunGitFn         func(ctx context.Context, args ...string) error
@@ -102,9 +102,6 @@ func extractLocalPackToStaging(configDir, packDir string) (string, config.PackMa
 func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
 	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
-	}
-	if err := source.ValidateVersionSpecifier(req.Version); err != nil {
-		return err
 	}
 	if req.URL != "" && req.PackPath != "" {
 		return fmt.Errorf("--url and path argument are mutually exclusive")
@@ -223,10 +220,14 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	}
 
 	approvedList, declinedList := buildPrefsLists(with)
-	if err := packRecordOrigin(req.ConfigDir, name, config.InstalledPackMeta{
+	meta := config.InstalledPackMeta{
 		Origin: packDir, Method: method, InstalledAt: now.UTC().Format(time.RFC3339),
 		Approved: approvedList, Declined: declinedList,
-	}); err != nil {
+	}
+	// Populate drift-detection baseline so doctor broken_refs and
+	// sync drift reports work before the first sync runs.
+	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, destDir, "", now, stdout)
+	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
 		fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
 	}
 
@@ -275,32 +276,48 @@ func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
 	fmt.Fprintln(stdout, "")
 }
 
+// resolveSemverRef expands an exact or partial semver classification to the
+// remote tag's raw spelling. For RefPartialSemver it prints a "Resolved X → Y"
+// hint to stdout. Returns "" with no error for non-semver kinds so callers can
+// treat the result uniformly: only overwrite their ref when resolved != "".
+// displayRef is the user-facing spec used in error messages.
+func resolveSemverRef(
+	ctx context.Context,
+	repoURL, displayRef string,
+	refClass source.RefClassification,
+	listFn func(ctx context.Context, repoURL string) ([]string, error),
+	stdout io.Writer,
+) (string, error) {
+	switch refClass.Kind {
+	case source.RefSemver:
+		resolved, err := source.ResolveExactSemver(ctx, repoURL, refClass.Prefix, refClass.Spec, listFn)
+		if err != nil {
+			return "", fmt.Errorf("resolving version %q: %w", displayRef, err)
+		}
+		return resolved, nil
+	case source.RefPartialSemver:
+		resolved, err := source.ResolvePartialSemver(ctx, repoURL, refClass.Prefix, refClass.Spec, listFn)
+		if err != nil {
+			return "", fmt.Errorf("resolving partial version %q: %w", displayRef, err)
+		}
+		fmt.Fprintf(stdout, "Resolved %s → %s\n", displayRef, resolved)
+		return resolved, nil
+	}
+	return "", nil
+}
+
 // packInstallFromURL implements the URL-based install flow via shallow git clone.
 func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
-	// Version resolution: translate --version to a git ref.
-	if req.Version != "" && req.Ref != "" {
-		return fmt.Errorf("--version and --ref are mutually exclusive")
-	}
-	var exactSemver bool
-	// partialSemver is true when --version is a major-only or major-minor
-	// spec like "v1" or "v1.2". Resolution is deferred until after URL
-	// probing so we can call ls-remote against the canonical repo URL.
-	var partialSemver bool
-	if req.Version != "" {
-		switch source.ClassifyVersion(req.Version) {
-		case source.VersionSemver:
-			exactSemver = true
-		case source.VersionPartialSemver:
-			partialSemver = true // resolved post-probe
-		case source.VersionCommit:
-			// Canonical short-SHA form is lowercase. Git accepts mixed case
-			// for checkout, but storing uppercase in the lockfile would
-			// disagree with what `git rev-parse` and `git log` print.
-			req.Version = strings.ToLower(req.Version)
-			req.Ref = req.Version
-		case source.VersionLatest:
-			req.Version = "" // "latest" means no pin; leave ref empty
-		}
+	refClass := source.ClassifyRef(req.Ref)
+	switch refClass.Kind {
+	case source.RefCommit:
+		// Canonical short-SHA form is lowercase. Git accepts mixed case
+		// for checkout, but storing uppercase in the lockfile would
+		// disagree with what `git rev-parse` and `git log` print.
+		req.Ref = refClass.Spec
+	case source.RefLatest:
+		// "latest" means unpin — track upstream HEAD.
+		req.Ref = ""
 	}
 
 	// Resolve URL info: for SSH/git URLs or when SubPath/Ref/partial version
@@ -309,7 +326,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// purposes — the user declared git intent and the URL is assumed to be
 	// a clone-able repo, not a GitHub blob URL that needs normalization.
 	var info source.PackURLInfo
-	if req.SubPath != "" || req.Ref != "" || partialSemver || config.IsGitURL(req.URL, "") {
+	if req.SubPath != "" || req.Ref != "" || refClass.Kind == source.RefPartialSemver || config.IsGitURL(req.URL, "") {
 		info = source.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
 	} else {
 		var err error
@@ -333,35 +350,22 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 			}
 		}
 	}
-	// Partial semver resolution: now that info.RepoURL is known, expand
-	// exact or partial semver specs to the remote tag's raw spelling. This
-	// preserves bare-tag remotes ("1.2.3") instead of forcing "v1.2.3".
+	// Semver resolution: now that info.RepoURL is known, expand exact or
+	// partial semver specs to the remote tag's raw spelling. This preserves
+	// bare-tag remotes ("1.2.3") and namespaced spellings
+	// ("my-pack/v1.2.3") unchanged for checkout.
 	listFn := req.ListRemoteTagsFn
 	if listFn == nil {
 		listFn = source.ListRemoteTags
 	}
-	if exactSemver {
-		resolved, err := source.ResolveExactSemver(ctx, info.RepoURL, req.Version, listFn)
-		if err != nil {
-			return fmt.Errorf("resolving version %q: %w", req.Version, err)
-		}
+	// Expand exact or partial semver specs to the remote tag's raw spelling.
+	// Partial installs still pin to a single resolved version — they do not
+	// create a channel that auto-updates.
+	if resolved, err := resolveSemverRef(ctx, info.RepoURL, req.Ref, refClass, listFn, stdout); err != nil {
+		return err
+	} else if resolved != "" {
 		req.Ref = resolved
 		info.Ref = resolved
-		req.Version = source.StripVersionPrefix(resolved)
-	}
-	// Partial semver resolution: now that info.RepoURL is known, expand
-	// --version "v1" or "v1.2" to the highest matching stable tag. The
-	// resolved tag is stored exactly in the lockfile — partial installs
-	// pin to a single version; they do not create a channel.
-	if partialSemver {
-		resolved, err := source.ResolvePartialSemver(ctx, info.RepoURL, req.Version, listFn)
-		if err != nil {
-			return fmt.Errorf("resolving partial version %q: %w", req.Version, err)
-		}
-		fmt.Fprintf(stdout, "Resolved %s → %s\n", source.NormalizeVersion(req.Version), resolved)
-		req.Ref = resolved
-		info.Ref = resolved
-		req.Version = source.StripVersionPrefix(resolved)
 	}
 
 	packsDir := PacksDir(req.ConfigDir)
@@ -384,7 +388,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// Verify pack.json version against the requested tag, if both are present.
 	// This educates pack authors when their pack.json version drifts from
 	// their git tags. Non-blocking — install proceeds either way.
-	warnPackJSONVersionMismatch(stdout, req.Version, result.manifest.Version)
+	warnPackJSONVersionMismatch(stdout, req.Ref, result.manifest.Version)
 
 	now := time.Now()
 	if req.NowFn != nil {
@@ -411,12 +415,17 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 
 	name := result.name
 	approvedList, declinedList := buildPrefsLists(effectiveWith)
-	if err := packRecordOrigin(req.ConfigDir, name, config.InstalledPackMeta{
+	meta := config.InstalledPackMeta{
 		Origin: info.RepoURL, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
 		Ref: info.Ref, SubPath: info.SubPath, CommitHash: result.commitHash,
 		ContentPaths: req.ContentPaths,
 		Approved:     approvedList, Declined: declinedList,
-	}); err != nil {
+	}
+	// Populate drift-detection baseline so doctor broken_refs and
+	// sync drift reports work before the first sync runs. The ref is
+	// captured so the next sync can report the version transition.
+	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, result.destDir, info.Ref, now, stdout)
+	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
 		fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
 	}
 
@@ -535,11 +544,14 @@ func listClonePacks(dir string) string {
 }
 
 // isPinned reports whether a lockfile entry represents a pinned install.
-// A pin is a ref that resolves to a fixed point — a semver tag (with or
-// without a v-prefix) or a commit hash. Branch names and an
-// empty ref track upstream.
+// A pin is a ref that resolves to a fixed point — a semver tag (flat or
+// namespaced) or a commit hash. Branch names and an empty ref track upstream.
 func isPinned(meta config.InstalledPackMeta) bool {
-	return meta.Ref != "" && (source.IsSemverTag(meta.Ref) || source.IsCommitHash(meta.Ref))
+	switch source.ClassifyRef(meta.Ref).Kind {
+	case source.RefSemver, source.RefPartialSemver, source.RefCommit:
+		return true
+	}
+	return false
 }
 
 // isLikelyTarballURL reports whether url has a shape that git can't clone.
@@ -555,24 +567,29 @@ func isLikelyTarballURL(url string) bool {
 	return strings.Contains(s, "/archive/")
 }
 
-// pinLabel returns the display label for a pinned ref: the semver tag
-// as-is, or the short commit hash.
+// pinLabel returns the display label for a pinned ref: the semver portion
+// (prefix stripped if namespaced), or the short commit hash for raw hash
+// pins.
 func pinLabel(ref string) string {
-	if source.IsSemverTag(ref) {
-		return ref
+	if semver := source.SemverFromRef(ref); semver != "" {
+		return semver
 	}
 	return util.ShortHash(ref)
 }
 
 // warnPackJSONVersionMismatch prints a non-blocking warning when a pack's
 // manifest version has drifted from its git tags, so authors notice the
-// mismatch. No-op for commit hashes, "latest", or empty versions.
-func warnPackJSONVersionMismatch(stdout io.Writer, requestedVersion, manifestVersion string) {
-	if !source.IsSemverTag(requestedVersion) || manifestVersion == "" {
+// mismatch. No-op for commit hashes, literal refs (branches), "latest",
+// or empty refs. Accepts both flat ("v1.2.3") and namespaced
+// ("my-pack/v1.2.3") semver refs — extracts the semver portion before
+// comparing against the manifest's plain-semver Version field.
+func warnPackJSONVersionMismatch(stdout io.Writer, requestedRef, manifestVersion string) {
+	requestedSemver := source.SemverFromRef(requestedRef)
+	if requestedSemver == "" || manifestVersion == "" {
 		return
 	}
-	expected := source.StripVersionPrefix(source.NormalizeVersion(requestedVersion))
-	actual := source.StripVersionPrefix(source.NormalizeVersion(manifestVersion))
+	expected := source.StripVersionPrefix(requestedSemver)
+	actual := source.StripVersionPrefix(manifestVersion)
 	if !source.IsSemverTag(actual) || actual == expected {
 		return
 	}

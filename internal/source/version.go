@@ -46,15 +46,31 @@ func parseLsRemoteTags(out []byte) []string {
 // FilterSemverTags returns only valid semver tags, normalized to v-prefix
 // form for comparison while preserving the remote's raw tag spelling in the
 // returned slice. Results are sorted descending (newest first).
-func FilterSemverTags(tags []string) []string {
+//
+// prefix scopes filtering to a git tag namespace. When prefix is empty, only
+// flat semver tags (v1.2.3, 1.2.3) match — tags of the form "<anything>/..."
+// are rejected by semver validation, so namespaced tags in a multi-pack repo
+// are correctly skipped. When prefix is non-empty, only tags of the form
+// "<prefix>/<semver>" match; the returned slice preserves the raw remote
+// spelling including the prefix, so callers can git-checkout the tags
+// unchanged.
+func FilterSemverTags(tags []string, prefix string) []string {
 	type semverTag struct {
 		raw  string
-		norm string
+		norm string // normalized semver form, prefix stripped
 	}
 	var valid []semverTag
 	seen := map[string]struct{}{}
 	for _, tag := range tags {
-		norm := NormalizeVersion(tag)
+		stripped := tag
+		if prefix != "" {
+			rest, ok := strings.CutPrefix(tag, prefix+"/")
+			if !ok {
+				continue
+			}
+			stripped = rest
+		}
+		norm := NormalizeVersion(stripped)
 		if !semver.IsValid(norm) {
 			continue
 		}
@@ -100,6 +116,20 @@ func StripVersionPrefix(v string) string {
 	return strings.TrimPrefix(v, "v")
 }
 
+// StripTagPrefix removes a namespace prefix ("<prefix>/") from a tag ref,
+// returning the portion after the slash. Returns ref unchanged when prefix
+// is empty, ref is empty, or ref does not start with "<prefix>/". The single
+// entry point for prefix stripping across the codebase.
+func StripTagPrefix(ref, prefix string) string {
+	if prefix == "" || ref == "" {
+		return ref
+	}
+	if rest, ok := strings.CutPrefix(ref, prefix+"/"); ok {
+		return rest
+	}
+	return ref
+}
+
 // IsSemverTag returns true if the string is a valid semver version
 // (with or without the v-prefix).
 func IsSemverTag(s string) bool {
@@ -120,6 +150,54 @@ func IsPartialSemver(s string) bool {
 	return strings.Count(base, ".") < 2
 }
 
+// splitSemverRef decomposes a ref into (prefix, semver tail). Accepts flat
+// ("v1.2.3") and namespaced ("my-pack/v1.2.3", "org/my-pack/v1.2.3") forms.
+// Returns ok=false when ref is empty or has no semver-shaped tail.
+func splitSemverRef(ref string) (prefix, tail string, ok bool) {
+	if IsSemverTag(ref) {
+		return "", ref, true
+	}
+	if idx := strings.LastIndex(ref, "/"); idx > 0 && idx < len(ref)-1 {
+		t := ref[idx+1:]
+		if IsSemverTag(t) {
+			return ref[:idx], t, true
+		}
+	}
+	return "", "", false
+}
+
+// IsSemverRef returns true if ref is a semver-shaped git tag, optionally
+// namespaced by a pack prefix ("<prefix>/<semver>").
+func IsSemverRef(ref string) bool {
+	_, _, ok := splitSemverRef(ref)
+	return ok
+}
+
+// SemverFromRef returns the semver portion of a ref, stripped of any
+// namespace prefix, or "" when ref is not a semver-shaped ref.
+//
+//	SemverFromRef("v1.2.3")            => "v1.2.3"
+//	SemverFromRef("1.2.3")             => "1.2.3"
+//	SemverFromRef("my-pack/v1.2.3")    => "v1.2.3"
+//	SemverFromRef("org/my-pack/1.2.3") => "1.2.3"
+//	SemverFromRef("main")              => ""
+func SemverFromRef(ref string) string {
+	_, tail, _ := splitSemverRef(ref)
+	return tail
+}
+
+// TagPrefixFromRef returns the namespace prefix of a semver-shaped ref, or
+// "" when ref is flat, empty, or not a semver at all.
+//
+//	TagPrefixFromRef("v1.2.3")             => ""
+//	TagPrefixFromRef("my-pack/v1.2.3")     => "my-pack"
+//	TagPrefixFromRef("org/my-pack/v1.2.3") => "org/my-pack"
+//	TagPrefixFromRef("main")               => ""
+func TagPrefixFromRef(ref string) string {
+	prefix, _, _ := splitSemverRef(ref)
+	return prefix
+}
+
 // ResolvePartialSemver expands a partial semver reference (like "v1" or
 // "v1.2") to the highest matching stable tag from the remote. Returns the
 // remote tag's raw spelling. Errors when no stable tag matches.
@@ -128,10 +206,14 @@ func IsPartialSemver(s string) bool {
 // must pass an exact tag. Build metadata is tolerated but ignored for
 // matching.
 //
+// prefix scopes resolution to "<prefix>/<semver>" tags. Empty prefix matches
+// flat tags only; non-empty prefix matches only namespaced tags for that
+// prefix. The two modes are mutually exclusive (no fallback).
+//
 // If s is not a partial semver, it is returned unchanged (as a normalized
-// semver string) without a network call, so callers can pass any
-// version through this function safely.
-func ResolvePartialSemver(ctx context.Context, repoURL, s string, listFn func(ctx context.Context, url string) ([]string, error)) (string, error) {
+// semver string) without a network call, so callers can pass any version
+// through this function safely.
+func ResolvePartialSemver(ctx context.Context, repoURL, prefix, s string, listFn func(ctx context.Context, url string) ([]string, error)) (string, error) {
 	norm := NormalizeVersion(s)
 	if !IsPartialSemver(norm) {
 		return norm, nil
@@ -143,24 +225,28 @@ func ResolvePartialSemver(ctx context.Context, repoURL, s string, listFn func(ct
 	if err != nil {
 		return "", fmt.Errorf("listing remote tags: %w", err)
 	}
-	sorted := FilterSemverTags(tags) // descending
-	prefix := norm + "."
+	sorted := FilterSemverTags(tags, prefix) // descending
+	wantPrefix := norm + "."
 	for _, tag := range sorted {
-		tagNorm := NormalizeVersion(tag)
+		tagNorm := NormalizeVersion(StripTagPrefix(tag, prefix))
 		if semver.Prerelease(tagNorm) != "" {
 			continue
 		}
-		if strings.HasPrefix(tagNorm, prefix) {
+		if strings.HasPrefix(tagNorm, wantPrefix) {
 			return tag, nil
 		}
 	}
 	return "", fmt.Errorf("no stable semver tag matching %q in remote", s)
 }
 
-// ResolveExactSemver resolves an exact semver request to the remote's raw tag
-// spelling. The caller passes a full semver version, with or without a
+// ResolveExactSemver resolves an exact semver request to the remote's raw
+// tag spelling. The caller passes a full semver version, with or without a
 // v-prefix.
-func ResolveExactSemver(ctx context.Context, repoURL, s string, listFn func(ctx context.Context, url string) ([]string, error)) (string, error) {
+//
+// prefix scopes resolution to "<prefix>/<semver>" tags. Empty prefix matches
+// flat tags only; non-empty prefix matches only namespaced tags for that
+// prefix.
+func ResolveExactSemver(ctx context.Context, repoURL, prefix, s string, listFn func(ctx context.Context, url string) ([]string, error)) (string, error) {
 	norm := NormalizeVersion(s)
 	if !IsSemverTag(norm) || IsPartialSemver(norm) {
 		return norm, nil
@@ -172,8 +258,8 @@ func ResolveExactSemver(ctx context.Context, repoURL, s string, listFn func(ctx 
 	if err != nil {
 		return "", fmt.Errorf("listing remote tags: %w", err)
 	}
-	for _, tag := range FilterSemverTags(tags) {
-		if NormalizeVersion(tag) == norm {
+	for _, tag := range FilterSemverTags(tags, prefix) {
+		if NormalizeVersion(StripTagPrefix(tag, prefix)) == norm {
 			return tag, nil
 		}
 	}
@@ -199,47 +285,66 @@ func IsCommitHash(s string) bool {
 	return true
 }
 
-// VersionKind classifies a version specifier.
-type VersionKind int
+// RefKind classifies a git ref specifier — the string a user passes via
+// --ref (or the deprecated --version, or the @<spec> install shorthand).
+// aipack does not distinguish "version" from "ref" at the semantic layer;
+// both map to this classification.
+type RefKind int
 
 const (
-	VersionNone          VersionKind = iota // empty — tracking HEAD
-	VersionSemver                           // exact semver pin ("1.2.3")
-	VersionPartialSemver                    // partial semver ("v1", "1.2") — resolves to latest matching stable tag
-	VersionCommit                           // commit hash pin ("abc1234")
-	VersionLatest                           // "latest" sentinel — clear pin
+	RefEmpty         RefKind = iota // empty string — track upstream HEAD
+	RefSemver                       // exact semver ("1.2.3"), optionally prefixed ("my-pack/v1.2.3")
+	RefPartialSemver                // partial semver ("v1", "1.2"), optionally prefixed ("my-pack/v1")
+	RefCommit                       // commit hash ("abc1234")
+	RefLatest                       // "latest" sentinel — unpin, track HEAD
+	RefLiteral                      // any other string (branch, non-semver tag, anything git can checkout)
 )
 
-// ClassifyVersion determines what kind of version specifier v is.
-func ClassifyVersion(v string) VersionKind {
-	if v == "" {
-		return VersionNone
-	}
-	if strings.EqualFold(v, "latest") {
-		return VersionLatest
-	}
-	if IsSemverTag(v) {
-		if IsPartialSemver(v) {
-			return VersionPartialSemver
-		}
-		return VersionSemver
-	}
-	if IsCommitHash(v) {
-		return VersionCommit
-	}
-	return VersionNone
+// RefClassification is the structured result of ClassifyRef.
+//
+// Prefix is non-empty only for namespaced semver forms (e.g. Kind=RefSemver,
+// Prefix="my-pack", Spec="v1.2.3" for input "my-pack/v1.2.3").
+//
+// Spec is the normalized form for semver kinds (v-prefixed), the lowercased
+// hash for commits, the raw input for literals, and empty for Empty/Latest
+// kinds.
+type RefClassification struct {
+	Kind   RefKind
+	Prefix string
+	Spec   string
 }
 
-// ValidateVersionSpecifier checks whether v is an accepted --version value.
-// Accepted values: exact semver, partial semver, commit hash, "latest", or
-// empty string. Returns an error for unsupported strings (for example, branch
-// names like "main").
-func ValidateVersionSpecifier(v string) error {
-	if v == "" {
-		return nil
+// ClassifyRef determines what kind of git ref s represents. It never errors —
+// every string is a legitimate ref attempt, interpretation is best-effort.
+//
+// Dispatch order:
+//
+//  1. Empty string → RefEmpty
+//  2. "latest" (case-insensitive) → RefLatest
+//  3. Flat semver / partial semver → RefSemver / RefPartialSemver
+//  4. Namespaced semver / partial (split at last "/") → RefSemver / RefPartialSemver with Prefix set
+//  5. Commit hash (7–40 hex chars) → RefCommit
+//  6. Anything else → RefLiteral (branch, non-semver tag, unrecognized string)
+//
+// Ordering matters: semver checks precede commit-hash detection so numeric
+// version strings aren't misread as short hashes.
+func ClassifyRef(s string) RefClassification {
+	if s == "" {
+		return RefClassification{Kind: RefEmpty}
 	}
-	if ClassifyVersion(v) != VersionNone {
-		return nil
+	if strings.EqualFold(s, "latest") {
+		return RefClassification{Kind: RefLatest}
 	}
-	return fmt.Errorf("invalid version %q: expected semver (1.2.3), partial semver (v1 or v1.2), commit hash, or latest", v)
+	if prefix, tail, ok := splitSemverRef(s); ok {
+		norm := NormalizeVersion(tail)
+		kind := RefSemver
+		if IsPartialSemver(norm) {
+			kind = RefPartialSemver
+		}
+		return RefClassification{Kind: kind, Prefix: prefix, Spec: norm}
+	}
+	if IsCommitHash(s) {
+		return RefClassification{Kind: RefCommit, Spec: strings.ToLower(s)}
+	}
+	return RefClassification{Kind: RefLiteral, Spec: s}
 }

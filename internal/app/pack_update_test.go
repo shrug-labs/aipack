@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,19 +76,167 @@ func TestPackUpdate_Link_VerifiesTarget(t *testing.T) {
 	}
 }
 
-func TestPackUpdate_InvalidVersionRejected(t *testing.T) {
+// TestPackUpdate_Local_BackfillsResolvedInventory asserts that running
+// pack update against a MethodLocal pack whose lockfile entry lacks a
+// Resolved inventory backfills the baseline. MethodLocal packs take a
+// bespoke early-return path (no clone, no buildUpToDateResult), so the
+// backfill has to be wired explicitly on that branch.
+func TestPackUpdate_Local_BackfillsResolvedInventory(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	// Write the pack directly into configDir/packs/ so PackInstall
+	// detects the in-place case and records method = MethodLocal.
+	packsDir := filepath.Join(e.configDir, "packs")
+	packDir := filepath.Join(packsDir, "local-backfill")
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifest(t, packDir, "local-backfill")
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "rule-a.md"), []byte("# rule-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: e.configDir,
+		NowFn: func() time.Time { return fixedNow },
+	}, &e.out); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	lfPath := config.LockfilePath(e.configDir)
+	lf, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := lf.Packs["local-backfill"]
+	if meta.Method != config.MethodLocal {
+		t.Fatalf("precondition: method = %q, want %q", meta.Method, config.MethodLocal)
+	}
+	// Simulate pre-v0.22: clear Resolved so the update path has to backfill.
+	meta.Resolved = nil
+	lf.Packs["local-backfill"] = meta
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := e.update(t, "local-backfill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpToDate {
+		t.Fatalf("status = %q, want up-to-date", results[0].Status)
+	}
+
+	lf, err = config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := lf.Packs["local-backfill"]
+	if got.Resolved == nil {
+		t.Fatal("Resolved is still nil after update — MethodLocal backfill did not fire")
+	}
+	if !slices.Contains(got.Resolved.Rules, "rule-a") {
+		t.Errorf("Resolved.Rules = %v, want to contain rule-a", got.Resolved.Rules)
+	}
+}
+
+// TestPackUpdate_UpToDate_BackfillsResolvedInventory asserts that running
+// pack update against an up-to-date pack whose lockfile entry lacks a
+// Resolved inventory (simulating a pre-v0.22 install) backfills the
+// baseline so drift detection and doctor broken_refs work going forward.
+// Regression guard for finding #3 in
+// projects/aipack-pack-update-bugs-2026-04-14.md (fast-path wire).
+func TestPackUpdate_UpToDate_BackfillsResolvedInventory(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	// Build a source pack with real content so the inventory has
+	// something to capture on backfill.
+	packDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifest(t, packDir, "backfill-test")
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "rule-a.md"), []byte("# rule-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Link install so update takes the MethodLink → buildUpToDateResult
+	// branch (no clone, no re-extraction).
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: e.configDir, Link: true,
+		NowFn: func() time.Time { return fixedNow },
+	}, &e.out); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// Simulate pre-v0.22: clear Resolved from the lockfile entry.
+	lfPath := config.LockfilePath(e.configDir)
+	lf, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatalf("LoadLockfile: %v", err)
+	}
+	meta := lf.Packs["backfill-test"]
+	if meta.Resolved == nil {
+		t.Fatal("precondition: install should have populated Resolved")
+	}
+	meta.Resolved = nil
+	lf.Packs["backfill-test"] = meta
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatalf("SaveLockfile: %v", err)
+	}
+
+	results, err := e.update(t, "backfill-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpToDate {
+		t.Fatalf("status = %q, want up-to-date", results[0].Status)
+	}
+
+	// Re-read the lockfile and assert Resolved is now populated.
+	lf, err = config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatalf("LoadLockfile after update: %v", err)
+	}
+	got := lf.Packs["backfill-test"]
+	if got.Resolved == nil {
+		t.Fatal("Resolved is still nil after update — backfill did not fire")
+	}
+	if !slices.Contains(got.Resolved.Rules, "rule-a") {
+		t.Errorf("Resolved.Rules = %v, want to contain rule-a", got.Resolved.Rules)
+	}
+}
+
+// TestPackUpdate_NonSemverVersionTreatedAsLiteralRef verifies that
+// --version "main" on update is dispatched as a literal ref to checkout
+// rather than rejected as an invalid version. Parallel to the
+// install-side test.
+func TestPackUpdate_NonSemverVersionTreatedAsLiteralRef(t *testing.T) {
 	t.Parallel()
 	e := newUpdateEnv(t)
 	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
 
-	_, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
-		r.Version = "main"
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Ref = "main"
+		r.RunGitFn = func(context.Context, ...string) error { return nil }
+		r.GitHashFn = fakeHashFn(fakeHash2)
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return nil, nil
+		}
 	})
-	if err == nil {
-		t.Fatal("expected invalid version error")
+	// Any error must not be an up-front "invalid version" rejection —
+	// under the unified ref model, validation was removed and literal
+	// refs flow through to the dispatch.
+	if err != nil && strings.Contains(err.Error(), "invalid version") {
+		t.Fatalf("unified ref model should not reject 'main' as invalid version: %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid version") {
-		t.Fatalf("expected invalid version error, got: %v", err)
+	// The update should dispatch through the literal-ref path rather than
+	// short-circuiting on validation. A successful dispatch produces a
+	// result entry (StatusUpdated or similar) even with a fake git runner.
+	if len(results) == 0 && err == nil {
+		t.Fatal("update produced no results and no error — dispatch did not run")
 	}
 }
 
@@ -747,7 +896,7 @@ func TestPackUpdate_Clone_VersionFlagMovesSemverPin(t *testing.T) {
 	patchLockfileRef(t, e.configDir, "my-pack", "v1.0.0")
 
 	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
-		r.Version = "2.0.0"
+		r.Ref = "2.0.0"
 		r.RunGitFn = func(_ context.Context, args ...string) error {
 			if len(args) >= 1 && args[0] == "clone" {
 				writePackManifest(t, args[len(args)-1], "my-pack")
@@ -784,7 +933,7 @@ func TestPackUpdate_Clone_VersionLatestUnpins(t *testing.T) {
 	patchLockfileRef(t, e.configDir, "my-pack", "v1.0.0")
 
 	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
-		r.Version = "latest"
+		r.Ref = "latest"
 		r.RunGitFn = func(_ context.Context, args ...string) error {
 			if len(args) >= 1 && args[0] == "clone" {
 				writePackManifest(t, args[len(args)-1], "my-pack")
@@ -1123,7 +1272,7 @@ func TestPackUpdate_Clone_PinMoveSameCommit(t *testing.T) {
 	// Move pin to v2.0.0 while ls-remote reports that tag resolves to the
 	// same commit hash as the current pin.
 	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
-		r.Version = "2.0.0"
+		r.Ref = "2.0.0"
 		r.RunGitFn = func(_ context.Context, args ...string) error {
 			if len(args) >= 1 && args[0] == "clone" {
 				writePackManifest(t, args[len(args)-1], "my-pack")
@@ -1161,7 +1310,7 @@ func TestPackUpdate_Clone_VersionFlagPreservesRemoteBareSemverTag(t *testing.T) 
 
 	var clonedRef string
 	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
-		r.Version = "v2.0.0"
+		r.Ref = "v2.0.0"
 		r.RunGitFn = func(_ context.Context, args ...string) error {
 			if len(args) >= 1 && args[0] == "clone" {
 				for i := 0; i < len(args)-1; i++ {
@@ -1196,6 +1345,167 @@ func TestPackUpdate_Clone_VersionFlagPreservesRemoteBareSemverTag(t *testing.T) 
 	}
 }
 
+// TestPackUpdate_Clone_NamespacedPinAutoPrependsBareSemver covers the
+// auto-prepend path in packUpdateOne: when the installed ref is a
+// namespaced tag ("my-pack/v1.0.0"), bare --ref 1.0.1 from the user must
+// inherit the "my-pack" prefix and resolve against the prefix-scoped tag
+// list. The noise tags (flat v1.0.1, other-pack/v1.0.1) prove the prefix
+// filter isolates correctly — neither must be picked.
+func TestPackUpdate_Clone_NamespacedPinAutoPrependsBareSemver(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	patchLockfileRef(t, e.configDir, "my-pack", "my-pack/v1.0.0")
+
+	var clonedRef string
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Ref = "1.0.1" // bare semver — auto-prepend should kick in
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				for i := 0; i < len(args)-1; i++ {
+					if args[i] == "--branch" {
+						clonedRef = args[i+1]
+						break
+					}
+				}
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{
+				"v1.0.1",            // flat — must not satisfy a namespaced request
+				"other-pack/v1.0.1", // wrong prefix — must not match
+				"my-pack/v1.0.0",
+				"my-pack/v1.0.1", // target
+			}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	// "v1.0.1" alone would mean the prefix was dropped;
+	// "my-pack/my-pack/v1.0.1" would mean it was double-prepended.
+	if clonedRef != "my-pack/v1.0.1" {
+		t.Fatalf("clone ref = %q, want my-pack/v1.0.1 (auto-prepended)", clonedRef)
+	}
+
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	meta := lf.Packs["my-pack"]
+	if meta.Ref != "my-pack/v1.0.1" {
+		t.Errorf("lockfile ref = %q, want my-pack/v1.0.1", meta.Ref)
+	}
+	if !isPinned(meta) {
+		t.Errorf("expected pin to be recorded after namespaced update")
+	}
+}
+
+// TestPackUpdate_Clone_NamespacedPinExplicitRefNoDoublePrefix verifies
+// the explicit-prefix branch of the auto-prepend guard: when the user
+// types the full "my-pack/v1.0.1" on an already-namespaced install, the
+// prefix on the classifier result is non-empty, so auto-prepend must
+// NOT fire. Double-prepending would produce "my-pack/my-pack/v1.0.1" and
+// fail resolution.
+func TestPackUpdate_Clone_NamespacedPinExplicitRefNoDoublePrefix(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	patchLockfileRef(t, e.configDir, "my-pack", "my-pack/v1.0.0")
+
+	var clonedRef string
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Ref = "my-pack/v1.0.1" // full namespaced form
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				for i := 0; i < len(args)-1; i++ {
+					if args[i] == "--branch" {
+						clonedRef = args[i+1]
+						break
+					}
+				}
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{"my-pack/v1.0.0", "my-pack/v1.0.1"}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	if clonedRef != "my-pack/v1.0.1" {
+		t.Fatalf("clone ref = %q, want my-pack/v1.0.1 (no double-prefix)", clonedRef)
+	}
+
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	if got := lf.Packs["my-pack"].Ref; got != "my-pack/v1.0.1" {
+		t.Errorf("lockfile ref = %q, want my-pack/v1.0.1", got)
+	}
+}
+
+// TestPackUpdate_Clone_NamespacedPinPartialSemverAutoPrepends exercises
+// the RefPartialSemver branch of the auto-prepend: installed at
+// my-pack/v1.0.0, bare --ref v1 must inherit the prefix and resolve
+// against namespaced v1.x.x tags, skipping flat v1.x.x and sibling-pack
+// v1.x.x entirely.
+func TestPackUpdate_Clone_NamespacedPinPartialSemverAutoPrepends(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	patchLockfileRef(t, e.configDir, "my-pack", "my-pack/v1.0.0")
+
+	var clonedRef string
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.Ref = "v1" // bare partial semver
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 1 && args[0] == "clone" {
+				for i := 0; i < len(args)-1; i++ {
+					if args[i] == "--branch" {
+						clonedRef = args[i+1]
+						break
+					}
+				}
+				writePackManifest(t, args[len(args)-1], "my-pack")
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
+			return []string{
+				"v1.9.0", // flat — must not win the partial match
+				"my-pack/v1.0.0",
+				"my-pack/v1.5.0", // target — highest stable v1.x.x for my-pack
+				"my-pack/v2.0.0",
+			}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	if clonedRef != "my-pack/v1.5.0" {
+		t.Fatalf("clone ref = %q, want my-pack/v1.5.0", clonedRef)
+	}
+	lf, _ := config.LoadLockfile(config.LockfilePath(e.configDir))
+	if got := lf.Packs["my-pack"].Ref; got != "my-pack/v1.5.0" {
+		t.Errorf("lockfile ref = %q, want my-pack/v1.5.0", got)
+	}
+}
+
 // TestPackUpdate_Clone_PartialSemverResolvesAndPins exercises partial
 // version refs on update — the user wants "latest v1.x.x" without typing
 // the exact patch version. The resolved tag lands in the lockfile, not the
@@ -1206,7 +1516,7 @@ func TestPackUpdate_Clone_PartialSemverResolvesAndPins(t *testing.T) {
 	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
 
 	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
-		r.Version = "v1"
+		r.Ref = "v1"
 		r.RunGitFn = func(_ context.Context, args ...string) error {
 			if len(args) >= 1 && args[0] == "clone" {
 				writePackManifest(t, args[len(args)-1], "my-pack")
@@ -1243,7 +1553,7 @@ func TestPackUpdate_Clone_PartialSemverNoMatch(t *testing.T) {
 	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
 
 	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
-		r.Version = "v3"
+		r.Ref = "v3"
 		r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
 			return []string{"v1.0.0", "v2.0.0"}, nil
 		}

@@ -40,21 +40,32 @@ func TestParseLsRemoteTags(t *testing.T) {
 func TestFilterSemverTags(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		tags []string
-		want []string
+		name   string
+		tags   []string
+		prefix string
+		want   []string
 	}{
-		{"empty", nil, nil},
-		{"all valid", []string{"v1.0.0", "v2.0.0", "v1.5.0"}, []string{"v2.0.0", "v1.5.0", "v1.0.0"}},
-		{"mixed valid and invalid", []string{"v1.0.0", "release-1", "v2.0.0", "nope"}, []string{"v2.0.0", "v1.0.0"}},
-		{"without v prefix", []string{"1.0.0", "2.0.0"}, []string{"2.0.0", "1.0.0"}},
-		{"preserves raw spelling while sorting semver", []string{"1.2.3", "v2.0.0", "v1.9.0"}, []string{"v2.0.0", "v1.9.0", "1.2.3"}},
-		{"with prerelease", []string{"v1.0.0", "v1.1.0-beta.1", "v1.1.0"}, []string{"v1.1.0", "v1.1.0-beta.1", "v1.0.0"}},
+		// Flat-tag behavior (prefix=""). Matches pre-v0.22 behavior byte-for-byte.
+		{"empty", nil, "", nil},
+		{"all valid", []string{"v1.0.0", "v2.0.0", "v1.5.0"}, "", []string{"v2.0.0", "v1.5.0", "v1.0.0"}},
+		{"mixed valid and invalid", []string{"v1.0.0", "release-1", "v2.0.0", "nope"}, "", []string{"v2.0.0", "v1.0.0"}},
+		{"without v prefix", []string{"1.0.0", "2.0.0"}, "", []string{"2.0.0", "1.0.0"}},
+		{"preserves raw spelling while sorting semver", []string{"1.2.3", "v2.0.0", "v1.9.0"}, "", []string{"v2.0.0", "v1.9.0", "1.2.3"}},
+		{"with prerelease", []string{"v1.0.0", "v1.1.0-beta.1", "v1.1.0"}, "", []string{"v1.1.0", "v1.1.0-beta.1", "v1.0.0"}},
+		{"empty prefix rejects namespaced", []string{"v1.0.0", "my-pack/v1.0.0", "my-pack/v2.0.0"}, "", []string{"v1.0.0"}},
+
+		// Namespaced-tag behavior (prefix="my-pack").
+		{"prefix filters to namespaced only", []string{"my-pack/v1.0.0", "my-pack/v1.1.0", "other-pack/v2.0.0", "v3.0.0"}, "my-pack", []string{"my-pack/v1.1.0", "my-pack/v1.0.0"}},
+		{"prefix no matches", []string{"v1.0.0", "other-pack/v1.0.0"}, "my-pack", nil},
+		{"prefix prerelease handling", []string{"my-pack/v1.0.0", "my-pack/v1.1.0-beta.1", "my-pack/v1.1.0"}, "my-pack", []string{"my-pack/v1.1.0", "my-pack/v1.1.0-beta.1", "my-pack/v1.0.0"}},
+		{"prefix sort multi-digit minor", []string{"my-pack/v0.9.0", "my-pack/v0.10.0"}, "my-pack", []string{"my-pack/v0.10.0", "my-pack/v0.9.0"}},
+		{"prefix preserves bare tail", []string{"my-pack/1.0.0", "my-pack/v2.0.0"}, "my-pack", []string{"my-pack/v2.0.0", "my-pack/1.0.0"}},
+		{"deep namespace", []string{"org/my-pack/v1.0.0", "org/my-pack/v2.0.0"}, "org/my-pack", []string{"org/my-pack/v2.0.0", "org/my-pack/v1.0.0"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := FilterSemverTags(tt.tags)
+			got := FilterSemverTags(tt.tags, tt.prefix)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
@@ -111,6 +122,27 @@ func TestStripVersionPrefix(t *testing.T) {
 	}
 }
 
+func TestStripTagPrefix(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		ref, prefix, want string
+	}{
+		{"v1.2.3", "", "v1.2.3"},
+		{"v1.2.3", "my-pack", "v1.2.3"},
+		{"my-pack/v1.2.3", "my-pack", "v1.2.3"},
+		{"my-pack/v1.2.3", "other", "my-pack/v1.2.3"},
+		{"my-pack/v1.2.3", "", "my-pack/v1.2.3"},
+		{"", "my-pack", ""},
+		{"", "", ""},
+		{"org/my-pack/v1.0.0", "org/my-pack", "v1.0.0"},
+	}
+	for _, tt := range tests {
+		if got := StripTagPrefix(tt.ref, tt.prefix); got != tt.want {
+			t.Errorf("StripTagPrefix(%q, %q) = %q, want %q", tt.ref, tt.prefix, got, tt.want)
+		}
+	}
+}
+
 func TestIsSemverTag(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -128,6 +160,74 @@ func TestIsSemverTag(t *testing.T) {
 	for _, tt := range tests {
 		if got := IsSemverTag(tt.in); got != tt.want {
 			t.Errorf("IsSemverTag(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestIsSemverRef(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"v1.2.3", true},
+		{"1.2.3", true},
+		{"v1.2.3-beta.1", true},
+		{"my-pack/v1.2.3", true},
+		{"my-pack/1.2.3", true},
+		{"org/my-pack/v1.2.3", true},
+		{"main", false},
+		{"my-pack/main", false},
+		{"release-1", false},
+		{"", false},
+		{"my-pack/", false},
+		{"/v1.2.3", false},
+	}
+	for _, tt := range tests {
+		if got := IsSemverRef(tt.in); got != tt.want {
+			t.Errorf("IsSemverRef(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSemverFromRef(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in, want string
+	}{
+		{"v1.2.3", "v1.2.3"},
+		{"1.2.3", "1.2.3"},
+		{"my-pack/v1.2.3", "v1.2.3"},
+		{"my-pack/1.2.3", "1.2.3"},
+		{"org/my-pack/v1.2.3", "v1.2.3"},
+		{"main", ""},
+		{"my-pack/main", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := SemverFromRef(tt.in); got != tt.want {
+			t.Errorf("SemverFromRef(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestTagPrefixFromRef(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in, want string
+	}{
+		{"v1.2.3", ""},
+		{"1.2.3", ""},
+		{"my-pack/v1.2.3", "my-pack"},
+		{"my-pack/1.2.3", "my-pack"},
+		{"org/my-pack/v1.2.3", "org/my-pack"},
+		{"main", ""},
+		{"my-pack/main", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := TagPrefixFromRef(tt.in); got != tt.want {
+			t.Errorf("TagPrefixFromRef(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
@@ -156,61 +256,62 @@ func TestIsCommitHash(t *testing.T) {
 	}
 }
 
-func TestClassifyVersion(t *testing.T) {
+func TestClassifyRef(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		in   string
-		want VersionKind
+		want RefClassification
 	}{
-		{"", VersionNone},
-		{"1.2.3", VersionSemver},
-		{"v1.2.3", VersionSemver},
-		{"v1.0.0-beta.1", VersionSemver},
-		{"v1.2.3+build", VersionSemver},
-		{"v1", VersionPartialSemver},
-		{"1", VersionPartialSemver},
-		{"v1.2", VersionPartialSemver},
-		{"1.2", VersionPartialSemver},
-		{"latest", VersionLatest},
-		{"LATEST", VersionLatest},
-		{"abc1234", VersionCommit},
-		{"aabbccdd1122334455667788", VersionCommit},
-		// All-hex 7+ char strings classify as commit hashes even if they
-		// happen to be valid branch names — commit wins over branch on
-		// ambiguity. Users who want to update to such a branch must use
-		// --ref, not --version.
-		{"cafe123", VersionCommit},
-		{"CAFE123", VersionCommit}, // uppercase paste from a URL still classifies as commit
-		{"develop", VersionNone},   // branch name, not a version
-		{"main", VersionNone},
-		{"release-1", VersionNone},
-	}
-	for _, tt := range tests {
-		if got := ClassifyVersion(tt.in); got != tt.want {
-			t.Errorf("ClassifyVersion(%q) = %v, want %v", tt.in, got, tt.want)
-		}
-	}
-}
+		// Empty and sentinel.
+		{"", RefClassification{Kind: RefEmpty}},
+		{"latest", RefClassification{Kind: RefLatest}},
+		{"LATEST", RefClassification{Kind: RefLatest}},
 
-func TestValidateVersionSpecifier(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		in      string
-		wantErr bool
-	}{
-		{"", false},
-		{"1.2.3", false},
-		{"v1", false},
-		{"abc1234", false},
-		{"latest", false},
-		{"main", true},
-		{"release-1", true},
+		// Flat semver.
+		{"1.2.3", RefClassification{Kind: RefSemver, Spec: "v1.2.3"}},
+		{"v1.2.3", RefClassification{Kind: RefSemver, Spec: "v1.2.3"}},
+		{"v1.0.0-beta.1", RefClassification{Kind: RefSemver, Spec: "v1.0.0-beta.1"}},
+		{"v1.2.3+build", RefClassification{Kind: RefSemver, Spec: "v1.2.3+build"}},
+
+		// Flat partial.
+		{"v1", RefClassification{Kind: RefPartialSemver, Spec: "v1"}},
+		{"1", RefClassification{Kind: RefPartialSemver, Spec: "v1"}},
+		{"v1.2", RefClassification{Kind: RefPartialSemver, Spec: "v1.2"}},
+		{"1.2", RefClassification{Kind: RefPartialSemver, Spec: "v1.2"}},
+
+		// Namespaced semver.
+		{"my-pack/v1.2.3", RefClassification{Kind: RefSemver, Prefix: "my-pack", Spec: "v1.2.3"}},
+		{"my-pack/1.2.3", RefClassification{Kind: RefSemver, Prefix: "my-pack", Spec: "v1.2.3"}},
+		{"my-pack/v1.0.0-beta", RefClassification{Kind: RefSemver, Prefix: "my-pack", Spec: "v1.0.0-beta"}},
+
+		// Namespaced partial.
+		{"my-pack/v1", RefClassification{Kind: RefPartialSemver, Prefix: "my-pack", Spec: "v1"}},
+		{"my-pack/v1.2", RefClassification{Kind: RefPartialSemver, Prefix: "my-pack", Spec: "v1.2"}},
+
+		// Deep namespace.
+		{"org/my-pack/v1.2.3", RefClassification{Kind: RefSemver, Prefix: "org/my-pack", Spec: "v1.2.3"}},
+
+		// Commit hash.
+		{"abc1234", RefClassification{Kind: RefCommit, Spec: "abc1234"}},
+		{"aabbccdd1122334455667788", RefClassification{Kind: RefCommit, Spec: "aabbccdd1122334455667788"}},
+		{"CAFE123", RefClassification{Kind: RefCommit, Spec: "cafe123"}}, // lowercased
+		{"cafe123", RefClassification{Kind: RefCommit, Spec: "cafe123"}},
+
+		// Literal.
+		{"main", RefClassification{Kind: RefLiteral, Spec: "main"}},
+		{"develop", RefClassification{Kind: RefLiteral, Spec: "develop"}},
+		{"release-2026-04-01", RefClassification{Kind: RefLiteral, Spec: "release-2026-04-01"}},
+		{"feature/my-branch", RefClassification{Kind: RefLiteral, Spec: "feature/my-branch"}},
+		{"my-pack/main", RefClassification{Kind: RefLiteral, Spec: "my-pack/main"}},
 	}
 	for _, tt := range tests {
-		err := ValidateVersionSpecifier(tt.in)
-		if (err != nil) != tt.wantErr {
-			t.Errorf("ValidateVersionSpecifier(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
-		}
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			got := ClassifyRef(tt.in)
+			if got != tt.want {
+				t.Errorf("ClassifyRef(%q) = %+v, want %+v", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -245,7 +346,7 @@ func TestResolvePartialSemver_ListFnError(t *testing.T) {
 	listFn := func(context.Context, string) ([]string, error) {
 		return nil, errors.New("simulated network failure")
 	}
-	got, err := ResolvePartialSemver(context.Background(), "https://example.com/repo", "v1", listFn)
+	got, err := ResolvePartialSemver(context.Background(), "https://example.com/repo", "", "v1", listFn)
 	if err == nil {
 		t.Fatalf("expected error, got %q", got)
 	}
@@ -263,26 +364,35 @@ func TestResolvePartialSemver(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		prefix  string
 		partial string
 		tags    []string
 		want    string
 		wantErr bool
 	}{
-		{"major picks latest minor", "v1", []string{"v1.0.0", "v1.5.0", "v2.0.0"}, "v1.5.0", false},
-		{"major preserves bare tag spelling", "v1", []string{"1.0.0", "1.5.0", "v2.0.0"}, "1.5.0", false},
-		{"major skips v10 when matching v1", "v1", []string{"v1.0.0", "v1.5.0", "v10.0.0"}, "v1.5.0", false},
-		{"major-minor picks latest patch", "v1.2", []string{"v1.2.0", "v1.2.5", "v1.3.0"}, "v1.2.5", false},
-		{"major-minor skips v1.10 when matching v1.2", "v1.2", []string{"v1.2.0", "v1.10.0"}, "v1.2.0", false},
-		{"unprefixed normalizes", "1", []string{"v1.0.0", "v2.0.0"}, "v1.0.0", false},
-		{"no stable match errors", "v2", []string{"v1.0.0"}, "", true},
-		{"all prereleases errors", "v1", []string{"v1.0.0-beta.1", "v1.0.0-rc.1"}, "", true},
-		{"prefers stable over prerelease", "v1", []string{"v1.0.0", "v1.5.0-beta"}, "v1.0.0", false},
-		{"exact semver passes through untouched", "v1.2.3", []string{"should-not-be-read"}, "v1.2.3", false},
-		{"exact unprefixed normalizes", "1.2.3", nil, "v1.2.3", false},
+		// Flat (prefix="").
+		{"major picks latest minor", "", "v1", []string{"v1.0.0", "v1.5.0", "v2.0.0"}, "v1.5.0", false},
+		{"major preserves bare tag spelling", "", "v1", []string{"1.0.0", "1.5.0", "v2.0.0"}, "1.5.0", false},
+		{"major skips v10 when matching v1", "", "v1", []string{"v1.0.0", "v1.5.0", "v10.0.0"}, "v1.5.0", false},
+		{"major-minor picks latest patch", "", "v1.2", []string{"v1.2.0", "v1.2.5", "v1.3.0"}, "v1.2.5", false},
+		{"major-minor skips v1.10 when matching v1.2", "", "v1.2", []string{"v1.2.0", "v1.10.0"}, "v1.2.0", false},
+		{"unprefixed normalizes", "", "1", []string{"v1.0.0", "v2.0.0"}, "v1.0.0", false},
+		{"no stable match errors", "", "v2", []string{"v1.0.0"}, "", true},
+		{"all prereleases errors", "", "v1", []string{"v1.0.0-beta.1", "v1.0.0-rc.1"}, "", true},
+		{"prefers stable over prerelease", "", "v1", []string{"v1.0.0", "v1.5.0-beta"}, "v1.0.0", false},
+		{"exact semver passes through untouched", "", "v1.2.3", []string{"should-not-be-read"}, "v1.2.3", false},
+		{"exact unprefixed normalizes", "", "1.2.3", nil, "v1.2.3", false},
+
+		// Namespaced (prefix="my-pack").
+		{"namespaced major picks latest", "my-pack", "v1", []string{"my-pack/v1.0.0", "my-pack/v1.5.0", "my-pack/v2.0.0"}, "my-pack/v1.5.0", false},
+		{"namespaced isolates from flat", "my-pack", "v1", []string{"v1.0.0", "v1.5.0"}, "", true},
+		{"namespaced isolates from other prefix", "my-pack", "v1", []string{"other-pack/v1.0.0"}, "", true},
+		{"namespaced prerelease skip", "my-pack", "v1", []string{"my-pack/v1.5.0-beta", "my-pack/v1.4.0"}, "my-pack/v1.4.0", false},
+		{"namespaced major-minor skips v1.10", "my-pack", "v1.2", []string{"my-pack/v1.2.0", "my-pack/v1.10.0"}, "my-pack/v1.2.0", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResolvePartialSemver(ctx, "https://example.com/repo", tt.partial, tagsFn(tt.tags...))
+			got, err := ResolvePartialSemver(ctx, "https://example.com/repo", tt.prefix, tt.partial, tagsFn(tt.tags...))
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got %q", got)
@@ -308,19 +418,28 @@ func TestResolveExactSemver(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		prefix  string
 		version string
 		tags    []string
 		want    string
 		wantErr bool
 	}{
-		{"prefixed input matches bare remote tag", "v1.2.3", []string{"1.2.3", "2.0.0"}, "1.2.3", false},
-		{"bare input matches prefixed remote tag", "1.2.3", []string{"v1.2.3", "v2.0.0"}, "v1.2.3", false},
-		{"prefers exact semver match", "1.2.3", []string{"v1.2.2", "1.2.3", "v1.2.4"}, "1.2.3", false},
-		{"missing tag errors", "1.2.3", []string{"v1.2.2", "v1.2.4"}, "", true},
+		// Flat (prefix="").
+		{"prefixed input matches bare remote tag", "", "v1.2.3", []string{"1.2.3", "2.0.0"}, "1.2.3", false},
+		{"bare input matches prefixed remote tag", "", "1.2.3", []string{"v1.2.3", "v2.0.0"}, "v1.2.3", false},
+		{"prefers exact semver match", "", "1.2.3", []string{"v1.2.2", "1.2.3", "v1.2.4"}, "1.2.3", false},
+		{"missing tag errors", "", "1.2.3", []string{"v1.2.2", "v1.2.4"}, "", true},
+
+		// Namespaced (prefix="my-pack").
+		{"namespaced exact match", "my-pack", "1.0.0", []string{"my-pack/v1.0.0", "my-pack/v2.0.0"}, "my-pack/v1.0.0", false},
+		{"namespaced missing tag errors", "my-pack", "9.9.9", []string{"my-pack/v1.0.0"}, "", true},
+		{"namespaced isolates from flat", "my-pack", "1.0.0", []string{"v1.0.0"}, "", true},
+		{"namespaced isolates from other prefix", "my-pack", "1.0.0", []string{"other-pack/v1.0.0"}, "", true},
+		{"namespaced preserves raw spelling", "my-pack", "1.0.0", []string{"my-pack/1.0.0", "my-pack/v2.0.0"}, "my-pack/1.0.0", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResolveExactSemver(ctx, "https://example.com/repo", tt.version, tagsFn(tt.tags...))
+			got, err := ResolveExactSemver(ctx, "https://example.com/repo", tt.prefix, tt.version, tagsFn(tt.tags...))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got %q", got)

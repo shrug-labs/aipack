@@ -85,22 +85,19 @@ func TestPackUpdate_MutualExclusion(t *testing.T) {
 	}
 }
 
-func TestPackInstall_VersionAndRefMutuallyExclusive(t *testing.T) {
-	t.Parallel()
-	_, _, code := runApp(t, "pack", "install", "--url", "https://example.com/repo", "--version", "1.0.0", "--ref", "main")
-	if code == cmdutil.ExitOK {
-		t.Fatalf("--version + --ref should fail, got exit=%d", code)
-	}
-}
-
-func TestPackInstall_InvalidVersionRejected(t *testing.T) {
+// TestPackInstall_NonSemverVersionTreatedAsLiteralRef verifies that
+// `pack install --version main` is dispatched as a literal ref through
+// the clone path rather than rejected at the CLI validation gate. The
+// install still fails downstream (fake URL), but the failure must NOT
+// be an "invalid version" short-circuit.
+func TestPackInstall_NonSemverVersionTreatedAsLiteralRef(t *testing.T) {
 	t.Parallel()
 	_, stderr, code := runApp(t, "pack", "install", "--url", "https://example.com/repo", "--version", "main")
 	if code == cmdutil.ExitOK {
-		t.Fatalf("invalid --version should fail, got exit=%d", code)
+		t.Fatalf("install with fake URL should still fail downstream, got exit=%d", code)
 	}
-	if !strings.Contains(stderr, "invalid version") {
-		t.Fatalf("stderr should mention invalid version, got: %s", stderr)
+	if strings.Contains(stderr, "invalid version") {
+		t.Fatalf("unified ref model should not reject 'main' as invalid version; stderr: %s", stderr)
 	}
 }
 
@@ -191,9 +188,10 @@ func TestPackInstall_VersionInNameParses(t *testing.T) {
 	}
 }
 
-// TestPackInstall_VersionInNameAndFlagCollide verifies the @version + --version
+// TestPackInstall_VersionInNameAndFlagCollide verifies the @<ref> + --ref
 // collision check at the install entry point. Both forms of intent are
 // rejected with a clear error rather than silently letting one win.
+// Covers both flag spellings since --version is a Kong alias for --ref.
 func TestPackInstall_VersionInNameAndFlagCollide(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
@@ -201,20 +199,30 @@ func TestPackInstall_VersionInNameAndFlagCollide(t *testing.T) {
 	if code == cmdutil.ExitOK {
 		t.Fatalf("expected collision error, got exit=%d", code)
 	}
-	if !strings.Contains(stderr, "@version") || !strings.Contains(stderr, "--version") {
-		t.Errorf("stderr should explain the @version + --version collision, got: %s", stderr)
+	if !strings.Contains(stderr, "@<ref>") {
+		t.Errorf("stderr should explain the @<ref> collision, got: %s", stderr)
 	}
 }
 
-func TestPackInstall_InvalidVersionInNameRejected(t *testing.T) {
+// TestPackInstall_NonSemverInNameTreatedAsLiteralRef verifies that the
+// @<spec> shorthand parses non-semver specs (like "ghost-pack@main") as
+// literal refs instead of rejecting them. The install still fails
+// downstream (pack not in registry), but the error path must go through
+// registry lookup, not an "invalid version" short-circuit.
+func TestPackInstall_NonSemverInNameTreatedAsLiteralRef(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	_, stderr, code := runApp(t, "pack", "install", "ghost-pack@main", "--config-dir", configDir)
 	if code == cmdutil.ExitOK {
-		t.Fatalf("invalid @version should fail, got exit=%d", code)
+		t.Fatalf("install of nonexistent registry pack should fail, got exit=%d", code)
 	}
-	if !strings.Contains(stderr, "invalid version") {
-		t.Fatalf("stderr should mention invalid version, got: %s", stderr)
+	if strings.Contains(stderr, "invalid version") {
+		t.Fatalf("unified ref model should not reject 'main' as invalid version; stderr: %s", stderr)
+	}
+	// The error must come from registry lookup (not validation), proving
+	// the @version parser passed "main" through to the install dispatch.
+	if !strings.Contains(stderr, "ghost-pack") {
+		t.Errorf("stderr should reference parsed name 'ghost-pack', got: %s", stderr)
 	}
 }
 
@@ -258,14 +266,20 @@ func TestPackUpdate_VersionWithoutName(t *testing.T) {
 	}
 }
 
-func TestPackUpdate_InvalidVersionRejected(t *testing.T) {
+// TestPackUpdate_NonSemverVersionTreatedAsLiteralRef verifies that
+// `pack update my-pack --version main` no longer short-circuits on
+// "invalid version". Under the unified ref model, the update dispatches
+// through the literal-ref path. The command still fails (pack not
+// installed in the empty config), but the error must not be a validation
+// rejection.
+func TestPackUpdate_NonSemverVersionTreatedAsLiteralRef(t *testing.T) {
 	t.Parallel()
 	_, stderr, code := runApp(t, "pack", "update", "my-pack", "--version", "main")
 	if code == cmdutil.ExitOK {
-		t.Fatal("pack update with invalid --version should fail")
+		t.Fatal("pack update against missing pack should fail")
 	}
-	if !strings.Contains(stderr, "invalid version") {
-		t.Fatalf("stderr should mention invalid version, got: %s", stderr)
+	if strings.Contains(stderr, "invalid version") {
+		t.Fatalf("unified ref model should not reject 'main' as invalid version; stderr: %s", stderr)
 	}
 }
 

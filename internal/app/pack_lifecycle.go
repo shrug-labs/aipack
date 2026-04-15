@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/util"
 
@@ -202,6 +204,15 @@ func packRenameInLockfile(configDir, oldName, newName string) error {
 			return nil
 		}
 		delete(lf.Packs, oldName)
+		// Rebuild inventory under the new name so a subsequent sync
+		// reads a fresh baseline. Content didn't change, but the
+		// inventory's name key follows the rename — and if the old
+		// entry had no Resolved block (pre-v0.22 install), this also
+		// backfills it opportunistically.
+		packDir := filepath.Join(configDir, "packs", newName)
+		if inv := buildResolvedInventory(configDir, newName, packDir, meta.Ref, time.Now(), nil); inv != nil {
+			meta.Resolved = inv
+		}
 		lf.Packs[newName] = meta
 		return nil
 	})
@@ -295,6 +306,26 @@ func packRecordOrigin(configDir, name string, meta config.InstalledPackMeta) err
 		lf.Packs[name] = meta
 		return nil
 	})
+}
+
+// buildResolvedInventory is a best-effort wrapper around
+// engine.BuildPackInventory used at install/update/rename time to keep the
+// lockfile's Resolved baseline populated without waiting for the first
+// sync. Logs a warning on failure and returns nil — the caller should
+// record install metadata either way; a missing Resolved block just
+// degrades drift detection and doctor broken_refs until the next sync
+// rebuilds it. Stamps CapturedAtRef so drift reports can show the
+// version transition on the next run.
+func buildResolvedInventory(configDir, name, packRoot, ref string, now time.Time, stdout io.Writer) *domain.PackInventory {
+	inv, err := engine.BuildPackInventory(configDir, domain.Pack{Name: name, Root: packRoot}, now)
+	if err != nil {
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Warning: failed to build inventory for %s: %v\n", name, err)
+		}
+		return nil
+	}
+	inv.CapturedAtRef = ref
+	return &inv
 }
 
 // packClearOrigin removes the install metadata for a pack from the lockfile.
@@ -457,11 +488,22 @@ type PackInstallMissingRequest struct {
 	PackInstallFn func(context.Context, PackInstallRequest, io.Writer) error
 }
 
+// MissingStatus is the outcome of reconciling a single profile-referenced
+// pack against the on-disk packs directory and the merged registry.
+type MissingStatus string
+
+const (
+	MissingStatusInstalled     MissingStatus = "installed"
+	MissingStatusPresent       MissingStatus = "present"
+	MissingStatusNotInRegistry MissingStatus = "not-in-registry"
+	MissingStatusError         MissingStatus = "error"
+)
+
 // PackInstallMissingResult describes the outcome for a single pack in the profile.
 type PackInstallMissingResult struct {
-	Pack   string // pack name from profile
-	Status string // "installed", "present", "not-in-registry", "error"
-	Detail string // install method or error message
+	Pack   string
+	Status MissingStatus
+	Detail string // error message for MissingStatusError / MissingStatusNotInRegistry
 }
 
 // ProfileMissingPacks returns the names of enabled packs in a profile whose
@@ -522,16 +564,15 @@ func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdo
 		packDir := filepath.Join(packsDir, name)
 		if _, err := os.Stat(packDir); err == nil {
 			results = append(results, PackInstallMissingResult{
-				Pack: name, Status: "present",
+				Pack: name, Status: MissingStatusPresent,
 			})
 			continue
 		}
 
 		entry, err := RegistryLookup(regReq, name)
 		if err != nil {
-			fmt.Fprintf(stdout, "  %s: not in registry — install manually or check 'aipack registry list'\n", name)
 			results = append(results, PackInstallMissingResult{
-				Pack: name, Status: "not-in-registry", Detail: err.Error(),
+				Pack: name, Status: MissingStatusNotInRegistry, Detail: err.Error(),
 			})
 			continue
 		}
@@ -547,15 +588,14 @@ func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdo
 			ContentPaths: entry.ContentPaths,
 		}
 		if installErr := installFn(ctx, installReq, stdout); installErr != nil {
-			fmt.Fprintf(stdout, "  %s: install failed: %v\n", name, installErr)
 			results = append(results, PackInstallMissingResult{
-				Pack: name, Status: "error", Detail: installErr.Error(),
+				Pack: name, Status: MissingStatusError, Detail: installErr.Error(),
 			})
 			continue
 		}
 
 		results = append(results, PackInstallMissingResult{
-			Pack: name, Status: "installed",
+			Pack: name, Status: MissingStatusInstalled,
 		})
 	}
 

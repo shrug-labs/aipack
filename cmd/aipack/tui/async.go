@@ -234,16 +234,17 @@ func saveSyncConfig(configDir string, cfg config.SyncConfig) tea.Cmd {
 
 // installPack installs a pack from a path, URL, or registry name.
 // For bare names (no path separators, not an existing path), it performs a
-// registry lookup — matching the CLI's `pack install` behavior. version is
-// the user-picked semver tag (e.g. "1.2.3"); empty installs at the registry
-// default ref. Only honored for registry-name installs — URL/path installs
-// ignore version because they take whatever ref the user already specified.
-func installPack(ctx context.Context, configDir, input, version string, with domain.BundledSet) tea.Cmd {
+// registry lookup — matching the CLI's `pack install` behavior. ref is
+// the user-picked git ref spec (e.g. "1.2.3" semver, "my-pack/v0.3.0"
+// namespaced, or "main" branch); empty installs at the registry default
+// ref. Only honored for registry-name installs — URL/path installs ignore
+// ref because they take whatever ref the user already specified.
+func installPack(ctx context.Context, configDir, input, ref string, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackInstallRequest{
 			ConfigDir: configDir,
 			With:      with,
-			Version:   version,
+			Ref:       ref,
 		}
 		if strings.Contains(input, "://") ||
 			strings.HasPrefix(input, "github.com") ||
@@ -265,7 +266,10 @@ func installPack(ctx context.Context, configDir, input, version string, with dom
 			}
 			req.URL = entry.Repo
 			req.SubPath = entry.Path
-			req.Ref = entry.Ref
+			// User-picked ref wins over the registry's default ref.
+			if req.Ref == "" {
+				req.Ref = entry.Ref
+			}
 			req.Name = input
 		} else {
 			req.PackPath = input
@@ -280,7 +284,6 @@ func installPack(ctx context.Context, configDir, input, version string, with dom
 	}
 }
 
-// isRegistryName checks if a string looks like a registry pack name.
 var isRegistryName = cmdutil.IsRegistryName
 
 // createPack scaffolds a new pack inside the packs directory and registers it.
@@ -375,17 +378,18 @@ func loadPackVersions(ctx context.Context, configDir, name string) tea.Cmd {
 // unreachable remote doesn't stall the render loop.
 const tuiVersionLoadTimeout = 5 * time.Second
 
-// updatePack updates one or all installed packs. version is the value passed
-// to PackUpdateRequest.Version: empty preserves the current pin (default
-// update behavior), a literal semver tag moves the pin, and "latest" clears
-// the pin entirely (the unpin sentinel honored by app.PackUpdate).
-func updatePack(ctx context.Context, configDir, name string, all bool, version string, with domain.BundledSet) tea.Cmd {
+// updatePack updates one or all installed packs. ref is the value passed
+// to PackUpdateRequest.Ref: empty preserves the current pin (default
+// update behavior), any ref spec moves the pin (semver, commit, branch,
+// namespaced tag), and "latest" clears the pin entirely (the unpin
+// sentinel honored by app.PackUpdate).
+func updatePack(ctx context.Context, configDir, name string, all bool, ref string, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackUpdateRequest{
 			ConfigDir: configDir,
 			Name:      name,
 			All:       all,
-			Version:   version,
+			Ref:       ref,
 			With:      with,
 		}
 		results, err := app.PackUpdate(ctx, req, io.Discard)

@@ -113,7 +113,7 @@ packs:
 | `origin` | string | Absolute local path or remote URL |
 | `method` | string | `link`, `copy`, `clone`, or `local`. Legacy `archive` and `http-tarball` entries are migrated to `clone` on next update. |
 | `installed_at` | string | RFC 3339 timestamp |
-| `ref` | string | Git ref at install time (remote only). A v-prefixed semver tag (`v1.2.3`) or commit hash marks the pack as **pinned** and is preserved across `pack update`; a branch name or empty value tracks upstream. `pack install --version 1.2.3` normalizes to `ref: v1.2.3` — there is no separate `version` field, pin state is derived from this one. |
+| `ref` | string | Git ref at install time (remote only). A semver tag (`v1.2.3`), namespaced tag (`my-pack/v1.2.3`), or commit hash marks the pack as **pinned** and is preserved across `pack update`; a branch name or empty value tracks upstream. The raw remote spelling is stored unchanged so the ref can be checked out directly. `pack install --ref 1.2.3` (and its alias `--version 1.2.3`) resolve to the matching remote tag and record it here — pin state is derived from the ref's shape, not a separate field. |
 | `sub_path` | string | Subdirectory within the repo (remote only) |
 | `commit_hash` | string | Git HEAD SHA at install time (remote only). Enables fast-path update detection via `git ls-remote`. |
 | `content_paths` | map | Maps content types to directory paths within the clone (see [Content path remapping](./pack-format.md#94-content-path-remapping)) |

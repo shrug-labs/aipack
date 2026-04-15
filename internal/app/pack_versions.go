@@ -49,7 +49,7 @@ func PackListVersions(ctx context.Context, req PackListVersionsRequest) (PackLis
 	}
 
 	// Resolve origin: lockfile first, then registry.
-	var origin, installedVersion string
+	var origin, installedVersion, prefix string
 	lf, err := config.EnsureLockfileMigrated(req.ConfigDir)
 	if err != nil {
 		return PackListVersionsResult{}, fmt.Errorf("loading lockfile: %w", err)
@@ -64,8 +64,11 @@ func PackListVersions(ctx context.Context, req PackListVersionsRequest) (PackLis
 				name, meta.Method)
 		}
 		origin = meta.Origin
-		if source.IsSemverTag(meta.Ref) {
-			installedVersion = source.StripVersionPrefix(meta.Ref)
+		// Namespaced installs store a ref like "my-pack/v1.2.3"; the prefix
+		// scopes tag filtering. Not-installed packs get flat behavior.
+		prefix = source.TagPrefixFromRef(meta.Ref)
+		if semver := source.SemverFromRef(meta.Ref); semver != "" {
+			installedVersion = source.StripVersionPrefix(semver)
 		} else if source.IsCommitHash(meta.Ref) {
 			installedVersion = meta.Ref
 		}
@@ -85,16 +88,19 @@ func PackListVersions(ctx context.Context, req PackListVersionsRequest) (PackLis
 	if err != nil {
 		return PackListVersionsResult{}, fmt.Errorf("listing remote tags: %w", err)
 	}
-
-	semverTags := source.FilterSemverTags(tags)
+	semverTags := source.FilterSemverTags(tags, prefix)
 
 	versions := make([]PackVersion, 0, len(semverTags))
 	installedIsSemver := source.IsSemverTag(installedVersion)
 	installedRef := source.NormalizeVersion(installedVersion)
 	for _, tag := range semverTags {
+		// Display stripped semver so users see "0.3.0", not
+		// "my-pack/v0.3.0". Consumers pin with @0.3.0 — never with the
+		// raw namespaced tag.
+		display := source.StripTagPrefix(tag, prefix)
 		versions = append(versions, PackVersion{
-			Version:   tag,
-			Installed: installedIsSemver && source.NormalizeVersion(tag) == installedRef,
+			Version:   display,
+			Installed: installedIsSemver && source.NormalizeVersion(display) == installedRef,
 		})
 	}
 

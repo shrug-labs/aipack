@@ -176,10 +176,9 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack install ---
 
 type PackInstallCmd struct {
-	Path      string   `arg:"" optional:"" help:"Local directory path, registry pack name, or name@version"`
+	Path      string   `arg:"" optional:"" help:"Local directory path, registry pack name, or name@ref"`
 	URL       string   `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
-	Ref       string   `help:"Git ref (branch/tag) to fetch" name:"ref"`
-	Version   string   `help:"Install a specific semver version (e.g. 1.2.3) or partial (v1, v1.2)" name:"version"`
+	Ref       string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
 	SubPath   string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
 	Name      string   `help:"Override the pack name from pack.json" name:"name"`
 	Registry  string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
@@ -249,11 +248,18 @@ Examples:
 
   # Install a specific version
   aipack pack install my-team-pack@1.2.3
-  aipack pack install --url https://github.com/org/repo --version 1.2.3
+  aipack pack install --url https://github.com/org/repo --ref 1.2.3
 
   # Install the latest stable v1.x.x (resolves to exact tag, pins to that)
   aipack pack install my-team-pack@v1
-  aipack pack install my-team-pack --version v1.2
+  aipack pack install my-team-pack --ref v1.2
+
+  # Install a namespaced tag from a multi-pack monorepo
+  aipack pack install my-team-pack --ref my-team-pack/v0.3.0
+  aipack pack install my-team-pack@my-team-pack/v0.3.0
+
+  # Track a branch (no pin — follows upstream HEAD of that branch)
+  aipack pack install my-team-pack --ref main
 
 See also: pack delete, pack list, pack update, registry list`,
 		configPathDisplay("packs", "<name>"),
@@ -268,7 +274,7 @@ func (c *PackInstallCmd) Validate() error {
 	// Bare `pack install` with no target implies profile reconciliation —
 	// the same as passing -m/--missing. Setting Missing here lets the rest
 	// of the checks treat implicit-missing and explicit-missing identically.
-	if !hasPath && !hasURL && !c.Missing && !hasContentFlags && c.Version == "" && c.Ref == "" {
+	if !hasPath && !hasURL && !c.Missing && !hasContentFlags && c.Ref == "" {
 		c.Missing = true
 	}
 
@@ -284,8 +290,8 @@ func (c *PackInstallCmd) Validate() error {
 	if c.Missing && len(c.With) > 0 {
 		return fmt.Errorf("profile reconciliation (bare `pack install` or -m/--missing) cannot be combined with --with; target a specific pack to use --with")
 	}
-	if c.Missing && c.Version != "" {
-		return fmt.Errorf("profile reconciliation cannot be combined with --version; target a specific pack to use --version")
+	if c.Missing && c.Ref != "" {
+		return fmt.Errorf("profile reconciliation cannot be combined with --ref/--version; target a specific pack")
 	}
 	if hasContentFlags && !hasURL {
 		return fmt.Errorf("content flags (--rules, --skills, --agents, --workflows, --prompts) require --url")
@@ -293,16 +299,9 @@ func (c *PackInstallCmd) Validate() error {
 	if hasContentFlags && c.Name == "" {
 		return fmt.Errorf("content flags require --name (no pack.json to derive name from)")
 	}
-	if c.Version != "" && c.Ref != "" {
-		return fmt.Errorf("--version and --ref are mutually exclusive")
-	}
-	if err := source.ValidateVersionSpecifier(c.Version); err != nil {
-		return err
-	}
 	return nil
 }
 
-// isRegistryName delegates to cmdutil.IsRegistryName.
 var isRegistryName = cmdutil.IsRegistryName
 
 // effectiveProfile returns the profile name to use, loading sync-config defaults
@@ -333,25 +332,24 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 			return err
 		}
 		printInstallMissingResults(results, profileName, g.Stdout)
-		return nil
+		return installMissingExitCode(results)
 	}
 
-	// Parse name@version from the positional arg. Only applies to non-local,
+	// Parse name@<ref> from the positional arg. Only applies to non-local,
 	// non-URL paths (i.e. registry names). Local paths and URLs can contain @
-	// for other reasons (e.g. git SSH URLs).
-	version := c.Version
+	// for other reasons (e.g. git SSH URLs). The suffix is a ref spec
+	// (semver, partial semver, commit, namespaced tag, branch name, or
+	// latest) and feeds the same dispatch as --ref/--version.
+	ref := c.Ref
 	path := c.Path
 	if path != "" && !c.Missing && c.URL == "" && isRegistryName(path) {
-		if name, ver, ok := strings.Cut(path, "@"); ok && ver != "" {
+		if name, suffix, ok := strings.Cut(path, "@"); ok && suffix != "" {
 			path = name
-			if version != "" {
-				return fmt.Errorf("cannot use @version in name and --version together")
+			if ref != "" {
+				return fmt.Errorf("cannot combine @<ref> in name with --ref/--version")
 			}
-			version = ver
+			ref = suffix
 		}
-	}
-	if err := source.ValidateVersionSpecifier(version); err != nil {
-		return err
 	}
 
 	profile := ""
@@ -371,7 +369,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		Profile:   profile,
 		With:      with,
 		Quiet:     c.Quiet,
-		Version:   version,
+		Ref:       ref,
 	}
 	// CLI content flags take precedence over registry entry content_paths.
 	if cp := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cp != nil {
@@ -380,7 +378,6 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 
 	if c.URL != "" {
 		req.URL = c.URL
-		req.Ref = c.Ref
 		req.SubPath = c.SubPath
 	} else if path != "" && isRegistryName(path) {
 		// Not a local path — try registry lookup.
@@ -404,9 +401,9 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		}
 		req.URL = entry.Repo
 		req.SubPath = entry.Path
-		if c.Ref != "" {
-			req.Ref = c.Ref
-		} else {
+		// User's explicit ref wins; fall back to the registry entry's
+		// default ref only when the user didn't specify one.
+		if req.Ref == "" {
 			req.Ref = entry.Ref
 		}
 		if req.Name == "" {
@@ -773,10 +770,10 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack update ---
 
 type PackUpdateCmd struct {
-	Name    string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
-	All     bool     `help:"Update all installed packs" name:"all"`
-	Version string   `help:"Update to a specific version (semver, partial like v1, commit hash, or 'latest' to unpin)" name:"version"`
-	With    []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
+	Name string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
+	All  bool     `help:"Update all installed packs" name:"all"`
+	Ref  string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
+	With []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
 }
 
 func (c *PackUpdateCmd) Help() string {
@@ -786,8 +783,9 @@ one. For remote packs, re-fetches from the origin (clone). For symlinked
 packs, re-validates the link target and re-installs bundled content. For
 copied packs, re-copies from the recorded origin.
 
-Pinned packs (installed with --version) stay pinned on a bare update and
-report available newer versions. Use --version to move or clear a pin.
+Pinned packs (installed with --ref) stay pinned on a bare update and
+report available newer versions. Use --ref (or its alias --version) to
+move or clear a pin.
 
 Examples:
   # Update all installed packs
@@ -800,13 +798,16 @@ Examples:
   aipack pack update -w all
 
   # Update a specific pack to a version
-  aipack pack update my-pack --version 2.0.0
+  aipack pack update my-pack --ref 2.0.0
 
   # Update to the latest stable v1.x.x (resolves and pins to the exact tag)
-  aipack pack update my-pack --version v1
+  aipack pack update my-pack --ref v1
+
+  # Update a namespaced-tag pack (multi-pack monorepo)
+  aipack pack update my-pack --ref my-pack/v0.3.1
 
   # Unpin a pack (resume tracking HEAD)
-  aipack pack update my-pack --version latest
+  aipack pack update my-pack --ref latest
 
   # --all is an explicit alias for the bare form (useful in scripts)
   aipack pack update --all
@@ -818,11 +819,8 @@ func (c *PackUpdateCmd) Validate() error {
 	if c.Name != "" && c.All {
 		return fmt.Errorf("<name> and --all are mutually exclusive")
 	}
-	if c.Version != "" && c.Name == "" {
-		return fmt.Errorf("--version requires a pack name argument")
-	}
-	if err := source.ValidateVersionSpecifier(c.Version); err != nil {
-		return err
+	if c.Ref != "" && c.Name == "" {
+		return fmt.Errorf("--ref/--version requires a pack name argument")
 	}
 	return nil
 }
@@ -846,7 +844,7 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 		All:       all,
-		Version:   c.Version,
+		Ref:       c.Ref,
 		With:      with,
 	}, g.Stdout)
 	if err != nil {
@@ -1027,18 +1025,30 @@ func (c *PackVersionsCmd) Run(ctx context.Context, g *Globals) error {
 	return nil
 }
 
+// installMissingExitCode surfaces per-pack reconciliation failures as a
+// non-zero exit. PackInstallMissing reports these in results, not via err,
+// so callers must inspect results to fail the command.
+func installMissingExitCode(results []app.PackInstallMissingResult) error {
+	for _, r := range results {
+		if r.Status == app.MissingStatusError || r.Status == app.MissingStatusNotInRegistry {
+			return ExitError{Code: cmdutil.ExitFail}
+		}
+	}
+	return nil
+}
+
 // printInstallMissingResults formats PackInstallMissing results for CLI output.
 func printInstallMissingResults(results []app.PackInstallMissingResult, profileName string, w io.Writer) {
 	var installed, present, notFound, errored int
 	for _, r := range results {
 		switch r.Status {
-		case "installed":
+		case app.MissingStatusInstalled:
 			installed++
-		case "present":
+		case app.MissingStatusPresent:
 			present++
-		case "not-in-registry":
+		case app.MissingStatusNotInRegistry:
 			notFound++
-		case "error":
+		case app.MissingStatusError:
 			errored++
 		}
 	}
@@ -1046,6 +1056,15 @@ func printInstallMissingResults(results []app.PackInstallMissingResult, profileN
 	if installed == 0 && notFound == 0 && errored == 0 {
 		fmt.Fprintf(w, "All packs in profile %q are installed.\n", profileName)
 		return
+	}
+
+	for _, r := range results {
+		switch r.Status {
+		case app.MissingStatusNotInRegistry:
+			fmt.Fprintf(w, "  %s: not in registry — %s\n", r.Pack, r.Detail)
+		case app.MissingStatusError:
+			fmt.Fprintf(w, "  %s: install failed — %s\n", r.Pack, r.Detail)
+		}
 	}
 
 	parts := []string{}
@@ -1062,4 +1081,7 @@ func printInstallMissingResults(results []app.PackInstallMissingResult, profileN
 		parts = append(parts, fmt.Sprintf("%d failed", errored))
 	}
 	fmt.Fprintln(w, strings.Join(parts, ", "))
+	if notFound > 0 {
+		fmt.Fprintln(w, "Hint: install manually or check 'aipack registry list'.")
+	}
 }

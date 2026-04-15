@@ -137,6 +137,7 @@ func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
 			return err
 		}
 		printInstallMissingResults(results, c.Name, g.Stdout)
+		return installMissingExitCode(results)
 	} else {
 		missing, err := app.ProfileMissingPacks(cfgDir, c.Name)
 		if err != nil {

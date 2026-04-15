@@ -8,12 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
 
 	"gopkg.in/yaml.v3"
 )
@@ -245,7 +247,7 @@ func TestPackInstallMissing(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, r := range results {
-			if r.Status != "present" {
+			if r.Status != MissingStatusPresent {
 				t.Errorf("%s: got %q, want present", r.Pack, r.Status)
 			}
 		}
@@ -261,7 +263,7 @@ func TestPackInstallMissing(t *testing.T) {
 		results, _ := PackInstallMissing(context.Background(), PackInstallMissingRequest{
 			ConfigDir: configDir, ProfileName: "test",
 		}, &out)
-		if results[1].Status != "not-in-registry" {
+		if results[1].Status != MissingStatusNotInRegistry {
 			t.Errorf("beta: got %q", results[1].Status)
 		}
 	})
@@ -285,7 +287,7 @@ func TestPackInstallMissing(t *testing.T) {
 		results, _ := PackInstallMissing(context.Background(), PackInstallMissingRequest{
 			ConfigDir: configDir, ProfileName: "test", PackInstallFn: fake,
 		}, &out)
-		if results[1].Status != "installed" {
+		if results[1].Status != MissingStatusInstalled {
 			t.Errorf("beta: got %q", results[1].Status)
 		}
 		if captured.URL != "https://example.com/repo.git" || captured.Ref != "main" || captured.SubPath != "packs/beta" {
@@ -352,11 +354,75 @@ func TestPackInstallMissing(t *testing.T) {
 		if calls != 3 {
 			t.Errorf("expected 3 calls, got %d", calls)
 		}
-		want := []string{"installed", "error", "installed"}
+		want := []MissingStatus{MissingStatusInstalled, MissingStatusError, MissingStatusInstalled}
 		for i, r := range results {
 			if r.Status != want[i] {
 				t.Errorf("[%d] %s: got %q, want %q", i, r.Pack, r.Status, want[i])
 			}
 		}
 	})
+}
+
+// TestPackRename_RebuildsResolvedInventory asserts that after renaming a
+// pack, the lockfile entry under the new name has a non-nil Resolved
+// inventory. Also verifies the backfill case: a rename of a pre-v0.22
+// install (whose lockfile entry lacks Resolved) produces a populated
+// baseline under the new name. Regression guard for finding #3 in
+// projects/aipack-pack-update-bugs-2026-04-14.md.
+func TestPackRename_RebuildsResolvedInventory(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifest(t, packDir, "rename-src")
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "rule-a.md"), []byte("# rule-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: false,
+	}, &out); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// Simulate pre-v0.22: clear Resolved so the rename path has to
+	// backfill rather than carry forward.
+	lfPath := config.LockfilePath(configDir)
+	lf, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := lf.Packs["rename-src"]
+	meta.Resolved = nil
+	lf.Packs["rename-src"] = meta
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := engine.New(nil, nil)
+	if err := PackRename(eng, configDir, "rename-src", "rename-dst", &out); err != nil {
+		t.Fatalf("PackRename: %v", err)
+	}
+
+	lf, err = config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := lf.Packs["rename-src"]; ok {
+		t.Error("old name still in lockfile")
+	}
+	got, ok := lf.Packs["rename-dst"]
+	if !ok {
+		t.Fatal("new name missing from lockfile")
+	}
+	if got.Resolved == nil {
+		t.Fatal("Resolved is nil after rename — rebuild did not fire")
+	}
+	if !slices.Contains(got.Resolved.Rules, "rule-a") {
+		t.Errorf("Resolved.Rules = %v, want to contain rule-a", got.Resolved.Rules)
+	}
 }

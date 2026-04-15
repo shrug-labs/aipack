@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,14 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrBrokenReferenceCache indicates that `git clone --reference <cache>`
+// failed because the bare reference cache is missing objects — the symptom
+// of a cache seeded from a shallow local clone before the UpdateBareCache
+// preventive fix shipped. Callers that observe this error can invalidate
+// the cache and retry the clone without `--reference`. Matches the
+// sentinel-error pattern already used by ErrHTTPTarballFailed.
+var ErrBrokenReferenceCache = errors.New("broken reference cache: missing objects")
 
 var checkGitOnce sync.Once
 var checkGitErr error
@@ -95,10 +104,25 @@ func ensureClone(ctx context.Context, repoURL string, dir string, ref string, re
 	// full-hash fetch requires server-side uploadpack.allowReachableSHA1InWant).
 	// Do a full clone and then checkout the commit locally.
 	if ref != "" && IsCommitHash(ref) {
-		args := append([]string{"clone"}, refArgs...)
-		args = append(args, repoURL, dir)
-		if err := runGitFn(ctx, args...); err != nil {
-			return err
+		cloneArgs := append([]string{"clone"}, refArgs...)
+		cloneArgs = append(cloneArgs, repoURL, dir)
+		if err := classifyCloneError(runGitFn(ctx, cloneArgs...)); err != nil {
+			if len(refArgs) == 0 || !errors.Is(err, ErrBrokenReferenceCache) {
+				return err
+			}
+			// Poisoned --reference cache (e.g. seeded from a shallow
+			// local before the UpdateBareCache fix shipped). Invalidate
+			// the cache, clear the destination, and retry without
+			// --reference. One-shot fallback; if the retry also fails,
+			// we return that error.
+			_ = os.RemoveAll(referenceDir)
+			_ = os.RemoveAll(dir)
+			if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+				return mkErr
+			}
+			if retryErr := runGitFn(ctx, "clone", repoURL, dir); retryErr != nil {
+				return retryErr
+			}
 		}
 		return runGitFn(ctx, "-C", dir, "checkout", "--force", ref)
 	}
@@ -339,6 +363,28 @@ func runGitCore(ctx context.Context, args ...string) ([]byte, error) {
 	return stdout, nil
 }
 
+// classifyCloneError inspects a git clone failure and, when its stderr
+// matches a broken-reference-cache pattern, wraps the error with
+// ErrBrokenReferenceCache via %w so callers can match it via errors.Is.
+// Non-matching errors are returned unchanged. Matched patterns:
+// "unresolved deltas" (the index-pack phase surfacing missing base
+// objects) and "invalid index-pack output" (a corrupt partial pack).
+// The match must be tight — auth failures ("could not read Username"),
+// network errors ("could not read from remote repository"), and
+// ref-not-found must NOT wrap as this sentinel, because the retry path
+// wipes the reference cache on a hit.
+func classifyCloneError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unresolved deltas") ||
+		strings.Contains(msg, "invalid index-pack output") {
+		return fmt.Errorf("%w: %s", ErrBrokenReferenceCache, err)
+	}
+	return err
+}
+
 // gitErrorHint returns an actionable hint for common git failures.
 func gitErrorHint(output string, args []string) string {
 	lower := strings.ToLower(output)
@@ -444,11 +490,18 @@ func UpdateBareCache(ctx context.Context, repoURL, localSource, cacheDir string,
 	if _, err := os.Stat(filepath.Join(bareDir, "HEAD")); err == nil {
 		return nil // Cache exists — already usable as --reference.
 	}
-	// Seed from local clone when available (avoids redundant network call).
+	// Seed from local clone when available (avoids redundant network call)
+	// — but only when the local source is non-shallow. A shallow local
+	// produces a bare cache with an incomplete object database; later
+	// `clone --reference` calls fail with "pack has N unresolved deltas"
+	// on any commit that isn't in the shallow pack files. Prefer one
+	// extra network round-trip over poisoning a long-lived cache.
 	src := repoURL
 	if localSource != "" {
 		if _, err := os.Stat(filepath.Join(localSource, ".git")); err == nil {
-			src = localSource
+			if _, shallowErr := os.Stat(filepath.Join(localSource, ".git", "shallow")); shallowErr != nil {
+				src = localSource
+			}
 		}
 	}
 	if err := runGitFn(ctx, "clone", "--bare", src, bareDir); err != nil {
@@ -456,9 +509,11 @@ func UpdateBareCache(ctx context.Context, repoURL, localSource, cacheDir string,
 		_ = os.RemoveAll(bareDir)
 		return err
 	}
-	// Unshallow: the source may be a --depth 1 clone, producing a shallow
-	// bare repo. git --reference requires non-shallow repos. Remove the
-	// shallow marker so subsequent clones can borrow objects.
+	// Defense-in-depth: if a shallow source slipped past the check above
+	// (e.g. a caller passed a path the stat couldn't reach), strip the
+	// shallow marker so the bare repo at least reports non-shallow to
+	// downstream --reference consumers. Missing objects still fail, but
+	// the check-then-clone guard is the load-bearing fix.
 	_ = os.Remove(filepath.Join(bareDir, "shallow"))
 	return nil
 }

@@ -53,6 +53,58 @@ func TestRunSync_DryRunJSONIsValidJSONOnly(t *testing.T) {
 	}
 }
 
+func TestRunSync_DryRunDoesNotMutateProfile(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+
+	t.Setenv("HOME", home)
+	t.Setenv("AIPACK_NO_UPDATE_CHECK", "1")
+	t.Chdir(projectDir)
+
+	// mcp server declaration required — an empty servers map gives
+	// load+marshal nothing to materialize and defeats the test.
+	packDir := filepath.Join(configDir, "packs", "demo")
+	manifest := `{"schema_version":1,"name":"demo","root":".","mcp":{"servers":{"example":{}}}}`
+	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(packDir, "mcp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpServer := `{"name":"example","command":["echo","hi"]}`
+	if err := os.WriteFile(filepath.Join(packDir, "mcp", "example.json"), []byte(mcpServer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-alphabetical params keys and `mcp: {}` both exercise
+	// yaml.Marshal normalization paths that would mutate the file on a
+	// naive load+save cycle.
+	profilePath := filepath.Join(configDir, "profiles", "default.yaml")
+	original := []byte("schema_version: 2\n" +
+		"params:\n" +
+		"  zebra: first\n" +
+		"  apple: second\n" +
+		"packs:\n" +
+		"  - name: demo\n" +
+		"    enabled: true\n" +
+		"mcp: {}\n")
+	if err := os.WriteFile(profilePath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "sync", "--config-dir", configDir, "--dry-run")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("sync --dry-run: exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+
+	got, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("sync --dry-run mutated profile:\n--- original\n%s\n--- after\n%s", original, got)
+	}
+}
+
 func TestResolveWatchDirs_ReturnsPackRootsWhenProfileContentIsInvalid(t *testing.T) {
 	home, configDir, _ := writeSyncFixture(t)
 	t.Setenv("HOME", home)

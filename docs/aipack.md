@@ -92,19 +92,25 @@ Supports three explicit sources:
 
 All remote installs use a shallow git clone (`git clone --depth 1`). Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts. The local clone cache (`~/.config/aipack/.cache/git/`) speeds up subsequent clones via `git --reference`.
 
-**Versioning.** Append `@version` to a pack name (or use `--version`) to install a specific semver tag or commit hash. The pack is then "pinned" — `pack update` won't change the install until you explicitly move the pin.
+**Pinning.** Append `@<ref>` to a pack name (or use `--ref`, or the Kong alias `--version`) to install a specific git ref. The pack is then "pinned" — `pack update` won't change the install until you explicitly move the pin. Any git ref shape works: exact semver, partial semver (`v1`, `v1.2`), commit hash, namespaced tag (`<pack>/vX.Y.Z`), branch name, or the `latest` sentinel.
 
 ```bash
-aipack pack install my-pack@1.2.3           # pin to exact semver tag v1.2.3
-aipack pack install my-pack@v1              # partial: resolves to latest stable v1.x.x, pins to that
-aipack pack install my-pack@v1.2            # partial: resolves to latest stable v1.2.x
-aipack pack install my-pack@abc1234         # pin to commit hash
-aipack pack install --url https://github.com/org/repo.git --version 1.2.3
+aipack pack install my-pack@1.2.3                     # pin to exact semver tag v1.2.3
+aipack pack install my-pack@v1                        # partial: resolves to latest stable v1.x.x, pins to that
+aipack pack install my-pack@v1.2                      # partial: resolves to latest stable v1.2.x
+aipack pack install my-pack@abc1234                   # pin to commit hash
+aipack pack install my-pack@my-pack/v0.3.0            # pin to namespaced tag (multi-pack monorepo)
+aipack pack install my-pack --ref main                # track a branch (no pin)
+aipack pack install --url https://github.com/org/repo.git --ref 1.2.3
 ```
 
-Partial version references (`v1` or `v1.2`) query the remote tags, pick the highest matching stable tag, and pin to that exact version. Prereleases (`v1.2.0-beta.1`) are skipped during partial matching — pass an exact tag to install a prerelease. Partial installs are a discovery shortcut, not a channel: re-run `update --version v1` to move the pin when new v1.x.x tags land.
+`--version` is a Kong alias for `--ref` kept for historical scripts; new content should prefer `--ref`.
 
-Use `aipack pack versions <name>` to discover available semver tags. Pack authors should tag their releases as `v1.2.3` (or `1.2.3` — the v-prefix is optional). The `version` field in `pack.json` is informational; git tags are authoritative.
+Partial version references (`v1` or `v1.2`) query the remote tags, pick the highest matching stable tag, and pin to that exact version. Prereleases (`v1.2.0-beta.1`) are skipped during partial matching — pass an exact tag to install a prerelease. Partial installs are a discovery shortcut, not a channel: re-run `update --ref v1` to move the pin when new v1.x.x tags land.
+
+Namespaced tags unblock multi-pack monorepos where flat `v1.2.3` tags would be ambiguous across sibling packs. The convention is `<pack-name>/vX.Y.Z` (Go-module style). Once installed, subsequent `pack update` and `pack versions` commands derive the prefix from the lockfile, so users don't have to re-type it — `pack update my-pack --ref 0.3.1` resolves against `my-pack/v0.3.1` automatically.
+
+Use `aipack pack versions <name>` to discover available semver tags. Pack authors should tag their releases as `v1.2.3` (or `1.2.3` — the v-prefix is optional), or as `<pack-name>/v1.2.3` for multi-pack repos. The `version` field in `pack.json` is informational; git tags are authoritative.
 
 By default, the pack is installed to disk but not added to any profile. Use `--add` to also add it to the active profile, or `--add --profile <name>` to target a specific one. Use `aipack pack add <name>` to add an installed pack to a profile later.
 
@@ -181,11 +187,12 @@ aipack pack update my-pack -w profiles     # also apply bundled profiles on this
 aipack pack update my-pack -w all          # accept all new bundled content
 ```
 
-**Pinned packs stay pinned.** A bare `pack update` on a pack that was installed with a `--version` does not change the installed version. Instead, it checks the remote and reports the latest available version. Use `--version` to explicitly move or clear the pin:
+**Pinned packs stay pinned.** A bare `pack update` on a pack that was installed with a `--ref` does not change the installed version. Instead, it checks the remote and reports the latest available version. Use `--ref` to explicitly move or clear the pin:
 
 ```bash
-aipack pack update my-pack --version 2.0.0    # move pin to a new tag
-aipack pack update my-pack --version latest   # clear pin, track default branch HEAD again
+aipack pack update my-pack --ref 2.0.0     # move pin to a new tag
+aipack pack update my-pack --ref latest    # clear pin, track default branch HEAD again
+aipack pack update my-pack --ref main      # switch to tracking a branch
 ```
 
 Legacy packs installed via the (now-removed) `http-tarball` method are transparently migrated to the `clone` method on next update.

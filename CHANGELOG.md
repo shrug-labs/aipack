@@ -6,6 +6,27 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.22.0]
+
+### Added
+
+- **Namespaced git tags unblock multi-pack monorepos.** Tags of the form `<pack-name>/vX.Y.Z` (Go-module convention) are now recognized by the resolver. Repos that ship multiple packs in subdirectories can version sibling packs independently without flat-tag collisions. The convention is opt-in per pack — single-pack repos keep their flat `vX.Y.Z` tags with zero change. Authors release with `git tag my-pack/v1.2.3`; consumers install with `pack install my-pack --ref my-pack/v1.2.3` or the positional shorthand `pack install my-pack@my-pack/v1.2.3`. Once installed, `pack update` and `pack versions` auto-derive the prefix from the lockfile, so users can pass bare semver on update (`--ref 1.2.4`) and aipack resolves against `my-pack/v1.2.4` automatically. No registry schema changes required.
+- **`pack update` accepts any git ref.** Previously `--version` rejected anything that didn't parse as semver, a commit hash, or `latest`. Now `pack update my-pack --ref main` switches to tracking a branch, `--ref release-2026-04-01` pins to a non-semver tag, and `--ref <namespaced-tag>` works on multi-pack repos. The update path and the install path now share one classification layer — any ref shape is a legitimate pin attempt, and the resolver dispatches on the shape.
+
+### Changed
+
+- **`--ref` is the primary flag for pinning on both `pack install` and `pack update`.** `--version` stays as a Kong alias — every `--version X` invocation resolves identically to `--ref X` — so existing scripts keep working unchanged. The unification drops the `--version`/`--ref` mutual-exclusivity check and removes the up-front validation that rejected non-semver specs; any git ref shape (exact semver, partial semver, namespaced semver, commit hash, `latest`, branch, non-semver tag) is now a legitimate ref attempt dispatched by shape. Help text, examples, and docs lead with `--ref`.
+
+### Fixed
+
+- **`aipack pack install` (bare and `-m/--missing`) and `aipack profile set <name> --install` exit non-zero when reconciliation hits an install error or a profile-referenced pack missing from every registry.** Both surfaces previously printed the failure and returned 0.
+- **`aipack pack update <name> --ref <older-commit>` no longer fails with `pack has N unresolved deltas`** when the initial install was a shallow clone. `UpdateBareCache` now skips seeding the bare reference cache from a shallow local — a shallow seed produces an incomplete object database that later `clone --reference` calls can't resolve. Existing poisoned caches recover via a one-shot retry that invalidates the cache and clones without `--reference`.
+- **`pack install`, `pack update`, and `pack rename` populate the drift-detection baseline at install time** instead of waiting for the first `sync`. `aipack doctor`'s broken-refs check and sync's drift report now work against a just-installed pack. `pack update` also backfills the baseline opportunistically on the up-to-date fast path, so packs installed before this release recover the gap without manual intervention.
+
+### Documentation
+
+- **Clarified the pack versioning model: installable versions are git tags, not `pack.json:version`.** The manifest field is author metadata for `pack show`, `pack list`, and `doctor`'s drift warning. `aipack pack install my-pack@1.2.3` resolves against the git tag on the remote. "Releasing a new version" in `docs/creating-packs.md` documents the bump → commit → tag → push ritual with rationale (immutable, distributed, branch-conflict-free, Go modules precedent). A new "Releasing a namespaced version" section covers the multi-pack-monorepo ritual. Cross-links from `docs/installing-packs.md` and `docs/pack-format.md`.
+
 ## [0.21.2]
 
 ### Added

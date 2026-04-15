@@ -147,6 +147,82 @@ func TestPackInstall_Copy(t *testing.T) {
 	}
 }
 
+// TestPackInstall_PopulatesResolvedInventory asserts that pack install
+// writes a non-nil Resolved inventory to the lockfile, so drift detection
+// and doctor's broken_refs check work against a just-installed pack
+// without waiting for the first sync. Regression guard for finding #3
+// in projects/aipack-pack-update-bugs-2026-04-14.md.
+func TestPackInstall_PopulatesResolvedInventory(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+
+	// Build a pack with one rule, one workflow, and one skill so the
+	// inventory has something to capture in every vector.
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(packDir, "workflows"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(packDir, "skills", "demo-skill"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := map[string]any{
+		"schema_version": 1,
+		"name":           "resolved-test",
+		"version":        "0.1.0",
+		"root":           ".",
+	}
+	b, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "rule-a.md"), []byte("# rule-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "workflows", "wf-a.md"), []byte("# wf-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "skills", "demo-skill", "SKILL.md"),
+		[]byte("---\nname: demo-skill\ndescription: demo skill for test\n---\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatalf("LoadLockfile: %v", err)
+	}
+	meta, ok := lf.Packs["resolved-test"]
+	if !ok {
+		t.Fatal("pack not recorded in lockfile")
+	}
+	if meta.Resolved == nil {
+		t.Fatal("meta.Resolved is nil — should be populated at install time")
+	}
+	if !slices.Contains(meta.Resolved.Rules, "rule-a") {
+		t.Errorf("Resolved.Rules = %v, want to contain rule-a", meta.Resolved.Rules)
+	}
+	if !slices.Contains(meta.Resolved.Workflows, "wf-a") {
+		t.Errorf("Resolved.Workflows = %v, want to contain wf-a", meta.Resolved.Workflows)
+	}
+	if _, ok := meta.Resolved.Skills["demo-skill"]; !ok {
+		t.Errorf("Resolved.Skills missing demo-skill: %v", meta.Resolved.Skills)
+	}
+}
+
 func TestPackInstall_Copy_CopiesRepoRelativeExtras(t *testing.T) {
 	t.Parallel()
 
@@ -1161,7 +1237,7 @@ func TestPackInstall_URL_VersionRecordedInLockfile(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Version:   "1.2.3",
+		Ref:       "1.2.3",
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1210,7 +1286,7 @@ func TestPackInstall_URL_ExactSemverPreservesRemoteBareTag(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Version:   "v1.2.3",
+		Ref:       "v1.2.3",
 		RunGitFn:  gitFn,
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1236,31 +1312,119 @@ func TestPackInstall_URL_ExactSemverPreservesRemoteBareTag(t *testing.T) {
 	}
 }
 
-func TestPackInstall_URL_InvalidVersionRejected(t *testing.T) {
+// TestPackInstall_URL_NamespacedSemverPreservesRawTag covers the end-to-end
+// flow for namespaced semver tags (Go-module convention). Installing with
+// Ref: "my-pack/v1.0.0" must resolve against the prefix-scoped tag list,
+// clone the raw namespaced tag unchanged, and record the raw spelling in
+// the lockfile so pack_update can derive the prefix on subsequent commands.
+// The tag list deliberately includes flat and foreign-prefix noise to
+// prove the prefix filter isolates correctly.
+func TestPackInstall_URL_NamespacedSemverPreservesRawTag(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	writeTestSyncConfig(t, configDir)
 
-	calledGit := false
+	var clonedRef string
+	gitFn := func(_ context.Context, args ...string) error {
+		if len(args) >= 1 && args[0] == "clone" {
+			for i := 0; i < len(args)-1; i++ {
+				if args[i] == "--branch" {
+					clonedRef = args[i+1]
+					break
+				}
+			}
+			writePackManifest(t, args[len(args)-1], "my-pack")
+		}
+		return nil
+	}
+
 	var out bytes.Buffer
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Version:   "main",
-		RunGitFn: func(context.Context, ...string) error {
-			calledGit = true
+		Ref:       "my-pack/v1.0.0",
+		RunGitFn:  gitFn,
+		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
+		NowFn:     func() time.Time { return fixedNow },
+		GitHashFn: fakeHashFn(fakeHash1),
+		ListRemoteTagsFn: func(context.Context, string) ([]string, error) {
+			return []string{
+				"v1.5.0",            // flat — must be ignored when prefix is set
+				"other-pack/v1.0.0", // wrong prefix — must be ignored
+				"my-pack/v1.0.0",    // target
+				"my-pack/v2.0.0",    // prefix-match but not the requested version
+			}, nil
+		},
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstall URL with namespaced semver: %v", err)
+	}
+	// Raw namespaced spelling must reach git clone — stripping the
+	// prefix ("v1.0.0") or double-prepending ("my-pack/my-pack/v1.0.0")
+	// would break checkout against the remote.
+	if clonedRef != "my-pack/v1.0.0" {
+		t.Fatalf("clone ref = %q, want my-pack/v1.0.0", clonedRef)
+	}
+
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatalf("LoadLockfile: %v", err)
+	}
+	meta := lf.Packs["my-pack"]
+	if meta.Ref != "my-pack/v1.0.0" {
+		t.Fatalf("lockfile ref = %q, want my-pack/v1.0.0", meta.Ref)
+	}
+	if !isPinned(meta) {
+		t.Errorf("namespaced semver ref should satisfy isPinned; got ref=%q", meta.Ref)
+	}
+}
+
+// TestPackInstall_URL_NonSemverVersionTreatedAsLiteralRef verifies that
+// non-semver strings passed to --version (like "main") are treated as
+// literal git refs rather than rejected up-front. Under the unified ref
+// model, --version and --ref share one dispatch path; any string is a
+// legitimate ref attempt. The test asserts the dispatch ran (git was
+// invoked with "main" as the branch arg) and no "invalid version" error
+// short-circuited the install.
+func TestPackInstall_URL_NonSemverVersionTreatedAsLiteralRef(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestSyncConfig(t, configDir)
+
+	var gitArgs [][]string
+	var out bytes.Buffer
+	err := PackInstall(context.Background(), PackInstallRequest{
+		URL:       "https://github.com/example/my-pack",
+		ConfigDir: configDir,
+		Ref:       "main",
+		RunGitFn: func(_ context.Context, args ...string) error {
+			gitArgs = append(gitArgs, append([]string(nil), args...))
 			return nil
 		},
 		URLOKFn: func(context.Context, string) (bool, error) { return true, nil },
 	}, &out)
-	if err == nil {
-		t.Fatal("expected invalid version error")
+	// Install fails downstream (fake git does nothing, so there's no
+	// pack.json to load). That's fine — the point is: the error is NOT an
+	// up-front "invalid version" rejection.
+	if err != nil && strings.Contains(err.Error(), "invalid version") {
+		t.Fatalf("unified ref model should not reject 'main' as invalid version: %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid version") {
-		t.Fatalf("expected invalid version error, got: %v", err)
+	// Git must have been called (proving the classifier dispatch ran).
+	if len(gitArgs) == 0 {
+		t.Fatal("git should be invoked — RefLiteral dispatch calls clone with the raw ref")
 	}
-	if calledGit {
-		t.Fatal("git should not be called for invalid version")
+	// Verify "main" was passed as the branch/ref arg somewhere in the
+	// clone invocation.
+	found := false
+	for _, call := range gitArgs {
+		for _, a := range call {
+			if a == "main" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("git clone should have been called with ref 'main'; got calls: %v", gitArgs)
 	}
 }
 
@@ -1279,7 +1443,7 @@ func TestPackInstall_URL_PartialSemverResolves(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Version:   "v1",
+		Ref:       "v1",
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1320,7 +1484,7 @@ func TestPackInstall_URL_PartialSemverNoMatch(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Version:   "v3",
+		Ref:       "v3",
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1350,6 +1514,9 @@ func TestPackInstall_URL_SemverRefRecordedAsPin(t *testing.T) {
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
 		GitHashFn: fakeHashFn(fakeHash1),
+		ListRemoteTagsFn: func(context.Context, string) ([]string, error) {
+			return []string{"v1.0.0", "v2.0.0"}, nil
+		},
 	}, &out)
 	if err != nil {
 		t.Fatalf("PackInstall URL with semver ref: %v", err)
@@ -1468,7 +1635,7 @@ func TestPackInstall_URL_LatestSentinelClearsPin(t *testing.T) {
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/my-pack",
 		ConfigDir: configDir,
-		Version:   "latest", // CLI sentinel — should resolve to empty (track HEAD)
+		Ref:       "latest", // CLI sentinel — should resolve to empty (track HEAD)
 		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1488,27 +1655,6 @@ func TestPackInstall_URL_LatestSentinelClearsPin(t *testing.T) {
 	}
 	if isPinned(meta) {
 		t.Errorf("expected unpinned after latest sentinel, got isPinned=true")
-	}
-}
-
-func TestPackInstall_URL_VersionAndRefMutuallyExclusive(t *testing.T) {
-	t.Parallel()
-	configDir := t.TempDir()
-	writeTestSyncConfig(t, configDir)
-
-	var out bytes.Buffer
-	err := PackInstall(context.Background(), PackInstallRequest{
-		URL:       "https://github.com/example/my-pack",
-		ConfigDir: configDir,
-		Version:   "1.0.0",
-		Ref:       "main",
-		RunGitFn:  fakeCloneGitFn(t, "my-pack"),
-	}, &out)
-	if err == nil {
-		t.Fatal("expected error for version+ref, got nil")
-	}
-	if !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Errorf("error = %q, want mention of mutually exclusive", err.Error())
 	}
 }
 

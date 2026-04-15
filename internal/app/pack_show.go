@@ -32,18 +32,24 @@ type PackShowEntry struct {
 }
 
 // PinLabel returns a human-readable label for the lockfile pin:
-// "v1.2.3 (pinned)" for semver pins, "@abc1234 (pinned)" for commit pins,
-// or "" when the pack is not pinned. Single source of truth shared by the
-// CLI's pack list/show output and the TUI's details panel.
+// "v1.2.3 (pinned)" for semver pins (flat or namespaced), "@abc1234
+// (pinned)" for commit pins, or "" when the pack is not pinned. Single
+// source of truth shared by the CLI's pack list/show output and the TUI's
+// details panel.
+//
+// For namespaced pins like "my-pack/v0.3.0", the label strips the namespace
+// prefix and displays "v0.3.0 (pinned)" — users recognize the version
+// faster without the repeated prefix.
 func (e PackShowEntry) PinLabel() string {
 	if e.Pin == "" {
 		return ""
 	}
-	switch source.ClassifyVersion(e.Pin) {
-	case source.VersionSemver:
-		return "v" + source.StripVersionPrefix(e.Pin) + " (pinned)"
-	case source.VersionCommit:
-		return "@" + e.Pin + " (pinned)"
+	class := source.ClassifyRef(e.Pin)
+	switch class.Kind {
+	case source.RefSemver, source.RefPartialSemver:
+		return "v" + source.StripVersionPrefix(class.Spec) + " (pinned)"
+	case source.RefCommit:
+		return "@" + class.Spec + " (pinned)"
 	default:
 		return e.Pin + " (pinned)"
 	}

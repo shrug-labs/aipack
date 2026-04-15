@@ -947,11 +947,12 @@ func (m packsModel) installedLatestHint(name string, entry app.PackShowEntry) st
 	if cached.state == asyncError || len(cached.versions) == 0 {
 		return ""
 	}
-	latest := cached.versions[0].Version // FilterSemverTags returns descending
+	latest := cached.versions[0].Version // PackListVersions returns descending display semver
 	// Suppress when the installed pin already matches the latest — no drift,
-	// no need for the user's attention. We compare against Pin first
-	// (authoritative for clone packs) and fall back to pack.json Version.
-	current := entry.Pin
+	// no need for the user's attention. Pin may be namespaced
+	// ("my-pack/v0.3.0"); extract the semver portion before comparing.
+	// Fall back to pack.json Version when the pack isn't pinned.
+	current := source.SemverFromRef(entry.Pin)
 	if current == "" {
 		current = entry.Version
 	}

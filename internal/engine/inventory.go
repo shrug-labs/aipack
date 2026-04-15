@@ -30,6 +30,15 @@ func BuildInventories(e *Engine, configDir string, profile domain.Profile, now t
 	return out, nil
 }
 
+// BuildPackInventory reads a single pack from disk and produces a
+// profile-independent inventory snapshot. Use at install/update/rename
+// time when a full BuildInventories call (which takes a profile) would
+// be overkill — drift detection and doctor's broken_refs check both need
+// a baseline inventory in the lockfile before the first sync runs.
+func BuildPackInventory(configDir string, pk domain.Pack, now time.Time) (domain.PackInventory, error) {
+	return New(nil, nil).buildPackInventory(configDir, pk, now)
+}
+
 func (e *Engine) buildPackInventory(configDir string, pk domain.Pack, now time.Time) (domain.PackInventory, error) {
 	manifestPath, err := inventoryManifestPath(configDir, pk)
 	if err != nil {

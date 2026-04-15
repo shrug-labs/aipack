@@ -255,6 +255,48 @@ aipack sync
 
 `-w all` accepts all bundled content (profiles, registries, extras). `--install` fetches any dependency packs. After this, the consumer's harness is fully configured.
 
+### Releasing a new version
+
+Pack versions are git tags. When you're ready to release, create a tag and push it — that's what consumers resolve against when they run `pack install my-pack@1.2.3`.
+
+```bash
+# 1. Bump the version field in pack.json
+# 2. Commit the bump
+git commit -am "release v1.2.3"
+
+# 3. Tag the commit
+git tag v1.2.3
+
+# 4. Push the branch and the tag
+git push origin main v1.2.3
+```
+
+Consumers can now install the new version with `aipack pack install my-pack@1.2.3`, `@v1.2`, or `@v1` (see [Installing Packs — Pinning to a ref](./installing-packs.md#pinning-to-a-ref) for the full matching rules).
+
+The `version` field in `pack.json` is author metadata — it's displayed by `pack show` and `pack list`, but aipack's resolver reads git tags, not the manifest. **Skipping the tag does not make the version installable.** aipack prints a one-line warning at install time when the installed tag's manifest `version` differs from the tag name — that warning is the only automated feedback loop, so watch for it if you see authors bumping the field without tagging.
+
+**Why git tags, not the manifest field:** tags are immutable, content-addressable, and distributed. They survive repo moves, mirrors, and forks without coordination. (Go modules use the same model.) Treating the manifest as the source of truth would introduce branch-conflict failure modes — what does "version 1.2.3" mean if it exists on two non-merged branches? — without buying anything the tag already provides.
+
+### Releasing a namespaced version
+
+Repositories that ship multiple packs in subdirectories need namespaced tags — a flat `v1.2.3` tag is ambiguous across sibling packs. The convention is `<pack-name>/vX.Y.Z` (Go-module style): the pack name goes in front, the semver goes after, separated by a single slash. Consumers pin against the namespaced form; aipack's resolver recognizes the shape automatically — no registry schema changes required.
+
+```bash
+# 1. Bump the version field in my-pack/pack.json
+# 2. Commit the bump
+git commit -am "my-pack: release v1.2.3"
+
+# 3. Tag the commit with the namespaced form
+git tag my-pack/v1.2.3
+
+# 4. Push the branch and the tag
+git push origin main my-pack/v1.2.3
+```
+
+Consumers install with `aipack pack install my-pack --ref my-pack/v1.2.3` (or with `@my-pack/v1.2.3` as the positional shorthand). Once installed, subsequent `pack update` and `pack versions` commands auto-derive the prefix from the lockfile — users can pass bare semver (`--ref 1.2.4`) and aipack resolves against `my-pack/v1.2.4` automatically.
+
+The namespaced and flat forms are mutually exclusive per pack: a pack uses one convention or the other, not both. The choice depends on repo layout — single-pack repos keep flat tags (simpler, unchanged from above), multi-pack repos need namespacing (isolation, sibling independence). The two modes coexist across packs — one multi-pack repo can sit alongside many single-pack repos in the same registry.
+
 ## What to read next
 
 - [Getting Started](./getting-started.md) — install packs and sync to your harness

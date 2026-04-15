@@ -228,31 +228,60 @@ packs:
 
 The lockfile is machine-managed — never hand-edit it. Earlier versions of aipack stored install metadata in `sync-config.yaml` under `installed_packs`; that section is migrated to the lockfile transparently the first time `aipack doctor` runs (or on the first lockfile read in any pack command). The `resolved` block records the pack's content state at the end of the last successful sync — rule/agent/workflow IDs, skill descriptions and bundled assets, and MCP server shapes — so the next sync can diff against it and surface drift. See [Sync and Save](./sync.md#content-drift-detection) for the drift detection flow.
 
-## Versioning
+## Pinning to a ref
 
-Packs can be installed at a specific semver tag, a partial semver reference, or a commit hash. Without a version, `pack install` tracks the default branch's HEAD.
+Every install takes an optional git ref — passed via `--ref`, the shorthand `@<ref>` after the pack name, or the `ref` field in the registry entry. aipack classifies the ref by shape and picks the right resolution path: exact semver, partial semver, commit hash, `latest` sentinel, namespaced tag, or any other literal git ref (branch, non-semver tag). Without a ref, `pack install` tracks the default branch's HEAD.
 
 ```bash
 # Pin to a specific semver tag
 aipack pack install my-pack@1.2.3
-aipack pack install my-pack --version 1.2.3
+aipack pack install my-pack --ref 1.2.3
 
-# Partial reference: resolves to latest stable v1.x.x (or v1.2.x), pins to that exact tag
+# Partial semver: resolves to the latest stable v1.x.x (or v1.2.x), pins to that exact tag
 aipack pack install my-pack@v1
 aipack pack install my-pack@v1.2
 
 # Pin to a commit hash
 aipack pack install my-pack@abc1234
 
-# Track HEAD (default behavior — no version)
+# Pin to a namespaced tag (multi-pack monorepo)
+aipack pack install my-pack@my-pack/v0.3.0
+aipack pack install my-pack --ref my-pack/v0.3.0
+
+# Track a branch (follows upstream HEAD of that branch)
+aipack pack install my-pack --ref main
+
+# Track HEAD on the default branch (no pin)
 aipack pack install my-pack
 ```
 
-Version sources are git tags filtered for valid semver. The `pack.json` `version` field is informational — git tags are authoritative. If they disagree at install time, aipack prints a warning to nudge pack authors but the install proceeds.
+`--version` is a Kong alias for `--ref` kept for historical scripts — every `--version X` invocation is equivalent to `--ref X`. New content should prefer `--ref`.
 
-**URL shape matters when using `--version`.** Version flags require a clone-able git repo URL — either a plain repo URL like `https://github.com/org/repo` or an SSH URL like `git@host:path.git`. GitHub blob-style URLs (`https://github.com/org/repo/tree/main/subdir`) are not supported alongside `--version` or `@version`; use `--url <repo-url> --path <subdir> --version <X>` instead.
+Version sources are git tags filtered for valid semver. The `pack.json` `version` field is author metadata for display — aipack's resolver reads git tags, not the manifest. If they disagree at install time, aipack prints a one-line warning to nudge pack authors, but the install proceeds against the tag either way. For the author-side release ritual (bump → commit → tag → push), see [Creating Packs — Releasing a new version](./creating-packs.md#releasing-a-new-version).
 
-Partial references (`v1`, `v1.2`) query the remote tags, pick the highest matching stable tag, and pin to that exact version — they are a discovery shortcut, not a channel. The lockfile records the resolved tag (`1.5.0`), not the partial (`v1`), so `pack update` won't auto-bump when new v1.x.x tags are released; re-run `pack update my-pack --version v1` to move the pin. Prereleases are skipped during partial matching; install them with an exact tag if needed (`my-pack@v1.5.0-beta.1`).
+**URL shape matters when `--ref` is a semver.** Semver resolution requires a clone-able git repo URL — either a plain repo URL like `https://github.com/org/repo` or an SSH URL like `git@host:path.git`. GitHub blob-style URLs (`https://github.com/org/repo/tree/main/subdir`) are not supported alongside semver refs; use `--url <repo-url> --path <subdir> --ref <X>` instead. Literal refs (branches, commit hashes) bypass the semver resolver and don't have this constraint.
+
+Partial references (`v1`, `v1.2`) query the remote tags, pick the highest matching stable tag, and pin to that exact version — they are a discovery shortcut, not a channel. The lockfile records the resolved tag (`1.5.0`), not the partial (`v1`), so `pack update` won't auto-bump when new v1.x.x tags are released; re-run `pack update my-pack --ref v1` to move the pin. Prereleases are skipped during partial matching; install them with an exact tag if needed (`my-pack@v1.5.0-beta.1`).
+
+### Namespaced tags (multi-pack monorepos)
+
+Repositories that ship multiple packs in subdirectories can't use flat semver tags without collision — `v1.2.3` is ambiguous across sibling packs. aipack supports namespaced tags of the form `<pack-name>/vX.Y.Z` (Go-module convention). When the installed ref is namespaced, `pack update`, `pack versions`, and the drift hint all derive the prefix automatically from the lockfile, so subsequent commands stay honest without requiring explicit repetition.
+
+```bash
+# Initial install via the namespaced tag
+aipack pack install oci-dev-starter-pack --ref oci-dev-starter-pack/v0.3.0
+
+# Update inherits the prefix from the installed ref — the bare semver is enough
+aipack pack update oci-dev-starter-pack --ref 0.3.1
+
+# Or re-type the full namespaced form; both work
+aipack pack update oci-dev-starter-pack --ref oci-dev-starter-pack/v0.3.1
+
+# Discovery lists the matching tags (prefix derived from the install)
+aipack pack versions oci-dev-starter-pack
+```
+
+No registry schema changes are required — the pack's registry entry just sets its `ref:` field to the initial namespaced tag (or users pass `--ref <prefix>/v<X.Y.Z>` on first install). See [Creating Packs — Releasing a namespaced version](./creating-packs.md#releasing-a-namespaced-version) for the author-side release ritual.
 
 List the available semver versions for a pack:
 
@@ -284,11 +313,12 @@ aipack pack update              # update all installed packs (default)
 aipack pack update my-pack      # update one specific pack
 ```
 
-**Pinned packs stay pinned.** A bare `pack update` on a versioned pack does not change the install. It checks the remote and reports the latest available version, but leaves the pin in place. Move the pin explicitly:
+**Pinned packs stay pinned.** A bare `pack update` on a pinned pack does not change the install. It checks the remote and reports the latest available version, but leaves the pin in place. Move the pin explicitly:
 
 ```bash
-aipack pack update my-pack --version 1.3.0   # move the pin to a new tag
-aipack pack update my-pack --version latest  # clear the pin, track HEAD again
+aipack pack update my-pack --ref 1.3.0    # move the pin to a new tag
+aipack pack update my-pack --ref latest   # clear the pin, track HEAD again
+aipack pack update my-pack --ref main     # switch to tracking a branch
 ```
 
 For standard packs (no `content_paths`), the same re-clone-and-extract process applies. Installed packs always contain only content — no `.git/` directories, no non-pack files.
