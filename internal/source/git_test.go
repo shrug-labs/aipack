@@ -231,6 +231,35 @@ func TestCheckGit_Available(t *testing.T) {
 	}
 }
 
+// TestListRemoteTags_ErrorSurfacesStderr locks in the end-to-end contract
+// that TUI/app callers depend on: when gitLsRemoteRaw's subprocess fails,
+// the returned error's Error() string must contain the actual stderr text,
+// not just "exit status 128". Without this, pattern-based error classifiers
+// downstream (e.g. the packs-tab recovery hint) would never see the ssh/git
+// message text they need to match on.
+//
+// Uses ssh://127.0.0.1:1/ — port 1 is IANA-assigned tcpmux but in practice
+// never listens, so the TCP connect attempt fails in ~60 ms via loopback
+// RST with no DNS dependency, no external network, and no flake risk on
+// machines with misconfigured resolvers.
+func TestListRemoteTags_ErrorSurfacesStderr(t *testing.T) {
+	t.Parallel()
+	_, err := ListRemoteTags(context.Background(), "ssh://127.0.0.1:1/foo.git")
+	if err == nil {
+		t.Fatal("expected error connecting to a port with no listener")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "Connection refused") {
+		t.Errorf("error message should include ssh stderr (looking for \"Connection refused\"), got %q", msg)
+	}
+	if !strings.Contains(msg, "port 1") {
+		t.Errorf("error message should include the target port, got %q", msg)
+	}
+	if strings.HasSuffix(msg, "exit status 128") {
+		t.Errorf("error message should contain stderr, not just the exit status suffix, got %q", msg)
+	}
+}
+
 func TestGitErrorHint_AuthFailure(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

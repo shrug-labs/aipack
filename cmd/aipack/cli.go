@@ -90,6 +90,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool
 		),
 	}
 
+	// Route bare `--version` / `-V` to the version subcommand. Can't register
+	// them as Kong flags because `pack install` / `pack update` already have
+	// their own --version and Kong propagates root flags into subcommands.
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-V") {
+		args = []string{"version"}
+	}
+
 	cli := &CLI{}
 	opts := []kong.Option{
 		kong.Name("aipack"),

@@ -99,6 +99,15 @@ type packVersionsLoadedMsg struct {
 	err      error
 }
 
+// versionsDebounceMsg is dispatched by a tea.Tick after a cursor-move delay
+// to fire the deferred version load. The epoch guards against stale ticks:
+// if the user moved the cursor again before the tick fired, a newer tick
+// is already in flight and this one must be discarded. Without this, each
+// keystroke would spawn its own ls-remote while the cursor is still moving.
+type versionsDebounceMsg struct {
+	epoch int
+}
+
 // packDriftLoadedMsg delivers the result of an async pack-drift scan over
 // every installed pack. Drives the drift indicator on list rows. The slice
 // is the *complete* drift state — not a delta — so the receiving model

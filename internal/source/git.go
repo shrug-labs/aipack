@@ -160,20 +160,28 @@ func lsRemoteHead(ctx context.Context, repoURL, ref string) (string, error) {
 	return parseLsRemoteHash(out), nil
 }
 
-// gitLsRemoteRaw runs `git ls-remote [flags] <repoURL> [refspecs]` with the
-// standard 30s timeout and credential-prompt suppression. Returns raw stdout.
-// Used by lsRemoteHead and listRemoteTags to share scaffolding.
+// gitLsRemoteRaw runs `git ls-remote [flags] <repoURL> [refspecs]` with a
+// non-interactive environment. Returns raw stdout. Used by lsRemoteHead and
+// listRemoteTags to share scaffolding.
 //
 // Args starting with "-" are treated as flags and placed before the repoURL;
 // other args are treated as refspecs and placed after. This matches git's
 // expected order — `--tags` and `--heads` are silently mis-parsed as refspec
 // patterns when they appear after the URL.
+//
+// Timeout policy: if ctx already has a deadline (e.g. a TUI path with a
+// short budget), it is honored as-is; otherwise a 30s ceiling is applied so
+// CLI callers don't hang indefinitely on an unreachable remote.
 func gitLsRemoteRaw(ctx context.Context, repoURL string, args ...string) ([]byte, error) {
 	if err := CheckGit(); err != nil {
 		return nil, err
 	}
-	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	tctx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		tctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
 	var flags, refspecs []string
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") {
@@ -187,12 +195,62 @@ func gitLsRemoteRaw(ctx context.Context, repoURL string, args ...string) ([]byte
 	cmdArgs = append(cmdArgs, repoURL)
 	cmdArgs = append(cmdArgs, refspecs...)
 	cmd := exec.CommandContext(tctx, "git", cmdArgs...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.Output()
+	cmd.Env = nonInteractiveGitEnv()
+	stdout, stderr, err := runAndCaptureStderr(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("git ls-remote %s: %w", repoURL, err)
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("git ls-remote %s: %s", repoURL, msg)
 	}
-	return out, nil
+	return stdout, nil
+}
+
+// runAndCaptureStderr runs cmd with both stdout and stderr buffered and
+// returns the captured bytes alongside any process error. Used instead of
+// cmd.Output() at every site that cares about the content of stderr — the
+// *exec.ExitError default Error() string is just "exit status N", so the
+// stderr bytes are invisible to downstream error classifiers and log
+// consumers unless explicitly pulled out here.
+func runAndCaptureStderr(cmd *exec.Cmd) (stdout, stderr []byte, err error) {
+	var so, se bytes.Buffer
+	cmd.Stdout = &so
+	cmd.Stderr = &se
+	err = cmd.Run()
+	return so.Bytes(), se.Bytes(), err
+}
+
+// nonInteractiveGitEnv returns the process environment with every interactive
+// credential channel disabled. Non-interactive credential sources — credential
+// helpers returning cached creds, ssh-agent (including PIV/smartcard keys),
+// user-defined silent askpass scripts — are deliberately left intact so a
+// pack install or update that WOULD succeed in a normal shell still succeeds
+// here.
+//
+//   - GIT_TERMINAL_PROMPT=0 — blocks git's own "Username:"/"Password:" prompt
+//     on a TTY, without touching credential helpers.
+//   - GIT_SSH_COMMAND — forces ssh BatchMode (refuses interactive auth) and a
+//     short ConnectTimeout so an unreachable host fails quickly. ssh-agent
+//     auth still works; only passphrase prompts for locked on-disk keys are
+//     refused. Git for Windows bundles OpenSSH which honors these options.
+//   - SSH_ASKPASS_REQUIRE=never — OpenSSH 8.4+ hard-disables the fallback
+//     askpass GUI even when DISPLAY is set. No-op on older ssh.
+//   - GCM_INTERACTIVE=Never — blocks Git Credential Manager's GUI popup on
+//     Windows while still allowing GCM to return already-cached creds.
+//
+// Do NOT add `-c credential.helper=` or `-c core.askPass=` here: at runtime
+// those reset the helper chain / override a legitimately-configured askpass
+// script, breaking users who rely on osxkeychain (macOS default via Xcode
+// CLT gitconfig), GCM's cached credentials, libsecret, or a silent askpass
+// wrapper around a password manager.
+func nonInteractiveGitEnv() []string {
+	return append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new",
+		"SSH_ASKPASS_REQUIRE=never",
+		"GCM_INTERACTIVE=Never",
+	)
 }
 
 // parseLsRemoteHash extracts the commit hash from ls-remote output.
@@ -232,7 +290,7 @@ func gitHeadHash(ctx context.Context, dir string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD")
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = nonInteractiveGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD in %s: %w", dir, err)
@@ -252,23 +310,25 @@ func runGit(ctx context.Context, args ...string) error {
 
 // runGitCore runs a git command with shared setup (timeout, env, error formatting)
 // and returns stdout bytes. Both runGit and runGitOutput delegate to this.
+//
+// The environment blocks every interactive credential channel (ssh passphrase
+// prompts, GCM GUI popups, askpass dialogs, terminal prompts) so clone/fetch
+// can't hang on a pinentry for a locked SSH key. Non-interactive credential
+// paths — credential helpers returning cached creds, ssh-agent, user-defined
+// silent askpass scripts — are deliberately left intact.
 func runGitCore(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
-	// Prevent git from prompting for credentials in non-interactive contexts.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+	cmd.Env = nonInteractiveGitEnv()
+	stdout, stderr, err := runAndCaptureStderr(cmd)
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("git %s timed out after 2m", strings.Join(args, " "))
 	}
 	if err != nil {
-		msg := strings.TrimSpace(stderr.String())
+		msg := strings.TrimSpace(string(stderr))
 		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+			msg = strings.TrimSpace(string(stdout))
 		}
 		hint := gitErrorHint(msg, args)
 		if hint != "" {
@@ -276,7 +336,7 @@ func runGitCore(ctx context.Context, args ...string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
 	}
-	return stdout.Bytes(), nil
+	return stdout, nil
 }
 
 // gitErrorHint returns an actionable hint for common git failures.

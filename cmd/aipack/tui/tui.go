@@ -708,7 +708,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, cmd
-	case packsLoadedMsg, packSizesMsg, registryLoadedMsg, packDriftLoadedMsg, packVersionsLoadedMsg:
+	case packsLoadedMsg, packSizesMsg, registryLoadedMsg, packDriftLoadedMsg, packVersionsLoadedMsg, versionsDebounceMsg:
 		var cmd tea.Cmd
 		m.packs, cmd = m.packs.Update(msg)
 		if m.packs.loadErr != "" {
@@ -1420,6 +1420,15 @@ func (m rootModel) refresh() (tea.Model, tea.Cmd) {
 	}
 	// Reload profiles, packs, and registry from disk.
 	cmds = append(cmds, loadProfiles(m.cfg.ConfigDir, m.cfg.SyncCfg), loadPacks(m.cfg.ConfigDir), loadRegistry(m.cfg.ConfigDir))
+	// On the packs tab, also force-refresh the version cache for the pack
+	// under the cursor. Versions are kept in an in-memory cache keyed by
+	// pack name that disk reloads don't touch — a user recovering from an
+	// ssh-auth failure needs this cache cleared to re-probe the remote.
+	if m.activeTab == tabPacks {
+		if vcmd := m.packs.refreshVersionsForCursor(); vcmd != nil {
+			cmds = append(cmds, vcmd)
+		}
+	}
 	if len(cmds) == 0 {
 		m.statusText = dimStyle.Render("nothing to refresh")
 		return m, nil

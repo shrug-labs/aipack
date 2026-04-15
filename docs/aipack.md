@@ -459,6 +459,7 @@ Prints the CLI version string. Also checks for newer releases in the background 
 
 ```bash
 aipack version
+aipack --version   # same output; -V also works
 ```
 
 ---

@@ -722,6 +722,123 @@ func TestPacksModel_VersionsLoadedMsgErrorMarksFailed(t *testing.T) {
 	}
 }
 
+// TestClassifyGitError pins the narrow classifier against real captured
+// stderr strings from `git ls-remote` against github.com under each
+// failure mode. The negative cases cover the generic fallback phrases
+// that used to match an earlier, broader implementation — we explicitly
+// do not match "Could not read from remote repository" or "Authentication
+// failed" alone because they appear for many unrelated failure modes
+// (DNS outages, VPN drops, repo not found) and would mislead the recovery
+// hint.
+func TestClassifyGitError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want gitErrorKind
+	}{
+		{"empty", "", gitErrOther},
+		{
+			name: "publickey_denied",
+			in: "git@github.com: Permission denied (publickey).\n" +
+				"fatal: Could not read from remote repository.\n\n" +
+				"Please make sure you have the correct access rights\n" +
+				"and the repository exists.",
+			want: gitErrSSHPublickeyDenied,
+		},
+		{
+			name: "host_key_failed",
+			in: "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n" +
+				"@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n" +
+				"Host key verification failed.\n" +
+				"fatal: Could not read from remote repository.",
+			want: gitErrSSHHostKeyFailed,
+		},
+		{
+			name: "dns_failure_ssh",
+			in: "ssh: Could not resolve hostname nonexistent.example.invalid: " +
+				"nodename nor servname provided, or not known\n" +
+				"fatal: Could not read from remote repository.",
+			want: gitErrOther,
+		},
+		{
+			name: "connection_refused_ssh",
+			in: "ssh: connect to host localhost port 65432: Connection refused\n" +
+				"fatal: Could not read from remote repository.",
+			want: gitErrOther,
+		},
+		{
+			name: "dns_failure_https",
+			in:   "fatal: unable to access 'https://nonexistent.example.invalid/foo.git/': Could not resolve host: nonexistent.example.invalid",
+			want: gitErrOther,
+		},
+		{
+			name: "connection_refused_https",
+			in:   "fatal: unable to access 'https://localhost:65432/foo.git/': Failed to connect to localhost port 65432 after 0 ms: Couldn't connect to server",
+			want: gitErrOther,
+		},
+		{
+			name: "https_auth_failed",
+			in: "remote: Invalid username or token. Password authentication is not supported for Git operations.\n" +
+				"fatal: Authentication failed for 'https://github.com/example/repo.git/'",
+			want: gitErrOther,
+		},
+		{
+			name: "github_repo_not_found",
+			in: "ERROR: Repository not found.\n" +
+				"fatal: Could not read from remote repository.",
+			want: gitErrOther,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := classifyGitError(tc.in); got != tc.want {
+				t.Errorf("classifyGitError(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPacksModel_RecoveryHintForCurrent(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{Name: "remote", Method: "clone"}},
+	})
+
+	// Before any error: no hint.
+	if got := m.recoveryHintForCurrent(); got != "" {
+		t.Errorf("no cache entry should produce empty hint, got %q", got)
+	}
+
+	// Generic fallback error (DNS failure over SSH): no hint.
+	m.versionsCache["remote"] = packVersionsCacheEntry{
+		state: asyncError,
+		err:   "ssh: Could not resolve hostname github.invalid: nodename nor servname provided, or not known\nfatal: Could not read from remote repository.",
+	}
+	if got := m.recoveryHintForCurrent(); got != "" {
+		t.Errorf("DNS failure should not render a recovery hint, got %q", got)
+	}
+
+	// SSH publickey denied: ssh-add hint.
+	m.versionsCache["remote"] = packVersionsCacheEntry{
+		state: asyncError,
+		err:   "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+	}
+	if got := m.recoveryHintForCurrent(); !strings.Contains(got, "ssh-add") {
+		t.Errorf("publickey denied should render ssh-add hint, got %q", got)
+	}
+
+	// Host key failure: known_hosts hint.
+	m.versionsCache["remote"] = packVersionsCacheEntry{
+		state: asyncError,
+		err:   "Host key verification failed.\nfatal: Could not read from remote repository.",
+	}
+	if got := m.recoveryHintForCurrent(); !strings.Contains(got, "known_hosts") {
+		t.Errorf("host key failure should render known_hosts hint, got %q", got)
+	}
+}
+
 func TestPacksModel_MaybeLoadVersionsSkipsLinkPacks(t *testing.T) {
 	t.Parallel()
 	m := newTestPacksModel([]packItemDetail{

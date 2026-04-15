@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -345,12 +346,19 @@ func loadPackDrift(ctx context.Context, configDir string) tea.Cmd {
 // loadPackVersions queries the remote tags for a pack via app.PackListVersions
 // and delivers the result as a packVersionsLoadedMsg. Used by the packs tab to
 // populate the inline version list in the details panel and warm the cache for
-// the install-time version picker. The call is bounded by app.PackListVersions's
-// own timeout (inherited from the ls-remote subprocess); a failed lookup is
-// reported back to the cache as a failed state, not as a TUI-wide error.
+// the install-time version picker.
+//
+// The interactive TUI budget is intentionally tight (tuiVersionLoadTimeout):
+// a miss is cosmetic (no version badge), while a long wait blocks the render
+// loop. gitLsRemoteRaw honors the ctx deadline we set here, so unreachable or
+// credential-gated remotes fail fast instead of applying the 30s CLI default.
+// A failed lookup is reported back to the cache as an error entry, not as a
+// TUI-wide error.
 func loadPackVersions(ctx context.Context, configDir, name string) tea.Cmd {
 	return func() tea.Msg {
-		result, err := app.PackListVersions(ctx, app.PackListVersionsRequest{
+		tctx, cancel := context.WithTimeout(ctx, tuiVersionLoadTimeout)
+		defer cancel()
+		result, err := app.PackListVersions(tctx, app.PackListVersionsRequest{
 			ConfigDir: configDir,
 			Name:      name,
 		})
@@ -360,6 +368,12 @@ func loadPackVersions(ctx context.Context, configDir, name string) tea.Cmd {
 		return packVersionsLoadedMsg{packName: name, versions: result.Versions}
 	}
 }
+
+// tuiVersionLoadTimeout is the upper bound for a single pack's ls-remote tag
+// probe when driven by the TUI. Five seconds is enough for a healthy fetch
+// over a typical corporate VPN but short enough that a credential-gated or
+// unreachable remote doesn't stall the render loop.
+const tuiVersionLoadTimeout = 5 * time.Second
 
 // updatePack updates one or all installed packs. version is the value passed
 // to PackUpdateRequest.Version: empty preserves the current pin (default

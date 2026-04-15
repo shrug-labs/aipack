@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.21.2]
+
+### Added
+
+- **`aipack --version` / `-V`** now print the same output as `aipack version`.
+- **`r` on the `aipack manage` packs tab** also re-checks remote versions for the pack under the cursor. Useful after fixing credentials or pushing a new tag upstream.
+
+### Fixed
+
+- **`aipack manage` packs tab no longer hangs** when SSH keys are passphrase-locked and not loaded in `ssh-agent`. Cursor navigation is debounced and aipack-spawned git commands run non-interactively; cached credential sources (ssh-agent, credential helpers, askpass) still work as configured.
+- **Pack version lookup failures caused by SSH auth issues show a recovery hint** in the details panel instead of a generic `(unavailable)` row.
+
 ## [0.21.1]
 
 ### Fixed

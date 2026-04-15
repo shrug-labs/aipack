@@ -2,6 +2,7 @@ package main
 
 import (
 	"runtime/debug"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,18 @@ func TestResolveVersionInfo_PreservesLinkerValues(t *testing.T) {
 	}
 	if commit != "49d4d25" {
 		t.Fatalf("commit = %q, want %q", commit, "49d4d25")
+	}
+}
+
+func TestRun_RootVersionFlag(t *testing.T) {
+	for _, flag := range []string{"--version", "-V"} {
+		stdout, _, code := runApp(t, flag)
+		if code != 0 {
+			t.Fatalf("%s: exit code = %d, want 0", flag, code)
+		}
+		if !strings.HasPrefix(stdout, "aipack ") {
+			t.Fatalf("%s: stdout = %q, want prefix %q", flag, stdout, "aipack ")
+		}
 	}
 }
 

@@ -108,6 +108,13 @@ type packsModel struct {
 	// the install-time version picker. Keyed by pack name.
 	versionsCache map[string]packVersionsCacheEntry
 
+	// versionsDebounceEpoch is incremented on every cursor move that would
+	// schedule a version load. A deferred tea.Tick delivers versionsDebounceMsg
+	// with the epoch value captured at schedule time; the handler only fires
+	// the load when the incoming epoch still matches. Holding j/k collapses
+	// to a single load on the pack where the cursor settles.
+	versionsDebounceEpoch int
+
 	// Drift set. Populated once by loadPackDrift when the packs tab
 	// initializes. The parent rootModel clears per-pack entries on
 	// successful install/update of that pack, but the set is never
@@ -185,12 +192,18 @@ func (m packsModel) versionsEligible(li *packListItem) bool {
 	return li.inRegistry
 }
 
-// maybeLoadVersionsForCursor returns a tea.Cmd that asynchronously fetches
-// available semver tags for the currently selected pack — but only when the
-// pack is eligible (clone or registry) and not already cached or in flight.
-// Returns nil when there's nothing to do, so callers can safely chain it
-// into tea.Batch without conditional branching.
-func (m *packsModel) maybeLoadVersionsForCursor() tea.Cmd {
+// versionsDebounceDelay is the idle window the packs tab waits before
+// resolving a queued version load. Holding j/k through a 20-pack registry
+// collapses to a single ls-remote for the pack under the cursor when it
+// settles, instead of 20 concurrent subprocesses per keystroke burst.
+const versionsDebounceDelay = 300 * time.Millisecond
+
+// versionLoadCandidate returns the current list item iff it's eligible for
+// a version load AND has no cached entry yet. Both the immediate and
+// debounced load paths share this precondition, so they funnel through
+// here. Refresh is deliberately different — it wants to proceed even on a
+// cache hit — and reaches for versionsEligible directly.
+func (m *packsModel) versionLoadCandidate() *packListItem {
 	li := m.currentListItem()
 	if !m.versionsEligible(li) {
 		return nil
@@ -198,11 +211,61 @@ func (m *packsModel) maybeLoadVersionsForCursor() tea.Cmd {
 	if _, ok := m.versionsCacheEntry(li.name); ok {
 		return nil
 	}
+	return li
+}
+
+// maybeLoadVersionsForCursor returns a tea.Cmd that asynchronously fetches
+// available semver tags for the currently selected pack — but only when the
+// pack is eligible (clone or registry) and not already cached or in flight.
+// Returns nil when there's nothing to do, so callers can safely chain it
+// into tea.Batch without conditional branching.
+//
+// This is the *immediate* load path, used by one-shot callers (initial
+// registry load, explicit refresh). Cursor-move paths must go through
+// scheduleVersionsLoad to benefit from debouncing.
+func (m *packsModel) maybeLoadVersionsForCursor() tea.Cmd {
+	li := m.versionLoadCandidate()
+	if li == nil {
+		return nil
+	}
 	if m.versionsCache == nil {
 		m.versionsCache = map[string]packVersionsCacheEntry{}
 	}
 	m.versionsCache[li.name] = packVersionsCacheEntry{state: asyncLoading}
 	return loadPackVersions(context.Background(), m.configDir, li.name)
+}
+
+// scheduleVersionsLoad debounces version loads across cursor-move bursts:
+// the caller bumps the epoch and a tea.Tick later delivers the captured
+// epoch back as versionsDebounceMsg, which only fires the load if no newer
+// cursor move has intervened. Without this, holding j/k spawned a 30s git
+// ls-remote per keystroke — blocking on pinentry for users with locked SSH
+// keys. Returns nil (emits no command at all) when the cursor target is
+// ineligible or already cached.
+func (m *packsModel) scheduleVersionsLoad() tea.Cmd {
+	if m.versionLoadCandidate() == nil {
+		return nil
+	}
+	m.versionsDebounceEpoch++
+	epoch := m.versionsDebounceEpoch
+	return tea.Tick(versionsDebounceDelay, func(_ time.Time) tea.Msg {
+		return versionsDebounceMsg{epoch: epoch}
+	})
+}
+
+// refreshVersionsForCursor drops any cached version entry for the current
+// pack and kicks off an immediate (non-debounced) reload. Bound to the 'r'
+// key so users can force a re-check after fixing credentials or pushing a
+// new tag upstream, without leaving the packs tab.
+func (m *packsModel) refreshVersionsForCursor() tea.Cmd {
+	li := m.currentListItem()
+	if !m.versionsEligible(li) {
+		return nil
+	}
+	if m.versionsCache != nil {
+		delete(m.versionsCache, li.name)
+	}
+	return m.maybeLoadVersionsForCursor()
 }
 
 func (m packsModel) Init() tea.Cmd {
@@ -283,6 +346,14 @@ func (m packsModel) Update(msg tea.Msg) (packsModel, tea.Cmd) {
 		}
 		m.versionsCache[msg.packName] = entry
 		return m, nil
+
+	case versionsDebounceMsg:
+		// Stale debounce tick — a newer cursor move has already bumped the
+		// epoch, so its own tick is in flight and this one must drop.
+		if msg.epoch != m.versionsDebounceEpoch {
+			return m, nil
+		}
+		return m, m.maybeLoadVersionsForCursor()
 
 	case packDriftLoadedMsg:
 		// Replace the drift set wholesale — the loader returns the complete
@@ -377,14 +448,14 @@ func (m packsModel) updateListPanel(msg tea.KeyMsg) (packsModel, tea.Cmd) {
 			m.listCursor++
 			m.clampListOffset()
 			m.buildContentForCurrent()
-			return m, m.maybeLoadVersionsForCursor()
+			return m, m.scheduleVersionsLoad()
 		}
 	case "k", "up":
 		if m.listCursor > 0 {
 			m.listCursor--
 			m.clampListOffset()
 			m.buildContentForCurrent()
-			return m, m.maybeLoadVersionsForCursor()
+			return m, m.scheduleVersionsLoad()
 		}
 	case "enter", "right", "l":
 		li := m.currentListItem()
@@ -850,6 +921,13 @@ func (m packsModel) viewPackInfoPanel(width, height int) string {
 		}
 	}
 
+	// A passphrase-locked ~/.ssh/id_rsa with no agent-cached entry turns
+	// every ls-remote into a "(unavailable)" row with no visible recovery
+	// path. Surfacing the ssh-add recipe inline makes the failure self-serve.
+	if hint := m.recoveryHintForCurrent(); hint != "" {
+		sb.WriteString("\n" + hint + "\n")
+	}
+
 	return renderPackPanel(width, height, false, sb.String())
 }
 
@@ -896,6 +974,12 @@ func (m packsModel) registryVersionsLine(name string) string {
 	case asyncLoading:
 		return dimStyle.Render("loading…")
 	case asyncError:
+		switch classifyGitError(cached.err) {
+		case gitErrSSHPublickeyDenied:
+			return dimStyle.Render("(ssh auth required)")
+		case gitErrSSHHostKeyFailed:
+			return dimStyle.Render("(host key issue)")
+		}
 		return dimStyle.Render("(unavailable)")
 	}
 	if len(cached.versions) == 0 {
@@ -913,6 +997,66 @@ func (m packsModel) registryVersionsLine(name string) string {
 		parts[i] = v.Version
 	}
 	return strings.Join(parts, ", ") + tail
+}
+
+// gitErrorKind classifies a git subprocess error string into one of a small
+// set of categories that have a distinctive stderr signature AND a single
+// universal user recovery. Patterns that would match generic git fallback
+// phrases ("Could not read from remote repository", "authentication failed")
+// are intentionally NOT matched — those appear for many unrelated failure
+// modes (DNS outages, VPN drops, repo not found, connection refused) and
+// matching them would surface the wrong recovery hint.
+type gitErrorKind int
+
+const (
+	gitErrOther gitErrorKind = iota
+	// gitErrSSHPublickeyDenied — ssh offered a key the remote rejected.
+	// Covers passphrase-locked local keys not in the agent, keys not
+	// registered on the remote account, and agent-empty states.
+	// Signature: "Permission denied (publickey".
+	gitErrSSHPublickeyDenied
+	// gitErrSSHHostKeyFailed — ~/.ssh/known_hosts has a stored key that
+	// doesn't match the server. Signature: "Host key verification failed".
+	gitErrSSHHostKeyFailed
+)
+
+// classifyGitError inspects a captured git stderr string and returns the
+// narrowest recognized classification. Empty / unrecognized strings map to
+// gitErrOther so the caller can fall back to a generic "(unavailable)"
+// rendering without a misleading recovery hint.
+func classifyGitError(errMsg string) gitErrorKind {
+	if errMsg == "" {
+		return gitErrOther
+	}
+	if strings.Contains(errMsg, "Permission denied (publickey") {
+		return gitErrSSHPublickeyDenied
+	}
+	if strings.Contains(errMsg, "Host key verification failed") {
+		return gitErrSSHHostKeyFailed
+	}
+	return gitErrOther
+}
+
+// recoveryHintForCurrent returns a dim recovery hint line when the currently
+// selected pack's cached version lookup failed with an error we can classify
+// as user-fixable. Returns "" otherwise, so the caller can unconditionally
+// append.
+func (m packsModel) recoveryHintForCurrent() string {
+	li := m.currentListItem()
+	if li == nil {
+		return ""
+	}
+	cached, ok := m.versionsCacheEntry(li.name)
+	if !ok || cached.state != asyncError {
+		return ""
+	}
+	switch classifyGitError(cached.err) {
+	case gitErrSSHPublickeyDenied:
+		return dimStyle.Render("ssh auth failed — run `ssh-add` in another terminal, then press r to retry")
+	case gitErrSSHHostKeyFailed:
+		return dimStyle.Render("host key mismatch — verify the remote host and update ~/.ssh/known_hosts, then press r to retry")
+	}
+	return ""
 }
 
 // sourceForMethod returns the Source value for the details pane.
