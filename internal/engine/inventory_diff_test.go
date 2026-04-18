@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,35 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
+
+func TestDiffStrings(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name            string
+		prev, curr      []string
+		wantAdd, wantRm []string
+	}{
+		{"both empty", nil, nil, nil, nil},
+		{"no change", []string{"a", "b"}, []string{"a", "b"}, nil, nil},
+		{"all added", nil, []string{"a", "b"}, []string{"a", "b"}, nil},
+		{"all removed", []string{"a", "b"}, nil, nil, []string{"a", "b"}},
+		{"mixed", []string{"a", "b", "c"}, []string{"b", "c", "d"}, []string{"d"}, []string{"a"}},
+		{"duplicates in prev", []string{"a", "a", "b"}, []string{"a", "b"}, nil, nil},
+		{"duplicates in curr", []string{"a", "b"}, []string{"a", "a", "b"}, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			added, removed := DiffStrings(tc.prev, tc.curr)
+			if !slices.Equal(added, tc.wantAdd) {
+				t.Errorf("added = %v, want %v", added, tc.wantAdd)
+			}
+			if !slices.Equal(removed, tc.wantRm) {
+				t.Errorf("removed = %v, want %v", removed, tc.wantRm)
+			}
+		})
+	}
+}
 
 func TestDiffInventory_EmptyOnIdentical(t *testing.T) {
 	t.Parallel()
@@ -243,7 +273,7 @@ func TestBuildInventories_CoversAllCategories(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "mypack",
 		Version:       "1.0.0",
 		Root:          ".",
@@ -251,9 +281,7 @@ func TestBuildInventories_CoversAllCategories(t *testing.T) {
 		Agents:        []string{"agent-a"},
 		Workflows:     []string{"flow-a"},
 		Skills:        []string{"skill-a"},
-		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{
-			"server-a": {DefaultAllowedTools: []string{"tool_x"}},
-		}},
+		MCP:           []string{"server-a"},
 	}
 	if err := config.SavePackManifest(filepath.Join(packRoot, "pack.json"), manifest); err != nil {
 		t.Fatal(err)
@@ -302,11 +330,10 @@ func TestBuildInventories_CoversAllCategories(t *testing.T) {
 		}},
 		MCPServers: []domain.MCPServer{
 			{
-				Name:                "server-a",
-				SourcePack:          "mypack",
-				AvailableTools:      []string{"tool_x", "tool_y"},
-				DefaultAllowedTools: []string{"tool_x"},
-				RequiredRefs:        []domain.RequiredRef{{Kind: domain.RefKindParam, Name: "base_url"}},
+				Name:           "server-a",
+				SourcePack:     "mypack",
+				AvailableTools: []string{"tool_x", "tool_y"},
+				RequiredRefs:   []domain.RequiredRef{{Kind: domain.RefKindParam, Name: "base_url"}},
 			},
 			{Name: "other-server", SourcePack: "different-pack"},
 		},
@@ -346,9 +373,6 @@ func TestBuildInventories_CoversAllCategories(t *testing.T) {
 	}
 	if len(snap.AvailableTools) != 2 || snap.AvailableTools[0] != "tool_x" {
 		t.Errorf("AvailableTools = %v", snap.AvailableTools)
-	}
-	if len(snap.DefaultAllowedTools) != 1 || snap.DefaultAllowedTools[0] != "tool_x" {
-		t.Errorf("DefaultAllowedTools = %v", snap.DefaultAllowedTools)
 	}
 	if len(snap.RequiredRefs) != 1 || snap.RequiredRefs[0].Kind != domain.RefKindParam || snap.RequiredRefs[0].Name != "base_url" {
 		t.Errorf("RequiredRefs = %+v", snap.RequiredRefs)

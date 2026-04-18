@@ -29,7 +29,7 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
 		t.Fatalf("mkdir pack mcp dir: %v", err)
 	}
 	packManifest := []byte(`{
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "test-pack",
   "version": "0",
   "root": ".",
@@ -37,12 +37,7 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
   "agents": [],
   "workflows": [],
   "skills": [],
-  "mcp": {
-    "servers": {
-      "bitbucket": {"default_allowed_tools": []},
-      "atlassian": {"default_allowed_tools": []}
-    }
-  },
+  "mcp":["srv-a","srv-b"],
   "configs": {"harness_settings": {}}
 }`)
 	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), packManifest, 0o644); err != nil {
@@ -51,7 +46,7 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
 
 	nodePath := filepath.Join(packDir, "bin", "node")
 	uvxPath := filepath.Join(packDir, "bin", "uvx")
-	serverPath := filepath.Join(packDir, "bitbucket-mcp", "build", "index.js")
+	serverPath := filepath.Join(packDir, "srv-a-mcp", "build", "index.js")
 	for _, p := range []string{nodePath, uvxPath, serverPath} {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", p, err)
@@ -61,8 +56,8 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
 		}
 	}
 
-	if err := os.WriteFile(filepath.Join(packDir, "mcp", "bitbucket.json"), []byte(`{
-  "name": "bitbucket",
+	if err := os.WriteFile(filepath.Join(packDir, "mcp", "srv-a.json"), []byte(`{
+  "name": "srv-a",
   "transport": "stdio",
   "timeout": 300,
   "command": [
@@ -70,15 +65,15 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
     "`+escapeJSON(serverPath)+`"
   ],
   "env": {
-    "BITBUCKET_URL": "{global.bitbucket_url}",
-    "BITBUCKET_TOKEN": "{env:BITBUCKET_TOKEN}"
+    "SRV_A_URL": "{global.srv_a_url}",
+    "SRV_A_TOKEN": "{env:SRV_A_TOKEN}"
   },
   "available_tools": []
 }`), 0o644); err != nil {
-		t.Fatalf("write bitbucket inventory: %v", err)
+		t.Fatalf("write srv-a inventory: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(packDir, "mcp", "atlassian.json"), []byte(`{
-  "name": "atlassian",
+	if err := os.WriteFile(filepath.Join(packDir, "mcp", "srv-b.json"), []byte(`{
+  "name": "srv-b",
   "transport": "stdio",
   "timeout": 300,
   "command": [
@@ -88,7 +83,7 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
   "env": {},
   "available_tools": []
 }`), 0o644); err != nil {
-		t.Fatalf("write atlassian inventory: %v", err)
+		t.Fatalf("write srv-b inventory: %v", err)
 	}
 
 	// Install pack at configDir/packs/local/
@@ -102,25 +97,20 @@ func TestDoctor_JSON_HappyPath(t *testing.T) {
 	profile := []byte("" +
 		"schema_version: 6\n" +
 		"globals:\n" +
-		"  bitbucket_url: https://example.invalid\n" +
-		"  jira_url: https://jira.invalid\n" +
-		"  confluence_url: https://confluence.invalid\n" +
-		"  artifactory_dev_pypi: https://pypi.invalid/dev\n" +
-		"  artifactory_release_pypi: https://pypi.invalid/release\n" +
-		"  mcp_servers_dir_rel: .local/share/mcp-servers\n" +
+		"  srv_a_url: https://example.invalid\n" +
 		"packs:\n" +
 		"  - name: local\n" +
 		"    enabled: true\n" +
 		"    settings:\n" +
 		"      enabled: true\n" +
 		"    mcp:\n" +
-		"      bitbucket: { enabled: true }\n" +
-		"      atlassian: { enabled: true }\n")
+		"      srv-a: { enabled: true }\n" +
+		"      srv-b: { enabled: true }\n")
 	if err := os.WriteFile(profilePath, profile, 0o644); err != nil {
 		t.Fatalf("write profile: %v", err)
 	}
 
-	t.Setenv("BITBUCKET_TOKEN", "x")
+	t.Setenv("SRV_A_TOKEN", "x")
 
 	stdout, _, exit := runApp(t, "doctor", "--config-dir", configDir, "--profile-path", profilePath, "--json")
 	if exit != 0 {

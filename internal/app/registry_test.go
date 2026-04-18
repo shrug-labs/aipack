@@ -885,7 +885,7 @@ func TestDeepIndexOnePack_RespectsPackJsonRoot(t *testing.T) {
 	t.Parallel()
 
 	cloneFn := func(repo, dir, ref string) error {
-		packJSON := `{"schema_version": 1, "name": "test-pack", "version": "1.0", "root": "content", "rules": ["safety"]}`
+		packJSON := `{"schema_version": 2, "name": "test-pack", "version": "1.0", "root": "content", "rules": ["safety"]}`
 		if err := os.WriteFile(filepath.Join(dir, "pack.json"), []byte(packJSON), 0o644); err != nil {
 			return err
 		}

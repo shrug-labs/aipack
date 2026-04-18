@@ -63,7 +63,7 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 			return fmt.Errorf("pack %q prompts %q missing: %w", packName, id, err)
 		}
 	}
-	for name := range manifest.MCP.Servers {
+	for _, name := range manifest.MCP {
 		path := filepath.Join(packRoot, "mcp", name+".json")
 		if err := requireFile(path); err != nil {
 			return fmt.Errorf("pack %q mcp server %q missing: %w", packName, name, err)

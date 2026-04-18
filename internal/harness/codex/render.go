@@ -9,21 +9,36 @@ import (
 	"github.com/shrug-labs/aipack/internal/engine"
 )
 
+// codexApprovalModeApprove is the Codex per-tool auto-approve value.
+const codexApprovalModeApprove = "approve"
+
 type codexMCPServer struct {
-	Enabled           bool              `toml:"enabled"`
-	Type              string            `toml:"type,omitempty"` // omit for stdio (default)
-	EnabledTools      []string          `toml:"enabled_tools,omitempty"`
-	DisabledTools     []string          `toml:"disabled_tools,omitempty"`
-	StartupTimeoutSec int               `toml:"startup_timeout_sec"`
-	Command           string            `toml:"command,omitempty"` // stdio only
-	Args              []string          `toml:"args,omitempty"`    // stdio only
-	Env               map[string]string `toml:"env,omitempty"`     // stdio only
-	URL               string            `toml:"url,omitempty"`     // sse / streamable-http
-	Headers           map[string]string `toml:"headers,omitempty"` // sse / streamable-http
+	Enabled           bool                       `toml:"enabled"`
+	Type              string                     `toml:"type,omitempty"` // omit for stdio (default)
+	EnabledTools      []string                   `toml:"enabled_tools,omitempty"`
+	DisabledTools     []string                   `toml:"disabled_tools,omitempty"`
+	StartupTimeoutSec int                        `toml:"startup_timeout_sec"`
+	Command           string                     `toml:"command,omitempty"` // stdio only
+	Args              []string                   `toml:"args,omitempty"`    // stdio only
+	Env               map[string]string          `toml:"env,omitempty"`     // stdio only
+	URL               string                     `toml:"url,omitempty"`     // sse / streamable-http
+	Headers           map[string]string          `toml:"headers,omitempty"` // sse / streamable-http
+	Tools             map[string]codexToolConfig `toml:"tools,omitempty"`   // per-tool overrides (approval_mode)
+}
+
+// codexToolConfig is the per-tool entry under [mcp_servers.<name>.tools.<tool>].
+// Currently only approval_mode is populated; other per-tool fields may be
+// added as Codex exposes them.
+type codexToolConfig struct {
+	ApprovalMode string `toml:"approval_mode,omitempty"`
 }
 
 // buildMCPEntries renders MCP servers to Codex TOML format.
 // Codex uses unprefixed tool names (it applies its own prefix internally).
+// AllowedTools and AlwaysAllowedTools are unioned into enabled_tools for
+// visibility; tools in AlwaysAllowedTools additionally receive a per-tool
+// [mcp_servers.<name>.tools.<tool>] approval_mode = "approve" stanza so
+// Codex auto-approves them without prompting.
 func buildMCPEntries(servers []domain.MCPServer) (map[string]codexMCPServer, []domain.Warning) {
 	expanded, warnings := engine.ExpandMCPServers(servers)
 
@@ -33,11 +48,19 @@ func buildMCPEntries(servers []domain.MCPServer) (map[string]codexMCPServer, []d
 		if timeout == 0 {
 			timeout = 10
 		}
+		enabledTools := engine.UnionToolLists(s.AllowedTools, s.AlwaysAllowedTools)
 		entry := codexMCPServer{
 			Enabled:           true,
-			EnabledTools:      append([]string{}, s.AllowedTools...),
+			EnabledTools:      enabledTools,
 			DisabledTools:     append([]string{}, s.DisabledTools...),
 			StartupTimeoutSec: timeout,
+		}
+		if len(s.AlwaysAllowedTools) > 0 {
+			tools := make(map[string]codexToolConfig, len(s.AlwaysAllowedTools))
+			for _, t := range s.AlwaysAllowedTools {
+				tools[t] = codexToolConfig{ApprovalMode: codexApprovalModeApprove}
+			}
+			entry.Tools = tools
 		}
 		if s.IsStdio() {
 			if len(s.Command) == 0 {

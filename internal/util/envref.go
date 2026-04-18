@@ -71,6 +71,16 @@ var paramRefPrefixesByLength = func() []string {
 	return sorted
 }()
 
+// HasParamRef reports whether s contains any {params.*}, {param.*}, or {global.*} reference.
+func HasParamRef(s string) bool {
+	for _, prefix := range ParamRefPrefixes {
+		if strings.Contains(s, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // EnvRef represents a parsed {env:VAR} reference with its position in the source string.
 type EnvRef struct {
 	Name  string // variable name
@@ -92,12 +102,15 @@ func WalkEnvRefs(s string, fn func(ref EnvRef) error) error {
 		rest := s[start:]
 		endRel := strings.Index(rest, "}")
 		if endRel < 0 {
-			return fmt.Errorf("unterminated env reference in %q", s)
+			// Don't echo s: after param expansion runs first in ExpandRefs,
+			// s may contain real secret values from {params.*} substitution.
+			// A byte offset is enough to locate the problem without leaking.
+			return fmt.Errorf("unterminated env reference at offset %d", start)
 		}
 		end := start + endRel + 1
 		name := strings.TrimSpace(s[start+len("{env:") : start+endRel])
 		if name == "" {
-			return fmt.Errorf("empty env reference in %q", s)
+			return fmt.Errorf("empty env reference at offset %d", start)
 		}
 		if err := fn(EnvRef{Name: name, Start: start, End: end}); err != nil {
 			return err

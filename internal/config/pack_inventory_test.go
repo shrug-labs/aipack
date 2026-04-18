@@ -11,10 +11,9 @@ func TestValidatePackInventory_AllowsEmptyVectorsWithoutContentDirs(t *testing.T
 	t.Parallel()
 	packRoot := t.TempDir()
 	manifest := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "demo",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 	}
 
 	if err := validatePackInventory("demo", packRoot, manifest); err != nil {
@@ -33,22 +32,20 @@ func TestValidatePackInventory_RequiresManifestReferencedFiles(t *testing.T) {
 		{
 			name: "missing rule file",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
 				Rules:         []string{"triage"},
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 			},
 			wantErr: `pack "demo" rules "triage" missing`,
 		},
 		{
 			name: "missing skill entry file",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
 				Skills:        []string{"triage"},
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 			},
 			setup: func(t *testing.T, root string) {
 				t.Helper()
@@ -61,33 +58,29 @@ func TestValidatePackInventory_RequiresManifestReferencedFiles(t *testing.T) {
 		{
 			name: "missing prompt file",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
 				Prompts:       []string{"review"},
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 			},
 			wantErr: `pack "demo" prompts "review" missing`,
 		},
 		{
 			name: "missing mcp file",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
-				MCP: MCPPack{Servers: map[string]MCPDefaults{
-					"atlassian": {},
-				}},
+				MCP:           []string{"srv-a"},
 			},
-			wantErr: `pack "demo" mcp server "atlassian" missing`,
+			wantErr: `pack "demo" mcp server "srv-a" missing`,
 		},
 		{
 			name: "missing harness settings file",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 				Configs: PackConfigs{HarnessSettings: map[string][]string{
 					"claudecode": {"settings.local.json"},
 				}},
@@ -97,10 +90,9 @@ func TestValidatePackInventory_RequiresManifestReferencedFiles(t *testing.T) {
 		{
 			name: "missing harness plugins file",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 				Configs: PackConfigs{HarnessPlugins: map[string][]string{
 					"opencode": {"plugin.json"},
 				}},
@@ -138,32 +130,29 @@ func TestValidatePackInventory_RejectsBadManifestEntries(t *testing.T) {
 		{
 			name: "duplicate rules id",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
 				Rules:         []string{"triage", "triage"},
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 			},
 			wantErr: `pack "demo" rules contains duplicate id "triage"`,
 		},
 		{
 			name: "empty workflow id",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
 				Workflows:     []string{"  "},
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 			},
 			wantErr: `pack "demo" workflows contains empty id`,
 		},
 		{
 			name: "empty harness key",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 				Configs: PackConfigs{HarnessSettings: map[string][]string{
 					"   ": {"settings.local.json"},
 				}},
@@ -173,10 +162,9 @@ func TestValidatePackInventory_RejectsBadManifestEntries(t *testing.T) {
 		{
 			name: "empty config filename",
 			manifest: PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
-				MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 				Configs: PackConfigs{HarnessPlugins: map[string][]string{
 					"opencode": {"   "},
 				}},
@@ -204,7 +192,7 @@ func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
-		key      string // manifest key in mcp.servers
+		key      string // manifest MCP server ID
 		jsonName string // "name" field inside the .json file
 		wantErr  string
 	}{
@@ -216,9 +204,9 @@ func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 		},
 		{
 			name:     "empty name field",
-			key:      "atlassian",
+			key:      "srv-a",
 			jsonName: "",
-			wantErr:  `missing "name" field in atlassian.json`,
+			wantErr:  `missing "name" field in srv-a.json`,
 		},
 		{
 			name:     "matching name passes",
@@ -249,12 +237,10 @@ func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 			}
 
 			manifest := PackManifest{
-				SchemaVersion: 1,
+				SchemaVersion: 2,
 				Name:          "demo",
 				Root:          ".",
-				MCP: MCPPack{Servers: map[string]MCPDefaults{
-					tc.key: {},
-				}},
+				MCP:           []string{tc.key},
 			}
 			err := validatePackInventory("demo", packRoot, manifest)
 			if tc.wantErr == "" {

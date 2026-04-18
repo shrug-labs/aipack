@@ -1,9 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +12,12 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/util"
 )
+
+// PackSchemaVersion is the manifest schema version aipack emits for new
+// packs. Schema 2 shipped with v0.23: `mcp` is a flat array of server IDs,
+// and tool policy lives entirely in profiles. Schema 1 is still accepted for
+// backward compat — see ParsePackManifest for routing details.
+const PackSchemaVersion = 2
 
 type PackManifest struct {
 	SchemaVersion int      `json:"schema_version"`
@@ -23,7 +29,10 @@ type PackManifest struct {
 	Workflows     []string `json:"workflows,omitempty"`
 	Skills        []string `json:"skills,omitempty"`
 	Prompts       []string `json:"prompts,omitempty"`
-	MCP           MCPPack  `json:"mcp,omitzero"`
+	// MCP holds server IDs — the runtime never sees v1's nested shape.
+	// parseV1Manifest extracts server keys from the legacy object into this
+	// slice so downstream code has a single representation to work with.
+	MCP []string `json:"mcp,omitempty"`
 
 	// Profiles lists profile IDs discovered from the profiles/ directory.
 	// Each ID corresponds to profiles/<id>.yaml. When a pack is installed
@@ -66,17 +75,9 @@ func (c PackConfigs) HasAnyConfigs() bool {
 	return len(c.HarnessSettings) > 0 || len(c.HarnessPlugins) > 0
 }
 
-type MCPPack struct {
-	Servers map[string]MCPDefaults `json:"servers"`
-}
-
-type MCPDefaults struct {
-	DefaultAllowedTools []string `json:"default_allowed_tools"`
-}
-
 // ContentIDsPtr returns a pointer to the content ID slice for the given
-// authored category, or nil for MCP and unknown categories.
-// Use this when you need to mutate the manifest's content list in place.
+// category, or nil for unknown categories. Use this when you need to
+// mutate the manifest's content list in place.
 func (m *PackManifest) ContentIDsPtr(cat domain.PackCategory) *[]string {
 	switch cat {
 	case domain.CategoryRules:
@@ -87,19 +88,16 @@ func (m *PackManifest) ContentIDsPtr(cat domain.PackCategory) *[]string {
 		return &m.Workflows
 	case domain.CategorySkills:
 		return &m.Skills
+	case domain.CategoryMCP:
+		return &m.MCP
 	}
 	return nil
 }
 
 // ContentIDs returns the resource IDs for the given category.
-// For MCP, returns sorted server names.
 func (m PackManifest) ContentIDs(cat domain.PackCategory) []string {
 	if p := m.ContentIDsPtr(cat); p != nil {
 		return *p
-	}
-	if cat == domain.CategoryMCP {
-		names := slices.Sorted(maps.Keys(m.MCP.Servers))
-		return names
 	}
 	return nil
 }
@@ -128,14 +126,33 @@ func LoadPackManifest(path string) (PackManifest, error) {
 	return ParsePackManifest(b)
 }
 
-// ParsePackManifest unmarshals and validates a pack manifest from raw JSON bytes.
+// ParsePackManifest unmarshals and validates a pack manifest from raw JSON
+// bytes. schema_version routes the parse: `1` expects the legacy nested
+// `mcp` object form; `2` expects the flat `mcp` array. Shape is strictly
+// tied to version — a v1 manifest with a flat `mcp` array (or vice versa)
+// is rejected at parse time rather than silently coerced.
 func ParsePackManifest(data []byte) (PackManifest, error) {
-	var m PackManifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return PackManifest{}, err
+	var probe struct {
+		SchemaVersion int `json:"schema_version"`
 	}
-	if m.SchemaVersion <= 0 {
+	_ = json.Unmarshal(data, &probe)
+
+	var (
+		m   PackManifest
+		err error
+	)
+	switch probe.SchemaVersion {
+	case 0:
 		return PackManifest{}, fmt.Errorf("pack manifest schema_version must be set")
+	case 1:
+		m, err = parseV1Manifest(data)
+	case 2:
+		m, err = parseV2Manifest(data)
+	default:
+		return PackManifest{}, fmt.Errorf("unsupported pack manifest schema_version %d (aipack supports 1 and 2)", probe.SchemaVersion)
+	}
+	if err != nil {
+		return PackManifest{}, err
 	}
 	if m.Name == "" {
 		return PackManifest{}, fmt.Errorf("pack manifest name must be set")
@@ -149,6 +166,95 @@ func ParsePackManifest(data []byte) (PackManifest, error) {
 	m.Profiles = normalizeIDs(m.Profiles, ".yaml")
 	m.Registries = normalizeIDs(m.Registries, ".yaml")
 	return m, nil
+}
+
+// parseV1Manifest parses a schema_version: 1 manifest where `mcp` is the
+// legacy nested object (`{"servers": {...}, "default_allowed_tools": [...]}`).
+// Server IDs are extracted into m.MCP so the rest of the codebase can stay
+// single-shape. Pack-level tool policy fields (default_allowed_tools,
+// default_always_allowed_tools) and per-server entries under `servers` are
+// read but not enforced by the v0.23+ runtime — authors who want tool policy
+// should upgrade to schema_version: 2 and express it in profiles. A v1
+// manifest whose `mcp` is a flat array (or any non-object shape) is rejected.
+func parseV1Manifest(data []byte) (PackManifest, error) {
+	if err := rejectMCPShapeMismatch(data, 1); err != nil {
+		return PackManifest{}, err
+	}
+	type v1MCP struct {
+		Servers map[string]json.RawMessage `json:"servers"`
+	}
+	// Embed PackManifest so every other field still populates; the outer
+	// MCP (v1MCP) shadows PackManifest.MCP during unmarshal.
+	type v1Wrapper struct {
+		PackManifest
+		MCP v1MCP `json:"mcp"`
+	}
+	var w v1Wrapper
+	if err := json.Unmarshal(data, &w); err != nil {
+		return PackManifest{}, err
+	}
+	m := w.PackManifest
+	ids := make([]string, 0, len(w.MCP.Servers))
+	for id := range w.MCP.Servers {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	m.MCP = ids
+	return m, nil
+}
+
+// parseV2Manifest parses a schema_version: 2 manifest where `mcp` is a flat
+// array of server IDs. Tool policy lives entirely in profiles. A v2
+// manifest whose `mcp` is a nested object is rejected.
+func parseV2Manifest(data []byte) (PackManifest, error) {
+	if err := rejectMCPShapeMismatch(data, 2); err != nil {
+		return PackManifest{}, err
+	}
+	var m PackManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return PackManifest{}, err
+	}
+	return m, nil
+}
+
+// rejectMCPShapeMismatch enforces the one-shape-per-schema contract: v1 pairs
+// with an object, v2 with an array. Absent `mcp` is accepted under either
+// version (auto-discovery from mcp/*.json populates it).
+func rejectMCPShapeMismatch(data []byte, schemaVersion int) error {
+	var probe struct {
+		MCP json.RawMessage `json:"mcp"`
+	}
+	_ = json.Unmarshal(data, &probe)
+	raw := bytes.TrimSpace(probe.MCP)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	first := raw[0]
+	switch schemaVersion {
+	case 1:
+		if first != '{' {
+			return fmt.Errorf("schema_version: 1 expects `mcp` as a nested object with a `servers` map; got a %s (bump to schema_version: 2 to use the flat-array form)", shapeName(first))
+		}
+	case 2:
+		if first != '[' {
+			return fmt.Errorf("schema_version: 2 expects `mcp` as a flat array of server IDs; got a %s (use schema_version: 1 for the legacy nested form, or convert `mcp` to `[...]`)", shapeName(first))
+		}
+	}
+	return nil
+}
+
+// shapeName labels the JSON shape that was found so error messages point at
+// the mismatch rather than asking the author to guess.
+func shapeName(first byte) string {
+	switch first {
+	case '{':
+		return "nested object"
+	case '[':
+		return "flat array"
+	case '"':
+		return "string"
+	}
+	return "scalar"
 }
 
 // normalizeIDs converts path-style entries to bare IDs by stripping any
@@ -187,7 +293,7 @@ func (m PackManifest) ContentPaths() []string {
 	for _, id := range m.Prompts {
 		paths = append(paths, filepath.ToSlash(filepath.Join("prompts", id+".md")))
 	}
-	for name := range m.MCP.Servers {
+	for _, name := range m.MCP {
 		paths = append(paths, filepath.ToSlash(filepath.Join("mcp", name+".json")))
 	}
 	for _, id := range m.Profiles {

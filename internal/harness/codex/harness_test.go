@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -358,6 +359,148 @@ func TestRenderBytes_MergesBase(t *testing.T) {
 	}
 }
 
+func TestRenderBytes_AlwaysAllowedToolsRendersApprovalMode(t *testing.T) {
+	t.Parallel()
+	// AlwaysAllowedTools should emit a [mcp_servers.<name>.tools.<tool>]
+	// approval_mode = "approve" stanza for each entry, and also union into
+	// enabled_tools so the tool is callable at all.
+	servers := []domain.MCPServer{
+		{
+			Name:               "bitbucket",
+			Command:            []string{"node", "bitbucket.js"},
+			Env:                map[string]string{},
+			AllowedTools:       []string{"list_repos", "get_pr_diff"},
+			AlwaysAllowedTools: []string{"get_pr_diff"}, // sensitive read auto-approved
+		},
+	}
+
+	out, _, err := RenderBytes(nil, servers, nil)
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+
+	var root map[string]any
+	if err := toml.Unmarshal(out, &root); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	bb := root["mcp_servers"].(map[string]any)["bitbucket"].(map[string]any)
+
+	// enabled_tools contains the union (sorted, deduped).
+	enabledAny, ok := bb["enabled_tools"].([]any)
+	if !ok {
+		t.Fatalf("enabled_tools missing or wrong type: %T %v", bb["enabled_tools"], bb["enabled_tools"])
+	}
+	got := make([]string, len(enabledAny))
+	for i, v := range enabledAny {
+		got[i] = v.(string)
+	}
+	wantEnabled := []string{"get_pr_diff", "list_repos"}
+	if len(got) != 2 || got[0] != wantEnabled[0] || got[1] != wantEnabled[1] {
+		t.Errorf("enabled_tools = %v, want %v", got, wantEnabled)
+	}
+
+	// tools.get_pr_diff.approval_mode = "approve".
+	tools, ok := bb["tools"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools table missing: %v", bb)
+	}
+	getPR, ok := tools["get_pr_diff"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools.get_pr_diff missing: %v", tools)
+	}
+	if getPR["approval_mode"] != "approve" {
+		t.Errorf("approval_mode = %v, want \"approve\"", getPR["approval_mode"])
+	}
+
+	// list_repos is NOT in tools (it's only in allowed_tools, not always_allowed).
+	if _, exists := tools["list_repos"]; exists {
+		t.Errorf("tools should not contain list_repos (not in AlwaysAllowedTools)")
+	}
+}
+
+func TestRenderBytes_AlwaysAllowedOnly(t *testing.T) {
+	t.Parallel()
+	// AlwaysAllowedTools implies visibility — a tool in always_allowed but
+	// NOT in allowed_tools must still appear in enabled_tools, otherwise
+	// Codex would hide it entirely.
+	servers := []domain.MCPServer{
+		{
+			Name:               "docs",
+			Command:            []string{"docs-server"},
+			Env:                map[string]string{},
+			AlwaysAllowedTools: []string{"search"},
+		},
+	}
+
+	out, _, err := RenderBytes(nil, servers, nil)
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+
+	var root map[string]any
+	if err := toml.Unmarshal(out, &root); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	docs := root["mcp_servers"].(map[string]any)["docs"].(map[string]any)
+	enabledAny := docs["enabled_tools"].([]any)
+	if len(enabledAny) != 1 || enabledAny[0] != "search" {
+		t.Errorf("enabled_tools = %v, want [search] (AlwaysAllowed implies visibility)", enabledAny)
+	}
+	tools := docs["tools"].(map[string]any)
+	if tools["search"].(map[string]any)["approval_mode"] != "approve" {
+		t.Errorf("tools.search.approval_mode missing")
+	}
+}
+
+func TestRenderBytes_ToolNamesWithSpecialCharsRoundTrip(t *testing.T) {
+	t.Parallel()
+	// OCI-style tool names commonly contain dots/slashes/hyphens which are
+	// not valid TOML bare keys. go-toml/v2 auto-quotes them on marshal and
+	// unquotes on unmarshal; this test pins the behavior so a future toml
+	// library swap can't silently mangle names.
+	specialNames := []string{
+		"with.dot",
+		"with-hyphen",
+		"with:colon",
+		"with/slash",
+		"namespace.action.v2",
+	}
+	servers := []domain.MCPServer{
+		{
+			Name:               "oci",
+			Command:            []string{"oci-mcp"},
+			Env:                map[string]string{},
+			AllowedTools:       specialNames,
+			AlwaysAllowedTools: specialNames,
+		},
+	}
+
+	out, _, err := RenderBytes(nil, servers, nil)
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+
+	// 1) The raw TOML must round-trip through the Codex capture parser and
+	//    surface identical tool names on both allowed + always-allowed sides.
+	captured := map[string]domain.MCPServer{}
+	allowed := map[string][]string{}
+	alwaysAllowed := map[string][]string{}
+	if warnings := parseCodexSettings(captured, allowed, alwaysAllowed, out); len(warnings) > 0 {
+		t.Fatalf("parseCodexSettings warnings: %+v", warnings)
+	}
+	wantSorted := append([]string(nil), specialNames...)
+	slices.Sort(wantSorted)
+
+	if !slices.Equal(allowed["oci"], wantSorted) {
+		t.Errorf("round-trip allowed_tools = %v, want %v", allowed["oci"], wantSorted)
+	}
+	if !slices.Equal(alwaysAllowed["oci"], wantSorted) {
+		t.Errorf("round-trip always_allowed_tools = %v, want %v", alwaysAllowed["oci"], wantSorted)
+	}
+}
+
 func TestRenderBytes_EnvIncluded(t *testing.T) {
 	t.Parallel()
 	servers := []domain.MCPServer{
@@ -653,6 +796,56 @@ startup_timeout_sec = 10
 	tools, ok := res.AllowedTools["atlassian"]
 	if !ok || len(tools) != 2 {
 		t.Fatalf("AllowedTools = %v, want [get_issue search]", tools)
+	}
+}
+
+func TestCapture_Project_AlwaysAllowedTools(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	configDir := filepath.Join(projectDir, ".codex")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Per-tool approval_mode round-trip: the bitbucket server has
+	// enabled_tools [get_pr, list_repos], and get_pr is additionally
+	// marked approval_mode = "approve" via the nested
+	// [mcp_servers.bitbucket.tools.get_pr] table.
+	configContent := `[mcp_servers.bitbucket]
+enabled = true
+command = "node"
+args = ["bitbucket.js"]
+enabled_tools = ["get_pr", "list_repos"]
+startup_timeout_sec = 10
+
+[mcp_servers.bitbucket.tools.get_pr]
+approval_mode = "approve"
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if _, ok := res.MCPServers["bitbucket"]; !ok {
+		t.Fatal("expected bitbucket server in captured MCPServers")
+	}
+	allowed, ok := res.AllowedTools["bitbucket"]
+	if !ok || len(allowed) != 2 || allowed[0] != "get_pr" || allowed[1] != "list_repos" {
+		t.Fatalf("AllowedTools = %v, want [get_pr list_repos]", allowed)
+	}
+	always, ok := res.AlwaysAllowedTools["bitbucket"]
+	if !ok {
+		t.Fatalf("AlwaysAllowedTools[bitbucket] missing; got %v", res.AlwaysAllowedTools)
+	}
+	if len(always) != 1 || always[0] != "get_pr" {
+		t.Fatalf("AlwaysAllowedTools = %v, want [get_pr]", always)
 	}
 }
 

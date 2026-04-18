@@ -117,7 +117,7 @@ func (v *packValidator) validateManifestAndInventory() {
 func (v *packValidator) validateFrontmatter(manifest PackManifest, packRoot string) {
 	// Build known-ID sets for cross-reference checks.
 	knownServers := map[string]struct{}{}
-	for name := range manifest.MCP.Servers {
+	for _, name := range manifest.MCP {
 		knownServers[name] = struct{}{}
 	}
 	knownSkills := map[string]struct{}{}

@@ -136,17 +136,6 @@ func MoveFile(eng *engine.Engine, req MoveFileRequest) error {
 // addToManifest adds an ID to the appropriate manifest list if not present.
 // Returns true if the manifest was modified.
 func addToManifest(m *config.PackManifest, category domain.PackCategory, id string) bool {
-	if category == domain.CategoryMCP {
-		if m.MCP.Servers == nil {
-			m.MCP.Servers = map[string]config.MCPDefaults{}
-		}
-		if _, exists := m.MCP.Servers[id]; !exists {
-			m.MCP.Servers[id] = config.MCPDefaults{}
-			return true
-		}
-		return false
-	}
-
 	list := m.ContentIDsPtr(category)
 	if list == nil {
 		return false
@@ -163,14 +152,6 @@ func addToManifest(m *config.PackManifest, category domain.PackCategory, id stri
 // removeFromManifest removes an ID from the appropriate manifest list.
 // Returns true if the manifest was modified.
 func removeFromManifest(m *config.PackManifest, category domain.PackCategory, id string) bool {
-	if category == domain.CategoryMCP {
-		if _, exists := m.MCP.Servers[id]; exists {
-			delete(m.MCP.Servers, id)
-			return true
-		}
-		return false
-	}
-
 	list := m.ContentIDsPtr(category)
 	if list == nil {
 		return false

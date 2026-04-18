@@ -32,23 +32,23 @@ For the CLI commands that trigger sync, see the [aipack reference](./aipack.md).
 
 ## MCP tool permissions
 
-Each harness controls MCP tool access differently. Some harnesses store permissions separately from the server connection config (Claude Code), while others co-locate them (Codex, OpenCode, Cline).
+Each harness controls MCP tool access differently. Some harnesses store permissions separately from the server connection config (Claude Code), while others co-locate them (Codex, OpenCode, Cline). Profiles carry three parallel fields per server — `allowed_tools` (visible/callable), `always_allowed_tools` (visible AND auto-approved without prompt), and `disabled_tools` (blocked) — and each harness adapter renders them into its native model.
 
-| Harness | Permission location | Allow format | Deny format |
-|---------|-------------------|-------------|-------------|
-| Claude Code | `settings.local.json` `permissions.allow` / `permissions.deny` | `mcp__<server>__<tool>` patterns | `mcp__<server>__<tool>` patterns in `permissions.deny` |
-| OpenCode | `opencode.json` `tools` key | `server_tool: true` per-tool | `server_*: false` wildcard deny |
-| Codex | Per-server in TOML | `enabled_tools = [...]` | `disabled_tools = [...]` |
-| Cline | Per-server in MCP JSON | `alwaysAllow: [...]` | Not supported |
+| Harness | Permission location | Visibility/allow format | Per-tool auto-approve | Deny format |
+|---------|-------------------|-------------------------|-----------------------|-------------|
+| Claude Code | `settings.local.json` `permissions.allow` / `permissions.deny` | `mcp__<server>__<tool>` patterns in `permissions.allow` (allow is already auto-approve) | same as allow — both `allowed_tools` and `always_allowed_tools` render to `permissions.allow` | `mcp__<server>__<tool>` patterns in `permissions.deny` |
+| Cline | Per-server in MCP JSON | `alwaysAllow: [...]` (Cline's only concept) | same as allow — both fields union into `alwaysAllow` | Not supported |
+| Codex | Per-server in TOML | `enabled_tools = [...]` (union of both fields) | `[mcp_servers.<name>.tools.<tool>] approval_mode = "approve"` — nested per-tool stanza emitted for each `always_allowed_tools` entry | `disabled_tools = [...]` |
+| OpenCode | `opencode.json` `tools` key (legacy, still supported) | `server_tool: true` per-tool (union of both fields) | not yet rendered — warning emitted, awaiting upstream syntax confirmation | `server_*: false` wildcard deny |
 
 **Allow semantics differ per harness.** Not all "allow" mechanisms restrict tool visibility:
 
-| Harness | `allow` means | `deny` means |
-|---------|--------------|-------------|
-| Claude Code | Auto-approve (tool still usable without it, just prompts) | Block entirely |
-| Cline | Auto-approve (`alwaysAllow`) | N/A |
-| OpenCode | Enable tool (boolean `true` in `tools` map) | Wildcard disable (`false`) |
-| Codex | Restrict to listed tools (`enabled_tools`) | Block listed tools (`disabled_tools`) |
+| Harness | `allow` means | `always_allow` distinct from `allow`? | `deny` means |
+|---------|--------------|--------------------------------------|-------------|
+| Claude Code | Auto-approve (tools not in allow are visible but prompt per call) | No — `permissions.allow` already means auto-approve | Block entirely |
+| Cline | Auto-approve (`alwaysAllow`) — only per-server concept | No — `alwaysAllow` is Cline's only allow mechanism | N/A |
+| OpenCode | Enable tool (boolean `true` in `tools` map) | Not yet — rendering pending upstream syntax | Wildcard disable (`false`) |
+| Codex | Restrict to listed tools (`enabled_tools`) | **Yes** — nested `[mcp_servers.X.tools.Y] approval_mode = "approve"` is distinct from visibility | Block listed tools (`disabled_tools`) |
 
 **Inventory policy:** when a server has a curated `AllowedTools` list, unspecified tools should be explicitly denied where the harness supports it. This requires the pack manifest to carry complete per-server tool inventories. Without complete inventories, only explicitly listed `disabled_tools` are denied; unlisted tools default to harness-specific behavior (ask/prompt for Claude Code and Cline, unrestricted for others).
 

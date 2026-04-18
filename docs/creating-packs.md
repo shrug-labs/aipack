@@ -34,7 +34,7 @@ This scaffolds the directory structure in the current directory, symlinks it int
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "my-pack",
   "version": "0.1.0",
   "root": "."

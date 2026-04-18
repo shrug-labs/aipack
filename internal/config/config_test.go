@@ -1,12 +1,15 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestResolveProfile_AllowsEmptyInclude(t *testing.T) {
@@ -20,12 +23,11 @@ func TestResolveProfile_AllowsEmptyInclude(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	manifest := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"base"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
 	}
 	b, err := json.Marshal(manifest)
 	if err != nil {
@@ -56,6 +58,35 @@ func TestResolveProfile_AllowsEmptyInclude(t *testing.T) {
 	// An empty allowlist is almost always a mistake from clearing the list.
 	if len(r.Packs[0].Rules) != 1 {
 		t.Fatalf("expected 1 rule (empty include = include all), got %d", len(r.Packs[0].Rules))
+	}
+}
+
+func TestProfileConfig_YAMLMarshalOmitsEmptyMCPToolLists(t *testing.T) {
+	t.Parallel()
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name: "demo",
+			MCP: map[string]MCPServerConfig{
+				"srv": {
+					Enabled:            BoolPtr(true),
+					AllowedTools:       []string{},
+					AlwaysAllowedTools: []string{},
+				},
+			},
+		}},
+	}
+
+	b, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(b, []byte("allowed_tools")) {
+		t.Fatalf("marshal should omit empty allowed_tools, got:\n%s", b)
+	}
+	if bytes.Contains(b, []byte("always_allowed_tools")) {
+		t.Fatalf("marshal should omit empty always_allowed_tools, got:\n%s", b)
 	}
 }
 
@@ -116,9 +147,8 @@ func installTestPack(t *testing.T, configDir string, spec testPackSpec) {
 	}
 
 	// Build MCP manifest entries and create server JSON files.
-	mcpPack := MCPPack{Servers: map[string]MCPDefaults{}}
+	mcpNames := append([]string{}, spec.mcpServers...)
 	for _, name := range spec.mcpServers {
-		mcpPack.Servers[name] = MCPDefaults{}
 		dir := filepath.Join(packDir, "mcp")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir mcp: %v", err)
@@ -141,11 +171,11 @@ func installTestPack(t *testing.T, configDir string, spec testPackSpec) {
 	// Write pack.json. Content fields are left nil (zero value) so DiscoverContent
 	// populates them from the filesystem.
 	manifest := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          spec.name,
 		Version:       "1.0.0",
 		Root:          ".",
-		MCP:           mcpPack,
+		MCP:           mcpNames,
 	}
 	if err := SavePackManifest(filepath.Join(packDir, "pack.json"), manifest); err != nil {
 		t.Fatalf("save manifest for %s: %v", spec.name, err)
@@ -381,7 +411,7 @@ func TestResolveProfile(t *testing.T) {
 			setup: func(t *testing.T, configDir string) {
 				installTestPack(t, configDir, testPackSpec{
 					name:       "mcp-default",
-					mcpServers: strSlice("my-server"),
+					mcpServers: strSlice("srv-a"),
 				})
 			},
 			cfg: ProfileConfig{
@@ -389,7 +419,7 @@ func TestResolveProfile(t *testing.T) {
 				Packs:         []PackEntry{{Name: "mcp-default"}},
 			},
 			check: func(t *testing.T, packs []ResolvedPack, _ []string) {
-				if _, ok := packs[0].MCP["my-server"]; !ok {
+				if _, ok := packs[0].MCP["srv-a"]; !ok {
 					t.Errorf("MCP server 'my-server' should be present by default, got %v", packs[0].MCP)
 				}
 			},

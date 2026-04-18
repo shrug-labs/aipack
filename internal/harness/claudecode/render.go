@@ -77,9 +77,13 @@ func RenderMCPBytesFromTyped(servers []domain.MCPServer) ([]byte, []domain.Warni
 }
 
 // RenderPermissions generates Claude Code permission.allow patterns.
-// Format: mcp__<servername>__<toolname>.
+// Format: mcp__<servername>__<toolname>. Claude Code has no visibility gate
+// for MCP tools — permissions.allow is already auto-approve semantics — so
+// AllowedTools and AlwaysAllowedTools are unioned into the same output.
 func RenderPermissions(servers []domain.MCPServer) []string {
-	return renderPermPatterns(servers, func(s domain.MCPServer) []string { return s.AllowedTools })
+	return renderPermPatterns(servers, func(s domain.MCPServer) []string {
+		return engine.UnionToolLists(s.AllowedTools, s.AlwaysAllowedTools)
+	})
 }
 
 // RenderDenyPermissions generates Claude Code permissions.deny patterns.

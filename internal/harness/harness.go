@@ -92,9 +92,10 @@ type CaptureResult struct {
 	Copies []domain.CopyAction
 	Writes []domain.WriteAction
 
-	MCPServers   map[string]domain.MCPServer
-	AllowedTools map[string][]string
-	MCP          []domain.CapturedMCP
+	MCPServers         map[string]domain.MCPServer
+	AllowedTools       map[string][]string
+	AlwaysAllowedTools map[string][]string
+	MCP                []domain.CapturedMCP
 
 	// Typed content populated during capture.
 	Rules     []domain.Rule
@@ -109,8 +110,9 @@ type CaptureResult struct {
 // NewCaptureResult returns a CaptureResult with initialized maps.
 func NewCaptureResult() CaptureResult {
 	return CaptureResult{
-		MCPServers:   map[string]domain.MCPServer{},
-		AllowedTools: map[string][]string{},
+		MCPServers:         map[string]domain.MCPServer{},
+		AllowedTools:       map[string][]string{},
+		AlwaysAllowedTools: map[string][]string{},
 	}
 }
 
@@ -125,9 +127,10 @@ func (r *CaptureResult) MaterializeCapturedMCP(harnessPath string) {
 	for _, name := range names {
 		server := r.MCPServers[name]
 		r.MCP = append(r.MCP, domain.CapturedMCP{
-			Server:       server,
-			HarnessPath:  filepath.Clean(harnessPath),
-			AllowedTools: append([]string{}, r.AllowedTools[name]...),
+			Server:             server,
+			HarnessPath:        filepath.Clean(harnessPath),
+			AllowedTools:       append([]string{}, r.AllowedTools[name]...),
+			AlwaysAllowedTools: append([]string{}, r.AlwaysAllowedTools[name]...),
 		})
 	}
 }
@@ -232,8 +235,9 @@ func ValidationRoots(r *Registry, scope domain.Scope, baseDir, home string, ids 
 // Returns an error if MCP servers conflict between results.
 func MergeCaptureResults(results ...CaptureResult) (CaptureResult, error) {
 	merged := CaptureResult{
-		MCPServers:   map[string]domain.MCPServer{},
-		AllowedTools: map[string][]string{},
+		MCPServers:         map[string]domain.MCPServer{},
+		AllowedTools:       map[string][]string{},
+		AlwaysAllowedTools: map[string][]string{},
 	}
 	for _, res := range results {
 		merged.Copies = append(merged.Copies, res.Copies...)
@@ -247,6 +251,7 @@ func MergeCaptureResults(results ...CaptureResult) (CaptureResult, error) {
 			return CaptureResult{}, err
 		}
 		mergeAllowedTools(merged.AllowedTools, res.AllowedTools)
+		mergeAllowedTools(merged.AlwaysAllowedTools, res.AlwaysAllowedTools)
 		merged.Warnings = append(merged.Warnings, res.Warnings...)
 	}
 	return merged, nil
@@ -295,6 +300,9 @@ func serversEqual(a, b domain.MCPServer) bool {
 		return false
 	}
 	if !stringSliceEqual(a.AllowedTools, b.AllowedTools) {
+		return false
+	}
+	if !stringSliceEqual(a.AlwaysAllowedTools, b.AlwaysAllowedTools) {
 		return false
 	}
 	if !stringSliceEqual(a.DisabledTools, b.DisabledTools) {

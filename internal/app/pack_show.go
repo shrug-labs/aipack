@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -182,11 +183,7 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Workflows = m.Workflows
 		entry.Skills = m.Skills
 		entry.Prompts = m.Prompts
-		servers := make([]string, 0, len(m.MCP.Servers))
-		for k := range m.MCP.Servers {
-			servers = append(servers, k)
-		}
-		entry.MCPServers = servers
+		entry.MCPServers = slices.Clone(m.MCP)
 		entry.Extras = m.Extras
 	}
 

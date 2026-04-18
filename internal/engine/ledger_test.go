@@ -128,7 +128,7 @@ func TestSaveLedger_V1Compat(t *testing.T) {
 	path := filepath.Join(dir, "ledger.json")
 
 	v1JSON := `{
-  "schema_version": 1,
+  "schema_version": 2,
   "updated_at_epoch_s": 1709500000,
   "tool": "aipack",
   "managed": {

@@ -29,8 +29,8 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 	if m.Name != "my-pack" {
 		t.Fatalf("name = %q, want %q", m.Name, "my-pack")
 	}
-	if m.SchemaVersion != 1 {
-		t.Fatalf("schema_version = %d, want 1", m.SchemaVersion)
+	if m.SchemaVersion != config.PackSchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", m.SchemaVersion, config.PackSchemaVersion)
 	}
 	if m.Root != "." {
 		t.Fatalf("root = %q, want %q", m.Root, ".")

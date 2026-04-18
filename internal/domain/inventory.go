@@ -59,13 +59,9 @@ func (c SkillChange) Empty() bool {
 //     server's own inventory JSON).
 //   - RequiredRefs: the {params.*} and {env:*} references the raw server
 //     strings make — both must resolve at render time.
-//   - DefaultAllowedTools: the pack author's recommended default allowed
-//     tools list from MCPDefaults, distinct from the profile-resolved
-//     AllowedTools on domain.MCPServer.
 type MCPServerSnapshot struct {
-	AvailableTools      []string      `yaml:"available_tools,omitempty"`
-	RequiredRefs        []RequiredRef `yaml:"required_refs,omitempty"`
-	DefaultAllowedTools []string      `yaml:"default_allowed_tools,omitempty"`
+	AvailableTools []string      `yaml:"available_tools,omitempty"`
+	RequiredRefs   []RequiredRef `yaml:"required_refs,omitempty"`
 }
 
 // MCPServerChange is the per-server diff for a server that exists in both

@@ -43,7 +43,7 @@ func TestBuildContentTree_BasicSelection(t *testing.T) {
 	t.Parallel()
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Root:          ".",
 		Rules:         []string{"anti-slop", "show-work"},
@@ -85,7 +85,7 @@ func TestBuildContentTree_ExcludeFilter(t *testing.T) {
 	t.Parallel()
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Root:          ".",
 		Rules:         []string{"anti-slop", "show-work", "verbose"},
@@ -114,15 +114,10 @@ func TestBuildContentTree_MCPServers(t *testing.T) {
 
 	f := false
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Root:          ".",
-		MCP: config.MCPPack{
-			Servers: map[string]config.MCPDefaults{
-				"atlassian":   {},
-				"deploy-tool": {},
-			},
-		},
+		MCP:           []string{"srv-a", "deploy-tool"},
 	}
 	entries := []config.PackEntry{{
 		Name: "test-pack",
@@ -147,7 +142,7 @@ func TestBuildContentTree_MCPServers(t *testing.T) {
 		if item.ID == "deploy-tool" && item.Enabled {
 			t.Error("deploy-tool should be disabled")
 		}
-		if item.ID == "atlassian" && !item.Enabled {
+		if item.ID == "srv-a" && !item.Enabled {
 			t.Error("atlassian should be enabled by default")
 		}
 	}
@@ -156,8 +151,8 @@ func TestBuildContentTree_MCPServers(t *testing.T) {
 func TestBuildContentTree_MultiPack(t *testing.T) {
 	t.Parallel()
 
-	m1 := config.PackManifest{SchemaVersion: 1, Name: "core", Root: ".", Rules: []string{"rule-a"}}
-	m2 := config.PackManifest{SchemaVersion: 1, Name: "extras", Root: ".", Rules: []string{"rule-b", "rule-c"}}
+	m1 := config.PackManifest{SchemaVersion: 2, Name: "core", Root: ".", Rules: []string{"rule-a"}}
+	m2 := config.PackManifest{SchemaVersion: 2, Name: "extras", Root: ".", Rules: []string{"rule-b", "rule-c"}}
 
 	packs := []ProfilePackInfo{
 		{Index: 0, Name: "core", Root: "/tmp/core", Manifest: m1},
@@ -184,7 +179,7 @@ func TestApplyContentTree_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Root:          ".",
 		Rules:         []string{"anti-slop", "show-work"},
@@ -227,15 +222,10 @@ func TestApplyContentTree_MCPToggle(t *testing.T) {
 	t.Parallel()
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Root:          ".",
-		MCP: config.MCPPack{
-			Servers: map[string]config.MCPDefaults{
-				"atlassian":   {},
-				"deploy-tool": {},
-			},
-		},
+		MCP:           []string{"srv-a", "deploy-tool"},
 	}
 	entries := []config.PackEntry{{Name: "test-pack"}}
 	packs := []ProfilePackInfo{{Index: 0, Name: "test-pack", Root: "/tmp", Manifest: manifest}}
@@ -262,10 +252,72 @@ func TestApplyContentTree_MCPToggle(t *testing.T) {
 	}
 }
 
+func TestApplyContentTree_MCPPreservesExplicitEmptyToolLists(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "test-pack",
+		Root:          ".",
+		MCP:           []string{"srv-a"},
+	}
+	entries := []config.PackEntry{{
+		Name: "test-pack",
+		MCP: map[string]config.MCPServerConfig{
+			"srv-a": {
+				Enabled:            config.BoolPtr(true),
+				AllowedTools:       []string{},
+				AlwaysAllowedTools: []string{},
+			},
+		},
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "test-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+	ApplyContentTree(tree, entries)
+
+	srv := entries[0].MCP["srv-a"]
+	if srv.AllowedTools == nil {
+		t.Fatal("explicit empty allowed_tools override should survive ApplyContentTree")
+	}
+	if srv.AlwaysAllowedTools == nil {
+		t.Fatal("explicit empty always_allowed_tools override should survive ApplyContentTree")
+	}
+}
+
+func TestApplyContentTree_MCPPreservesDisabledTools(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "test-pack",
+		Root:          ".",
+		MCP:           []string{"srv-a"},
+	}
+	entries := []config.PackEntry{{
+		Name: "test-pack",
+		MCP: map[string]config.MCPServerConfig{
+			"srv-a": {
+				Enabled:       config.BoolPtr(true),
+				DisabledTools: []string{"write"},
+			},
+		},
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "test-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+	ApplyContentTree(tree, entries)
+
+	srv := entries[0].MCP["srv-a"]
+	if len(srv.DisabledTools) != 1 || srv.DisabledTools[0] != "write" {
+		t.Fatalf("disabled_tools = %v, want [write]", srv.DisabledTools)
+	}
+}
+
 func TestBuildContentTree_EmptyManifest(t *testing.T) {
 	t.Parallel()
 
-	manifest := config.PackManifest{SchemaVersion: 1, Name: "empty", Root: "."}
+	manifest := config.PackManifest{SchemaVersion: 2, Name: "empty", Root: "."}
 	packs := []ProfilePackInfo{{Index: 0, Name: "empty", Root: "/tmp", Manifest: manifest}}
 	entries := []config.PackEntry{{Name: "empty"}}
 
@@ -280,16 +332,14 @@ func TestBuildContentTree_CategoryOrdering(t *testing.T) {
 	t.Parallel()
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "all",
 		Root:          ".",
 		Rules:         []string{"r1"},
 		Agents:        []string{"a1"},
 		Workflows:     []string{"w1"},
 		Skills:        []string{"s1"},
-		MCP: config.MCPPack{
-			Servers: map[string]config.MCPDefaults{"m1": {}},
-		},
+		MCP:           []string{"m1"},
 	}
 	packs := []ProfilePackInfo{{Index: 0, Name: "all", Root: "/tmp", Manifest: manifest}}
 	entries := []config.PackEntry{{Name: "all"}}
@@ -300,10 +350,10 @@ func TestBuildContentTree_CategoryOrdering(t *testing.T) {
 		t.Fatalf("items = %d, want 5", len(tree.Items))
 	}
 
-	// Items should be ordered: rules, agents, workflows, skills, mcp.
+	// Items should be ordered alphabetically: agents, mcp, rules, skills, workflows.
 	expected := []domain.PackCategory{
-		domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows,
-		domain.CategorySkills, domain.CategoryMCP,
+		domain.CategoryAgents, domain.CategoryMCP, domain.CategoryRules,
+		domain.CategorySkills, domain.CategoryWorkflows,
 	}
 	for i, item := range tree.Items {
 		if item.Category != expected[i] {

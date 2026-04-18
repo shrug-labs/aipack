@@ -12,6 +12,7 @@ type Plan struct {
 	Settings   []SettingsAction
 	MCP        []SettingsAction // MCP-related config files; NOT gated by --skip-settings
 	MCPServers []MCPAction
+	Warnings   []Warning
 	Desired    map[string]struct{}
 	Ledger     string // path to ledger file
 }
@@ -32,6 +33,7 @@ type Fragment struct {
 	Settings   []SettingsAction
 	MCP        []SettingsAction
 	MCPServers []MCPAction
+	Warnings   []Warning
 	Desired    []string
 }
 
@@ -42,6 +44,7 @@ func (f Fragment) Apply(plan *Plan) {
 	plan.Settings = append(plan.Settings, f.Settings...)
 	plan.MCP = append(plan.MCP, f.MCP...)
 	plan.MCPServers = append(plan.MCPServers, f.MCPServers...)
+	plan.Warnings = append(plan.Warnings, f.Warnings...)
 	for _, d := range f.Desired {
 		plan.AddDesired(d)
 	}

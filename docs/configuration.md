@@ -26,6 +26,8 @@ What aipack puts on your machine, how to configure it, and how to manage it. For
 │   │   └── presync/           # pre-sync settings cache for this project
 │   └── presync/               # pre-sync settings cache (global scope)
 ├── index.db                   # SQLite search index (rebuildable)
+├── cache/                     # ephemeral user-local caches
+│   └── mcp-probes.json        # live MCP tool probe results (24-hour TTL)
 └── update-check.json          # cached update check result (6-hour TTL)
 ```
 
@@ -196,6 +198,12 @@ Each time `aipack sync` writes a settings file, it first snapshots the existing 
 Cache files are keyed by `<harness>--<filename>` (e.g., `claudecode--settings.local.json`). An `index.json` manifest maps cache keys to their original file paths. Only settings and plugin files are cached — content files (rules, agents, workflows, skills) are not.
 
 The cache is overwritten on every sync. `--dry-run` does not write cache files. `aipack restore --dry-run` previews what would be recovered.
+
+## MCP probe cache
+
+`~/.config/aipack/cache/mcp-probes.json` holds live tool-list results for MCP servers, populated by both the TUI picker and `aipack mcp inspect-tools` runs. Entries are keyed by the pack's absolute root path plus server name, stamped with `probed_at`, and expire after 24 hours. Expired entries are dropped on load and on save; no explicit purge is needed.
+
+The file is pure optimization — missing, corrupt, or deleted, the next interaction simply re-probes. Safe to remove at any time. The TUI picker's header shows `probed Nh ago · r to refresh` when a cache hit seeds the initial view; pressing `r` inside the picker forces a fresh probe that overwrites the cached entry on success (and keeps the previous entry on failure).
 
 ## Search index
 

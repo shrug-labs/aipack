@@ -371,6 +371,44 @@ func TestRenderBytes_PopulatesAlwaysAllow(t *testing.T) {
 	}
 }
 
+func TestRenderBytes_UnionsAllowedAndAlwaysAllowed(t *testing.T) {
+	t.Parallel()
+	// Cline has no visibility/prompt distinction — both fields collapse
+	// into the single alwaysAllow list.
+	servers := []domain.MCPServer{
+		{
+			Name:               "foo",
+			Command:            []string{"echo", "hi"},
+			Env:                map[string]string{},
+			AllowedTools:       []string{"read", "list"},
+			AlwaysAllowedTools: []string{"search", "read"}, // "read" overlaps
+		},
+	}
+
+	out, _, err := RenderBytes(nil, servers)
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	mcp := got["mcpServers"].(map[string]any)
+	foo := mcp["foo"].(map[string]any)
+	allowRaw := foo["alwaysAllow"].([]any)
+	if len(allowRaw) != 3 {
+		t.Fatalf("alwaysAllow length: got %d want 3 (dedup union), list=%v", len(allowRaw), allowRaw)
+	}
+	// Sorted output; "read" deduped.
+	want := []string{"foo_list", "foo_read", "foo_search"}
+	for i, w := range want {
+		if allowRaw[i] != w {
+			t.Errorf("alwaysAllow[%d]: got %q want %q", i, allowRaw[i], w)
+		}
+	}
+}
+
 func TestRenderBytes_PopulatesTimeout(t *testing.T) {
 	t.Parallel()
 	servers := []domain.MCPServer{

@@ -139,6 +139,28 @@ func expandMCPServer(params map[string]string, server domain.MCPServer, warningF
 	return result, nil
 }
 
+// ExpandSingleMCPServer expands {params.*}, {env:*}, and {pack:root} refs in
+// a single server definition. Returns the server with expanded Command, URL,
+// Env, and Headers. Returns an error if any required ref cannot be resolved.
+func ExpandSingleMCPServer(params map[string]string, server domain.MCPServer) (domain.MCPServer, error) {
+	var detail string
+	exp, err := expandMCPServer(params, server, func(msg string) { detail = msg })
+	if err != nil || exp.Skip {
+		if detail != "" {
+			return server, fmt.Errorf("%s", detail)
+		}
+		if err != nil {
+			return server, err
+		}
+		return server, fmt.Errorf("unresolved references in server %q", server.Name)
+	}
+	server.Command = exp.Command
+	server.URL = exp.URL
+	server.Env = exp.Env
+	server.Headers = exp.Headers
+	return server, nil
+}
+
 // ExpandMCPServers expands env refs in all servers. It is intended for use
 // at render time, after param refs have already been resolved during profile
 // resolution. Passing nil for params means any residual {params.*} refs will

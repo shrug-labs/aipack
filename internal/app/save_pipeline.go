@@ -356,13 +356,18 @@ func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.R
 					SourcePack: req.PackName,
 					Digest:     domain.SingleFileDigest(content),
 				}
-				if manifest.MCP.Servers == nil {
-					manifest.MCP.Servers = map[string]config.MCPDefaults{}
+				if !slices.Contains(manifest.MCP, c.RelPath) {
+					manifest.MCP = append(manifest.MCP, c.RelPath)
+					slices.Sort(manifest.MCP)
+					manifestChanged = true
 				}
-				manifest.MCP.Servers[c.RelPath] = config.MCPDefaults{
-					DefaultAllowedTools: append([]string{}, c.AllowedTools...),
-				}
-				manifestChanged = true
+				// Captured tool lists (c.AllowedTools / c.AlwaysAllowedTools) are
+				// intentionally discarded. The profile is the sole source of truth
+				// for tool permissions; the harness allow list is strictly a
+				// render target. Capturing it back would be a lossy round-trip
+				// (lossy harnesses collapse allowed/always into one native field),
+				// and users configure permissions through the profile's TUI picker,
+				// not by editing harness UIs.
 			}
 			for _, m := range scanBytesForSecrets(content) {
 				result.SecretFindings = append(result.SecretFindings, c.RelPath+": "+m)

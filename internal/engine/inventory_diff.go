@@ -16,15 +16,17 @@ import (
 // Callers fold the profile in at print time via FormatDriftReport.
 func DiffInventory(packName string, old, new domain.PackInventory) domain.InventoryDiff {
 	d := domain.InventoryDiff{PackName: packName}
-	d.AddedRules, d.RemovedRules = diffStrings(old.Rules, new.Rules)
-	d.AddedAgents, d.RemovedAgents = diffStrings(old.Agents, new.Agents)
-	d.AddedWorkflows, d.RemovedWorkflows = diffStrings(old.Workflows, new.Workflows)
+	d.AddedRules, d.RemovedRules = DiffStrings(old.Rules, new.Rules)
+	d.AddedAgents, d.RemovedAgents = DiffStrings(old.Agents, new.Agents)
+	d.AddedWorkflows, d.RemovedWorkflows = DiffStrings(old.Workflows, new.Workflows)
 	d.AddedSkills, d.RemovedSkills, d.ChangedSkills = diffSkills(old.Skills, new.Skills)
 	d.AddedServers, d.RemovedServers, d.ChangedServers = diffServers(old.MCPServers, new.MCPServers)
 	return d
 }
 
-func diffStrings(oldList, newList []string) (added, removed []string) {
+// DiffStrings returns the elements added and removed between two string
+// slices, sorted. Both inputs are treated as sets (duplicates collapse).
+func DiffStrings(oldList, newList []string) (added, removed []string) {
 	oldSet := make(map[string]struct{}, len(oldList))
 	for _, v := range oldList {
 		oldSet[v] = struct{}{}
@@ -58,7 +60,7 @@ func diffSkills(oldMap, newMap map[string]domain.SkillSnapshot) (added map[strin
 			added[name] = snap
 			continue
 		}
-		addedAssets, removedAssets := diffStrings(prev.Assets, snap.Assets)
+		addedAssets, removedAssets := DiffStrings(prev.Assets, snap.Assets)
 		if prev.Description == snap.Description && len(addedAssets) == 0 && len(removedAssets) == 0 {
 			continue
 		}
@@ -91,7 +93,7 @@ func diffServers(oldMap, newMap map[string]domain.MCPServerSnapshot) (added map[
 			added[name] = snap
 			continue
 		}
-		addedTools, removedTools := diffStrings(prev.AvailableTools, snap.AvailableTools)
+		addedTools, removedTools := DiffStrings(prev.AvailableTools, snap.AvailableTools)
 		addedRefs, removedRefs := diffRefs(prev.RequiredRefs, snap.RequiredRefs)
 		if len(addedTools) == 0 && len(removedTools) == 0 && len(addedRefs) == 0 && len(removedRefs) == 0 {
 			continue

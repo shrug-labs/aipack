@@ -40,7 +40,7 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 		}
 	}
 
-	profile := resolveProfileName(profileFlag, syncCfg)
+	profile := cmdutil.ResolveProfileName(profileFlag, syncCfg)
 
 	path, err := config.ResolveProfilePath(profilePathFlag, configDir, profile, config.HomeDir())
 	if err != nil {
@@ -96,16 +96,4 @@ func loadLockfileInventories(configDir string) (map[string]domain.PackInventory,
 		return nil, nil
 	}
 	return out, nil
-}
-
-// resolveProfileName returns the effective profile name from an explicit flag value
-// and sync-config defaults, falling back to "default".
-func resolveProfileName(explicit string, sc config.SyncConfig) string {
-	if explicit != "" {
-		return explicit
-	}
-	if sc.Defaults.Profile != "" {
-		return sc.Defaults.Profile
-	}
-	return "default"
 }

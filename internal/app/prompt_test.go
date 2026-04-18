@@ -51,7 +51,7 @@ func TestPromptList_ManifestDeclaredStillWorks(t *testing.T) {
 	if err := os.MkdirAll(packDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"schema_version":1,"name":"declared-pack","version":"1.0.0","root":".","prompts":["greet"]}`
+	manifest := `{"schema_version":2,"name":"declared-pack","version":"1.0.0","root":".","prompts":["greet"]}`
 	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -58,8 +58,8 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 				entry.Headers = s.Headers
 			}
 		}
-		if len(s.AllowedTools) > 0 {
-			entry.AlwaysAllow = engine.PrefixToolList(s.Name, s.AllowedTools)
+		if tools := engine.UnionToolLists(s.AllowedTools, s.AlwaysAllowedTools); len(tools) > 0 {
+			entry.AlwaysAllow = engine.PrefixToolList(s.Name, tools)
 		}
 		mcp[s.Name] = entry
 	}

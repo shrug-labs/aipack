@@ -19,7 +19,7 @@ func TestExitCodeContract_PackUpdateMissingCommit(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(packDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"schema_version":1,"name":"demo","version":"1.0.0","root":"."}`
+	manifest := `{"schema_version":2,"name":"demo","version":"1.0.0","root":"."}`
 	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestExitCodeContract_DoctorMissingCriticalEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manifest := `{"schema_version":1,"name":"demo","version":"1.0.0","root":".","mcp":{"servers":{"needsenv":{}}}}`
+	manifest := `{"schema_version":2,"name":"demo","version":"1.0.0","root":".","mcp":["needsenv"]}`
 	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestExitCodeContract_SyncMissingSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manifest := `{"schema_version":1,"name":"demo","version":"1.0.0","root":".","skills":["ghost-skill"]}`
+	manifest := `{"schema_version":2,"name":"demo","version":"1.0.0","root":".","skills":["ghost-skill"]}`
 	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}

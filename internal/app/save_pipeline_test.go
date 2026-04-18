@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -896,10 +897,11 @@ func TestRunSavePipeline_MCPServer(t *testing.T) {
 	}
 
 	server := domain.MCPServer{
-		Name:         "test",
-		Transport:    domain.TransportStdio,
-		Command:      []string{"echo", "hi"},
-		AllowedTools: []string{"list"},
+		Name:               "test",
+		Transport:          domain.TransportStdio,
+		Command:            []string{"echo", "hi"},
+		AllowedTools:       []string{"list"},
+		AlwaysAllowedTools: []string{"query"},
 	}
 	content, err := domain.MCPInventoryBytes(server)
 	if err != nil {
@@ -912,13 +914,14 @@ func TestRunSavePipeline_MCPServer(t *testing.T) {
 	result, err := RunSavePipeline(engine.New(nil, nil), SavePipelineRequest{
 		Candidates: []SaveCandidate{{
 			HarnessFile: HarnessFile{
-				HarnessPath:  settingsPath,
-				RelPath:      "test",
-				Category:     domain.CategoryMCP,
-				Kind:         domain.CopyKindFile,
-				State:        FileUntracked,
-				Content:      content,
-				AllowedTools: []string{"list"},
+				HarnessPath:        settingsPath,
+				RelPath:            "test",
+				Category:           domain.CategoryMCP,
+				Kind:               domain.CopyKindFile,
+				State:              FileUntracked,
+				Content:            content,
+				AllowedTools:       []string{"list"},
+				AlwaysAllowedTools: []string{"query"},
 			},
 			Selected: true,
 		}},
@@ -953,17 +956,16 @@ func TestRunSavePipeline_MCPServer(t *testing.T) {
 	if len(saved.AllowedTools) != 0 {
 		t.Fatalf("saved MCP inventory should not include runtime allowed_tools: %v", saved.AllowedTools)
 	}
+	if len(saved.AlwaysAllowedTools) != 0 {
+		t.Fatalf("saved MCP inventory should not include runtime always_allowed_tools: %v", saved.AlwaysAllowedTools)
+	}
 
 	manifest, err := config.LoadPackManifest(filepath.Join(packRoot, "pack.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defaults, ok := manifest.MCP.Servers["test"]
-	if !ok {
-		t.Fatal("expected MCP manifest entry")
-	}
-	if len(defaults.DefaultAllowedTools) != 1 || defaults.DefaultAllowedTools[0] != "list" {
-		t.Fatalf("expected default allowed tools to be preserved, got %v", defaults.DefaultAllowedTools)
+	if !slices.Contains(manifest.MCP, "test") {
+		t.Fatalf("expected MCP manifest entry for 'test', got %v", manifest.MCP)
 	}
 
 	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, projectDir, domain.HarnessCodex)

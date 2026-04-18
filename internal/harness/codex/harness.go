@@ -163,7 +163,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	}
 	if hasMCP && len(mcpRendered) > 0 {
 		planned := map[string]domain.MCPServer{}
-		parseCodexSettings(planned, map[string][]string{}, mcpRendered)
+		parseCodexSettings(planned, map[string][]string{}, nil, mcpRendered)
 		mcpActions, err := domain.BuildMCPActions(
 			settingsPath,
 			domain.HarnessCodex,
@@ -249,7 +249,7 @@ func captureProject(projectDir string, res harness.CaptureResult) (harness.Captu
 		res.Writes = append(res.Writes, domain.WriteAction{
 			Dst: filepath.Join("configs", "codex", "config.toml"), Content: b, Src: settingsPath,
 		})
-		res.Warnings = append(res.Warnings, parseCodexSettings(res.MCPServers, res.AllowedTools, b)...)
+		res.Warnings = append(res.Warnings, parseCodexSettings(res.MCPServers, res.AllowedTools, res.AlwaysAllowedTools, b)...)
 	}
 	res.MaterializeCapturedMCP(settingsPath)
 	return res, nil
@@ -271,7 +271,7 @@ func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResul
 		res.Writes = append(res.Writes, domain.WriteAction{
 			Dst: filepath.Join("configs", "codex", "config.toml"), Content: b, Src: settingsPath,
 		})
-		res.Warnings = append(res.Warnings, parseCodexSettings(res.MCPServers, res.AllowedTools, b)...)
+		res.Warnings = append(res.Warnings, parseCodexSettings(res.MCPServers, res.AllowedTools, res.AlwaysAllowedTools, b)...)
 	}
 	res.MaterializeCapturedMCP(settingsPath)
 	return res, nil
@@ -370,17 +370,27 @@ type codexSettingsCapture struct {
 }
 
 type codexCapturedServer struct {
-	Type          string            `toml:"type"`
-	Command       string            `toml:"command"`
-	Args          []string          `toml:"args"`
-	EnabledTools  []string          `toml:"enabled_tools"`
-	DisabledTools []string          `toml:"disabled_tools"`
-	Env           map[string]string `toml:"env"`
-	URL           string            `toml:"url"`
-	Headers       map[string]string `toml:"headers"`
+	Type          string                             `toml:"type"`
+	Command       string                             `toml:"command"`
+	Args          []string                           `toml:"args"`
+	EnabledTools  []string                           `toml:"enabled_tools"`
+	DisabledTools []string                           `toml:"disabled_tools"`
+	Env           map[string]string                  `toml:"env"`
+	URL           string                             `toml:"url"`
+	Headers       map[string]string                  `toml:"headers"`
+	Tools         map[string]codexCapturedToolConfig `toml:"tools"`
 }
 
-func parseCodexSettings(servers map[string]domain.MCPServer, allowed map[string][]string, b []byte) []domain.Warning {
+type codexCapturedToolConfig struct {
+	ApprovalMode string `toml:"approval_mode"`
+}
+
+// parseCodexSettings reads a Codex config.toml byte payload and populates the
+// caller-provided maps. alwaysAllowed is optional (may be nil) for callers
+// that do not care about per-tool approval round-trip; when supplied, it
+// receives tools whose [mcp_servers.<name>.tools.<tool>] approval_mode field
+// is codexApprovalModeApprove.
+func parseCodexSettings(servers map[string]domain.MCPServer, allowed, alwaysAllowed map[string][]string, b []byte) []domain.Warning {
 	var cfg codexSettingsCapture
 	if err := toml.Unmarshal(b, &cfg); err != nil {
 		return []domain.Warning{{Message: fmt.Sprintf("failed to parse Codex config.toml: %v", err)}}
@@ -420,6 +430,18 @@ func parseCodexSettings(servers map[string]domain.MCPServer, allowed map[string]
 		if len(entry.EnabledTools) > 0 {
 			allowed[name] = append([]string{}, entry.EnabledTools...)
 			slices.Sort(allowed[name])
+		}
+		if alwaysAllowed != nil && len(entry.Tools) > 0 {
+			var approved []string
+			for tool, cfg := range entry.Tools {
+				if cfg.ApprovalMode == codexApprovalModeApprove {
+					approved = append(approved, tool)
+				}
+			}
+			if len(approved) > 0 {
+				slices.Sort(approved)
+				alwaysAllowed[name] = approved
+			}
 		}
 	}
 	return nil

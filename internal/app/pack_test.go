@@ -24,7 +24,7 @@ var fixedNow = time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 func writePackManifest(t *testing.T, dir string, name string) {
 	t.Helper()
 	m := map[string]any{
-		"schema_version": 1,
+		"schema_version": 2,
 		"name":           name,
 		"version":        "1.0.0",
 		"root":           ".",
@@ -169,7 +169,7 @@ func TestPackInstall_PopulatesResolvedInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := map[string]any{
-		"schema_version": 1,
+		"schema_version": 2,
 		"name":           "resolved-test",
 		"version":        "0.1.0",
 		"root":           ".",
@@ -244,7 +244,7 @@ func TestPackInstall_Copy_CopiesRepoRelativeExtras(t *testing.T) {
 	}
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "my-pack",
 		Version:       "1.0.0",
 		Root:          ".",
@@ -1688,12 +1688,7 @@ func TestValidatePackName(t *testing.T) {
 func TestPackWarnMCPServers(t *testing.T) {
 	t.Parallel()
 	manifest := config.PackManifest{
-		MCP: config.MCPPack{
-			Servers: map[string]config.MCPDefaults{
-				"jira":      {DefaultAllowedTools: []string{"get_issue", "search"}},
-				"bitbucket": {DefaultAllowedTools: []string{"list_repos"}},
-			},
-		},
+		MCP: []string{"bitbucket", "srv-a"},
 	}
 	var out bytes.Buffer
 	packWarnMCPServers(manifest, &out)
@@ -1701,11 +1696,11 @@ func TestPackWarnMCPServers(t *testing.T) {
 	if !strings.Contains(output, "WARNING") {
 		t.Error("expected WARNING in output")
 	}
-	if !strings.Contains(output, "jira (2 tools)") {
-		t.Errorf("expected 'jira (2 tools)' in output, got: %s", output)
+	if !strings.Contains(output, "srv-a") {
+		t.Errorf("expected 'jira' in output, got: %s", output)
 	}
-	if !strings.Contains(output, "bitbucket (1 tool)") {
-		t.Errorf("expected 'bitbucket (1 tool)' in output, got: %s", output)
+	if !strings.Contains(output, "bitbucket") {
+		t.Errorf("expected 'bitbucket' in output, got: %s", output)
 	}
 }
 
@@ -1876,7 +1871,7 @@ func TestPackLifecycle_InstallListUpdateShowRemove(t *testing.T) {
 	writeTestSyncConfig(t, configDir)
 
 	m := map[string]any{
-		"schema_version": 1, "name": "lifecycle-pack", "version": "1.0.0",
+		"schema_version": 2, "name": "lifecycle-pack", "version": "1.0.0",
 		"root": ".", "rules": []string{"test-rule"},
 	}
 	mb, _ := json.Marshal(m)

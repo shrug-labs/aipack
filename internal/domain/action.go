@@ -53,13 +53,14 @@ type SettingsAction struct {
 // MCPAction represents a single MCP server as a first-class sync unit.
 // ConfigPath points to the harness config file that embeds or stores it.
 type MCPAction struct {
-	Name         string
-	ConfigPath   string
-	Content      []byte
-	SourcePack   string
-	Harness      Harness
-	Embedded     bool
-	AllowedTools []string
+	Name               string
+	ConfigPath         string
+	Content            []byte
+	SourcePack         string
+	Harness            Harness
+	Embedded           bool
+	AllowedTools       []string
+	AlwaysAllowedTools []string
 }
 
 // LedgerKey returns the synthetic ledger key for this MCP server.

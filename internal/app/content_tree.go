@@ -263,15 +263,29 @@ func ApplyContentTree(tree ContentTree, entries []config.PackEntry) {
 		}
 
 		// MCP servers — preserve existing tool allowlists from the profile.
-		if len(p.Manifest.MCP.Servers) > 0 {
+		if len(p.Manifest.MCP) > 0 {
 			enabledServers := cats[domain.CategoryMCP]
 			existingTools := map[string][]string{}
+			existingAlwaysTools := map[string][]string{}
+			existingDisabledTools := map[string][]string{}
 			for name, cfg := range pe.MCP {
-				if len(cfg.AllowedTools) > 0 {
+				if cfg.AllowedTools != nil {
 					existingTools[name] = cfg.AllowedTools
 				}
+				if cfg.AlwaysAllowedTools != nil {
+					existingAlwaysTools[name] = cfg.AlwaysAllowedTools
+				}
+				if cfg.DisabledTools != nil {
+					existingDisabledTools[name] = cfg.DisabledTools
+				}
 			}
-			pe.MCP = config.MCPToConfig(p.Manifest, enabledServers, existingTools)
+			pe.MCP = config.MCPToConfig(p.Manifest.MCP, enabledServers, existingTools, existingAlwaysTools)
+			for name, disabled := range existingDisabledTools {
+				if cfg, ok := pe.MCP[name]; ok {
+					cfg.DisabledTools = append([]string{}, disabled...)
+					pe.MCP[name] = cfg
+				}
+			}
 			if pe.MCP == nil {
 				pe.MCP = map[string]config.MCPServerConfig{}
 			}

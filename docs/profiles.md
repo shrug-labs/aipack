@@ -259,13 +259,32 @@ packs:
           - confluence_search
           - confluence_get_page
           - jira_get_issue
+        always_allowed_tools:
+          - confluence_search
         disabled_tools:
           - confluence_delete_page
       build-system:
         enabled: false
 ```
 
-`allowed_tools` overrides the pack manifest's `default_allowed_tools` for this server. `disabled_tools` explicitly blocks specific tools. When both are present, `disabled_tools` takes precedence.
+The profile is the sole source of tool permissions. `allowed_tools` limits visibility to the listed tools; `always_allowed_tools` additionally auto-approves without a per-call prompt; `disabled_tools` explicitly blocks. When both `allowed_tools` and `disabled_tools` are present, `disabled_tools` takes precedence. A tool in `always_allowed_tools` is implicitly visible, so setting it without also listing the tool in `allowed_tools` is valid and common.
+
+Leaving all three fields unset (silent) emits no allow list to the harness — the harness's native default (ask per call) applies, which is operationally equivalent to "grant all."
+
+**Per-harness rendering of `always_allowed_tools`:**
+
+- **Cline** renders both fields into `alwaysAllow` — no visibility/prompt distinction.
+- **Claude Code** renders both fields into `permissions.allow` — tools in allow are auto-approved; unlisted tools default to per-call prompt.
+- **Codex** renders `allowed_tools` and `always_allowed_tools` into `enabled_tools`, and additionally emits a `[mcp_servers.<name>.tools.<tool>] approval_mode = "approve"` stanza for each entry in `always_allowed_tools`.
+- **OpenCode** unions both fields into the legacy `tools` boolean map and emits a sync-time warning that per-tool auto-approve is pending upstream syntax confirmation.
+
+**Editing from the TUI.** The `aipack manage` TUI offers an interactive tri-state tool picker on the profiles tab. Navigate to the content tree (right-most panel), place the cursor on an MCP entry, and press `t` to open the picker. Each tool cycles through off / ask / auto on `<space>` (shortcuts: `x` off, `a` ask, `A` auto). Silent profiles render every probed tool as *ask* — matching the effective state. Probe results are cached per user at `~/.config/aipack/cache/mcp-probes.json` (24-hour TTL) so reopening the picker is instant; the header renders a "probed Nh ago" freshness hint, and pressing `r` inside the picker forces a re-probe. `aipack mcp inspect-tools` (CLI) writes the same cache as a side effect, so running it populates the TUI for next use. Pressing `.` on an MCP entry in the tree opens a small menu with "Edit file" and "Tool list" (which opens the tri-state picker, same as `t`). Inside the picker, pressing `.` opens a bulk action menu:
+
+- **Enable all tools** — clears every tool list and enables the server (silent = grant all, matching the harness default).
+- **Always allow all tools** — enumerates the probed tool list into `always_allowed_tools`. Requires a successful probe; silent has no equivalent encoding for "auto-approve everything".
+- **Disable MCP server** / **Enable MCP server** — flips `enabled`; the disable variant also clears any profile tool-list overrides because they're meaningless on a disabled server.
+- **Reset to pack defaults** — clears all tool-list overrides but preserves `enabled`. The resolver falls back to manifest defaults on next sync.
+- **Save inventory** — rewrites the pack's `mcp/<server>.json` `available_tools` from the probe result. Only shown when a probe has completed during the current picker session.
 
 Disabling a server in one pack and providing it from another is clean composition — for example, when a team pack's MCP server is broken and you provide a working replacement from a personal pack.
 

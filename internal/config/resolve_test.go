@@ -28,11 +28,11 @@ func TestResolveProfile_InstalledPack(t *testing.T) {
 		t.Fatalf("mkdir pack root: %v", err)
 	}
 	manifest := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "snap",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}
 	b, err := json.Marshal(manifest)
 	if err != nil {
@@ -78,12 +78,12 @@ func TestResolveProfile_VectorSelectorErrors(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "base", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "base",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"alpha"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{"rules/alpha.md": "---\nname: alpha\n---\nbody\n"})
 
 	include := []string{"alpha"}
@@ -127,20 +127,20 @@ func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "first", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "first",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"jira": {}}},
+		MCP:           []string{"jira"},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n", "mcp/jira.json": `{"name":"jira"}`})
 	installPackForResolveTest(t, root, "second", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "second",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"jira": {}}},
+		MCP:           []string{"jira"},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n", "mcp/jira.json": `{"name":"jira"}`})
 
 	_, err := ResolveProfile(ProfileConfig{
@@ -174,20 +174,20 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "first", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "first",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n"})
 	installPackForResolveTest(t, root, "second", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "second",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbody\n"})
 
 	// Neither pack has config files, so settingsPacks should be empty
@@ -208,11 +208,11 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 
 	// Install a pack WITH config files — it should auto-contribute.
 	installPackForResolveTest(t, root, "third", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "third",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 		Configs:       PackConfigs{HarnessSettings: map[string][]string{"claudecode": {"settings.local.json"}}},
 	}, map[string]string{
 		"configs/claudecode/settings.local.json": `{"theme": "dark"}`,
@@ -235,38 +235,38 @@ func TestResolveProfile_OverrideStripsEarlierPack(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
-	// Two packs both provide rule "shared" and MCP server "tracker".
+	// Two packs both provide rule "shared" and MCP server "srv-a".
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "team",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared", "team-only"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+		MCP:           []string{"srv-a"},
 	}, map[string]string{
 		"rules/shared.md":    "---\nname: shared\n---\nteam version\n",
 		"rules/team-only.md": "---\nname: team-only\n---\nbody\n",
-		"mcp/tracker.json":   `{"name":"tracker"}`,
+		"mcp/srv-a.json":     `{"name":"srv-a"}`,
 	})
 	installPackForResolveTest(t, root, "org", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "org",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared", "org-only"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+		MCP:           []string{"srv-a"},
 	}, map[string]string{
 		"rules/shared.md":   "---\nname: shared\n---\norg version\n",
 		"rules/org-only.md": "---\nname: org-only\n---\nbody\n",
-		"mcp/tracker.json":  `{"name":"tracker"}`,
+		"mcp/srv-a.json":    `{"name":"srv-a"}`,
 	})
 
-	// org declares overrides — its version of "shared" and "tracker" should win.
+	// org declares overrides — its version of "shared" and "srv-a" should win.
 	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
 			{Name: "team"},
-			{Name: "org", Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"tracker"}}},
+			{Name: "org", Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"srv-a"}}},
 		},
 	}, filepath.Join(root, "profile.yaml"), root)
 	if err != nil {
@@ -286,11 +286,11 @@ func TestResolveProfile_OverrideStripsEarlierPack(t *testing.T) {
 	if len(teamPack.Rules) != 1 || teamPack.Rules[0] != "team-only" {
 		t.Errorf("team rules = %v, want [team-only]", teamPack.Rules)
 	}
-	if _, ok := teamPack.MCP["tracker"]; ok {
+	if _, ok := teamPack.MCP["srv-a"]; ok {
 		t.Error("team pack should not have 'tracker' MCP after override")
 	}
 
-	// org pack should have "shared" and "tracker".
+	// org pack should have "shared" and "srv-a".
 	orgPack := packs[1]
 	if orgPack.Name != "org" {
 		t.Fatalf("expected pack[1] = org, got %s", orgPack.Name)
@@ -304,7 +304,7 @@ func TestResolveProfile_OverrideStripsEarlierPack(t *testing.T) {
 	if !hasShared {
 		t.Error("org pack should have 'shared' rule")
 	}
-	if _, ok := orgPack.MCP["tracker"]; !ok {
+	if _, ok := orgPack.MCP["srv-a"]; !ok {
 		t.Error("org pack should have 'tracker' MCP")
 	}
 }
@@ -313,35 +313,35 @@ func TestResolveProfile_OverrideWinsRegardlessOfOrder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
-	// Two packs both provide rule "shared" and MCP server "tracker".
+	// Two packs both provide rule "shared" and MCP server "srv-a".
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "team",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+		MCP:           []string{"srv-a"},
 	}, map[string]string{
-		"rules/shared.md":  "---\nname: shared\n---\nteam version\n",
-		"mcp/tracker.json": `{"name":"tracker"}`,
+		"rules/shared.md": "---\nname: shared\n---\nteam version\n",
+		"mcp/srv-a.json":  `{"name":"srv-a"}`,
 	})
 	installPackForResolveTest(t, root, "org", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "org",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+		MCP:           []string{"srv-a"},
 	}, map[string]string{
-		"rules/shared.md":  "---\nname: shared\n---\norg version\n",
-		"mcp/tracker.json": `{"name":"tracker"}`,
+		"rules/shared.md": "---\nname: shared\n---\norg version\n",
+		"mcp/srv-a.json":  `{"name":"srv-a"}`,
 	})
 
 	// team declares override but is listed FIRST — should still win.
 	packs, _, err := resolveStrict(t, ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{
-			{Name: "team", Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"tracker"}}},
+			{Name: "team", Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"srv-a"}}},
 			{Name: "org"},
 		},
 	}, filepath.Join(root, "profile.yaml"), root)
@@ -349,11 +349,11 @@ func TestResolveProfile_OverrideWinsRegardlessOfOrder(t *testing.T) {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
 
-	// team (first, override owner) keeps "shared" and "tracker".
+	// team (first, override owner) keeps "shared" and "srv-a".
 	if len(packs[0].Rules) != 1 || packs[0].Rules[0] != "shared" {
 		t.Errorf("team rules = %v, want [shared]", packs[0].Rules)
 	}
-	if _, ok := packs[0].MCP["tracker"]; !ok {
+	if _, ok := packs[0].MCP["srv-a"]; !ok {
 		t.Error("team should have 'tracker' MCP")
 	}
 	// org (second, not owner) has them stripped.
@@ -362,7 +362,7 @@ func TestResolveProfile_OverrideWinsRegardlessOfOrder(t *testing.T) {
 			t.Error("org should not have 'shared' rule")
 		}
 	}
-	if _, ok := packs[1].MCP["tracker"]; ok {
+	if _, ok := packs[1].MCP["srv-a"]; ok {
 		t.Error("org should not have 'tracker' MCP")
 	}
 }
@@ -373,18 +373,18 @@ func TestResolveProfile_ExcludePreventsDuplicate(t *testing.T) {
 
 	// Two packs both define MCP servers "alpha" and "beta".
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "team",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"alpha": {}, "beta": {}}},
+		MCP:           []string{"alpha", "beta"},
 	}, map[string]string{"mcp/alpha.json": `{"name":"alpha"}`, "mcp/beta.json": `{"name":"beta"}`})
 	installPackForResolveTest(t, root, "org", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "org",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"alpha": {}, "beta": {}}},
+		MCP:           []string{"alpha", "beta"},
 	}, map[string]string{"mcp/alpha.json": `{"name":"alpha"}`, "mcp/beta.json": `{"name":"beta"}`})
 
 	// org disables both via enabled:false — no conflict.
@@ -422,13 +422,11 @@ func TestResolveProfile_MCPSelectionErrors(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "base", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "base",
 		Version:       "1",
 		Root:          ".",
-		MCP: MCPPack{Servers: map[string]MCPDefaults{
-			"jira": {DefaultAllowedTools: []string{"get_issue"}},
-		}},
+		MCP:           []string{"jira"},
 	}, map[string]string{"mcp/jira.json": `{"name":"jira"}`})
 
 	_, _, err := resolveStrict(t, ProfileConfig{
@@ -450,12 +448,12 @@ func TestResolveProfile_AutoDiscover(t *testing.T) {
 	// Install a pack with NO content fields in the manifest (nil),
 	// but with content files on disk.
 	manifest := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "disco",
 		Version:       "1",
 		Root:          ".",
 		// Rules, Agents, Workflows, Skills are all nil
-		MCP: MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP: []string{},
 	}
 	installPackForResolveTest(t, root, "disco", manifest, map[string]string{
 		"rules/auto-rule.md":         "---\nname: auto-rule\n---\nbody\n",
@@ -492,11 +490,11 @@ func TestResolveProfile_AutoDiscoverWithExclude(t *testing.T) {
 
 	// Pack with nil rules — auto-discover finds both, then profile excludes one.
 	manifest := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "filtered",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}
 	installPackForResolveTest(t, root, "filtered", manifest, map[string]string{
 		"rules/keep.md": "---\nname: keep\n---\nbody\n",
@@ -526,11 +524,11 @@ func TestResolveProfile_GlobInclude(t *testing.T) {
 	root := t.TempDir()
 
 	installPackForResolveTest(t, root, "globs", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "globs",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/anti-slop.md":     "---\nname: anti-slop\n---\nbody\n",
 		"rules/anti-bloat.md":    "---\nname: anti-bloat\n---\nbody\n",
@@ -563,11 +561,11 @@ func TestResolveProfile_GlobExclude(t *testing.T) {
 	root := t.TempDir()
 
 	installPackForResolveTest(t, root, "globex", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "globex",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/anti-slop.md":     "---\nname: anti-slop\n---\nbody\n",
 		"rules/anti-bloat.md":    "---\nname: anti-bloat\n---\nbody\n",
@@ -599,12 +597,12 @@ func TestResolveProfile_GlobMixedWithExact(t *testing.T) {
 	root := t.TempDir()
 
 	installPackForResolveTest(t, root, "mixed", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "mixed",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta", "gamma", "anti-slop"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md":     "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":      "---\nname: beta\n---\nbody\n",
@@ -636,11 +634,11 @@ func TestResolveProfile_GlobNoMatch_NoError(t *testing.T) {
 	root := t.TempDir()
 
 	installPackForResolveTest(t, root, "nomatch", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "nomatch",
 		Version:       "1",
 		Root:          ".",
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
 	})
@@ -668,12 +666,12 @@ func TestResolveProfile_ExactUnknown_StillErrors(t *testing.T) {
 	root := t.TempDir()
 
 	installPackForResolveTest(t, root, "exacterr", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "exacterr",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"alpha"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
 	})
@@ -697,29 +695,29 @@ func TestResolveProfile_DisabledPackOverridesIgnored(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
-	// Two packs both provide rule "shared" and MCP server "tracker".
+	// Two packs both provide rule "shared" and MCP server "srv-a".
 	// The disabled pack declares overrides — these should be ignored.
 	installPackForResolveTest(t, root, "personal", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "personal",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+		MCP:           []string{"srv-a"},
 	}, map[string]string{
-		"rules/shared.md":  "---\nname: shared\n---\npersonal version\n",
-		"mcp/tracker.json": `{"name":"tracker"}`,
+		"rules/shared.md": "---\nname: shared\n---\npersonal version\n",
+		"mcp/srv-a.json":  `{"name":"srv-a"}`,
 	})
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "team",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"shared"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{"tracker": {}}},
+		MCP:           []string{"srv-a"},
 	}, map[string]string{
-		"rules/shared.md":  "---\nname: shared\n---\nteam version\n",
-		"mcp/tracker.json": `{"name":"tracker"}`,
+		"rules/shared.md": "---\nname: shared\n---\nteam version\n",
+		"mcp/srv-a.json":  `{"name":"srv-a"}`,
 	})
 
 	// personal is disabled but has overrides — should not cause errors
@@ -731,7 +729,7 @@ func TestResolveProfile_DisabledPackOverridesIgnored(t *testing.T) {
 			{
 				Name:      "personal",
 				Enabled:   BoolPtr(false),
-				Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"tracker"}},
+				Overrides: Overrides{Rules: []string{"shared"}, MCP: []string{"srv-a"}},
 			},
 			{
 				Name: "team",
@@ -751,7 +749,7 @@ func TestResolveProfile_DisabledPackOverrideShouldNotResolveEnabledConflict(t *t
 	// The disabled pack's override must not silently resolve the conflict
 	// between the two enabled packs.
 	installPackForResolveTest(t, root, "alpha", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "alpha",
 		Version:       "1",
 		Root:          ".",
@@ -760,7 +758,7 @@ func TestResolveProfile_DisabledPackOverrideShouldNotResolveEnabledConflict(t *t
 		"rules/shared.md": "---\nname: shared\n---\nalpha version\n",
 	})
 	installPackForResolveTest(t, root, "beta", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "beta",
 		Version:       "1",
 		Root:          ".",
@@ -769,7 +767,7 @@ func TestResolveProfile_DisabledPackOverrideShouldNotResolveEnabledConflict(t *t
 		"rules/shared.md": "---\nname: shared\n---\nbeta version\n",
 	})
 	installPackForResolveTest(t, root, "disabled-resolver", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "disabled-resolver",
 		Version:       "1",
 		Root:          ".",
@@ -805,11 +803,11 @@ func TestResolveProfile_CollisionStrategy_FirstWins(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "base", PackManifest{
-		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "base", Version: "1", Root: ".",
 		Rules: []string{"shared"},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbase version\n"})
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "team", Version: "1", Root: ".",
 		Rules: []string{"shared"},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nteam version\n"})
 
@@ -847,7 +845,7 @@ func TestResolveProfile_CollisionStrategy_FirstWins_MultiID(t *testing.T) {
 	// This exercises the deferred-deletion path: mutating the current pack's
 	// slice during range iteration would skip the second colliding ID.
 	installPackForResolveTest(t, root, "base", PackManifest{
-		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "base", Version: "1", Root: ".",
 		Rules: []string{"alpha", "beta", "gamma"},
 	}, map[string]string{
 		"rules/alpha.md": "---\nname: alpha\n---\nbase version\n",
@@ -855,7 +853,7 @@ func TestResolveProfile_CollisionStrategy_FirstWins_MultiID(t *testing.T) {
 		"rules/gamma.md": "---\nname: gamma\n---\nbase version\n",
 	})
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "team", Version: "1", Root: ".",
 		Rules: []string{"alpha", "beta", "team-only"},
 	}, map[string]string{
 		"rules/alpha.md":     "---\nname: alpha\n---\nteam version\n",
@@ -897,11 +895,11 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 	// Four-pack layering: essentials → dev-starter → team → personal.
 	// Overlaps at every layer to exercise the cascade.
 	installPackForResolveTest(t, root, "essentials", PackManifest{
-		SchemaVersion: 1, Name: "essentials", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "essentials", Version: "1", Root: ".",
 		Rules:     []string{"anti-slop", "show-your-work", "base-only"},
 		Skills:    []string{"tdd"},
 		Workflows: []string{"deploy"},
-		MCP:       MCPPack{Servers: map[string]MCPDefaults{"jira": {}}},
+		MCP:       []string{"jira"},
 	}, map[string]string{
 		"rules/anti-slop.md":      "---\nname: anti-slop\n---\nessentials version\n",
 		"rules/show-your-work.md": "---\nname: show-your-work\n---\nessentials version\n",
@@ -911,10 +909,10 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 		"mcp/jira.json":           `{"name":"jira"}`,
 	})
 	installPackForResolveTest(t, root, "dev-starter", PackManifest{
-		SchemaVersion: 1, Name: "dev-starter", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "dev-starter", Version: "1", Root: ".",
 		Rules:  []string{"anti-slop"},
 		Skills: []string{"tdd", "oncall"},
-		MCP:    MCPPack{Servers: map[string]MCPDefaults{"jira": {}, "deploy-tool": {}}},
+		MCP:    []string{"deploy-tool", "jira"},
 	}, map[string]string{
 		"rules/anti-slop.md":     "---\nname: anti-slop\n---\ndev-starter version\n",
 		"skills/tdd/SKILL.md":    "---\nname: tdd\n---\ndev-starter tdd\n",
@@ -923,7 +921,7 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 		"mcp/deploy-tool.json":   `{"name":"deploy-tool"}`,
 	})
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "team", Version: "1", Root: ".",
 		Rules:     []string{"anti-slop"},
 		Workflows: []string{"deploy"},
 	}, map[string]string{
@@ -931,7 +929,7 @@ func TestResolveProfile_CollisionStrategy_LastWins(t *testing.T) {
 		"workflows/deploy.md": "---\nname: deploy\n---\nteam deploy\n",
 	})
 	installPackForResolveTest(t, root, "personal", PackManifest{
-		SchemaVersion: 1, Name: "personal", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "personal", Version: "1", Root: ".",
 		Rules: []string{"show-your-work"},
 	}, map[string]string{
 		"rules/show-your-work.md": "---\nname: show-your-work\n---\npersonal version\n",
@@ -1094,18 +1092,18 @@ func TestResolveProfile_CollisionStrategy_ErrorCollectsAll(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "first", PackManifest{
-		SchemaVersion: 1, Name: "first", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "first", Version: "1", Root: ".",
 		Rules: []string{"rule-a", "rule-b"},
-		MCP:   MCPPack{Servers: map[string]MCPDefaults{"srv": {}}},
+		MCP:   []string{"srv"},
 	}, map[string]string{
 		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
 		"rules/rule-b.md": "---\nname: rule-b\n---\nbody\n",
 		"mcp/srv.json":    `{"name":"srv"}`,
 	})
 	installPackForResolveTest(t, root, "second", PackManifest{
-		SchemaVersion: 1, Name: "second", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "second", Version: "1", Root: ".",
 		Rules: []string{"rule-a", "rule-b"},
-		MCP:   MCPPack{Servers: map[string]MCPDefaults{"srv": {}}},
+		MCP:   []string{"srv"},
 	}, map[string]string{
 		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
 		"rules/rule-b.md": "---\nname: rule-b\n---\nbody\n",
@@ -1146,12 +1144,12 @@ func TestResolveProfile_CollisionStrategy_MCP(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "pack-a", PackManifest{
-		SchemaVersion: 1, Name: "pack-a", Version: "1", Root: ".",
-		MCP: MCPPack{Servers: map[string]MCPDefaults{"shared-srv": {}}},
+		SchemaVersion: 2, Name: "pack-a", Version: "1", Root: ".",
+		MCP: []string{"shared-srv"},
 	}, map[string]string{"mcp/shared-srv.json": `{"name":"shared-srv"}`})
 	installPackForResolveTest(t, root, "pack-b", PackManifest{
-		SchemaVersion: 1, Name: "pack-b", Version: "1", Root: ".",
-		MCP: MCPPack{Servers: map[string]MCPDefaults{"shared-srv": {}}},
+		SchemaVersion: 2, Name: "pack-b", Version: "1", Root: ".",
+		MCP: []string{"shared-srv"},
 	}, map[string]string{"mcp/shared-srv.json": `{"name":"shared-srv"}`})
 
 	// first-wins: pack-a keeps server
@@ -1195,11 +1193,11 @@ func TestResolveProfile_OverridesOverrideStrategy(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "base", PackManifest{
-		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "base", Version: "1", Root: ".",
 		Rules: []string{"shared"},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nbase version\n"})
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "team", Version: "1", Root: ".",
 		Rules: []string{"shared"},
 	}, map[string]string{"rules/shared.md": "---\nname: shared\n---\nteam version\n"})
 
@@ -1231,14 +1229,14 @@ func TestResolveProfile_CollisionError_PartialOverrideResolution(t *testing.T) {
 	root := t.TempDir()
 	// Two packs, each providing two colliding rules.
 	installPackForResolveTest(t, root, "base", PackManifest{
-		SchemaVersion: 1, Name: "base", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "base", Version: "1", Root: ".",
 		Rules: []string{"rule-a", "rule-b"},
 	}, map[string]string{
 		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
 		"rules/rule-b.md": "---\nname: rule-b\n---\nbody\n",
 	})
 	installPackForResolveTest(t, root, "team", PackManifest{
-		SchemaVersion: 1, Name: "team", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "team", Version: "1", Root: ".",
 		Rules: []string{"rule-a", "rule-b"},
 	}, map[string]string{
 		"rules/rule-a.md": "---\nname: rule-a\n---\nbody\n",
@@ -1343,12 +1341,12 @@ func TestResolveProfile_DriftAware_RefInPrevInventoryBecomesBrokenRef(t *testing
 	// "removed", which was in the previous inventory — expect a BrokenRef,
 	// not an error.
 	installPackForResolveTest(t, root, "test-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"kept"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
 
 	include := []string{"kept", "removed"}
@@ -1382,12 +1380,12 @@ func TestResolveProfile_DriftAware_TypoStillErrors(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "test-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"kept"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
 
 	// "typo" was never in the pack — not in current inventory, not in prev.
@@ -1412,12 +1410,12 @@ func TestResolveProfile_DriftAware_OverrideDriftsOut(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "first", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "first",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"kept"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
 
 	// Override targets "removed" — not in any current pack, but was in
@@ -1444,12 +1442,12 @@ func TestResolveProfile_DriftAware_NilPrevPreservesHardError(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "test-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Version:       "1",
 		Root:          ".",
 		Rules:         []string{"kept"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{"rules/kept.md": "---\nname: kept\n---\nbody\n"})
 
 	// No prevInventories map → the classic hard-error path must be preserved
@@ -1495,13 +1493,13 @@ func TestResolveProfile_EmptyIncludeIncludesAll(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "test-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta"},
 		Skills:        []string{"skill-one", "skill-two"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
@@ -1540,13 +1538,13 @@ func TestResolveProfile_QuietPackOmittedSelectorsExcludeAll(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "quiet-pack",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta"},
 		Skills:        []string{"skill-one", "skill-two"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
@@ -1583,13 +1581,13 @@ func TestResolveProfile_QuietPackWithExplicitInclude(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "quiet-pack",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta"},
 		Skills:        []string{"skill-one", "skill-two"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
@@ -1627,12 +1625,12 @@ func TestResolveProfile_QuietPackEmptyIncludeExcludesAll(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "quiet-pack",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":  "---\nname: beta\n---\nbody\n",
@@ -1669,12 +1667,12 @@ func TestResolveProfile_ExtractedContentPathsPack(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "ext-lib", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "ext-lib",
 		Version:       "0.1.0",
 		Root:          ".",
 		Skills:        []string{"skill-alpha", "skill-beta"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"skills/skill-alpha/SKILL.md": "---\nname: skill-alpha\ndescription: test\n---\nbody\n",
 		"skills/skill-beta/SKILL.md":  "---\nname: skill-beta\ndescription: test\n---\nbody\n",
@@ -1700,12 +1698,12 @@ func TestResolveProfile_QuietPackExcludeReturnsNothing(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "quiet-pack",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta", "gamma"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":  "---\nname: beta\n---\nbody\n",
@@ -1740,13 +1738,13 @@ func TestResolveProfile_NonQuietOmittedSelectorsIncludeAll(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "normal-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "normal-pack",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta"},
 		Skills:        []string{"skill-one"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md":            "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":             "---\nname: beta\n---\nbody\n",
@@ -1781,17 +1779,15 @@ func TestResolveProfile_QuietPackMCPStillDelivered(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "quiet-mcp", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "quiet-mcp",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"some-rule"},
-		MCP: MCPPack{Servers: map[string]MCPDefaults{
-			"my-server": {DefaultAllowedTools: []string{"tool-a"}},
-		}},
+		MCP:           []string{"srv-a"},
 	}, map[string]string{
 		"rules/some-rule.md": "---\nname: some-rule\n---\nbody\n",
-		"mcp/my-server.json": `{"name":"my-server","command":["echo","hi"]}`,
+		"mcp/srv-a.json":     `{"name":"srv-a","command":["echo","hi"]}`,
 	})
 
 	// Quiet suppresses content vectors but MCP is controlled by its own
@@ -1804,7 +1800,7 @@ func TestResolveProfile_QuietPackMCPStillDelivered(t *testing.T) {
 			Enabled: BoolPtr(true),
 			Quiet:   true,
 			MCP: map[string]MCPServerConfig{
-				"my-server": {Enabled: BoolPtr(true)},
+				"srv-a": {Enabled: BoolPtr(true)},
 			},
 		}},
 	}
@@ -1820,13 +1816,140 @@ func TestResolveProfile_QuietPackMCPStillDelivered(t *testing.T) {
 	if len(packs[0].Rules) != 0 {
 		t.Fatalf("expected 0 rules for quiet pack, got %d", len(packs[0].Rules))
 	}
-	// MCP: explicitly enabled, should be delivered.
-	srv, ok := packs[0].MCP["my-server"]
+	// MCP: explicitly enabled, should be delivered. Tool lists are silent —
+	// no manifest defaults exist; the harness default applies at render time.
+	srv, ok := packs[0].MCP["srv-a"]
 	if !ok {
 		t.Fatal("expected my-server in MCP map")
 	}
-	if len(srv.AllowedTools) != 1 || srv.AllowedTools[0] != "tool-a" {
-		t.Fatalf("expected [tool-a], got %v", srv.AllowedTools)
+	if len(srv.AllowedTools) != 0 || len(srv.AlwaysAllowedTools) != 0 {
+		t.Fatalf("expected silent tool lists, got allowed=%v always=%v", srv.AllowedTools, srv.AlwaysAllowedTools)
+	}
+}
+
+// TestResolveProfile_SentinelSurvivesProfileAllowedTools verifies that the "*"
+// sentinel in a profile's per-server allowed_tools passes through ResolveProfile
+// and normalizeList unchanged. Expansion happens downstream in
+// engine.buildMCPServers; the resolver must not filter or rewrite it.
+func TestResolveProfile_SentinelSurvivesProfileAllowedTools(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "star", PackManifest{
+		SchemaVersion: 2,
+		Name:          "star",
+		Version:       "1.0.0",
+		Root:          ".",
+		MCP:           []string{"srv"},
+	}, map[string]string{
+		"mcp/srv.json": `{"name":"srv","command":["echo","hi"],"available_tools":["alpha","beta","gamma"]}`,
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "star",
+			Enabled: BoolPtr(true),
+			MCP: map[string]MCPServerConfig{
+				"srv": {Enabled: BoolPtr(true), AllowedTools: []string{"*"}},
+			},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	srv, ok := packs[0].MCP["srv"]
+	if !ok {
+		t.Fatal("expected srv in MCP map")
+	}
+	if len(srv.AllowedTools) != 1 || srv.AllowedTools[0] != "*" {
+		t.Fatalf("expected AllowedTools=[*] preserved through resolver, got %v", srv.AllowedTools)
+	}
+}
+
+// TestResolveProfile_AlwaysAllowedSurvivesProfile verifies that an explicit
+// always_allowed_tools list on a profile MCP server override flows through
+// ResolveProfile and normalizeList into ResolvedMCPServer.AlwaysAllowedTools
+// unchanged, and is independent of AllowedTools.
+func TestResolveProfile_AlwaysAllowedSurvivesProfile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "always", PackManifest{
+		SchemaVersion: 2,
+		Name:          "always",
+		Version:       "1.0.0",
+		Root:          ".",
+		MCP:           []string{"srv"},
+	}, map[string]string{
+		"mcp/srv.json": `{"name":"srv","command":["echo","hi"],"available_tools":["alpha","beta","gamma"]}`,
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "always",
+			Enabled: BoolPtr(true),
+			MCP: map[string]MCPServerConfig{
+				"srv": {
+					Enabled:            BoolPtr(true),
+					AllowedTools:       []string{"alpha", "beta"},
+					AlwaysAllowedTools: []string{"alpha"},
+				},
+			},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	srv := packs[0].MCP["srv"]
+	if len(srv.AllowedTools) != 2 || srv.AllowedTools[0] != "alpha" || srv.AllowedTools[1] != "beta" {
+		t.Fatalf("AllowedTools = %v, want [alpha beta]", srv.AllowedTools)
+	}
+	if len(srv.AlwaysAllowedTools) != 1 || srv.AlwaysAllowedTools[0] != "alpha" {
+		t.Fatalf("AlwaysAllowedTools = %v, want [alpha]", srv.AlwaysAllowedTools)
+	}
+}
+
+// TestResolveProfile_AlwaysAllowedSentinelSurvivesProfile verifies the "*"
+// sentinel passes through unchanged on always_allowed_tools just like it does
+// on allowed_tools — expansion happens downstream in engine.buildMCPServers.
+func TestResolveProfile_AlwaysAllowedSentinelSurvivesProfile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "always-star", PackManifest{
+		SchemaVersion: 2,
+		Name:          "always-star",
+		Version:       "1.0.0",
+		Root:          ".",
+		MCP:           []string{"srv"},
+	}, map[string]string{
+		"mcp/srv.json": `{"name":"srv","command":["echo","hi"],"available_tools":["read","write"]}`,
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "always-star",
+			Enabled: BoolPtr(true),
+			MCP: map[string]MCPServerConfig{
+				"srv": {Enabled: BoolPtr(true), AlwaysAllowedTools: []string{"*"}},
+			},
+		}},
+	}
+	profilePath := filepath.Join(root, "profile.yaml")
+	packs, _, err := resolveStrict(t, cfg, profilePath, root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	srv := packs[0].MCP["srv"]
+	if len(srv.AlwaysAllowedTools) != 1 || srv.AlwaysAllowedTools[0] != "*" {
+		t.Fatalf("AlwaysAllowedTools = %v, want [*] preserved through resolver", srv.AlwaysAllowedTools)
 	}
 }
 
@@ -1837,12 +1960,12 @@ func TestResolveProfile_QuietPackEmptyExcludeExcludesAll(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "quiet-pack", PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "quiet-pack",
 		Version:       "1.0.0",
 		Root:          ".",
 		Rules:         []string{"alpha", "beta", "gamma"},
-		MCP:           MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:           []string{},
 	}, map[string]string{
 		"rules/alpha.md": "---\nname: alpha\n---\nbody\n",
 		"rules/beta.md":  "---\nname: beta\n---\nbody\n",
@@ -1943,15 +2066,15 @@ func TestResolveProfile_TwoPacksComposeContent(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "team-ops", PackManifest{
-		SchemaVersion: 1, Name: "team-ops", Version: "1", Root: ".",
-		MCP: MCPPack{Servers: map[string]MCPDefaults{}},
+		SchemaVersion: 2, Name: "team-ops", Version: "1", Root: ".",
+		MCP: []string{},
 	}, map[string]string{
 		"rules/no-force-push.md":  "---\nname: no-force-push\n---\nbody\n",
 		"rules/require-review.md": "---\nname: require-review\n---\nbody\n",
 	})
 	installPackForResolveTest(t, root, "team-sec", PackManifest{
-		SchemaVersion: 1, Name: "team-sec", Version: "1", Root: ".",
-		MCP: MCPPack{Servers: map[string]MCPDefaults{}},
+		SchemaVersion: 2, Name: "team-sec", Version: "1", Root: ".",
+		MCP: []string{},
 	}, map[string]string{
 		"rules/no-secrets.md": "---\nname: no-secrets\n---\nbody\n",
 	})
@@ -1984,10 +2107,10 @@ func TestResolveProfile_QuietCatalogSelectiveInclude(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "catalog", PackManifest{
-		SchemaVersion: 1, Name: "catalog", Version: "2.0.0", Root: ".",
+		SchemaVersion: 2, Name: "catalog", Version: "2.0.0", Root: ".",
 		Rules:  []string{"verbose-logging", "audit-trail"},
 		Skills: []string{"deploy", "triage", "rollback", "debug", "migrate"},
-		MCP:    MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:    []string{},
 	}, map[string]string{
 		"rules/verbose-logging.md": "---\nname: verbose-logging\n---\nb\n",
 		"rules/audit-trail.md":     "---\nname: audit-trail\n---\nb\n",
@@ -2025,23 +2148,21 @@ func TestResolveProfile_DisabledPackContributesNothing(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "active", PackManifest{
-		SchemaVersion: 1, Name: "active", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "active", Version: "1", Root: ".",
 		Rules: []string{"keep-this"},
-		MCP:   MCPPack{Servers: map[string]MCPDefaults{}},
+		MCP:   []string{},
 	}, map[string]string{
 		"rules/keep-this.md": "---\nname: keep-this\n---\nb\n",
 	})
 	installPackForResolveTest(t, root, "dormant", PackManifest{
-		SchemaVersion: 1, Name: "dormant", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "dormant", Version: "1", Root: ".",
 		Rules:  []string{"important-rule"},
 		Skills: []string{"critical-skill"},
-		MCP: MCPPack{Servers: map[string]MCPDefaults{
-			"my-server": {},
-		}},
+		MCP:    []string{"jira"},
 	}, map[string]string{
 		"rules/important-rule.md":        "---\nname: important-rule\n---\nb\n",
 		"skills/critical-skill/SKILL.md": "---\nname: critical-skill\ndescription: d\n---\nb\n",
-		"mcp/my-server.json":             `{"name":"my-server","command":["echo"]}`,
+		"mcp/my-server.json":             `{"name":"jira","command":["echo"]}`,
 	})
 
 	packs, _, err := resolveStrict(t, ProfileConfig{

@@ -237,6 +237,7 @@ func (d dialogModel) Update(msg tea.Msg) (dialogModel, tea.Cmd) {
 					d.listCursor--
 				}
 			}
+
 		}
 	}
 	return d, nil
@@ -314,6 +315,7 @@ func (d dialogModel) View() string {
 			}
 			content += "\n" + prefix + label + "\n"
 		}
+
 	}
 
 	width := max(lipgloss.Width(content)+6, 30)

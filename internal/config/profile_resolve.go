@@ -29,8 +29,9 @@ type ResolvedPack struct {
 }
 
 type ResolvedMCPServer struct {
-	AllowedTools  []string
-	DisabledTools []string
+	AllowedTools       []string
+	AlwaysAllowedTools []string
+	DisabledTools      []string
 }
 
 // ResolveResult holds the outputs of ResolveProfile.
@@ -222,24 +223,22 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		mcpSelection := packCfg.MCP
 		if len(mcpSelection) == 0 {
 			mcpSelection = map[string]MCPServerConfig{}
-			for name := range manifest.MCP.Servers {
+			for _, name := range manifest.MCP {
 				mcpSelection[name] = MCPServerConfig{Enabled: BoolPtr(true)}
 			}
 		}
+		manifestMCPSet := ToStringSet(manifest.MCP)
 		for name, serverCfg := range mcpSelection {
-			if _, ok := manifest.MCP.Servers[name]; !ok {
+			if !manifestMCPSet[name] {
 				return ResolveResult{}, fmt.Errorf("pack %q references unknown mcp server %q", packName, name)
 			}
 			if !defaultTrue(serverCfg.Enabled) {
 				continue
 			}
-			tools := serverCfg.AllowedTools
-			if len(tools) == 0 {
-				tools = manifest.MCP.Servers[name].DefaultAllowedTools
-			}
 			entry := ResolvedMCPServer{
-				AllowedTools:  normalizeList(tools),
-				DisabledTools: normalizeList(serverCfg.DisabledTools),
+				AllowedTools:       normalizeList(serverCfg.AllowedTools),
+				AlwaysAllowedTools: normalizeList(serverCfg.AlwaysAllowedTools),
+				DisabledTools:      normalizeList(serverCfg.DisabledTools),
 			}
 			packResolved.MCP[name] = entry
 			if prev, ok := seenServers[name]; ok {

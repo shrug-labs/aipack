@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -22,11 +23,29 @@ func TestSelectionsToVector_None(t *testing.T) {
 	t.Parallel()
 	inv := []string{"a", "b", "c"}
 	got := SelectionsToVector(inv, []string{})
-	if got.Include == nil {
-		t.Fatalf("none selected should have Include=&[]string{}")
+	if got.Include != nil {
+		t.Fatalf("none selected must NOT emit Include — empty Include is equivalent to nil (\"include all\") by design for content vectors; got include=%v", *got.Include)
 	}
-	if len(*got.Include) != 0 {
-		t.Fatalf("expected empty include, got %v", *got.Include)
+	if got.Exclude == nil {
+		t.Fatalf("none selected should emit Exclude of full inventory")
+	}
+	if !slices.Equal(*got.Exclude, []string{"a", "b", "c"}) {
+		t.Fatalf("expected exclude=[a,b,c] (sorted full inventory), got %v", *got.Exclude)
+	}
+}
+
+// Ensures the writer never emits a VectorSelector that the resolver would
+// silently read as "include all" when the user's intent is "include none".
+// Regression guard for the TUI-side bug where disabling every skill for a
+// pack produced include: [] in YAML which the content-vector resolver read
+// as "include all".
+func TestSelectionsToVector_NoneRoundTripsToZero(t *testing.T) {
+	t.Parallel()
+	inv := []string{"alpha", "beta", "gamma"}
+	sel := SelectionsToVector(inv, []string{})
+	resolved := ResolveCurrentVector(inv, sel)
+	if len(resolved) != 0 {
+		t.Fatalf("none-selected write+resolve round trip must yield zero items; got %v", resolved)
 	}
 }
 
@@ -92,65 +111,53 @@ func TestSelectionsToVector_Deterministic(t *testing.T) {
 // MCPToConfig tests
 // ---------------------------------------------------------------------------
 
-func TestMCPToConfig_AllDefaults(t *testing.T) {
+func TestMCPToConfig_EnabledServerExplicitTools(t *testing.T) {
 	t.Parallel()
-	manifest := PackManifest{
-		MCP: MCPPack{Servers: map[string]MCPDefaults{
-			"foo": {DefaultAllowedTools: []string{"a", "b"}},
-		}},
-	}
-	got := MCPToConfig(manifest, []string{"foo"}, map[string][]string{"foo": {"a", "b"}})
+	got := MCPToConfig([]string{"foo"}, []string{"foo"}, map[string][]string{"foo": {"b", "a"}}, nil)
 	cfg := got["foo"]
 	if cfg.Enabled == nil || !*cfg.Enabled {
 		t.Fatalf("expected enabled")
 	}
-	if len(cfg.AllowedTools) != 0 {
-		t.Fatalf("expected no AllowedTools when matching defaults, got %v", cfg.AllowedTools)
+	if !reflect.DeepEqual(cfg.AllowedTools, []string{"a", "b"}) {
+		t.Fatalf("expected sorted AllowedTools=[a b], got %v", cfg.AllowedTools)
 	}
 }
 
 func TestMCPToConfig_Disabled(t *testing.T) {
 	t.Parallel()
-	manifest := PackManifest{
-		MCP: MCPPack{Servers: map[string]MCPDefaults{
-			"foo": {DefaultAllowedTools: []string{"a"}},
-		}},
-	}
-	got := MCPToConfig(manifest, []string{}, map[string][]string{})
+	got := MCPToConfig([]string{"foo"}, []string{}, nil, nil)
 	cfg := got["foo"]
 	if cfg.Enabled == nil || *cfg.Enabled {
 		t.Fatalf("expected disabled")
 	}
 }
 
-func TestMCPToConfig_CustomTools(t *testing.T) {
+func TestMCPToConfig_SilentWhenNoToolsProvided(t *testing.T) {
 	t.Parallel()
-	manifest := PackManifest{
-		MCP: MCPPack{Servers: map[string]MCPDefaults{
-			"foo": {DefaultAllowedTools: []string{"a", "b", "c"}},
-		}},
-	}
-	got := MCPToConfig(manifest, []string{"foo"}, map[string][]string{"foo": {"a"}})
+	got := MCPToConfig([]string{"foo"}, []string{"foo"}, nil, nil)
 	cfg := got["foo"]
 	if cfg.Enabled == nil || !*cfg.Enabled {
 		t.Fatalf("expected enabled")
 	}
-	if len(cfg.AllowedTools) != 1 || cfg.AllowedTools[0] != "a" {
-		t.Fatalf("expected AllowedTools=[a], got %v", cfg.AllowedTools)
+	if cfg.AllowedTools != nil || cfg.AlwaysAllowedTools != nil {
+		t.Fatalf("expected silent tool lists; got allowed=%v always=%v", cfg.AllowedTools, cfg.AlwaysAllowedTools)
 	}
 }
 
-func TestMCPToConfig_ToolsMatchDefaults(t *testing.T) {
+func TestMCPToConfig_BothToolLists(t *testing.T) {
 	t.Parallel()
-	manifest := PackManifest{
-		MCP: MCPPack{Servers: map[string]MCPDefaults{
-			"bar": {DefaultAllowedTools: []string{"x", "y"}},
-		}},
-	}
-	got := MCPToConfig(manifest, []string{"bar"}, map[string][]string{"bar": {"y", "x"}})
+	got := MCPToConfig(
+		[]string{"bar"},
+		[]string{"bar"},
+		map[string][]string{"bar": {"a"}},
+		map[string][]string{"bar": {"b"}},
+	)
 	cfg := got["bar"]
-	if len(cfg.AllowedTools) != 0 {
-		t.Fatalf("expected no AllowedTools when matching defaults (even different order), got %v", cfg.AllowedTools)
+	if !reflect.DeepEqual(cfg.AllowedTools, []string{"a"}) {
+		t.Errorf("AllowedTools=%v want [a]", cfg.AllowedTools)
+	}
+	if !reflect.DeepEqual(cfg.AlwaysAllowedTools, []string{"b"}) {
+		t.Errorf("AlwaysAllowedTools=%v want [b]", cfg.AlwaysAllowedTools)
 	}
 }
 

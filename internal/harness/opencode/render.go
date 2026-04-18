@@ -2,6 +2,8 @@ package opencode
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -45,12 +47,24 @@ func buildMCPEntries(servers []domain.MCPServer) (map[string]opencodeMCPEntry, [
 	return mcp, expanded, warnings
 }
 
-func buildToolsMap(servers []domain.MCPServer) map[string]bool {
+// buildToolsMap emits OpenCode's per-tool enable map under the `tools` key.
+// Both AllowedTools and AlwaysAllowedTools union into the same boolean map
+// (both become `true`) because OpenCode's public `tools` field is binary —
+// there is no distinct per-tool auto-approve target yet. When any profiles
+// set AlwaysAllowedTools on OpenCode servers, a single aggregated warning
+// is emitted listing the affected servers so the user knows the auto-approve
+// intent is not enforced per-tool.
+//
+// TODO: confirm upstream per-tool auto-approve syntax (Slack discussion
+// referenced by user, 2026-04-15). Once the target is known, emit distinct
+// JSON for AlwaysAllowedTools instead of folding it into `tools`.
+func buildToolsMap(servers []domain.MCPServer) (map[string]bool, []domain.Warning) {
 	tools := map[string]bool{}
 	prefixSet := map[string]struct{}{}
+	var alwaysAllowServers []string
 	for _, s := range servers {
 		name := engine.NormalizeServerName(s.Name)
-		for _, t := range s.AllowedTools {
+		for _, t := range engine.UnionToolLists(s.AllowedTools, s.AlwaysAllowedTools) {
 			t = strings.TrimSpace(t)
 			if t == "" {
 				continue
@@ -65,11 +79,26 @@ func buildToolsMap(servers []domain.MCPServer) map[string]bool {
 			}
 			tools[name+"_"+t] = false
 		}
+		if len(s.AlwaysAllowedTools) > 0 {
+			alwaysAllowServers = append(alwaysAllowServers, s.Name)
+		}
 	}
 	for p := range prefixSet {
 		tools[p+"_*"] = false
 	}
-	return tools
+	var warnings []domain.Warning
+	if len(alwaysAllowServers) > 0 {
+		slices.Sort(alwaysAllowServers)
+		warnings = append(warnings, domain.Warning{
+			Field: "mcp.always_allowed_tools",
+			Message: fmt.Sprintf(
+				"OpenCode: always_allowed_tools unioned into the legacy `tools` map for: %s. "+
+					"Tools are callable but will prompt per call — per-tool auto-approve rendering is not yet implemented "+
+					"(upstream syntax pending confirmation).",
+				strings.Join(alwaysAllowServers, ", ")),
+		})
+	}
+	return tools, warnings
 }
 
 // RenderBytes produces the full opencode.json content.
@@ -83,7 +112,9 @@ func RenderBytes(base []byte, servers []domain.MCPServer, instr InstructionsSpec
 
 	entries, expanded, warnings := buildMCPEntries(servers)
 	root["mcp"] = entries
-	root["tools"] = buildToolsMap(expanded)
+	toolsMap, toolWarnings := buildToolsMap(expanded)
+	root["tools"] = toolsMap
+	warnings = append(warnings, toolWarnings...)
 	MergeInstructions(root, instr)
 	MergeSkills(root, skills)
 
@@ -100,7 +131,9 @@ func RenderManagedKeysOnly(servers []domain.MCPServer, instr InstructionsSpec, s
 	root := map[string]any{}
 	entries, expanded, warnings := buildMCPEntries(servers)
 	root["mcp"] = entries
-	root["tools"] = buildToolsMap(expanded)
+	toolsMap, toolWarnings := buildToolsMap(expanded)
+	root["tools"] = toolsMap
+	warnings = append(warnings, toolWarnings...)
 
 	if instr.Manage && len(instr.Desired) > 0 {
 		root["instructions"] = instr.Desired

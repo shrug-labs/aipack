@@ -117,10 +117,11 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	var mcpRendered []byte
 	if decision.EmitSettings {
 		base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
-		out, _, err := RenderBytes(base, ctx.Profile.MCPServers, instr, skills)
+		out, renderWarnings, err := RenderBytes(base, ctx.Profile.MCPServers, instr, skills)
 		if err != nil {
 			return fmt.Errorf("render opencode settings: %w", err)
 		}
+		f.Warnings = append(f.Warnings, renderWarnings...)
 		mcpRendered = out
 		f.Settings = append(f.Settings, domain.SettingsAction{
 			Dst: configPath, Desired: out, Harness: domain.HarnessOpenCode,
@@ -128,10 +129,11 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		})
 		f.Desired = append(f.Desired, filepath.Clean(configPath))
 	} else if decision.EmitMCP {
-		managed, _, err := RenderManagedKeysOnly(ctx.Profile.MCPServers, instr, skills)
+		managed, renderWarnings, err := RenderManagedKeysOnly(ctx.Profile.MCPServers, instr, skills)
 		if err != nil {
 			return fmt.Errorf("render opencode managed keys: %w", err)
 		}
+		f.Warnings = append(f.Warnings, renderWarnings...)
 		mcpRendered = managed
 		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst: configPath, Desired: managed, Harness: domain.HarnessOpenCode,

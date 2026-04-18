@@ -22,6 +22,7 @@ func IsMCPLedgerKey(key string) bool {
 // MCP server, excluding runtime-only profile fields.
 func MCPInventoryBytes(server MCPServer) ([]byte, error) {
 	server.AllowedTools = nil
+	server.AlwaysAllowedTools = nil
 	server.DisabledTools = nil
 	server.SourcePack = ""
 	b, err := json.MarshalIndent(server, "", "  ")
@@ -55,13 +56,14 @@ func BuildMCPActions(harnessPath string, harness Harness, servers []MCPServer, e
 			return nil, err
 		}
 		entries = append(entries, MCPAction{
-			Name:         server.Name,
-			ConfigPath:   harnessPath,
-			Content:      content,
-			SourcePack:   server.SourcePack,
-			Harness:      harness,
-			Embedded:     embedded,
-			AllowedTools: append([]string{}, server.AllowedTools...),
+			Name:               server.Name,
+			ConfigPath:         harnessPath,
+			Content:            content,
+			SourcePack:         server.SourcePack,
+			Harness:            harness,
+			Embedded:           embedded,
+			AllowedTools:       append([]string{}, server.AllowedTools...),
+			AlwaysAllowedTools: append([]string{}, server.AlwaysAllowedTools...),
 		})
 	}
 	return entries, nil

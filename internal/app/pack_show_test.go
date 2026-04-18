@@ -50,7 +50,7 @@ func writeShowTestProfileWithDisabled(t *testing.T, configDir, name string, enab
 
 func writeShowTestRegistry(t *testing.T, configDir string, packs map[string]config.RegistryEntry) {
 	t.Helper()
-	reg := config.Registry{SchemaVersion: 1, Packs: packs}
+	reg := config.Registry{SchemaVersion: config.RegistrySchemaVersion, Packs: packs}
 	b, _ := yaml.Marshal(reg)
 	cacheDir := config.RegistriesCacheDir(configDir)
 	os.MkdirAll(cacheDir, 0o700)

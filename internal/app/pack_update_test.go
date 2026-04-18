@@ -245,7 +245,7 @@ func TestPackUpdate_Copy_ReCopies(t *testing.T) {
 	// Set up a source pack with a rule file.
 	packDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "test-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "test-pack", Version: "1.0.0", Root: ".",
 		Rules: []string{"test-rule"},
 	}
 	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
@@ -608,7 +608,7 @@ func TestPackUpdate_Clone_LsRemoteSkippedWhenWithAddsCategory(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "scripts"), 0o700)
 		os.WriteFile(filepath.Join(dir, "scripts", "helper.sh"), []byte("#!/bin/sh\n"), 0o600)
 		config.SavePackManifest(filepath.Join(dir, "pack.json"), config.PackManifest{
-			SchemaVersion: 1, Name: "my-pack", Version: "1.0.0", Root: ".",
+			SchemaVersion: 2, Name: "my-pack", Version: "1.0.0", Root: ".",
 			Extras: []string{"scripts"},
 		})
 	})
@@ -650,7 +650,7 @@ func TestPackUpdate_Clone_UpToDate_WithExtrasRehydrates(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "scripts"), 0o700)
 		os.WriteFile(filepath.Join(dir, "scripts", "helper.sh"), []byte("#!/bin/sh\necho hi\n"), 0o600)
 		config.SavePackManifest(filepath.Join(dir, "pack.json"), config.PackManifest{
-			SchemaVersion: 1, Name: "my-pack", Version: "1.0.0", Root: ".",
+			SchemaVersion: 2, Name: "my-pack", Version: "1.0.0", Root: ".",
 			Extras: []string{"scripts"},
 		})
 	})
@@ -696,7 +696,7 @@ func TestPackUpdate_Copy_PreferencesCarryForward(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "profiles", "dev.yaml"),
 		[]byte("packs:\n  - essentials\n"), 0o644)
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), config.PackManifest{
-		SchemaVersion: 1, Name: "pref-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "pref-pack", Version: "1.0.0", Root: ".",
 		Rules: []string{"rules/init.md"}, Skills: []string{"skills/init.md"},
 		Profiles: []string{"dev"}, Extras: []string{"extras/init.md"},
 	})
@@ -768,7 +768,7 @@ func TestPackUpdate_Copy_CopiesRepoRelativeExtras(t *testing.T) {
 	os.MkdirAll(sharedDir, 0o700)
 	os.WriteFile(filepath.Join(sharedDir, "helper.sh"), []byte("#!/bin/sh\necho hi\n"), 0o600)
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), config.PackManifest{
-		SchemaVersion: 1, Name: "copy-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "copy-pack", Version: "1.0.0", Root: ".",
 		Extras: []string{"../../shared-scripts"},
 	})
 

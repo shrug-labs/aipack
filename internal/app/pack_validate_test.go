@@ -104,7 +104,7 @@ func TestRunPackValidate_TopLevelMarkdownIsScannedForSecrets(t *testing.T) {
 func TestRunPackValidate_DoesNotRequireContentDirectoriesWhenManifestVectorsAreEmpty(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
-	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":1,"name":"demo","version":"0.1.0","root":".","rules":[],"agents":[],"workflows":[],"skills":[],"mcp":{"servers":{}},"configs":{"harness_settings":{}}}`)
+	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":2,"name":"demo","version":"0.1.0","root":".","rules":[],"agents":[],"workflows":[],"skills":[],"mcp":[],"configs":{"harness_settings":{}}}`)
 
 	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
 	if !rep.OK {
@@ -166,7 +166,7 @@ func TestRunPackValidate_RejectsRealSecretsInMarkdown(t *testing.T) {
 func writePackValidateFixture(t *testing.T) string {
 	t.Helper()
 	packDir := t.TempDir()
-	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":1,"name":"demo","version":"0.1.0","root":".","rules":[],"agents":[],"workflows":[],"skills":[],"mcp":{"servers":{}},"configs":{"harness_settings":{}}}`)
+	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":2,"name":"demo","version":"0.1.0","root":".","rules":[],"agents":[],"workflows":[],"skills":[],"mcp":[],"configs":{"harness_settings":{}}}`)
 	if err := os.MkdirAll(filepath.Join(packDir, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func writePackValidateFixture(t *testing.T) string {
 func TestRunPackValidate_FrontmatterMissingDescription(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
-	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":1,"name":"demo","root":".","rules":["no-desc"],"agents":[],"workflows":[],"skills":[]}`)
+	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":2,"name":"demo","root":".","rules":["no-desc"],"agents":[],"workflows":[],"skills":[]}`)
 	writeFile(t, filepath.Join(packDir, "rules", "no-desc.md"), "---\nname: no-desc\n---\nbody\n")
 
 	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
@@ -206,7 +206,7 @@ func TestRunPackValidate_FrontmatterMissingDescription(t *testing.T) {
 func TestRunPackValidate_AgentUnknownMCPServer(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
-	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":1,"name":"demo","root":".","rules":[],"agents":["bad"],"workflows":[],"skills":[],"mcp":{"servers":{}}}`)
+	writeFile(t, filepath.Join(packDir, "pack.json"), `{"schema_version":2,"name":"demo","root":".","rules":[],"agents":["bad"],"workflows":[],"skills":[],"mcp":[]}`)
 	writeFile(t, filepath.Join(packDir, "agents", "bad.md"), "---\nname: bad\ndescription: test\nmcp_servers:\n  - nonexistent\n---\nbody\n")
 
 	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
@@ -225,7 +225,7 @@ func TestRunPackValidate_AgentUnknownFieldEmitsWarning(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
 	writeFile(t, filepath.Join(packDir, "pack.json"),
-		`{"schema_version":1,"name":"demo","root":".","rules":[],"agents":["typo"],"workflows":[],"skills":[]}`)
+		`{"schema_version":2,"name":"demo","root":".","rules":[],"agents":["typo"],"workflows":[],"skills":[]}`)
 	writeFile(t, filepath.Join(packDir, "agents", "typo.md"),
 		"---\nname: typo\ndescription: test\ndissallowed_tools:\n  - Bash\n---\nbody\n")
 
@@ -246,7 +246,7 @@ func TestRunPackValidate_MalformedFrontmatterEmitsWarning(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
 	writeFile(t, filepath.Join(packDir, "pack.json"),
-		`{"schema_version":1,"name":"demo","root":".","rules":[],"agents":["bad"],"workflows":[],"skills":[]}`)
+		`{"schema_version":2,"name":"demo","root":".","rules":[],"agents":["bad"],"workflows":[],"skills":[]}`)
 	// tools should be a list, not a string — yaml.Unmarshal will error
 	writeFile(t, filepath.Join(packDir, "agents", "bad.md"),
 		"---\nname: bad\ndescription: test\ntools: not-a-list\n---\nbody\n")
@@ -267,7 +267,7 @@ func TestRunPackValidate_EmptyFrontmatterBlockEmitsWarning(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
 	writeFile(t, filepath.Join(packDir, "pack.json"),
-		`{"schema_version":1,"name":"demo","root":".","rules":["empty-fm"],"agents":[],"workflows":[],"skills":[]}`)
+		`{"schema_version":2,"name":"demo","root":".","rules":["empty-fm"],"agents":[],"workflows":[],"skills":[]}`)
 	// Frontmatter markers present but no content between them — unclosed delimiter.
 	writeFile(t, filepath.Join(packDir, "rules", "empty-fm.md"), "---\nname: broken\nbody\n")
 
@@ -400,7 +400,7 @@ func TestRunPackValidate_Extras(t *testing.T) {
 			t.Parallel()
 			packDir := t.TempDir()
 			writeFile(t, filepath.Join(packDir, "pack.json"),
-				`{"schema_version":1,"name":"test","root":".","extras":`+tt.extras+`}`)
+				`{"schema_version":2,"name":"test","root":".","extras":`+tt.extras+`}`)
 			if tt.setup != nil {
 				tt.setup(t, packDir)
 			}

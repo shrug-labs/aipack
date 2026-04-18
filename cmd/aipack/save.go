@@ -80,6 +80,9 @@ func (c *SaveCmd) Help() string {
 Round-trip (default): Requires a profile. Compares current harness files against
 the ledger written by the last sync. Changed files are written back to their
 source pack. Settings files require --force or are reported as "pending".
+Tool permissions observed in the harness config (MCP allow / deny lists) are
+not captured back — the profile is the sole source of truth for permission
+policy. Adjust permissions through the profile or aipack manage's tool picker.
 
 To-pack (--to-pack NAME): Captures harness content and saves it to the named
 installed pack. If the pack does not exist, scaffolds a new pack directory and

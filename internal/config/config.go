@@ -52,9 +52,38 @@ type VectorSelector struct {
 }
 
 type MCPServerConfig struct {
-	Enabled       *bool    `yaml:"enabled"`
-	AllowedTools  []string `yaml:"allowed_tools"`
-	DisabledTools []string `yaml:"disabled_tools"`
+	Enabled            *bool    `yaml:"enabled"`
+	AllowedTools       []string `yaml:"allowed_tools,omitempty"`
+	AlwaysAllowedTools []string `yaml:"always_allowed_tools,omitempty"`
+	DisabledTools      []string `yaml:"disabled_tools,omitempty"`
+}
+
+type mcpServerConfigYAML struct {
+	Enabled            *bool     `yaml:"enabled"`
+	AllowedTools       *[]string `yaml:"allowed_tools,omitempty"`
+	AlwaysAllowedTools *[]string `yaml:"always_allowed_tools,omitempty"`
+	DisabledTools      []string  `yaml:"disabled_tools,omitempty"`
+}
+
+// MarshalYAML omits empty tool-list slices so they fall back to manifest
+// defaults on reload. A nil or empty slice both serialize as "field absent";
+// only non-empty slices are written. Users who want no tools from a server
+// should disable it (enabled: false) rather than relying on an explicit
+// empty list.
+func (c MCPServerConfig) MarshalYAML() (any, error) {
+	out := mcpServerConfigYAML{
+		Enabled:       c.Enabled,
+		DisabledTools: c.DisabledTools,
+	}
+	if len(c.AllowedTools) > 0 {
+		tools := append([]string{}, c.AllowedTools...)
+		out.AllowedTools = &tools
+	}
+	if len(c.AlwaysAllowedTools) > 0 {
+		tools := append([]string{}, c.AlwaysAllowedTools...)
+		out.AlwaysAllowedTools = &tools
+	}
+	return out, nil
 }
 
 type Overrides struct {

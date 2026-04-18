@@ -449,8 +449,138 @@ func TestDialogHelpText(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// dialogChecklist
+// toolPicker
 // ---------------------------------------------------------------------------
+
+func TestToolPicker_SpaceCycles(t *testing.T) {
+	t.Parallel()
+	items := []toolPickerItem{
+		{label: "read", state: triOff},
+		{label: "write", state: triAsk},
+	}
+	p := newToolPicker("test", "Tools:", items)
+
+	// Space on cursor 0 (triOff) → triAsk.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if p.items[0].state != triAsk {
+		t.Errorf("after 1 space: state = %v, want triAsk", p.items[0].state)
+	}
+	// → triAuto.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if p.items[0].state != triAuto {
+		t.Errorf("after 2 space: state = %v, want triAuto", p.items[0].state)
+	}
+	// → triOff (wrap).
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if p.items[0].state != triOff {
+		t.Errorf("after 3 space: state = %v, want triOff (wrap)", p.items[0].state)
+	}
+}
+
+func TestToolPicker_ShortcutsJumpToStates(t *testing.T) {
+	t.Parallel()
+	items := []toolPickerItem{{label: "read", state: triOff}}
+	p := newToolPicker("test", "Tools:", items)
+
+	// 'A' → triAuto.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	if p.items[0].state != triAuto {
+		t.Errorf("'A' should jump to triAuto, got %v", p.items[0].state)
+	}
+	// 'a' → triAsk.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if p.items[0].state != triAsk {
+		t.Errorf("'a' should jump to triAsk, got %v", p.items[0].state)
+	}
+	// 'x' → triOff.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if p.items[0].state != triOff {
+		t.Errorf("'x' should jump to triOff, got %v", p.items[0].state)
+	}
+}
+
+func TestToolPicker_EnterPartitionsResult(t *testing.T) {
+	t.Parallel()
+	items := []toolPickerItem{
+		{label: "alpha", state: triAsk},
+		{label: "beta", state: triOff},
+		{label: "gamma", state: triAuto},
+		{label: "delta", state: triAsk},
+	}
+	p := newToolPicker("test", "Tools:", items)
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter should produce a command")
+	}
+	result := cmd().(toolPickerResultMsg)
+	if !result.confirmed {
+		t.Fatal("enter should confirm")
+	}
+	// "ask" → ask, preserving input order.
+	if len(result.ask) != 2 || result.ask[0] != "alpha" || result.ask[1] != "delta" {
+		t.Errorf("ask = %v, want [alpha delta]", result.ask)
+	}
+	if len(result.auto) != 1 || result.auto[0] != "gamma" {
+		t.Errorf("auto = %v, want [gamma]", result.auto)
+	}
+	// "off" tools are absent from both slices.
+}
+
+func TestToolPicker_EscSaves(t *testing.T) {
+	t.Parallel()
+	items := []toolPickerItem{{label: "alpha", state: triAuto}}
+	p := newToolPicker("test", "Tools:", items)
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	result := cmd().(toolPickerResultMsg)
+	if !result.confirmed {
+		t.Error("esc should save (confirmed=true) — no cancel in the tool picker")
+	}
+	if len(result.auto) != 1 || result.auto[0] != "alpha" {
+		t.Errorf("esc should preserve state: auto = %v, want [alpha]", result.auto)
+	}
+}
+
+func TestToolPicker_NavigationBounded(t *testing.T) {
+	t.Parallel()
+	items := []toolPickerItem{
+		{label: "a"},
+		{label: "b"},
+		{label: "c"},
+	}
+	p := newToolPicker("test", "Tools:", items)
+
+	for range 5 {
+		p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
+	if p.cursor != 2 {
+		t.Errorf("cursor stuck at %d after 5 'j', want 2", p.cursor)
+	}
+	for range 5 {
+		p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	}
+	if p.cursor != 0 {
+		t.Errorf("cursor = %d after 5 'k', want 0", p.cursor)
+	}
+}
+
+func TestToolPicker_View_AutoRendersSolidMarker(t *testing.T) {
+	t.Parallel()
+	items := []toolPickerItem{
+		{label: "a", state: triAuto},
+		{label: "b", state: triAuto},
+	}
+	p := newToolPicker("test", "Tools:", items)
+	view := p.View()
+	if !strings.Contains(view, "[■]") {
+		t.Errorf("all-auto view should show solid-box markers, got:\n%s", view)
+	}
+	// The picker writes literal sorted lists; no sentinel is emitted.
+	if strings.Contains(view, `"*"`) {
+		t.Errorf("view should not mention a [\"*\"] sentinel, got:\n%s", view)
+	}
+}
 
 func TestChecklistDialog_SpaceToggles(t *testing.T) {
 	t.Parallel()
@@ -703,7 +833,7 @@ func TestBundledCandidatesDialog_ConfirmRehydratesApprovedContent(t *testing.T) 
 		t.Fatal(err)
 	}
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "copy-pack",
 		Version:       "1.0.0",
 		Root:          ".",

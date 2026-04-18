@@ -124,6 +124,20 @@ func NormalizeScope(scope string) (domain.Scope, error) {
 	return "", fmt.Errorf("unknown scope %q (expected %q or %q)", scope, domain.ScopeProject, domain.ScopeGlobal)
 }
 
+// ResolveProfileName returns the effective profile name from an explicit
+// flag value and sync-config defaults, falling back to "default". The
+// explicit flag wins over the sync-config default; the hardcoded "default"
+// ensures commands that don't require a flag still land on a concrete name.
+func ResolveProfileName(explicit string, sc config.SyncConfig) string {
+	if explicit != "" {
+		return explicit
+	}
+	if sc.Defaults.Profile != "" {
+		return sc.Defaults.Profile
+	}
+	return "default"
+}
+
 // ResolveConfigDir returns the config dir, using the default if empty.
 func ResolveConfigDir(configDir string, home string) (string, error) {
 	if configDir != "" {

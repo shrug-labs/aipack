@@ -53,7 +53,7 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "my-pack",
   "version": "2026.03.12",
   "root": "."
@@ -64,7 +64,7 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `schema_version` | integer | Currently `1`. Must be a positive integer. |
+| `schema_version` | integer | `2` for current packs (flat `mcp` array). `1` is the pre-v0.23 shape with nested `mcp: { servers: { ... } }` and is still accepted. The shape of `mcp` is strictly tied to the version — a mismatch is rejected at parse time. |
 | `name` | string | Pack identifier (must match directory name) |
 | `root` | string | Base path for content resolution (typically `"."`) |
 
@@ -78,7 +78,7 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | `workflows` | string[] | Explicit workflow IDs. If omitted, auto-discovered from `workflows/*.md` |
 | `skills` | string[] | Explicit skill IDs. If omitted, auto-discovered from `skills/*/SKILL.md` |
 | `prompts` | string[] | Local prompt library IDs. Not synced to harnesses — used for pack-internal prompt management only. |
-| `mcp` | object | MCP server defaults (see [Section 6](#6-mcp-servers)) |
+| `mcp` | string[] | Explicit MCP server IDs. If omitted, auto-discovered from `mcp/*.json`. See [Section 6](#6-mcp-servers). |
 | `configs` | object | Harness settings and plugin inventory (see [Section 7](#7-configurations)) |
 | `profiles` | string[] | Profile IDs. If omitted, auto-discovered from `profiles/*.yaml` |
 | `registries` | string[] | Registry IDs. If omitted, auto-discovered from `registries/*.yaml` |
@@ -96,6 +96,7 @@ When a content vector field is **empty** — omitted, null, or an empty array �
 | Skills | `skills/*/SKILL.md` (subdirectories containing a `SKILL.md` entry point) |
 | Profiles | `profiles/*.yaml` |
 | Registries | `registries/*.yaml` |
+| MCP | `mcp/*.json` |
 
 An **explicit non-empty array** (`"rules": ["rule-one", "rule-two"]`) acts as a filter — only listed IDs are included, even if the directory contains more files.
 
@@ -379,28 +380,24 @@ A formal JSON Schema is available at [`mcp-server.schema.json`](../schemas/mcp-s
 | `env` | object | No | Environment variables passed to the server process |
 | `url` | string | SSE/HTTP only | Server endpoint URL |
 | `headers` | object | No | HTTP headers (SSE/HTTP transports) |
-| `available_tools` | string[] | No | Complete inventory of tools the server provides |
+| `available_tools` | string[] | No | Complete inventory of tools the server provides. Populate or refresh with `aipack mcp inspect-tools <server> --save`. |
 | `links` | string[] | No | Documentation URLs (metadata, not synced to harness) |
 | `auth` | string | No | Authentication notes (metadata, not synced to harness) |
 | `notes` | string | No | Human-readable notes (metadata, not synced to harness) |
 
 ### Tool allowlists
 
-The `available_tools` field serves as a complete tool inventory. In the manifest, `mcp.servers.<name>.default_allowed_tools` defines which tools are enabled by default:
+The pack manifest's `mcp` field is a flat list of server IDs. The pack declares *what* servers exist; *which tools are granted* is a profile decision. If omitted, the field is auto-discovered from `mcp/*.json`.
 
 ```json
 {
-  "mcp": {
-    "servers": {
-      "my-server": {
-        "default_allowed_tools": ["tool_one", "tool_two"]
-      }
-    }
-  }
+  "mcp": ["my-server", "another-server"]
 }
 ```
 
-Profiles can override allowed tools per server (see [Profiles — MCP server overrides](./profiles.md#mcp-server-overrides)).
+Tool permissions are configured in profiles, not the manifest. See [Profiles — MCP server overrides](./profiles.md#mcp-server-overrides).
+
+A silent profile (no `allowed_tools`, `always_allowed_tools`, or `disabled_tools` entries for a server) maps to "no allow list emitted" at the harness — the harness's native default (ask per call) applies. Packs that want to ship opinionated defaults do so through a bundled profile (`profiles/default.yaml`), not the manifest.
 
 ## 7. Configurations
 
@@ -553,29 +550,11 @@ Per-harness rendering details (file paths, config formats, merge behavior) are d
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "team-ops",
   "version": "2026.03.12",
   "root": ".",
-  "mcp": {
-    "servers": {
-      "atlassian": {
-        "default_allowed_tools": [
-          "confluence_search",
-          "confluence_get_page",
-          "jira_search",
-          "jira_get_issue"
-        ]
-      },
-      "deploy-tool": {
-        "default_allowed_tools": [
-          "get_alarms",
-          "search_logs",
-          "get_metrics"
-        ]
-      }
-    }
-  },
+  "mcp": ["atlassian", "deploy-tool"],
   "configs": {
     "harness_settings": {
       "claudecode": ["settings.local.json"],
@@ -607,7 +586,7 @@ minimal-pack/
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "minimal-pack",
   "root": "."
 }
@@ -654,7 +633,7 @@ Add a `$schema` reference to enable editor autocomplete and validation:
 ```json
 {
   "$schema": "../schemas/pack.schema.json",
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "my-pack",
   "root": "."
 }

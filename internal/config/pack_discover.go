@@ -117,5 +117,12 @@ func DiscoverContent(m *PackManifest, packRoot string) error {
 		}
 		m.Registries = ids
 	}
+	if len(m.MCP) == 0 {
+		ids, err := DiscoverIDs(filepath.Join(packRoot, "mcp"), ".json")
+		if err != nil {
+			return err
+		}
+		m.MCP = ids
+	}
 	return nil
 }

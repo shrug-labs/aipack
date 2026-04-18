@@ -36,7 +36,7 @@ func TestResolveActiveProfile_UsesLockfileInventoriesForDriftedRefs(t *testing.T
 
 	// Current pack inventory has only kept-rule.
 	packRoot := filepath.Join(configDir, "packs", "test-pack")
-	if err := writeTestFile(filepath.Join(packRoot, "pack.json"), `{"schema_version":1,"name":"test-pack","version":"1.0.0","root":".","rules":["kept-rule"]}`); err != nil {
+	if err := writeTestFile(filepath.Join(packRoot, "pack.json"), `{"schema_version":2,"name":"test-pack","version":"1.0.0","root":".","rules":["kept-rule"]}`); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeTestFile(filepath.Join(packRoot, "rules", "kept-rule.md"), "---\nname: kept-rule\n---\nbody\n"); err != nil {

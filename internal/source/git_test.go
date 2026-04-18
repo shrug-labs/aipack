@@ -389,26 +389,39 @@ func TestCheckGit_Available(t *testing.T) {
 // that TUI/app callers depend on: when gitLsRemoteRaw's subprocess fails,
 // the returned error's Error() string must contain the actual stderr text,
 // not just "exit status 128". Without this, pattern-based error classifiers
-// downstream (e.g. the packs-tab recovery hint) would never see the ssh/git
+// downstream (e.g. the packs-tab recovery hint) would never see the git
 // message text they need to match on.
 //
-// Uses ssh://127.0.0.1:1/ — port 1 is IANA-assigned tcpmux but in practice
-// never listens, so the TCP connect attempt fails in ~60 ms via loopback
-// RST with no DNS dependency, no external network, and no flake risk on
-// machines with misconfigured resolvers.
+// Triggers the failure via a nonexistent filesystem path. git treats a
+// non-URL string as a local transport and fails with a stable error
+// message ("does not appear to be a git repository" / "Could not read
+// from remote repository") across every git version since ~2010. This
+// avoids any dependency on the SSH client — earlier revisions of this
+// test used ssh://127.0.0.1:1/ and asserted on "Connection refused",
+// which broke on build environments with OpenSSH older than 7.6 that
+// reject the StrictHostKeyChecking=accept-new option aipack sets in
+// nonInteractiveGitEnv(). The filesystem trigger is faster, hermetic,
+// and exercises the same error-surfacing code path in gitLsRemoteRaw.
 func TestListRemoteTags_ErrorSurfacesStderr(t *testing.T) {
 	t.Parallel()
-	_, err := ListRemoteTags(context.Background(), "ssh://127.0.0.1:1/foo.git")
+	bogusPath := filepath.Join(t.TempDir(), "nonexistent-probe.git")
+	_, err := ListRemoteTags(context.Background(), bogusPath)
 	if err == nil {
-		t.Fatal("expected error connecting to a port with no listener")
+		t.Fatal("expected error listing tags from a nonexistent path")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "Connection refused") {
-		t.Errorf("error message should include ssh stderr (looking for \"Connection refused\"), got %q", msg)
+	// Our error wrapper prefix must be present — proves the error
+	// went through the formatting path, not just the raw *exec.ExitError.
+	if !strings.Contains(msg, "git ls-remote") {
+		t.Errorf("error message should include command context, got %q", msg)
 	}
-	if !strings.Contains(msg, "port 1") {
-		t.Errorf("error message should include the target port, got %q", msg)
+	// Real git stderr must be surfaced. Either phrase proves the subprocess
+	// output was captured; git typically emits both.
+	if !strings.Contains(msg, "does not appear to be a git repository") &&
+		!strings.Contains(msg, "Could not read from remote repository") {
+		t.Errorf("error message should include git stderr, got %q", msg)
 	}
+	// Must be more than the bare "exit status N" wrapper.
 	if strings.HasSuffix(msg, "exit status 128") {
 		t.Errorf("error message should contain stderr, not just the exit status suffix, got %q", msg)
 	}

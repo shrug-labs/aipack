@@ -129,7 +129,7 @@ func PackCreate(req PackCreateRequest) error {
 	// When content sources are provided, discover now so the manifest
 	// reflects what's actually linked.
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: config.PackSchemaVersion,
 		Name:          req.Name,
 		Version:       "0.1.0",
 		Root:          ".",

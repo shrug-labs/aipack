@@ -77,21 +77,20 @@ func (e *Engine) buildPackInventory(configDir string, pk domain.Pack, now time.T
 		}
 	}
 
-	if len(manifest.MCP.Servers) > 0 {
+	if len(manifest.MCP) > 0 {
 		rawServers, err := e.loadMCPInventoryDir(filepath.Join(packRoot, "mcp"))
 		if err != nil {
 			return domain.PackInventory{}, fmt.Errorf("loading mcp inventory for pack %q: %w", pk.Name, err)
 		}
-		inv.MCPServers = make(map[string]domain.MCPServerSnapshot, len(manifest.MCP.Servers))
-		for name, def := range manifest.MCP.Servers {
+		inv.MCPServers = make(map[string]domain.MCPServerSnapshot, len(manifest.MCP))
+		for _, name := range manifest.MCP {
 			server, ok := rawServers[NormalizeServerName(name)]
 			if !ok {
 				return domain.PackInventory{}, fmt.Errorf("pack %q mcp server %q missing from inventory", pk.Name, name)
 			}
 			inv.MCPServers[name] = domain.MCPServerSnapshot{
-				AvailableTools:      domain.SortedCopy(server.AvailableTools),
-				RequiredRefs:        extractRequiredRefs(server),
-				DefaultAllowedTools: domain.SortedCopy(def.DefaultAllowedTools),
+				AvailableTools: domain.SortedCopy(server.AvailableTools),
+				RequiredRefs:   extractRequiredRefs(server),
 			}
 		}
 	}

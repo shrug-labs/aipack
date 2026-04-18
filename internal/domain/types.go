@@ -82,13 +82,13 @@ const (
 // Settings is excluded — it is not user-authored pack content but rather
 // harness configuration derived from MCP server definitions and settings packs.
 func AllPackCategories() []PackCategory {
-	return []PackCategory{CategoryRules, CategoryAgents, CategoryWorkflows, CategorySkills, CategoryMCP}
+	return []PackCategory{CategoryAgents, CategoryMCP, CategoryPrompts, CategoryRules, CategorySkills, CategoryWorkflows}
 }
 
 // AuthoredCategories returns the subset of categories that have authored
 // markdown files with YAML frontmatter (i.e. everything except MCP).
 func AuthoredCategories() []PackCategory {
-	return []PackCategory{CategoryRules, CategoryAgents, CategoryWorkflows, CategorySkills}
+	return []PackCategory{CategoryAgents, CategoryRules, CategorySkills, CategoryWorkflows}
 }
 
 // IsAuthored returns true for categories with authored markdown+frontmatter files.

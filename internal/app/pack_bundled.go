@@ -290,8 +290,8 @@ func packPreviewBundled(packDir string, manifest config.PackManifest, stdout io.
 	if len(manifest.Prompts) > 0 {
 		contentDirs = append(contentDirs, fmt.Sprintf("%d prompts", len(manifest.Prompts)))
 	}
-	if len(manifest.MCP.Servers) > 0 {
-		contentDirs = append(contentDirs, fmt.Sprintf("%d MCP servers", len(manifest.MCP.Servers)))
+	if len(manifest.MCP) > 0 {
+		contentDirs = append(contentDirs, fmt.Sprintf("%d MCP servers", len(manifest.MCP)))
 	}
 	if manifest.Configs.HasAnyConfigs() {
 		contentDirs = append(contentDirs, "harness configs")

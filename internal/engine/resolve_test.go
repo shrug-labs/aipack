@@ -24,7 +24,7 @@ func createTestPack(t *testing.T, configDir string) string {
 
 	// Pack manifest.
 	manifest := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test-pack",
 		Version:       "0.1.0",
 		Root:          ".",
@@ -195,7 +195,7 @@ func TestResolve_MultiPack(t *testing.T) {
 
 	// Pack A manifest.
 	writeManifest(t, pack1, config.PackManifest{
-		SchemaVersion: 1, Name: "pack-a", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "pack-a", Version: "1.0.0", Root: ".",
 		Rules: []string{"rule-a"}, Agents: []string{"agent-a"},
 	})
 	if err := os.WriteFile(filepath.Join(pack1, "rules", "rule-a.md"), []byte("Rule A body\n"), 0o644); err != nil {
@@ -207,7 +207,7 @@ func TestResolve_MultiPack(t *testing.T) {
 
 	// Pack B manifest.
 	writeManifest(t, pack2, config.PackManifest{
-		SchemaVersion: 1, Name: "pack-b", Version: "2.0.0", Root: ".",
+		SchemaVersion: 2, Name: "pack-b", Version: "2.0.0", Root: ".",
 		Rules: []string{"rule-b"},
 	})
 	if err := os.WriteFile(filepath.Join(pack2, "rules", "rule-b.md"), []byte("---\ndescription: Rule B\n---\nRule B body\n"), 0o644); err != nil {
@@ -267,18 +267,14 @@ func TestResolve_WithMCPServers(t *testing.T) {
 	}
 
 	// MCP server definition.
-	mcpDef := `{"name": "myserver", "transport": "stdio", "command": ["node", "server.js"], "env": {"API_KEY": "{params.api_key}"}, "available_tools": ["tool-a", "tool-b"]}`
-	if err := os.WriteFile(filepath.Join(packDir, "mcp", "myserver.json"), []byte(mcpDef), 0o644); err != nil {
+	mcpDef := `{"name": "srv-a", "transport": "stdio", "command": ["node", "server.js"], "env": {"API_KEY": "{params.api_key}"}, "available_tools": ["tool-a", "tool-b"]}`
+	if err := os.WriteFile(filepath.Join(packDir, "mcp", "srv-a.json"), []byte(mcpDef), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	writeManifest(t, packDir, config.PackManifest{
-		SchemaVersion: 1, Name: "pack-mcp", Version: "1.0.0", Root: ".",
-		MCP: config.MCPPack{
-			Servers: map[string]config.MCPDefaults{
-				"myserver": {DefaultAllowedTools: []string{"tool-a"}},
-			},
-		},
+		SchemaVersion: 2, Name: "pack-mcp", Version: "1.0.0", Root: ".",
+		MCP: []string{"srv-a"},
 	})
 
 	enabled := true
@@ -289,7 +285,7 @@ func TestResolve_WithMCPServers(t *testing.T) {
 			{
 				Name: "pack-mcp",
 				MCP: map[string]config.MCPServerConfig{
-					"myserver": {Enabled: &enabled, AllowedTools: []string{"tool-a", "tool-b"}},
+					"srv-a": {Enabled: &enabled, AllowedTools: []string{"tool-a", "tool-b"}},
 				},
 			},
 		},
@@ -304,7 +300,7 @@ func TestResolve_WithMCPServers(t *testing.T) {
 		t.Fatalf("MCPServers = %d, want 1", len(profile.MCPServers))
 	}
 	srv := profile.MCPServers[0]
-	if srv.Name != "myserver" {
+	if srv.Name != "srv-a" {
 		t.Errorf("MCPServer.Name = %q", srv.Name)
 	}
 	// Globals should be expanded in env.
@@ -349,27 +345,27 @@ func TestResolve_MCPPackRootExpandsToAbsolutePath(t *testing.T) {
 	t.Parallel()
 	eng := New(nil, nil)
 	dir := t.TempDir()
-	packDir := filepath.Join(dir, "packs", "wrapped")
+	packDir := filepath.Join(dir, "packs", "my-pack")
 	for _, sub := range []string{"mcp", "wrappers"} {
 		os.MkdirAll(filepath.Join(packDir, sub), 0o755)
 	}
 	writeManifest(t, packDir, config.PackManifest{
-		SchemaVersion: 1, Name: "wrapped", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "my-pack", Version: "1", Root: ".",
 		Extras: []string{"wrappers"},
-		MCP:    config.MCPPack{Servers: map[string]config.MCPDefaults{"proxy": {}}},
+		MCP:    []string{"srv-a"},
 	})
 	os.WriteFile(filepath.Join(packDir, "wrappers", "proxy.py"),
 		[]byte("#!/usr/bin/env python3\n"), 0o644)
-	os.WriteFile(filepath.Join(packDir, "mcp", "proxy.json"), []byte(`{
-		"name": "proxy",
+	os.WriteFile(filepath.Join(packDir, "mcp", "srv-a.json"), []byte(`{
+		"name": "srv-a",
 		"command": ["python3", "{pack:root}/wrappers/proxy.py", "--port", "8080"]
 	}`), 0o644)
 
 	profile, warnings, err := eng.Resolve(config.ProfileConfig{
 		SchemaVersion: config.ProfileSchemaVersion,
 		Packs: []config.PackEntry{{
-			Name: "wrapped",
-			MCP:  map[string]config.MCPServerConfig{"proxy": {Enabled: config.BoolPtr(true)}},
+			Name: "my-pack",
+			MCP:  map[string]config.MCPServerConfig{"srv-a": {Enabled: config.BoolPtr(true)}},
 		}},
 	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError, nil)
 	if err != nil {
@@ -398,11 +394,11 @@ func TestResolve_ProfileParamsExpandInMCPCommand(t *testing.T) {
 	packDir := filepath.Join(dir, "packs", "parameterized")
 	os.MkdirAll(filepath.Join(packDir, "mcp"), 0o755)
 	writeManifest(t, packDir, config.PackManifest{
-		SchemaVersion: 1, Name: "parameterized", Version: "1", Root: ".",
-		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{"pypi": {}}},
+		SchemaVersion: 2, Name: "parameterized", Version: "1", Root: ".",
+		MCP: []string{"srv-a"},
 	})
-	os.WriteFile(filepath.Join(packDir, "mcp", "pypi.json"), []byte(`{
-		"name": "pypi",
+	os.WriteFile(filepath.Join(packDir, "mcp", "srv-a.json"), []byte(`{
+		"name": "srv-a",
 		"command": ["uv", "run", "--default-index", "{params.pypi_url}", "pypi-mcp"],
 		"env": {"INDEX_URL": "{params.pypi_url}"}
 	}`), 0o644)
@@ -412,7 +408,7 @@ func TestResolve_ProfileParamsExpandInMCPCommand(t *testing.T) {
 		Params:        map[string]string{"pypi_url": "https://pypi.internal.example.com/simple"},
 		Packs: []config.PackEntry{{
 			Name: "parameterized",
-			MCP:  map[string]config.MCPServerConfig{"pypi": {Enabled: config.BoolPtr(true)}},
+			MCP:  map[string]config.MCPServerConfig{"srv-a": {Enabled: config.BoolPtr(true)}},
 		}},
 	}, filepath.Join(dir, "p.yaml"), dir, config.CollisionError, nil)
 	if err != nil {
@@ -440,11 +436,8 @@ func TestResolve_UnresolvableEnvSkipsServerOthersSurvive(t *testing.T) {
 	packDir := filepath.Join(dir, "packs", "mixed-env")
 	os.MkdirAll(filepath.Join(packDir, "mcp"), 0o755)
 	writeManifest(t, packDir, config.PackManifest{
-		SchemaVersion: 1, Name: "mixed-env", Version: "1", Root: ".",
-		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{
-			"needs-token": {},
-			"standalone":  {},
-		}},
+		SchemaVersion: 2, Name: "mixed-env", Version: "1", Root: ".",
+		MCP: []string{"needs-token", "standalone"},
 	})
 	os.WriteFile(filepath.Join(packDir, "mcp", "needs-token.json"), []byte(`{
 		"name": "needs-token",
@@ -500,9 +493,9 @@ func TestResolve_DiscoveryNilPopulatesEmptyArrayOpts(t *testing.T) {
 	// Manifest: Rules nil (discover), Agents empty (also discover — empty
 	// arrays trigger auto-discovery the same as nil/omitted).
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "discovery", Version: "1", Root: ".",
+		SchemaVersion: 2, Name: "discovery", Version: "1", Root: ".",
 		Agents: []string{}, // empty = also triggers discovery
-		MCP:    config.MCPPack{Servers: map[string]config.MCPDefaults{}},
+		MCP:    []string{},
 	}
 	writeManifest(t, packDir, manifest)
 

@@ -137,9 +137,19 @@ Unit tests in each package follow standard Go conventions. `internal/app/` tests
 | Config directory layout or sync-config schema | `docs/configuration.md` |
 | Collision strategy or profile resolution behavior | `docs/configuration.md` + `docs/profiles.md` |
 | Manifest fields or content discovery | `internal/config/pack_discover.go` + `docs/pack-format.md` |
+| User-facing CLI vocabulary (flag renames, new `pack` subcommands, lockfile/sync-config layout) | `shrug-labs/packs` → `aipack-core/skills/aipack-system/SKILL.md` tables |
 
 ### Release process
 
 `VERSION` is the source of truth. Full process in `RELEASING.md`: bump VERSION → update CHANGELOG → verify (`make fmt-check && make test && go vet ./... && make dist`) → commit → tag `vX.Y.Z` → push tag. The tag triggers CI to build and publish release assets.
 
 Run release `make` targets (`dist`, `release-tag-check`) from the repo root — they silently produce wrong output from any other directory.
+
+**Before tagging, scan the `aipack-core` pack content for stale CLI references.** The `aipack-core` pack (in the `shrug-labs/packs` repo) documents aipack's CLI surface in `skills/aipack-system/SKILL.md` — command tables, flag syntax, lockfile/sync-config routing, version pinning forms. Any release that renames a flag, adds a subcommand, or changes user-facing config layout needs a matching edit there. Recurring miss: each aipack minor release has drifted the pack content at least once (v0.21 lockfile table, v0.22 `--ref`/`--version` table). Fast scan:
+
+```bash
+# From ~/src/gh/shrug-labs/packs (or wherever the packs repo is cloned):
+grep -rn "installed_packs\|sync-config\|pack install\|pack update\|aipack\.lock\|--version\|--ref\|pack versions" aipack-core/ | grep -v "test\|fixture"
+```
+
+Verify each hit against the new binary by running `go run ./cmd/aipack <cmd> --help` from this repo — use the source-tree binary so you see current behavior, not whatever `~/.local/bin/aipack` has cached.

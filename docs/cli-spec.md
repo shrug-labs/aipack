@@ -1,6 +1,6 @@
 # CLI Specification
 
-Version: 0.18.0
+Version: 0.22.0
 
 Machine-readable output contracts for the aipack CLI. This document defines the JSON shapes that `--json` commands emit — the public interface for CI pipelines, dashboards, wrapper scripts, and automation. For command behavior, flags, and per-harness rendering details, see the [aipack reference](./aipack.md).
 
@@ -27,14 +27,17 @@ aipack
 ├── pack
 │   ├── create
 │   ├── install
+│   ├── delete
+│   ├── update
+│   ├── rename
+│   ├── add
+│   ├── remove
+│   ├── enable
+│   ├── disable
 │   ├── list
 │   ├── show
-│   ├── validate
-│   ├── update
-│   ├── delete
-│   ├── rename
-│   ├── enable
-│   └── disable
+│   ├── versions
+│   └── validate
 ├── profile
 │   ├── create
 │   ├── set
@@ -45,7 +48,9 @@ aipack
 │   ├── fetch
 │   ├── list
 │   ├── sources
-│   └── remove
+│   └── delete
+├── mcp
+│   └── inspect-tools
 └── prompt
     ├── list
     ├── show
@@ -500,6 +505,84 @@ The fully-resolved profile object. Shape follows the `domain.Profile` struct —
 | `ref` | string | Git ref (omitempty) |
 | `path` | string | File path within the repo (omitempty) |
 | `cached` | bool | Whether a local cache file exists |
+
+### `aipack mcp inspect-tools` (list mode)
+
+When invoked without a server argument or `--all`, returns the inventory of MCP servers across all installed packs.
+
+```json
+{
+  "list_mode": true,
+  "ok": true,
+  "available_servers": [
+    {
+      "server_name": "my-server",
+      "pack_name": "my-team-pack",
+      "transport": "stdio",
+      "tool_count": 24,
+      "inventory_path": "/home/user/.config/aipack/packs/my-team-pack/mcp/my-server.json"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `list_mode` | bool | Always `true` in list mode |
+| `ok` | bool | Always `true` in list mode |
+| `available_servers` | array | One entry per MCP server found across installed packs |
+| `available_servers[].server_name` | string | Server identifier (filename without `.json`) |
+| `available_servers[].pack_name` | string | Name of the pack containing this server |
+| `available_servers[].transport` | string | `stdio`, `sse`, or `streamable-http` |
+| `available_servers[].tool_count` | int | Number of tools in the static `available_tools` inventory |
+| `available_servers[].inventory_path` | string | Absolute path to the inventory JSON file |
+| `warnings` | string[] | Per-file read or parse failures encountered while scanning `packs/*/mcp/*.json`. Omitted when empty. |
+
+### `aipack mcp inspect-tools <server>` (probe mode)
+
+When invoked with a server name or `--all`, probes servers and returns results.
+
+```json
+{
+  "ok": true,
+  "results": [
+    {
+      "server_name": "my-server",
+      "pack_name": "my-team-pack",
+      "transport": "stdio",
+      "status": "ok",
+      "tools": ["get_item", "list_items", "search"],
+      "tool_count": 3,
+      "previous_tools": ["get_item", "list_items"],
+      "added": ["search"],
+      "removed": [],
+      "saved": true,
+      "inventory_path": "/home/user/.config/aipack/packs/my-team-pack/mcp/my-server.json",
+      "duration": "1.2s"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ok` | bool | `true` if all probed servers responded successfully |
+| `input_error` | bool | Present and `true` when the failure is caused by bad user input (unknown or ambiguous server name). CLI adapters map this to exit code 2 (`ExitUsage`); all other `!ok` results map to exit code 1 (`ExitFail`). |
+| `results` | array | One entry per server inspected |
+| `results[].server_name` | string | Server identifier |
+| `results[].pack_name` | string | Pack containing this server |
+| `results[].transport` | string | Transport type |
+| `results[].status` | string | `ok`, `skipped`, or `error`. `error` covers probe failures and post-probe `--save` write failures. |
+| `results[].tools` | string[] | Discovered tool names (sorted). Present when the live probe succeeded, even if a later `--save` failed. |
+| `results[].tool_count` | int | Number of discovered tools |
+| `results[].previous_tools` | string[] | Tools from the static inventory before probe |
+| `results[].added` | string[] | Tools in live list but not in previous inventory |
+| `results[].removed` | string[] | Tools in previous inventory but not in live list |
+| `results[].saved` | bool | Whether `--save` wrote the inventory file |
+| `results[].would_save` | bool | Present and `true` when `--save --dry-run` determined a write would happen but skipped it |
+| `results[].inventory_path` | string | Path to inventory JSON (present when `saved` or `would_save` is true) |
+| `results[].error` | string | Error message (present when status is `skipped` or `error`) |
+| `results[].duration` | string | Probe duration (e.g. `"1.2s"`). Present when the live probe succeeded, even if a later `--save` failed. |
 
 ## Shared flag resolution
 

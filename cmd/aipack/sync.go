@@ -208,7 +208,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 		if c.ProfilePath != "" {
 			configFiles = append(configFiles, c.ProfilePath)
 		} else if configDir != "" {
-			profileName := resolveProfileName(c.Profile, watchSyncCfg)
+			profileName := cmdutil.ResolveProfileName(c.Profile, watchSyncCfg)
 			if p, perr := config.ResolveProfilePath("", configDir, profileName, config.HomeDir()); perr == nil {
 				configFiles = append(configFiles, p)
 			}
@@ -250,7 +250,7 @@ func resolveWatchDirs(profileFlag, profilePathFlag, configDirFlag string) ([]str
 		syncCfg = loaded
 	}
 
-	profileName := resolveProfileName(profileFlag, syncCfg)
+	profileName := cmdutil.ResolveProfileName(profileFlag, syncCfg)
 	profilePath, err := config.ResolveProfilePath(profilePathFlag, configDir, profileName, config.HomeDir())
 	if err != nil {
 		return nil, err

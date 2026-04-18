@@ -39,7 +39,11 @@ type HarnessFile struct {
 	Kind         domain.CopyKind // file or dir
 	Content      []byte          // synthesized content for non-file-backed resources like MCP servers
 	AllowedTools []string
-	Scope        domain.Scope // source scope (global or project)
+	// AlwaysAllowedTools is the per-server auto-approve subset captured from
+	// harness configs. Inspect-only: save discards these lists because the
+	// profile is the sole SSOT for tool permissions.
+	AlwaysAllowedTools []string
+	Scope              domain.Scope // source scope (global or project)
 }
 
 // InspectRequest holds parameters for inspecting harness file state.
@@ -278,14 +282,15 @@ func InspectHarness(ctx context.Context, eng *engine.Engine, req InspectRequest,
 			}
 			name := captured.Server.Name
 			fi := HarnessFile{
-				HarnessPath:  filepath.Clean(captured.HarnessPath),
-				RelPath:      name,
-				Category:     domain.CategoryMCP,
-				Kind:         domain.CopyKindFile,
-				Size:         int64(len(content)),
-				Content:      content,
-				AllowedTools: append([]string{}, captured.AllowedTools...),
-				Scope:        req.Scope,
+				HarnessPath:        filepath.Clean(captured.HarnessPath),
+				RelPath:            name,
+				Category:           domain.CategoryMCP,
+				Kind:               domain.CopyKindFile,
+				Size:               int64(len(content)),
+				Content:            content,
+				AllowedTools:       append([]string{}, captured.AllowedTools...),
+				AlwaysAllowedTools: append([]string{}, captured.AlwaysAllowedTools...),
+				Scope:              req.Scope,
 			}
 
 			entry, tracked := lg.Managed[domain.MCPLedgerKey(fi.HarnessPath, name)]

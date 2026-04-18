@@ -63,7 +63,7 @@ func TestRunSync_DryRunDoesNotMutateProfile(t *testing.T) {
 	// mcp server declaration required — an empty servers map gives
 	// load+marshal nothing to materialize and defeats the test.
 	packDir := filepath.Join(configDir, "packs", "demo")
-	manifest := `{"schema_version":1,"name":"demo","root":".","mcp":{"servers":{"example":{}}}}`
+	manifest := `{"schema_version":2,"name":"demo","root":".","mcp":["example"]}`
 	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func writeSyncFixture(t *testing.T) (home, configDir, projectDir string) {
 		t.Fatal(err)
 	}
 
-	manifest := `{"schema_version":1,"name":"demo","root":"."}`
+	manifest := `{"schema_version":2,"name":"demo","root":"."}`
 	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}

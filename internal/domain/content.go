@@ -140,8 +140,12 @@ const (
 // MCPServer is the single MCP server type used throughout the codebase.
 // At load time, Command/Env/URL/Headers may contain {params.*} and {env:VAR} refs.
 // After resolution, params are expanded; env refs stay as-is for harness transform.
-// AllowedTools/DisabledTools are populated from profile permissions (UNPREFIXED —
-// each harness applies its own prefix format).
+// AllowedTools/AlwaysAllowedTools/DisabledTools are populated from profile
+// permissions (UNPREFIXED — each harness applies its own prefix format).
+// AllowedTools = visible/callable (will prompt per call on harnesses that
+// distinguish). AlwaysAllowedTools = visible AND auto-approved without
+// prompting. Tools in AlwaysAllowedTools are implicitly callable even if
+// absent from AllowedTools — the effective allow set is the union of both.
 type MCPServer struct {
 	Name           string            `json:"name"`
 	Transport      string            `json:"transport"`
@@ -153,16 +157,12 @@ type MCPServer struct {
 	AvailableTools []string          `json:"available_tools"`
 
 	// Profile-level fields — omitted from pack inventory JSON.
-	AllowedTools  []string `json:"allowed_tools,omitempty"`
-	DisabledTools []string `json:"disabled_tools,omitempty"`
-	SourcePack    string   `json:"source_pack,omitempty"`
-	PackRoot      string   `json:"-"` // absolute path to source pack dir; resolves {pack:root}
+	AllowedTools       []string `json:"allowed_tools,omitempty"`
+	AlwaysAllowedTools []string `json:"always_allowed_tools,omitempty"`
+	DisabledTools      []string `json:"disabled_tools,omitempty"`
+	SourcePack         string   `json:"source_pack,omitempty"`
+	PackRoot           string   `json:"-"` // absolute path to source pack dir; resolves {pack:root}
 
-	// DefaultAllowedTools is the pack author's declared default allowed
-	// tool list from the pack manifest (MCPDefaults). Distinct from
-	// AllowedTools, which is the effective permission set after profile
-	// resolution.
-	DefaultAllowedTools []string `json:"-"`
 	// RequiredRefs is the set of {params.*} and {env:*} references in the
 	// raw (pre-expansion) Command/Env/URL/Headers strings. Both must be
 	// satisfied at render time for the server to be emitted. Populated by
@@ -180,9 +180,10 @@ type MCPServer struct {
 
 // CapturedMCP is a per-server MCP record extracted from a harness config.
 type CapturedMCP struct {
-	Server       MCPServer
-	HarnessPath  string
-	AllowedTools []string
+	Server             MCPServer
+	HarnessPath        string
+	AllowedTools       []string
+	AlwaysAllowedTools []string
 }
 
 // IsStdio reports whether the server uses stdio transport (including empty, which defaults to stdio).

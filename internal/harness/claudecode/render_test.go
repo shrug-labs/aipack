@@ -124,6 +124,36 @@ func TestRenderPermissions_AllowedTools(t *testing.T) {
 	}
 }
 
+func TestRenderPermissions_UnionsAllowedAndAlwaysAllowed(t *testing.T) {
+	t.Parallel()
+	// Claude Code has no separate visibility gate — permissions.allow
+	// already means auto-approve. Both profile fields union into the same
+	// output.
+	servers := []domain.MCPServer{
+		{
+			Name:               "atlassian",
+			AllowedTools:       []string{"jira_get_issue", "confluence_search"},
+			AlwaysAllowedTools: []string{"confluence_search", "jira_list_projects"},
+		},
+	}
+
+	perms := RenderPermissions(servers)
+
+	want := []string{
+		"mcp__atlassian__confluence_search", // deduped from overlap
+		"mcp__atlassian__jira_get_issue",
+		"mcp__atlassian__jira_list_projects",
+	}
+	if len(perms) != len(want) {
+		t.Fatalf("permissions: got %v want %v", perms, want)
+	}
+	for i, p := range perms {
+		if p != want[i] {
+			t.Errorf("permissions[%d]: got %q want %q", i, p, want[i])
+		}
+	}
+}
+
 func TestRenderDenyPermissions_DisabledTools(t *testing.T) {
 	t.Parallel()
 	servers := []domain.MCPServer{

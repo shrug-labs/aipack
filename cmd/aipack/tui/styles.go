@@ -163,6 +163,7 @@ var (
 	dialogTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(clrAccent)
 
 	treeCheckOn        = lipgloss.NewStyle().Foreground(clrSuccess).Render("[x]")
+	triCheckAuto       = lipgloss.NewStyle().Foreground(clrSuccess).Render("[■]")
 	treeOverrideWinner = lipgloss.NewStyle().Foreground(clrSuccess).Render("⬡")
 	treeExpanded       = "▼"
 	treeCollapsed      = "▶"

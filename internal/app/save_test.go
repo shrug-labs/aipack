@@ -266,7 +266,7 @@ func writeLedger(t *testing.T, path string, entries map[string]domain.Entry) {
 func writeSaveTestManifest(t *testing.T, packRoot, name string) {
 	t.Helper()
 	m := config.PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          name,
 		Version:       "0.1.0",
 		Root:          ".",

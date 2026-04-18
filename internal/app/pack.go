@@ -254,23 +254,15 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 
 // packWarnMCPServers prints a prominent warning when a pack defines MCP servers.
 func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
-	servers := make([]string, 0, len(manifest.MCP.Servers))
-	for name := range manifest.MCP.Servers {
-		servers = append(servers, name)
-	}
-	if len(servers) == 0 {
+	if len(manifest.MCP) == 0 {
 		return
 	}
+	servers := slices.Clone(manifest.MCP)
 	slices.Sort(servers)
 	fmt.Fprintln(stdout, "")
 	fmt.Fprintln(stdout, "WARNING: This pack defines MCP servers (external tool access):")
 	for _, s := range servers {
-		tools := manifest.MCP.Servers[s].DefaultAllowedTools
-		noun := "tools"
-		if len(tools) == 1 {
-			noun = "tool"
-		}
-		fmt.Fprintf(stdout, "  %s (%d %s)\n", s, len(tools), noun)
+		fmt.Fprintf(stdout, "  %s\n", s)
 	}
 	fmt.Fprintln(stdout, "Review MCP server definitions before running 'aipack sync'.")
 	fmt.Fprintln(stdout, "")

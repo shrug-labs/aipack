@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -14,13 +16,9 @@ func TestContentPaths(t *testing.T) {
 		Agents:        []string{"reviewer"},
 		Workflows:     []string{"deploy"},
 		Skills:        []string{"oncall"},
-		MCP: MCPPack{
-			Servers: map[string]MCPDefaults{
-				"jira": {DefaultAllowedTools: []string{"search"}},
-			},
-		},
-		Profiles:   []string{"default"},
-		Registries: []string{"team"},
+		MCP:           []string{"srv-a"},
+		Profiles:      []string{"default"},
+		Registries:    []string{"team"},
 		Configs: PackConfigs{
 			HarnessSettings: map[string][]string{
 				"claudecode": {"settings.json"},
@@ -37,7 +35,7 @@ func TestContentPaths(t *testing.T) {
 		"agents/reviewer.md":               false,
 		"workflows/deploy.md":              false,
 		"skills/oncall/":                   false,
-		"mcp/jira.json":                    false,
+		"mcp/srv-a.json":                   false,
 		"profiles/default.yaml":            false,
 		"registries/team.yaml":             false,
 		"configs/claudecode/settings.json": false,
@@ -85,14 +83,9 @@ func TestContentPaths_FullManifest(t *testing.T) {
 		Agents:        []string{"reviewer"},
 		Workflows:     []string{"deploy", "triage"},
 		Skills:        []string{"oncall", "debug"},
-		MCP: MCPPack{
-			Servers: map[string]MCPDefaults{
-				"jira":      {DefaultAllowedTools: []string{"get_issue"}},
-				"bitbucket": {DefaultAllowedTools: []string{"list_repos"}},
-			},
-		},
-		Profiles:   []string{"default"},
-		Registries: []string{"team"},
+		MCP:           []string{"srv-a", "srv-b"},
+		Profiles:      []string{"default"},
+		Registries:    []string{"team"},
 		Configs: PackConfigs{
 			HarnessSettings: map[string][]string{
 				"claudecode": {"settings.json"},
@@ -114,8 +107,8 @@ func TestContentPaths_FullManifest(t *testing.T) {
 		"workflows/triage.md",
 		"skills/oncall/",
 		"skills/debug/",
-		"mcp/jira.json",
-		"mcp/bitbucket.json",
+		"mcp/srv-a.json",
+		"mcp/srv-b.json",
 		"profiles/default.yaml",
 		"registries/team.yaml",
 		"configs/claudecode/settings.json",
@@ -276,6 +269,133 @@ func TestExtrasStagingName(t *testing.T) {
 		got := ExtrasStagingName(tt.input)
 		if got != tt.want {
 			t.Errorf("ExtrasStagingName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParsePackManifest_V1NestedMCPExtractsServerIDs(t *testing.T) {
+	// schema_version: 1 is the legacy shape where `mcp` is an object with
+	// `servers` and optional pack-level tool-policy defaults. The parser
+	// extracts sorted server IDs into m.MCP so the runtime sees a uniform
+	// shape; pack-level policy fields parse without error but are inert —
+	// v0.23+ expresses tool policy in profiles, not manifests.
+	data := []byte(`{
+		"schema_version": 1,
+		"name": "legacy-pack",
+		"root": "bb:org/repo",
+		"mcp": {
+			"servers": {
+				"srv-b": {"allowed_tools": ["x"]},
+				"srv-a": {}
+			},
+			"default_allowed_tools": ["tool-a"],
+			"default_always_allowed_tools": ["tool-auto"]
+		}
+	}`)
+	m, err := ParsePackManifest(data)
+	if err != nil {
+		t.Fatalf("ParsePackManifest returned error on valid v1 form: %v", err)
+	}
+	if !slices.Equal(m.MCP, []string{"srv-a", "srv-b"}) {
+		t.Errorf("m.MCP = %v, want [srv-a srv-b] (sorted extraction from v1 servers map)", m.MCP)
+	}
+	if m.Name != "legacy-pack" || m.Root != "bb:org/repo" || m.SchemaVersion != 1 {
+		t.Errorf("non-mcp fields dropped; got %+v", m)
+	}
+}
+
+func TestParsePackManifest_V2FlatMCPArrayParsesCleanly(t *testing.T) {
+	data := []byte(`{
+		"schema_version": 2,
+		"name": "flat-pack",
+		"root": "bb:org/repo",
+		"mcp": ["srv-a", "srv-b"]
+	}`)
+	m, err := ParsePackManifest(data)
+	if err != nil {
+		t.Fatalf("ParsePackManifest returned error on valid v2 flat mcp: %v", err)
+	}
+	if !slices.Equal(m.MCP, []string{"srv-a", "srv-b"}) {
+		t.Errorf("m.MCP = %v, want [srv-a srv-b]", m.MCP)
+	}
+	if m.SchemaVersion != 2 {
+		t.Errorf("SchemaVersion = %d, want 2", m.SchemaVersion)
+	}
+}
+
+func TestParsePackManifest_V1WithFlatMCPIsRejected(t *testing.T) {
+	// Shape is strictly tied to schema_version. A pack that advertises v1
+	// but uses the v2 flat form is malformed — the error must point at the
+	// fix (bump to schema_version: 2) rather than silently coercing.
+	data := []byte(`{
+		"schema_version": 1,
+		"name": "mismatched",
+		"root": "bb:org/repo",
+		"mcp": ["srv-a"]
+	}`)
+	_, err := ParsePackManifest(data)
+	if err == nil {
+		t.Fatal("expected error for v1 + flat mcp")
+	}
+	msg := err.Error()
+	for _, want := range []string{"schema_version: 1", "flat array", "schema_version: 2"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q; got: %s", want, msg)
+		}
+	}
+}
+
+func TestParsePackManifest_V2WithNestedMCPIsRejected(t *testing.T) {
+	// Symmetric case: v2 must use the flat form. The error points at both
+	// fixes (convert mcp to an array, or downgrade to v1).
+	data := []byte(`{
+		"schema_version": 2,
+		"name": "mismatched",
+		"root": "bb:org/repo",
+		"mcp": {"servers": {"srv-a": {}}}
+	}`)
+	_, err := ParsePackManifest(data)
+	if err == nil {
+		t.Fatal("expected error for v2 + nested mcp")
+	}
+	msg := err.Error()
+	for _, want := range []string{"schema_version: 2", "nested object", "schema_version: 1"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q; got: %s", want, msg)
+		}
+	}
+}
+
+func TestParsePackManifest_UnsupportedSchemaVersionRejected(t *testing.T) {
+	data := []byte(`{"schema_version":99,"name":"future","root":"r","mcp":[]}`)
+	_, err := ParsePackManifest(data)
+	if err == nil {
+		t.Fatal("expected error for unsupported schema_version")
+	}
+	if !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "99") {
+		t.Errorf("error should mention the unsupported version; got: %v", err)
+	}
+}
+
+func TestParsePackManifest_MissingSchemaVersionRejected(t *testing.T) {
+	data := []byte(`{"name":"noversion","root":"r"}`)
+	_, err := ParsePackManifest(data)
+	if err == nil {
+		t.Fatal("expected error when schema_version is missing")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error should mention schema_version; got: %v", err)
+	}
+}
+
+func TestParsePackManifest_EmptyMCPAcceptedUnderEitherVersion(t *testing.T) {
+	// Manifests with no mcp field at all pass both versions (auto-discovery
+	// from mcp/*.json populates it downstream). The shape check only fires
+	// when mcp is present and non-null.
+	for _, version := range []int{1, 2} {
+		data := fmt.Appendf(nil, `{"schema_version":%d,"name":"empty","root":"r"}`, version)
+		if _, err := ParsePackManifest(data); err != nil {
+			t.Errorf("schema %d without mcp should parse; got error: %v", version, err)
 		}
 	}
 }

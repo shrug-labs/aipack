@@ -92,6 +92,8 @@ const (
 	dialogUpdateWith        = "update-with"
 	dialogPinVersion        = "pin-version"
 	dialogPackAddToProfile  = "pack-add-to-profile"
+	dialogMCPToolPicker     = "mcp-tool-picker"
+	dialogMCPBulkAction     = "mcp-bulk-action"
 )
 
 type rootModel struct {
@@ -107,6 +109,7 @@ type rootModel struct {
 	search   searchTabModel
 
 	dialog               *dialogModel
+	picker               *toolPicker    // MCP tool picker overlay (separate from dialog)
 	preview              *previewModel  // full-screen markdown preview overlay
 	planView             *planViewModel // full-screen sync plan overlay
 	dirty                bool
@@ -115,6 +118,9 @@ type rootModel struct {
 	statusText           string                 // transient status message (auto-cleared after timeout)
 	statusID             int                    // monotonic counter to match statusClearMsg to current status
 	pendingUpdateResults []app.PackUpdateResult // stashed for bundled candidate dialog
+	pendingReturnToTools bool                   // when true, bulk menu returns to tool picker instead of tree
+	mcpProbeSeq          int                    // monotonic sequence for async MCP probe requests
+	mcpProbeActive       *mcpProbeRequest       // currently active MCP probe tied to the open picker
 	width                int
 	height               int
 
@@ -191,10 +197,22 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Dialog result must be handled before the dialog intercept,
-	// otherwise the dialog swallows its own result message.
+	// Result messages must be handled before the overlay intercepts,
+	// otherwise the overlay swallows its own result.
 	if msg, ok := msg.(dialogResultMsg); ok {
 		return m.handleDialogResult(msg)
+	}
+	if msg, ok := msg.(toolPickerResultMsg); ok {
+		return m.handleToolPickerResult(msg)
+	}
+	if msg, ok := msg.(toolPickerRefreshMsg); ok {
+		return m.handleToolPickerRefresh(msg)
+	}
+
+	// MCP probe result arrives while the tool picker overlay is open.
+	// Handle before the overlay intercept so non-key messages aren't swallowed.
+	if msg, ok := msg.(mcpProbeResultMsg); ok {
+		return m.handleMCPProbeResult(msg)
 	}
 
 	// Preview overlay message handling.
@@ -264,7 +282,12 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePreview(msg)
 	}
 
-	// Dialog captures all input when active.
+	// Tool picker and dialog are mutually exclusive overlays — both
+	// capture all input while active. Picker takes precedence so it can
+	// handle its own key set before generic dialog routing.
+	if m.picker != nil {
+		return m.updatePicker(msg)
+	}
 	if m.dialog != nil {
 		return m.updateDialog(msg)
 	}
@@ -361,6 +384,14 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.editCurrentFile()
 		case ".":
 			return m.openActionMenu()
+		case "t", "enter":
+			if m.activeTab == tabProfiles && m.profiles.focus == panelTree {
+				if item := m.profiles.currentItem(); item != nil && item.tree != nil {
+					if n := item.tree.cursorNode(); n != nil && n.kind == nodeItem && n.category == domain.CategoryMCP {
+						return m.openMCPToolPicker()
+					}
+				}
+			}
 		}
 
 	case profileCreatedMsg:
@@ -549,6 +580,19 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(syncCycleCollisionMsg); ok {
 		m.cfg.SyncCfg = app.CycleCollisionStrategy(m.cfg.SyncCfg)
 		return m, saveSyncConfig(m.cfg.ConfigDir, m.cfg.SyncCfg)
+	}
+
+	if msg, ok := msg.(mcpInventorySavedMsg); ok {
+		if msg.err != nil {
+			m.statusText = errorStyle.Render(fmt.Sprintf("save MCP inventory: %v", msg.err))
+		} else {
+			m.statusText = dimStyle.Render(fmt.Sprintf("saved probed inventory for %s", msg.key.server))
+		}
+		if m.pendingReturnToTools {
+			m.pendingReturnToTools = false
+			return m.openMCPToolPicker()
+		}
+		return m, nil
 	}
 
 	// Handle syncConfigSavedMsg: update config, re-run sync check.
@@ -867,6 +911,53 @@ func (m rootModel) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m rootModel) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	p, cmd := m.picker.Update(msg)
+	m.picker = &p
+	if cmd != nil {
+		return m, cmd
+	}
+	return m, nil
+}
+
+// handleToolPickerResult dispatches the picker's result. Only one picker ID
+// exists today (the MCP tool picker); the switch is future-proofing for
+// additional pickers that could reuse toolPicker as a sub-model.
+func (m rootModel) handleToolPickerResult(msg toolPickerResultMsg) (tea.Model, tea.Cmd) {
+	m.picker = nil
+	switch msg.id {
+	case dialogMCPToolPicker:
+		return m.handleMCPToolPickerResult(msg)
+	}
+	return m, nil
+}
+
+// handleToolPickerRefresh fires a fresh probe for the server the picker is
+// currently editing. The picker stays open in loading state; on success the
+// probe-result handler overwrites the cached entry. We do NOT invalidate
+// the cache up-front — if the re-probe fails (server down, network blip),
+// keeping the previous entry means the next session still shows useful
+// data instead of falling back to the static inventory.
+func (m rootModel) handleToolPickerRefresh(_ toolPickerRefreshMsg) (tea.Model, tea.Cmd) {
+	if m.picker == nil {
+		return m, nil
+	}
+	item := m.profiles.currentItem()
+	if item == nil || item.tree == nil {
+		return m, nil
+	}
+	n := item.tree.cursorNode()
+	if n == nil || n.packIdx < 0 || n.packIdx >= len(item.tree.packs) {
+		return m, nil
+	}
+	packInfo := item.tree.packs[n.packIdx]
+	key := newMCPProbeKey(packInfo.Root, n.id)
+
+	m.mcpProbeSeq++
+	m.mcpProbeActive = &mcpProbeRequest{key: key, seq: m.mcpProbeSeq}
+	return m, probeMCPServer(m.ctx, packInfo.Root, n.id, item.cfg.Params, key, m.mcpProbeSeq)
+}
+
 func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) {
 	m.dialog = nil
 	switch msg.id {
@@ -887,6 +978,11 @@ func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) 
 		return m.handleActionMenuResult(msg)
 	case dialogActionTree:
 		return m.handleTreeAction(msg)
+	// MCP bulk action menu (regular list-select dialog opened from the
+	// tool picker's `.` key). The picker itself lives on m.picker and
+	// emits toolPickerResultMsg, handled separately.
+	case dialogMCPBulkAction:
+		return m.handleMCPBulkActionResult(msg)
 	// Save tab dialogs.
 	case dialogActionSave:
 		return m.handleSaveActionResult(msg)
@@ -1694,10 +1790,14 @@ func (m rootModel) View() string {
 	gap := tabGapStyle.Render(strings.Repeat(" ", max(0, m.width-lipgloss.Width(tabBar))))
 	tabBar = lipgloss.JoinHorizontal(lipgloss.Bottom, tabBar, gap)
 
-	// Content — dialog replaces tab content when active.
+	// Content — picker and dialog overlays replace tab content when active.
+	// Picker takes precedence (it can't be stacked with a dialog anyway).
 	var content string
 	var help string
-	if m.dialog != nil {
+	if m.picker != nil {
+		content = contentStyle.Render("\n" + m.picker.View() + "\n")
+		help = helpBarStyle.Render(m.picker.helpText())
+	} else if m.dialog != nil {
 		content = contentStyle.Render("\n" + m.dialog.View() + "\n")
 		help = helpBarStyle.Render(m.dialog.helpText())
 	} else {
@@ -1768,6 +1868,15 @@ const (
 	// Override actions (content tree).
 	actSetOverride    = "Set override"
 	actRemoveOverride = "Remove override"
+	// MCP tree action (content tree, MCP items — routes into the picker).
+	actMCPToolList = "Tool list"
+	// MCP tool-list bulk actions (surfaced inside the tool picker only).
+	actMCPEnableAll      = "Enable all tools"
+	actMCPAlwaysAllowAll = "Always allow all tools"
+	actMCPDisableServer  = "Disable MCP server"
+	actMCPEnableServer   = "Enable MCP server"
+	actMCPReset          = "Reset to pack defaults"
+	actMCPSaveInventory  = "Save probed inventory to pack"
 	// Edit actions (open in $EDITOR).
 	actEditFile       = "Edit file"
 	actEditManifest   = "Edit manifest"
@@ -1864,6 +1973,19 @@ func (m rootModel) openTreeActions() (tea.Model, tea.Cmd) {
 		m.statusText = dimStyle.Render("no actions available")
 		return m, nil
 	}
+	// MCP items get a slim tree action menu — Edit file plus a Tool list
+	// entry that routes into the tri-state picker. The broader bulk
+	// actions (enable all / always allow / disable server / reset /
+	// save inventory) live inside the picker itself so the tree menu
+	// stays focused on the two most common intents.
+	if n.category == domain.CategoryMCP {
+		actions := []string{actEditFile, actMCPToolList}
+		d := newListSelectDialog(dialogActionTree,
+			fmt.Sprintf("Actions for %s/%s:", n.category, n.id),
+			actions)
+		m.dialog = &d
+		return m, nil
+	}
 	var actions []string
 	if n.conflict {
 		if n.isOverride {
@@ -1904,6 +2026,8 @@ func (m rootModel) handleTreeAction(msg dialogResultMsg) (tea.Model, tea.Cmd) {
 			return m, openFileInEditor(fp)
 		}
 		return m, nil
+	case actMCPToolList:
+		return m.openMCPToolPicker()
 	}
 	m.dirty = m.dirty || m.profiles.dirty
 	if item := m.profiles.currentItem(); item != nil && item.dirty {
@@ -2132,6 +2256,11 @@ func (m rootModel) helpText() string {
 			base = "j/k:navigate  J/K:reorder  space:toggle  enter:tree  .:actions │ esc:back"
 		case panelTree:
 			base = "j/k:navigate  space:toggle  enter:preview  e:edit  .:actions │ v:plan  s:sync  ctrl+s:save │ esc:back"
+			if item := m.profiles.currentItem(); item != nil && item.tree != nil {
+				if n := item.tree.cursorNode(); n != nil && n.kind == nodeItem && n.category == domain.CategoryMCP {
+					base = "j/k:navigate  space:toggle  enter/t:tools  e:edit  .:actions │ v:plan  s:sync  ctrl+s:save │ esc:back"
+				}
+			}
 		}
 	case tabPacks:
 		switch m.packs.focus {

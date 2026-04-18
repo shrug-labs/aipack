@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -368,6 +369,97 @@ func TestPlan_DropInConfig_DeployedAsIs(t *testing.T) {
 }
 
 // --- Render tests ---
+
+func TestRenderBytes_AlwaysAllowedUnionsIntoToolsAndWarns(t *testing.T) {
+	t.Parallel()
+	// OpenCode has no confirmed per-tool auto-approve target yet — both
+	// fields union into the binary tools map and a single aggregated warning
+	// lists the affected servers so the user knows the intent isn't
+	// enforced per-tool.
+	servers := []domain.MCPServer{
+		{
+			Name:               "bitbucket",
+			Command:            []string{"bb-server"},
+			Env:                map[string]string{},
+			AllowedTools:       []string{"list_repos"},
+			AlwaysAllowedTools: []string{"get_pr_diff"},
+		},
+	}
+
+	out, warnings, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false})
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(out, &root); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := root["tools"].(map[string]any)
+	if tools["bitbucket_list_repos"] != true {
+		t.Errorf("tools[bitbucket_list_repos] = %v, want true", tools["bitbucket_list_repos"])
+	}
+	if tools["bitbucket_get_pr_diff"] != true {
+		t.Errorf("tools[bitbucket_get_pr_diff] = %v, want true (AlwaysAllowed unioned into tools map)", tools["bitbucket_get_pr_diff"])
+	}
+
+	// One aggregated warning on the shared field that lists every server.
+	var found int
+	for _, w := range warnings {
+		if w.Field == "mcp.always_allowed_tools" && strings.Contains(w.Message, "bitbucket") && strings.Contains(w.Message, "pending confirmation") {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Errorf("expected exactly one aggregated always_allowed_tools warning listing bitbucket, got %d warnings: %+v", found, warnings)
+	}
+}
+
+func TestRenderBytes_AlwaysAllowedAggregatesAcrossServers(t *testing.T) {
+	t.Parallel()
+	// Multiple servers with always_allowed_tools must produce ONE aggregated
+	// warning listing them in sorted order, not one warning per server.
+	servers := []domain.MCPServer{
+		{
+			Name:               "zeta",
+			Command:            []string{"z"},
+			AlwaysAllowedTools: []string{"tool-z"},
+		},
+		{
+			Name:               "alpha",
+			Command:            []string{"a"},
+			AlwaysAllowedTools: []string{"tool-a"},
+		},
+		{
+			Name:         "mu",
+			Command:      []string{"m"},
+			AllowedTools: []string{"tool-m"}, // no always_allowed — should NOT appear in warning
+		},
+	}
+
+	_, warnings, err := RenderBytes(nil, servers, InstructionsSpec{Manage: false}, SkillsSpec{Manage: false})
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+	var aggCount int
+	var matched domain.Warning
+	for _, w := range warnings {
+		if w.Field == "mcp.always_allowed_tools" {
+			aggCount++
+			matched = w
+		}
+	}
+	if aggCount != 1 {
+		t.Fatalf("expected 1 aggregated warning, got %d: %+v", aggCount, warnings)
+	}
+	// Sorted alphabetically, "mu" absent.
+	if !strings.Contains(matched.Message, "alpha, zeta") {
+		t.Errorf("warning should list affected servers in sorted order (alpha, zeta); got: %s", matched.Message)
+	}
+	if strings.Contains(matched.Message, "mu") {
+		t.Errorf("warning should not mention servers without always_allowed_tools; got: %s", matched.Message)
+	}
+}
 
 func TestRenderBytes_MergesBase(t *testing.T) {
 	t.Parallel()

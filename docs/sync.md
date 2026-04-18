@@ -76,8 +76,8 @@ Given identical inputs and profile, sync produces byte-identical outputs across 
 Each successful sync records a per-pack content inventory in `aipack.lock`:
 rule, agent, and workflow IDs; skill snapshots (description + the sorted list
 of files bundled under the skill directory other than `SKILL.md`); and MCP
-server snapshots (available tools, the `{params.*}` and `{env:*}` references
-the raw server strings make, and the pack author's `default_allowed_tools`).
+server snapshots (available tools and the `{params.*}` / `{env:*}` references
+the raw server strings make).
 
 On the next sync, before the plan runs, aipack diffs the previous inventory
 against the freshly resolved pack contents and prints a per-pack report for
@@ -123,6 +123,8 @@ aipack save --profile default                    # save changed files
 aipack save --profile default --dry-run          # preview first
 aipack save --profile default --force            # include settings changes
 ```
+
+**Tool permissions are not captured.** If a harness-side MCP `allow` / `deny` list has drifted from what the profile declares, `save` ignores the drift. The profile is the sole source of truth for MCP tool permission policy; the harness allow list is a render target, not an input. Adjust permissions through `aipack manage`'s tool picker (`t` on an MCP entry) so the profile YAML stays the canonical record.
 
 ### To-pack
 

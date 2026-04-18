@@ -223,7 +223,6 @@ packs:
           required_refs:
             - {kind: param, name: base_url}
             - {kind: env, name: API_TOKEN}
-          default_allowed_tools: [list, get]
 ```
 
 The lockfile is machine-managed — never hand-edit it. Earlier versions of aipack stored install metadata in `sync-config.yaml` under `installed_packs`; that section is migrated to the lockfile transparently the first time `aipack doctor` runs (or on the first lockfile read in any pack command). The `resolved` block records the pack's content state at the end of the last successful sync — rule/agent/workflow IDs, skill descriptions and bundled assets, and MCP server shapes — so the next sync can diff against it and surface drift. See [Sync and Save](./sync.md#content-drift-detection) for the drift detection flow.
@@ -269,16 +268,16 @@ Repositories that ship multiple packs in subdirectories can't use flat semver ta
 
 ```bash
 # Initial install via the namespaced tag
-aipack pack install oci-dev-starter-pack --ref oci-dev-starter-pack/v0.3.0
+aipack pack install my-team-pack --ref my-team-pack/v0.3.0
 
 # Update inherits the prefix from the installed ref — the bare semver is enough
-aipack pack update oci-dev-starter-pack --ref 0.3.1
+aipack pack update my-team-pack --ref 0.3.1
 
 # Or re-type the full namespaced form; both work
-aipack pack update oci-dev-starter-pack --ref oci-dev-starter-pack/v0.3.1
+aipack pack update my-team-pack --ref my-team-pack/v0.3.1
 
 # Discovery lists the matching tags (prefix derived from the install)
-aipack pack versions oci-dev-starter-pack
+aipack pack versions my-team-pack
 ```
 
 No registry schema changes are required — the pack's registry entry just sets its `ref:` field to the initial namespaced tag (or users pass `--ref <prefix>/v<X.Y.Z>` on first install). See [Creating Packs — Releasing a namespaced version](./creating-packs.md#releasing-a-namespaced-version) for the author-side release ritual.

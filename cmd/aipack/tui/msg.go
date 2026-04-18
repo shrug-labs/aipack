@@ -146,6 +146,24 @@ type dialogResultMsg struct {
 	values    []string // for checklist dialogs: individually selected items
 }
 
+// toolPickerResultMsg carries the outcome of the MCP tool picker. Tools not
+// present in either ask or auto are "off" — disabled_tools is computed at
+// save time by comparing the user's selection against pack manifest defaults.
+type toolPickerResultMsg struct {
+	id        string
+	confirmed bool
+	ask       []string // items in the "ask" state → allowed_tools
+	auto      []string // items in the "auto" state → always_allowed_tools
+	bulk      bool     // when true, save then chain to the bulk action menu
+}
+
+// toolPickerRefreshMsg is emitted by the picker when the user presses `r`.
+// The root handler invalidates the cache for the current server and
+// re-fires the probe; the picker stays open in loading state.
+type toolPickerRefreshMsg struct {
+	id string
+}
+
 // profileItem holds the state for a single profile in the list.
 type profileItem struct {
 	name         string
@@ -272,6 +290,22 @@ type moveToPackMsg struct {
 type searchResultsMsg struct {
 	results []app.SearchResult
 	err     error
+}
+
+// mcpProbeResultMsg delivers the result of an async MCP server probe
+// (tools/list via JSON-RPC). Received while the tri-state picker dialog is
+// open in loading state. On success the picker rebuilds its items from the
+// live tool list; on failure it falls back to the static pack inventory.
+type mcpProbeResultMsg struct {
+	key   mcpProbeKey
+	seq   int
+	tools []string
+	err   error
+}
+
+type mcpInventorySavedMsg struct {
+	key mcpProbeKey
+	err error
 }
 
 // searchInstallMsg is sent after a pack is installed from the search tab.

@@ -311,7 +311,7 @@ func effectiveProfile(explicit, cfgDir string) string {
 		return explicit
 	}
 	sc, _ := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
-	return resolveProfileName("", sc)
+	return cmdutil.ResolveProfileName("", sc)
 }
 
 func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {

@@ -91,7 +91,7 @@ func TestDiscoverContent_NilFieldsPopulated(t *testing.T) {
 	root := t.TempDir()
 
 	// Create content on disk
-	for _, dir := range []string{"rules", "agents", "workflows"} {
+	for _, dir := range []string{"rules", "agents", "workflows", "mcp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -109,9 +109,12 @@ func TestDiscoverContent_NilFieldsPopulated(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "mcp", "srv1.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	m := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test",
 		Root:          ".",
 		// All content fields are nil (absent from JSON)
@@ -132,6 +135,9 @@ func TestDiscoverContent_NilFieldsPopulated(t *testing.T) {
 	if len(m.Skills) != 1 || m.Skills[0] != "s1" {
 		t.Fatalf("Skills = %v, want [s1]", m.Skills)
 	}
+	if len(m.MCP) != 1 || m.MCP[0] != "srv1" {
+		t.Fatalf("MCP = %v, want [srv1]", m.MCP)
+	}
 }
 
 func TestDiscoverContent_ExplicitFieldsPreserved(t *testing.T) {
@@ -150,7 +156,7 @@ func TestDiscoverContent_ExplicitFieldsPreserved(t *testing.T) {
 	}
 
 	m := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test",
 		Root:          ".",
 		Rules:         []string{"r1"}, // explicit list — only r1
@@ -179,7 +185,7 @@ func TestDiscoverContent_EmptySliceTriggersDiscovery(t *testing.T) {
 
 	// Empty slice is treated the same as nil — discovery fills it.
 	m := PackManifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Name:          "test",
 		Root:          ".",
 		Rules:         []string{}, // non-nil empty slice

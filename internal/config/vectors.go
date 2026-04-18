@@ -24,8 +24,15 @@ func SelectionsToVector(inventory, selected []string) VectorSelector {
 		return VectorSelector{} // nil,nil = all
 	}
 	if noneSelected {
-		empty := []string{}
-		return VectorSelector{Include: &empty}
+		// Content-vector selectors treat nil and empty Include as equivalent
+		// ("include all") by design — forgiving for YAML authoring, since
+		// "all" is the natural default and there is no third "inherit from
+		// pack defaults" state to distinguish (unlike MCP tool lists). To
+		// express "include nothing" unambiguously, emit Exclude of the full
+		// current inventory.
+		excluded := slices.Clone(inventory)
+		slices.Sort(excluded)
+		return VectorSelector{Exclude: &excluded}
 	}
 	// Partial: use whichever list is shorter.
 	sorted := slices.Clone(selected)
@@ -63,24 +70,33 @@ func ResolveCurrentVector(inventory []string, sel VectorSelector) []string {
 }
 
 // MCPToConfig converts selected MCP servers and tool allowlists back to
-// profile config format.
-func MCPToConfig(manifest PackManifest, enabledServers []string, allowedTools map[string][]string) map[string]MCPServerConfig {
+// profile config format. Both allowedTools and alwaysAllowedTools may be
+// nil when the caller has no data for that map — in that case the server's
+// entry is emitted with only the Enabled flag (or the field is omitted
+// entirely when silent). Servers in packServers but absent from
+// enabledServers are marked disabled; their presence in the profile is
+// intentional (explicit opt-out).
+func MCPToConfig(packServers, enabledServers []string, allowedTools, alwaysAllowedTools map[string][]string) map[string]MCPServerConfig {
 	out := map[string]MCPServerConfig{}
 	enabledSet := ToStringSet(enabledServers)
 
-	for name, defaults := range manifest.MCP.Servers {
+	for _, name := range packServers {
 		if !enabledSet[name] {
 			out[name] = MCPServerConfig{Enabled: BoolPtr(false)}
 			continue
 		}
-		tools := allowedTools[name]
-		if StringSlicesEqual(tools, defaults.DefaultAllowedTools) {
-			out[name] = MCPServerConfig{Enabled: BoolPtr(true)}
-		} else {
+		cfg := MCPServerConfig{Enabled: BoolPtr(true)}
+		if tools := allowedTools[name]; tools != nil {
 			sorted := slices.Clone(tools)
 			slices.Sort(sorted)
-			out[name] = MCPServerConfig{Enabled: BoolPtr(true), AllowedTools: sorted}
+			cfg.AllowedTools = sorted
 		}
+		if alwaysTools := alwaysAllowedTools[name]; alwaysTools != nil {
+			alwaysSorted := slices.Clone(alwaysTools)
+			slices.Sort(alwaysSorted)
+			cfg.AlwaysAllowedTools = alwaysSorted
+		}
+		out[name] = cfg
 	}
 	return out
 }
@@ -124,6 +140,9 @@ func MCPConfigEqual(a, b map[string]MCPServerConfig) bool {
 			return false
 		}
 		if !StringSlicesEqual(av.AllowedTools, bv.AllowedTools) {
+			return false
+		}
+		if !StringSlicesEqual(av.AlwaysAllowedTools, bv.AlwaysAllowedTools) {
 			return false
 		}
 		if !StringSlicesEqual(av.DisabledTools, bv.DisabledTools) {

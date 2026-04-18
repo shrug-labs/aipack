@@ -268,6 +268,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		if err != nil {
 			return SyncResult{}, warnings, wrapFatalSync("plan sync", err)
 		}
+		warnings = append(warnings, plan.Warnings...)
 
 		if req.DryRun {
 			mergePlans(&aggregatePlan, plan)

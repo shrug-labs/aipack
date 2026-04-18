@@ -51,26 +51,25 @@ func buildMCPServers(params map[string]string, packs []config.ResolvedPack, inve
 		}
 
 		entry, sourcePack := mcpPermissionsAndSource(packs, name)
-		defaultAllowed := mcpDefaultAllowedTools(packs, sourcePack, name)
 		requiredRefs := extractRequiredRefs(inv)
 
 		out = append(out, domain.MCPServer{
-			Name:                name,
-			Transport:           inv.Transport,
-			Timeout:             inv.Timeout,
-			Command:             expanded.Command,
-			URL:                 expanded.URL,
-			Env:                 expanded.Env,
-			Headers:             expanded.Headers,
-			AvailableTools:      inv.AvailableTools,
-			AllowedTools:        sortedCopy(entry.AllowedTools),
-			DisabledTools:       sortedCopy(entry.DisabledTools),
-			SourcePack:          sourcePack,
-			DefaultAllowedTools: sortedCopy(defaultAllowed),
-			RequiredRefs:        requiredRefs,
-			Links:               inv.Links,
-			Auth:                inv.Auth,
-			Notes:               inv.Notes,
+			Name:               name,
+			Transport:          inv.Transport,
+			Timeout:            inv.Timeout,
+			Command:            expanded.Command,
+			URL:                expanded.URL,
+			Env:                expanded.Env,
+			Headers:            expanded.Headers,
+			AvailableTools:     inv.AvailableTools,
+			AllowedTools:       sortedCopy(entry.AllowedTools),
+			AlwaysAllowedTools: sortedCopy(entry.AlwaysAllowedTools),
+			DisabledTools:      sortedCopy(entry.DisabledTools),
+			SourcePack:         sourcePack,
+			RequiredRefs:       requiredRefs,
+			Links:              inv.Links,
+			Auth:               inv.Auth,
+			Notes:              inv.Notes,
 		})
 	}
 	return out, warnings
@@ -100,24 +99,6 @@ func mcpPermissionsAndSource(packs []config.ResolvedPack, name string) (config.R
 		}
 	}
 	return entry, sourcePack
-}
-
-// mcpDefaultAllowedTools returns the pack author's declared default
-// allowed-tool list for a server, looked up on the source pack's manifest.
-func mcpDefaultAllowedTools(packs []config.ResolvedPack, sourcePack, serverName string) []string {
-	if sourcePack == "" {
-		return nil
-	}
-	for _, p := range packs {
-		if p.Name != sourcePack {
-			continue
-		}
-		if def, ok := p.Manifest.MCP.Servers[serverName]; ok {
-			return def.DefaultAllowedTools
-		}
-		return nil
-	}
-	return nil
 }
 
 // extractRequiredRefs walks the raw pre-expansion strings on an MCP server
@@ -201,6 +182,34 @@ func prefixTool(server string, tool string) string {
 		return tool
 	}
 	return prefix + tool
+}
+
+// UnionToolLists returns the sorted, deduplicated union of two unprefixed
+// tool-name slices. Used by harness adapters to merge AllowedTools and
+// AlwaysAllowedTools when the harness collapses the two concepts into a
+// single native field (Cline, Claude Code).
+func UnionToolLists(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(a)+len(b))
+	for _, t := range a {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	for _, t := range b {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // PrefixToolList creates a sorted list of prefixed tool names.

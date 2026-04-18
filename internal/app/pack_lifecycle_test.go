@@ -112,7 +112,7 @@ func TestPackDelete(t *testing.T) {
 		configDir := t.TempDir()
 
 		m := map[string]any{
-			"schema_version": 1, "name": "test-pack", "version": "1.0.0",
+			"schema_version": 2, "name": "test-pack", "version": "1.0.0",
 			"root": ".", "profiles": []string{"dev"},
 		}
 		b, _ := json.Marshal(m)

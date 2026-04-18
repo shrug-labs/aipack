@@ -258,7 +258,7 @@ func TestInstallBundledProfiles(t *testing.T) {
 		packDir := t.TempDir()
 		configDir := t.TempDir()
 		m := map[string]any{
-			"schema_version": 1, "name": "test-pack", "version": "2.0.0",
+			"schema_version": 2, "name": "test-pack", "version": "2.0.0",
 			"root": ".", "profiles": []string{"dev"},
 		}
 		b, _ := json.Marshal(m)

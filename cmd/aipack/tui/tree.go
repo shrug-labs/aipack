@@ -19,6 +19,29 @@ type treeModel struct {
 	cursor int
 	offset int // scroll offset (visible line index)
 	packs  []app.ProfilePackInfo
+	// mcpCounts carries per-server display counts and the profile-wide total.
+	// Populated by ensureTree via computeMCPCounts and applied to each MCP
+	// node via applyMCPCounts. Total drives the 128-limit warning on the
+	// MCP category header; per-row counts show in the rightmost column.
+	mcpCounts profileMCPCounts
+}
+
+// applyMCPCounts writes the computed per-server counts into each MCP node's
+// mcpToolsEnabled / mcpToolsAvailable fields. Called after buildTreeFromContent
+// and after any in-place mutation that changes effective tool counts (picker
+// save, bulk action). Nodes outside the MCP category are untouched.
+func (t *treeModel) applyMCPCounts() {
+	for i := range t.nodes {
+		n := &t.nodes[i]
+		if n.kind != nodeItem || n.category != domain.CategoryMCP {
+			continue
+		}
+		key := mcpCountsKey{PackIdx: n.packIdx, Server: n.id}
+		if c, ok := t.mcpCounts.ByServer[key]; ok {
+			n.mcpToolsEnabled = c.Enabled
+			n.mcpToolsAvailable = c.Available
+		}
+	}
 }
 
 type treeNodeKind int
@@ -39,6 +62,14 @@ type treeNode struct {
 	parentIdx     int                 // index of parent category node (-1 for categories)
 	fileSize      int64               // bytes, -1 = not computed
 	formattedSize string              // cached formatSize(fileSize), empty if not computed
+
+	// MCP tool counts — populated for nodeItem entries in the MCP category.
+	// mcpToolsAvailable == -1 means "not an MCP item / not computed". For MCP
+	// items, Available is the inventory size and Enabled is the effective
+	// count after resolver fallback and disabled_tools subtraction. Shown in
+	// the per-row tool count column and summed on the MCP category header.
+	mcpToolsEnabled   int
+	mcpToolsAvailable int
 
 	// Conflict state — set when multiple packs provide the same (category, id).
 	conflict          bool // true if this item conflicts with another pack
@@ -88,6 +119,7 @@ func buildTreeFromContent(ct app.ContentTree) treeModel {
 				packIdx:           it.PackIdx,
 				parentIdx:         catIdx,
 				fileSize:          -1,
+				mcpToolsAvailable: -1,
 				conflict:          len(it.ConflictPacks) > 0,
 				isOverride:        it.IsOverride,
 				isOverridden:      it.IsOverridden,
@@ -312,6 +344,15 @@ func (t *treeModel) view(focused bool, width, height int) string {
 		if n.fileSize >= 0 {
 			n.formattedSize = formatSize(n.fileSize)
 		}
+		if n.category == domain.CategoryMCP && n.mcpToolsAvailable >= 0 {
+			// For MCP items, replace the meaningless JSON-file byte size
+			// with the tool count in the right-aligned column. Set
+			// fileSize = 0 so the "hasSize" renderer picks up formattedSize;
+			// DON'T add to sizeTotal — the category header uses the tool
+			// count label instead.
+			n.fileSize = 0
+			n.formattedSize = fmt.Sprintf("%d/%d", n.mcpToolsEnabled, n.mcpToolsAvailable)
+		}
 		if !t.isVisible(i) {
 			continue
 		}
@@ -390,7 +431,9 @@ func (t *treeModel) view(focused bool, width, height int) string {
 			catLeft := fmt.Sprintf("%s%s %s (%d/%d)", cursor, arrow, n.label, enabled, total)
 
 			catSuffix := ""
-			if showSize && cs != nil && cs.hasSize {
+			if n.category == domain.CategoryMCP {
+				catSuffix = fileSizeStyle.Render(fmt.Sprintf("%d/%d tools", t.mcpCounts.TotalEnabled, t.mcpCounts.TotalAvailable))
+			} else if showSize && cs != nil && cs.hasSize {
 				catSuffix = fileSizeStyle.Render(formatSize(cs.sizeTotal))
 			}
 

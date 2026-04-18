@@ -423,7 +423,7 @@ func TestParseWithFlag_Duplicates(t *testing.T) {
 func writePackManifestCmd(t *testing.T, dir string, name string) {
 	t.Helper()
 	m := map[string]any{
-		"schema_version": 1,
+		"schema_version": 2,
 		"name":           name,
 		"version":        "1.0.0",
 		"root":           ".",

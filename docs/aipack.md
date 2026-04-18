@@ -4,7 +4,7 @@ Complete CLI reference for `aipack`. For first-time setup, see [Getting Started]
 
 ## Command map
 
-- Setup: `init`, `doctor`
+- Setup: `init`, `doctor`, `mcp inspect-tools`
 - Pack lifecycle: `pack create`, `pack install`, `pack delete`, `pack update`, `pack rename`, `pack add`, `pack remove`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
 - Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`
 - Registry: `registry fetch`, `registry list`, `registry sources`, `registry delete`
@@ -52,6 +52,42 @@ Runs diagnostic checks on config, packs, and MCP servers. Overall status fails o
 aipack doctor
 aipack doctor --fix       # auto-fix safe issues
 aipack doctor --json      # machine-readable output
+```
+
+### mcp inspect-tools
+
+Connects to MCP servers and queries their live tool inventories via the MCP protocol (`initialize` → `tools/list`). Compares discovered tools against the static `available_tools` in each pack's `mcp/<server>.json` inventory, reporting additions and removals.
+
+Without arguments, lists every MCP server found across installed packs with its pack, transport, and current inventory count. Pass a server name to inspect it. Use `--all` to inspect every server.
+
+Server names are looked up across all installed packs. When the same name appears in multiple packs, specify `pack/server` to disambiguate. The `--profile` flag selects which profile supplies `{params.*}` values for server commands; the active profile is used by default. All three MCP transports are probed: stdio (subprocess), streamable-http (POST with `application/json` or `text/event-stream` responses), and the legacy HTTP+SSE transport (GET stream + POST). HTTP transports include the status code and response body snippet in error output so auth failures are self-describing.
+
+With `--save`, the discovered tool list replaces `available_tools` in the pack's inventory JSON. All other metadata (`command`, `env`, `links`, `auth`, `notes`) is preserved. This is the recommended way to keep inventories current after a server update — avoids manual JSON editing and ensures the TUI tool picker and tool counts reflect reality. Combine with `--dry-run` to preview the writes without touching disk.
+
+```bash
+# List available MCP servers
+aipack mcp inspect-tools
+
+# Inspect a server
+aipack mcp inspect-tools my-server
+
+# Disambiguate when a name exists in multiple packs
+aipack mcp inspect-tools my-team-pack/my-server
+
+# Inspect and save to pack inventory
+aipack mcp inspect-tools my-server --save
+
+# Preview --save without writing
+aipack mcp inspect-tools my-server --save --dry-run
+
+# Inspect all servers
+aipack mcp inspect-tools --all
+
+# Use a different profile for {params.*} expansion
+aipack mcp inspect-tools my-server --profile ops
+
+# JSON output
+aipack mcp inspect-tools my-server --json
 ```
 
 ## Pack lifecycle
@@ -444,7 +480,7 @@ aipack query "SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY coun
 
 Tabs: Profiles, Packs, Save, Sync, Search.
 
-Key bindings: `tab` switch tabs, `j/k` navigate, `enter` expand, `space` toggle, `l` list profiles, `n` new profile, `d` delete, `D` duplicate, `a` activate, `p` add pack, `r` remove pack, `s` sync, `esc` quit (auto-saves).
+Key bindings: `tab` switch tabs, `j/k` navigate, `enter` expand, `space` toggle, `l` list profiles, `n` new profile, `d` delete, `D` duplicate, `a` activate, `p` add pack, `r` remove pack, `s` sync, `t` MCP tool picker (on an MCP entry in the profiles tree), `.` context actions (Edit file, Tool list; inside the tool picker, bulk actions), `esc` quit (auto-saves).
 
 ```bash
 aipack manage

@@ -29,7 +29,7 @@ func TestValidateCmd_MissingPackRootFails(t *testing.T) {
 func TestValidateCmd_JSONReportsFindings(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "pack.json"), []byte(`{"schema_version":1,"name":"demo","root":"."}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "pack.json"), []byte(`{"schema_version":2,"name":"demo","root":"."}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "rules"), 0o755); err != nil {
@@ -79,7 +79,7 @@ func TestValidateCmd_ExtrasValid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pack.json"), []byte(
-		`{"schema_version":1,"name":"inc","root":".","extras":["wrappers","proxy.py"]}`), 0o644)
+		`{"schema_version":2,"name":"inc","root":".","extras":["wrappers","proxy.py"]}`), 0o644)
 	os.MkdirAll(filepath.Join(dir, "wrappers"), 0o755)
 	os.WriteFile(filepath.Join(dir, "proxy.py"), []byte("#!/usr/bin/env python3\n"), 0o644)
 
@@ -94,7 +94,7 @@ func TestValidateCmd_ExtrasInvalidJSON(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pack.json"), []byte(
-		`{"schema_version":1,"name":"inc","root":".","extras":["missing","/absolute"]}`), 0o644)
+		`{"schema_version":2,"name":"inc","root":".","extras":["missing","/absolute"]}`), 0o644)
 
 	stdout, _, code := runApp(t, "pack", "validate", dir, "--json")
 	if code == cmdutil.ExitOK {

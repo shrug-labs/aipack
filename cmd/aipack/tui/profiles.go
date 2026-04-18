@@ -40,6 +40,12 @@ type profilesModel struct {
 	// Scroll offsets for each panel.
 	profileOffset int
 	packOffset    int
+
+	// Successful live MCP tool probes keyed by pack root + server name.
+	// Initial tree counts still come from static inventory; once a server
+	// is probed, tree rebuilds and count refreshes prefer the cached live
+	// inventory for that specific server.
+	mcpProbeCache map[mcpProbeKey]mcpProbeEntry
 }
 
 // treeVisibleH returns the height available for the tree panel content.
@@ -55,10 +61,29 @@ func (m *profilesModel) clampProfileOffset() {
 
 func newProfilesModel(ctx context.Context, eng *engine.Engine, configDir string) profilesModel {
 	return profilesModel{
-		eng:       eng,
-		ctx:       ctx,
-		configDir: configDir,
+		eng:           eng,
+		ctx:           ctx,
+		configDir:     configDir,
+		mcpProbeCache: loadMCPProbeCacheForTUI(configDir),
 	}
+}
+
+// loadMCPProbeCacheForTUI reads the persistent cache written by prior TUI
+// sessions and `aipack mcp inspect-tools` runs. Returns an empty (non-nil)
+// map when no cache exists or loading fails — the cache is an optimization,
+// never required.
+func loadMCPProbeCacheForTUI(configDir string) map[mcpProbeKey]mcpProbeEntry {
+	out := map[mcpProbeKey]mcpProbeEntry{}
+	if configDir == "" {
+		return out
+	}
+	for key, entry := range app.LoadMCPProbeCache(configDir) {
+		out[mcpProbeKey{packRoot: key.PackRoot, server: key.Server}] = mcpProbeEntry{
+			tools:    entry.Tools,
+			probedAt: entry.ProbedAt,
+		}
+	}
+	return out
 }
 
 // initCmd returns the command to load profiles at startup.
@@ -240,9 +265,11 @@ func (m profilesModel) updateTree(msg tea.KeyMsg) (profilesModel, tea.Cmd) {
 			break
 		}
 		// Item node: open preview if it has a file path.
+		// MCP items have no file path — enter on MCP is intercepted at
+		// the root level to open the tool picker instead.
 		fp := item.tree.filePath()
 		if fp == "" {
-			break // MCP or unresolvable
+			break
 		}
 		packName := ""
 		if n.packIdx >= 0 && n.packIdx < len(item.tree.packs) {
@@ -358,6 +385,8 @@ func (m profilesModel) ensureTree() profilesModel {
 
 	ct := app.BuildContentTree(enabled, item.cfg.Packs)
 	tree := buildTreeFromContent(ct)
+	tree.mcpCounts = computeMCPCountsWithProbeCache(enabled, item.cfg, m.mcpProbeCache)
+	tree.applyMCPCounts()
 	item.tree = &tree
 	item.treeErr = ""
 	return m

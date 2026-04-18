@@ -388,7 +388,7 @@ func TestTreeModel_FilePathMCP(t *testing.T) {
 	root := filepath.Join("/tmp", "pack")
 	packs := []app.ProfilePackInfo{
 		{Index: 0, Name: "test-pack", Root: root, Manifest: config.PackManifest{
-			MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{"srv": {}}},
+			MCP: []string{"srv"},
 		}},
 	}
 	ct := app.BuildContentTree(packs, []config.PackEntry{{Name: "test-pack"}})
@@ -411,7 +411,7 @@ func TestTreeModel_EnterOnMCPItem_OpensPreview(t *testing.T) {
 	t.Parallel()
 	packs := []app.ProfilePackInfo{
 		{Index: 0, Name: "test-pack", Root: "/tmp/pack", Manifest: config.PackManifest{
-			MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{"srv": {}}},
+			MCP: []string{"srv"},
 		}},
 	}
 	ct := app.BuildContentTree(packs, []config.PackEntry{{Name: "test-pack"}})

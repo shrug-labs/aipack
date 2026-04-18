@@ -39,6 +39,7 @@ type cliCore struct {
 	Registry RegistryCmd `cmd:"" group:"Pack Management:" help:"Browse and search the pack registry"`
 	Profile  ProfileCmd  `cmd:"" group:"Profile Management:" help:"Manage sync profiles"`
 
+	MCP    MCPCmd    `cmd:"" group:"Discovery:" help:"MCP server operations (inspect tools, discover inventory)"`
 	Search SearchCmd `cmd:"" group:"Discovery:" help:"Search the pack index by name, tags, role, or kind"`
 	Query  QueryCmd  `cmd:"" group:"Discovery:" help:"Run raw SQL against the pack index"`
 	Status StatusCmd `cmd:"" group:"Discovery:" help:"Show ecosystem status: profile, packs, and content vectors"`

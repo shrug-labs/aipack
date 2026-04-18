@@ -108,7 +108,7 @@ func TestExtractPackContent_StandardPack(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "std-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "std-pack", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 	os.MkdirAll(filepath.Join(srcDir, "rules"), 0o755)
@@ -160,7 +160,7 @@ func TestExtractPackContent_StandardPack_SkillResourceFiles(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "rich-skills", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "rich-skills", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 
@@ -198,10 +198,8 @@ func TestExtractPackContent_StandardPack_MCPAndConfigs(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "mcp-pack", Version: "1.0.0", Root: ".",
-		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{
-			"my-server": {},
-		}},
+		SchemaVersion: 2, Name: "mcp-pack", Version: "1.0.0", Root: ".",
+		MCP: []string{"my-server"},
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 
@@ -266,7 +264,7 @@ func TestExtractPackContent_StandardPack_RootEscapeBlocked(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "evil-pack", Version: "1.0.0",
+		SchemaVersion: 2, Name: "evil-pack", Version: "1.0.0",
 		Root: "../..",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
@@ -285,7 +283,7 @@ func TestExtractPackContent_StandardPack_RootDotIsAllowed(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "normal", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "normal", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 	os.MkdirAll(filepath.Join(srcDir, "rules"), 0o755)
@@ -311,7 +309,7 @@ func TestExtractPackContent_StandardPack_SubdirRootWithinBoundary(t *testing.T) 
 	subDir := filepath.Join(cloneDir, "packs", "my-pack")
 	os.MkdirAll(subDir, 0o755)
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "sub-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "sub-pack", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(subDir, "pack.json"), manifest)
 	os.MkdirAll(filepath.Join(subDir, "skills", "deploy"), 0o755)
@@ -339,7 +337,7 @@ func TestExtractPackContent_StandardPack_RootEscapeFromSubpath(t *testing.T) {
 	subDir := filepath.Join(cloneDir, "packs", "evil")
 	os.MkdirAll(subDir, 0o755)
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "evil", Version: "1.0.0",
+		SchemaVersion: 2, Name: "evil", Version: "1.0.0",
 		Root: "../../..",
 	}
 	config.SavePackManifest(filepath.Join(subDir, "pack.json"), manifest)
@@ -453,7 +451,7 @@ func TestExtractPackContent_StandardPack_FilesNormalisedTo0600(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "perms-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "perms-pack", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 	skillDir := filepath.Join(srcDir, "skills", "ops")
@@ -489,7 +487,7 @@ func TestExtractPackContent_StandardPack_NestedDirStructurePreserved(t *testing.
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "deep", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "deep", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 
@@ -611,7 +609,7 @@ func TestExtractPackContent_StandardPack_EmptyContentDirsNotCreated(t *testing.T
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "rules-only", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "rules-only", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 	os.MkdirAll(filepath.Join(srcDir, "rules"), 0o755)
@@ -653,7 +651,7 @@ func TestExtractPackContent_StandardPack_SymlinkWithinBoundaryResolved(t *testin
 		filepath.Join(cloneDir, "rules", "common.md"))
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "symlink-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "symlink-pack", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(cloneDir, "pack.json"), manifest)
 
@@ -697,7 +695,7 @@ func TestExtractPackContent_StandardPack_NonDotRoot_RewritesRootToFlat(t *testin
 
 	// Repo layout: pack.json at root with Root: "src", content under src/.
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "nested-root", Version: "1.0.0", Root: "src",
+		SchemaVersion: 2, Name: "nested-root", Version: "1.0.0", Root: "src",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 	os.MkdirAll(filepath.Join(srcDir, "src", "rules"), 0o755)
@@ -754,7 +752,7 @@ func TestExtractPackContent_StandardPack_ExcludesNonContent(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "real-repo", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "real-repo", Version: "1.0.0", Root: ".",
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 
@@ -803,9 +801,9 @@ func TestExtractPackContent_StandardPack_ExtrasPreservedForPackRoot(t *testing.T
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "wrapper-pack", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "wrapper-pack", Version: "1.0.0", Root: ".",
 		Extras: []string{"wrappers"},
-		MCP:    config.MCPPack{Servers: map[string]config.MCPDefaults{"wrapped": {}}},
+		MCP:    []string{"my-server"},
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 
@@ -814,7 +812,7 @@ func TestExtractPackContent_StandardPack_ExtrasPreservedForPackRoot(t *testing.T
 		[]byte("import sys; print(sys.argv)"), 0o644)
 	os.MkdirAll(filepath.Join(srcDir, "mcp"), 0o755)
 	os.WriteFile(filepath.Join(srcDir, "mcp", "wrapped.json"), []byte(`{
-		"name": "wrapped",
+		"name": "my-server",
 		"command": ["python3", "{pack:root}/wrappers/proxy.py"]
 	}`), 0o644)
 
@@ -856,7 +854,7 @@ func TestExtractPackContent_StandardPack_Extras(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "with-extras", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "with-extras", Version: "1.0.0", Root: ".",
 		Extras: []string{"wrappers", "mcp-servers/oci-api", "bootstrap.sh"},
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
@@ -923,7 +921,7 @@ func TestExtractPackContent_StandardPack_ExtrasSymlinkEscapeBlocked(t *testing.T
 	os.Symlink(filepath.Join(outsideDir, "secret.sh"), filepath.Join(srcDir, "escape.sh"))
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "escape", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "escape", Version: "1.0.0", Root: ".",
 		Extras: []string{"escape.sh"},
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
@@ -953,10 +951,10 @@ func TestExtractPackContent_StandardPack_ExtrasRepoRelative(t *testing.T) {
 	// Also a local extras dir inside the pack.
 	os.MkdirAll(filepath.Join(packDir, "wrappers"), 0o755)
 	os.WriteFile(filepath.Join(packDir, "wrappers", "proxy.py"),
-		[]byte("proxy"), 0o644)
+		[]byte("my-server"), 0o644)
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "repo-rel", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "repo-rel", Version: "1.0.0", Root: ".",
 		Extras: []string{"../../shared-scripts", "wrappers"},
 	}
 	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
@@ -1010,7 +1008,7 @@ func TestExtractPackContent_StandardPack_ExtrasRepoEscapeBlocked(t *testing.T) {
 
 	// The extras path tries to escape the repo entirely.
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "escape", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "escape", Version: "1.0.0", Root: ".",
 		Extras: []string{"../../../outside"},
 	}
 	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
@@ -1041,7 +1039,7 @@ func TestExtractPackContent_StandardPack_ExtrasSymlinkOverlapBlocked(t *testing.
 	os.Symlink(realDir, filepath.Join(repoDir, "alias-scripts"))
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "sym-overlap", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "sym-overlap", Version: "1.0.0", Root: ".",
 		Extras: []string{"../../real-scripts", "../../alias-scripts"},
 	}
 	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
@@ -1069,7 +1067,7 @@ func TestExtractPackContent_StandardPack_ExtrasPrefixContainmentBlocked(t *testi
 	os.WriteFile(filepath.Join(packDir, "shared", "sub", "deep.txt"), []byte("deep"), 0o644)
 
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "prefix", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "prefix", Version: "1.0.0", Root: ".",
 		Extras: []string{"shared", "shared/sub"},
 	}
 	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
@@ -1087,7 +1085,7 @@ func TestExtractPackContent_StandardPack_BundledProfiles(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
-		SchemaVersion: 1, Name: "with-profiles", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "with-profiles", Version: "1.0.0", Root: ".",
 		Profiles:   []string{"dev"},
 		Registries: []string{"popular-packs"},
 	}
@@ -1150,7 +1148,7 @@ func buildFilterStaging(t *testing.T, m config.PackManifest) string {
 func TestApplyWithFilter_NilNoOp(t *testing.T) {
 	t.Parallel()
 	m := config.PackManifest{
-		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "test", Version: "1.0.0", Root: ".",
 		Rules:  []string{"style"},
 		Skills: []string{"deploy"},
 	}
@@ -1176,7 +1174,7 @@ func TestApplyWithFilter_NilNoOp(t *testing.T) {
 func TestApplyWithFilter_WithAll(t *testing.T) {
 	t.Parallel()
 	m := config.PackManifest{
-		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "test", Version: "1.0.0", Root: ".",
 		Rules:      []string{"style"},
 		Skills:     []string{"deploy"},
 		Extras:     []string{"scripts/run.sh"},
@@ -1204,7 +1202,7 @@ func TestApplyWithFilter_Partial(t *testing.T) {
 	// Core content dirs are always kept regardless of the domain.BundledSet.
 	t.Parallel()
 	m := config.PackManifest{
-		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "test", Version: "1.0.0", Root: ".",
 		Rules:      []string{"style"},
 		Agents:     []string{"navigator"},
 		Workflows:  []string{"deploy-flow"},
@@ -1213,9 +1211,7 @@ func TestApplyWithFilter_Partial(t *testing.T) {
 		Profiles:   []string{"team"},
 		Extras:     []string{"scripts/run.sh"},
 		Registries: []string{"reg"},
-		MCP: config.MCPPack{Servers: map[string]config.MCPDefaults{
-			"pg": {DefaultAllowedTools: []string{"query"}},
-		}},
+		MCP:        []string{"my-server"},
 		Configs: config.PackConfigs{
 			HarnessSettings: map[string][]string{"opencode": {"oc.json"}},
 		},
@@ -1277,8 +1273,8 @@ func TestApplyWithFilter_Partial(t *testing.T) {
 	if len(m.Profiles) != 1 || m.Profiles[0] != "team" {
 		t.Errorf("profiles manifest should be unchanged, got %v", m.Profiles)
 	}
-	if len(m.MCP.Servers) != 1 {
-		t.Errorf("MCP.Servers should be unchanged, got %v", m.MCP.Servers)
+	if len(m.MCP) != 1 {
+		t.Errorf("MCP should be unchanged, got %v", m.MCP)
 	}
 	if !m.Configs.HasAnyConfigs() {
 		t.Errorf("configs should be unchanged, got %+v", m.Configs)
@@ -1308,7 +1304,7 @@ func TestApplyWithFilter_Partial(t *testing.T) {
 func TestApplyWithFilter_ExtrasRemoval(t *testing.T) {
 	t.Parallel()
 	m := config.PackManifest{
-		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "test", Version: "1.0.0", Root: ".",
 		Extras: []string{"scripts/deploy.sh", "data/config.yaml"},
 	}
 	staging := buildFilterStaging(t, m)
@@ -1334,7 +1330,7 @@ func TestApplyWithFilter_ExtrasRemoval(t *testing.T) {
 func TestApplyWithFilter_RegistriesRemoval(t *testing.T) {
 	t.Parallel()
 	m := config.PackManifest{
-		SchemaVersion: 1, Name: "test", Version: "1.0.0", Root: ".",
+		SchemaVersion: 2, Name: "test", Version: "1.0.0", Root: ".",
 		Registries: []string{"team-tools", "community"},
 	}
 	staging := buildFilterStaging(t, m)
@@ -1357,7 +1353,7 @@ func TestApplyWithFilter_RegistriesRemoval(t *testing.T) {
 func TestApplyWithFilter_PackJsonReSaved(t *testing.T) {
 	t.Parallel()
 	m := config.PackManifest{
-		SchemaVersion: 1, Name: "saved-test", Version: "2.0.0", Root: ".",
+		SchemaVersion: 2, Name: "saved-test", Version: "2.0.0", Root: ".",
 		Rules:      []string{"alpha"},
 		Skills:     []string{"beta"},
 		Agents:     []string{"gamma"},
