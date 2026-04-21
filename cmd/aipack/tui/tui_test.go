@@ -565,6 +565,86 @@ func TestToolPicker_NavigationBounded(t *testing.T) {
 	}
 }
 
+// TestToolPicker_FastNavigation pins the fast-nav keys added after the
+// v0.23.0 picker shipped with only j/k cursor movement — users with long
+// tool lists (e.g., multi-tool MCP servers) couldn't reach items past the
+// viewport without excessive j-spam. g/G jump to the first/last item, and
+// PgUp/PgDn page by the visible-window height.
+func TestToolPicker_FastNavigation(t *testing.T) {
+	t.Parallel()
+	items := make([]toolPickerItem, 20)
+	for i := range items {
+		items[i] = toolPickerItem{label: fmt.Sprintf("tool-%d", i)}
+	}
+
+	p := newToolPicker("test", "Tools:", items)
+	p.visibleH = 5 // Simulate a small viewport: 5 rows at a time.
+
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	if p.cursor != len(items)-1 {
+		t.Errorf("G: cursor = %d, want %d (last)", p.cursor, len(items)-1)
+	}
+
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	if p.cursor != 0 {
+		t.Errorf("g: cursor = %d, want 0 (first)", p.cursor)
+	}
+
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if p.cursor != 5 {
+		t.Errorf("PgDn from 0: cursor = %d, want 5 (one page)", p.cursor)
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if p.cursor != 10 {
+		t.Errorf("PgDn from 5: cursor = %d, want 10", p.cursor)
+	}
+
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if p.cursor != 5 {
+		t.Errorf("PgUp from 10: cursor = %d, want 5", p.cursor)
+	}
+
+	// End and Home are aliases for G and g.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if p.cursor != len(items)-1 {
+		t.Errorf("End: cursor = %d, want %d", p.cursor, len(items)-1)
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if p.cursor != 0 {
+		t.Errorf("Home: cursor = %d, want 0", p.cursor)
+	}
+
+	// Page keys must stay bounded — no underflow past 0 or overflow past last.
+	for range 10 {
+		p, _ = p.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	}
+	if p.cursor != 0 {
+		t.Errorf("repeated PgUp: cursor = %d, want 0 (clamped)", p.cursor)
+	}
+	p.cursor = len(items) - 1
+	for range 10 {
+		p, _ = p.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+	if p.cursor != len(items)-1 {
+		t.Errorf("repeated PgDn: cursor = %d, want %d (clamped)", p.cursor, len(items)-1)
+	}
+}
+
+// TestToolPicker_HelpTextAdvertisesNavigation pins the fix for the v0.23.0
+// gap: the help bar omitted j/k and had no mention of fast-nav, so users
+// scrolling past the viewport concluded they couldn't. Both sets of keys
+// must appear in helpText so the UI is self-documenting.
+func TestToolPicker_HelpTextAdvertisesNavigation(t *testing.T) {
+	t.Parallel()
+	p := newToolPicker("test", "Tools:", []toolPickerItem{{label: "x"}})
+	help := p.helpText()
+	for _, want := range []string{"j/k", "g/G"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("helpText = %q, missing %q", help, want)
+		}
+	}
+}
+
 func TestToolPicker_View_AutoRendersSolidMarker(t *testing.T) {
 	t.Parallel()
 	items := []toolPickerItem{

@@ -148,9 +148,7 @@ func (m rootModel) openMCPToolPicker() (tea.Model, tea.Cmd) {
 		p = p.withProbedAt(probedAt)
 	}
 
-	// Cap the visible height to the terminal. Reserve lines for title (2),
-	// footer (3), border (2), scroll indicators (2), and dialog chrome (2).
-	maxVisible := max(m.height-15, 5)
+	maxVisible := pickerMaxVisible(m.height)
 	if len(items) > maxVisible {
 		p.visibleH = maxVisible
 	}
@@ -252,7 +250,7 @@ func (m rootModel) handleMCPProbeResult(msg mcpProbeResultMsg) (tea.Model, tea.C
 		m.picker.probedAt = probedAt
 	}
 
-	maxVisible := max(m.height-15, 5)
+	maxVisible := pickerMaxVisible(m.height)
 	if len(items) > maxVisible {
 		m.picker.visibleH = maxVisible
 	} else {

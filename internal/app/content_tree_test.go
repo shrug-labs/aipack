@@ -109,6 +109,122 @@ func TestBuildContentTree_ExcludeFilter(t *testing.T) {
 	}
 }
 
+// TestBuildContentTree_QuietPack pins the TUI tree's selection state against
+// quiet-pack semantics — the resolver at internal/config/profile_resolve.go
+// treats a nil-include selector on a quiet pack as "include nothing," but
+// BuildContentTree used to call ResolveCurrentVector directly and resolve
+// the same selector as "include all," producing a tree full of [x] items
+// that sync wouldn't actually deliver. Mirrors the quiet-aware logic so
+// what the user sees matches what sync ships.
+func TestBuildContentTree_QuietPack(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "big-pack",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta", "gamma"},
+		Agents:        []string{"reviewer"},
+		MCP:           []string{"srv-a", "srv-b"},
+	}
+	packs := []ProfilePackInfo{{Index: 0, Name: "big-pack", Root: "/tmp/packs/big-pack", Manifest: manifest}}
+
+	// Quiet pack with no explicit selectors at all — every vector must
+	// resolve to nothing selected. MCP too.
+	wfInclude := []string{"deploy"}
+	entries := []config.PackEntry{{
+		Name:  "big-pack",
+		Quiet: true,
+		Workflows: config.VectorSelector{
+			Include: &wfInclude,
+		},
+	}}
+
+	tree := BuildContentTree(packs, entries)
+	enabled := map[string][]string{}
+	for _, item := range tree.Items {
+		if item.Enabled {
+			enabled[string(item.Category)] = append(enabled[string(item.Category)], item.ID)
+		}
+	}
+
+	if n := len(enabled[string(domain.CategoryRules)]); n != 0 {
+		t.Errorf("quiet pack with nil rules include: got %d enabled rules, want 0 (%v)",
+			n, enabled[string(domain.CategoryRules)])
+	}
+	if n := len(enabled[string(domain.CategoryAgents)]); n != 0 {
+		t.Errorf("quiet pack with nil agents include: got %d enabled agents, want 0", n)
+	}
+	if n := len(enabled[string(domain.CategoryMCP)]); n != 0 {
+		t.Errorf("quiet pack with no explicit mcp map: got %d enabled servers, want 0 (%v)",
+			n, enabled[string(domain.CategoryMCP)])
+	}
+
+	// Every item should still appear in the tree (discoverability) — it's
+	// just the Enabled flag that flips. Count total items across categories
+	// to confirm the tree didn't drop rows.
+	rules, agents, mcps := 0, 0, 0
+	for _, item := range tree.Items {
+		switch item.Category {
+		case domain.CategoryRules:
+			rules++
+		case domain.CategoryAgents:
+			agents++
+		case domain.CategoryMCP:
+			mcps++
+		}
+	}
+	if rules != 3 || agents != 1 || mcps != 2 {
+		t.Errorf("tree row counts = rules:%d agents:%d mcp:%d, want 3/1/2 (discoverability)",
+			rules, agents, mcps)
+	}
+}
+
+// TestBuildContentTree_QuietPackExplicitIncludeActivates verifies the
+// opt-in escape hatch: a quiet pack's explicit non-empty include list
+// activates only those items. Mirrors the resolver's quiet path.
+func TestBuildContentTree_QuietPackExplicitIncludeActivates(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "big-pack",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta", "gamma"},
+		MCP:           []string{"srv-a", "srv-b"},
+	}
+	packs := []ProfilePackInfo{{Index: 0, Name: "big-pack", Root: "/tmp/packs/big-pack", Manifest: manifest}}
+
+	ruleInclude := []string{"alpha"}
+	trueVal := true
+	entries := []config.PackEntry{{
+		Name:  "big-pack",
+		Quiet: true,
+		Rules: config.VectorSelector{
+			Include: &ruleInclude,
+		},
+		MCP: map[string]config.MCPServerConfig{
+			"srv-a": {Enabled: &trueVal},
+		},
+	}}
+
+	tree := BuildContentTree(packs, entries)
+	for _, item := range tree.Items {
+		switch item.Category {
+		case domain.CategoryRules:
+			wantEnabled := item.ID == "alpha"
+			if item.Enabled != wantEnabled {
+				t.Errorf("rule %q: Enabled=%v, want %v", item.ID, item.Enabled, wantEnabled)
+			}
+		case domain.CategoryMCP:
+			wantEnabled := item.ID == "srv-a"
+			if item.Enabled != wantEnabled {
+				t.Errorf("mcp %q: Enabled=%v, want %v", item.ID, item.Enabled, wantEnabled)
+			}
+		}
+	}
+}
+
 func TestBuildContentTree_MCPServers(t *testing.T) {
 	t.Parallel()
 

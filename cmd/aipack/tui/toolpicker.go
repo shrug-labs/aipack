@@ -71,6 +71,37 @@ type toolPicker struct {
 	probedAt time.Time
 }
 
+// pickerMaxVisible returns the number of tool rows that fit alongside the
+// picker's fixed chrome within a terminal of the given total height.
+//
+// The picker content is wrapped by tui.go before render:
+//
+//   - tabBar + statusLine + help bar → 3 rows subtracted from m.height
+//   - contentStyle.Padding(1, 2) → 2 rows (1 top, 1 bottom)
+//   - explicit `"\n" + View() + "\n"` pad → 2 rows
+//
+// Inside picker.View():
+//
+//   - dialogBorderStyle → 2 border rows
+//   - title + blank → 2
+//   - legend + blank → 2
+//   - blank + counts footer → 2
+//   - freshness hint (+ blank) → up to 2
+//   - server-disabled banner (+ blank) → up to 2
+//   - "↑ N more" / "↓ N more" indicators → up to 2
+//
+// Worst-case fixed overhead (with all banners + both indicators) is 21 rows,
+// typical is 17. Reserving 20 keeps the counts footer visible across common
+// states. The minimum of 3 prevents total hiding on small terminals.
+//
+// When the terminal is too small to show a usable picker, the counts footer
+// still takes priority — losing a row of item visibility is preferable to
+// losing the "N enabled / N total" tally users rely on for the cross-harness
+// tool budget.
+func pickerMaxVisible(termHeight int) int {
+	return max(termHeight-20, 3)
+}
+
 // newToolPicker creates an MCP tool picker. User-visible states cycle
 // off → ask → auto → off on <space>.
 func newToolPicker(id, title string, items []toolPickerItem) toolPicker {
@@ -169,6 +200,22 @@ func (p toolPicker) Update(msg tea.Msg) (toolPicker, tea.Cmd) {
 		if p.cursor > 0 {
 			p.cursor--
 		}
+	case "pgdown", "ctrl+f":
+		step := p.visibleH
+		if step <= 0 {
+			step = len(p.items)
+		}
+		p.cursor = min(p.cursor+step, len(p.items)-1)
+	case "pgup", "ctrl+b":
+		step := p.visibleH
+		if step <= 0 {
+			step = len(p.items)
+		}
+		p.cursor = max(p.cursor-step, 0)
+	case "g", "home":
+		p.cursor = 0
+	case "G", "end":
+		p.cursor = len(p.items) - 1
 	}
 
 	// Clamp scroll so the cursor stays visible within the visibleH window.
@@ -279,7 +326,7 @@ func (p toolPicker) helpText() string {
 	if p.loading {
 		return "esc:cancel"
 	}
-	return "space:cycle  a:ask  A:auto  x/d:off  r:refresh  .:bulk  enter/esc:save"
+	return "j/k:move  g/G:top/bot  space:cycle  a:ask  A:auto  x/d:off  r:refresh  .:bulk  enter/esc:save"
 }
 
 // toolPickerCounts tallies items by their tri-state.

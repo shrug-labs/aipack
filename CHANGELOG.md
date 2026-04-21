@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.24.1]
+
+### Fixed
+
+- **TUI MCP tool picker now advertises navigation, adds fast-nav keys, and keeps the counts footer on-screen.** The v0.23.0 picker over-budgeted its visible-row count by five rows — `contentStyle.Padding(1, 2)` (2) and the wrapping `"\n" + View() + "\n"` (2) weren't accounted for in the terminal-height reservation — so on long tool lists the cursor scrolled past the viewport and the `N off · N ask · N auto │ N/N enabled` counts footer clipped off the bottom. The reservation is now centralized in a `pickerMaxVisible()` helper that documents every row of chrome. Separately, the help bar listed only cycle/shortcut keys with no hint of how to scroll, so users reported they "couldn't scroll to the bottom" even though `j`/`k` worked — the bar now spells navigation out (`j/k:move  g/G:top/bot`) and the picker handles `PgDn`/`PgUp`/`Ctrl+F`/`Ctrl+B` (page by viewport) plus `g`/`G`/`Home`/`End` (jump to first/last).
+- **TUI content tree now honors `quiet: true` for both content vectors and MCP servers.** `BuildContentTree` called the lower-level `ResolveCurrentVector`, which doesn't know about quiet — a quiet pack with `rules: include: null` resolved to "include everything" instead of the sync-time resolver's "include nothing," producing a tree full of `[x]` rows for items sync would never actually deliver. Same gap for MCP servers with no explicit `mcp:` entry. The tree now mirrors `internal/config/profile_resolve.go`: quiet packs default every vector and server to off, and only an explicit non-empty `include` list or `enabled: true` activates items. Discoverability is preserved — every declared item still appears in the tree; only the `Enabled` flag flips.
+
 ## [0.24.0]
 
 ### Added

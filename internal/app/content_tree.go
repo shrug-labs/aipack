@@ -108,6 +108,12 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 		pe := entries[p.Index]
 
 		// Authored categories use VectorSelector for selection state.
+		// Quiet packs flip the default: without an explicit non-empty
+		// include list, nothing is selected. Non-quiet packs fall through
+		// to ResolveCurrentVector's "nil/empty include = include all" rule.
+		// This mirrors the sync-time resolver at
+		// internal/config/profile_resolve.go:422 so the tree's [x]/[ ]
+		// state matches what sync would actually deliver.
 		for _, cat := range domain.AuthoredCategories() {
 			inventory := p.Manifest.ContentIDs(cat)
 			if len(inventory) == 0 {
@@ -117,7 +123,12 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 			if sel == nil {
 				continue
 			}
-			selected := config.ToStringSet(config.ResolveCurrentVector(inventory, *sel))
+			var selected map[string]bool
+			if pe.Quiet && (sel.Include == nil || len(*sel.Include) == 0) {
+				selected = map[string]bool{}
+			} else {
+				selected = config.ToStringSet(config.ResolveCurrentVector(inventory, *sel))
+			}
 			for _, id := range inventory {
 				categoryItems[cat] = append(categoryItems[cat], ContentItem{
 					ID:       id,
@@ -129,11 +140,20 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 			}
 		}
 
-		// MCP servers use a different config structure.
+		// MCP servers use a different config structure. Quiet packs
+		// default to disabled; only an explicit profile entry with
+		// enabled != false activates a server. Non-quiet packs inherit
+		// the manifest-declared set.
 		for _, name := range p.Manifest.ContentIDs(domain.CategoryMCP) {
-			enabled := true
+			enabled := !pe.Quiet
 			if mcpCfg, ok := pe.MCP[name]; ok {
-				if mcpCfg.Enabled != nil && !*mcpCfg.Enabled {
+				switch {
+				case mcpCfg.Enabled == nil:
+					// Profile entry present with enabled unset — quiet
+					// packs still opt out; non-quiet packs stay enabled.
+				case *mcpCfg.Enabled:
+					enabled = true
+				default:
 					enabled = false
 				}
 			}
