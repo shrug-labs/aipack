@@ -28,6 +28,22 @@ type ResolvedPack struct {
 	MCP       map[string]ResolvedMCPServer
 }
 
+// ContentIDs returns the resolved id list for the given authored category.
+// Empty for unknown categories.
+func (rp ResolvedPack) ContentIDs(cat domain.PackCategory) []string {
+	switch cat {
+	case domain.CategoryRules:
+		return rp.Rules
+	case domain.CategoryAgents:
+		return rp.Agents
+	case domain.CategoryWorkflows:
+		return rp.Workflows
+	case domain.CategorySkills:
+		return rp.Skills
+	}
+	return nil
+}
+
 type ResolvedMCPServer struct {
 	AllowedTools       []string
 	AlwaysAllowedTools []string
@@ -220,11 +236,17 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 			}
 		}
 
+		// Quiet semantics for MCP mirror content vectors: include nothing
+		// unless the profile entry explicitly opts in. Non-quiet packs keep
+		// the manifest-derived default so new servers an upstream pack adds
+		// become available automatically.
 		mcpSelection := packCfg.MCP
 		if len(mcpSelection) == 0 {
 			mcpSelection = map[string]MCPServerConfig{}
-			for _, name := range manifest.MCP {
-				mcpSelection[name] = MCPServerConfig{Enabled: BoolPtr(true)}
+			if !quiet {
+				for _, name := range manifest.MCP {
+					mcpSelection[name] = MCPServerConfig{Enabled: BoolPtr(true)}
+				}
 			}
 		}
 		manifestMCPSet := ToStringSet(manifest.MCP)
@@ -273,8 +295,15 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 			seenServers[name] = packName
 		}
 
-		// Settings: packs contribute if they have config files and are not opted out.
-		if !settingsDisabled(packCfg.Settings.Enabled) && manifest.Configs.HasAnyConfigs() {
+		// Settings: packs contribute if they have config files and are not
+		// opted out. Quiet packs opt out by default — a nil Settings.Enabled
+		// suppresses contribution — but an explicit Settings.Enabled: true
+		// still opts in.
+		contributeSettings := manifest.Configs.HasAnyConfigs() && !settingsDisabled(packCfg.Settings.Enabled)
+		if quiet && packCfg.Settings.Enabled == nil {
+			contributeSettings = false
+		}
+		if contributeSettings {
 			settingsPacks = append(settingsPacks, packName)
 		}
 

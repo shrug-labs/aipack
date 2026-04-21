@@ -2,7 +2,7 @@
 
 A profile is a YAML file that defines an agent environment — which packs to draw from, which content is active, which MCP servers connect, and what parameters to expand. It turns a collection of installed packs into a coherent setup.
 
-Each content vector (rules, skills, workflows, agents, MCP servers) can be filtered per pack with `include` and `exclude` selectors. Packs marked `quiet` include nothing by default — content activates only when explicitly listed. Parameters expand `{params.*}` placeholders in MCP configs and content, making the same profile portable across environments. Switching profiles changes what's active without reinstalling anything.
+Each content vector (rules, skills, workflows, agents, MCP servers) can be filtered per pack with `include` and `exclude` selectors. Packs marked `quiet` include nothing by default — content, MCP servers, and harness settings all activate only when explicitly listed. Parameters expand `{params.*}` placeholders in MCP configs and content, making the same profile portable across environments. Switching profiles changes what's active without reinstalling anything.
 
 Profiles live in `~/.config/aipack/profiles/` (on Windows: `%APPDATA%\aipack\profiles\`).
 
@@ -47,7 +47,7 @@ packs:
 - **`params`** — key-value pairs expanded into `{params.*}` placeholders throughout pack content and MCP definitions.
 - **`packs`** — ordered list of pack entries. Each entry names an installed pack and optionally filters its content, configures MCP servers, or declares overrides.
 
-Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (false to opt out), vector selectors (`rules`, `skills`, `workflows`, `agents`), `mcp` server config, and `overrides`.
+Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (normal packs default to `true`; quiet packs default to `false` and need `true` to opt in), vector selectors (`rules`, `skills`, `workflows`, `agents`), `mcp` server config, and `overrides`.
 
 ## Parameters
 
@@ -102,7 +102,7 @@ packs:
 
 ## Quiet packs
 
-A pack entry marked `quiet: true` flips the default: omitted or empty selectors resolve to nothing instead of everything. Content activates only when you explicitly list it with a non-empty `include`.
+A pack entry marked `quiet: true` flips the default across every delivery mechanism — content vectors, MCP servers, and harness settings. Nothing from the pack activates unless you explicitly list it.
 
 | Configuration | Normal pack | Quiet pack |
 |---------------|------------|------------|
@@ -110,6 +110,11 @@ A pack entry marked `quiet: true` flips the default: omitted or empty selectors 
 | `include: []` | All content | **Nothing** |
 | `include: [a, b]` | Only a, b | Only a, b |
 | `exclude: [x]` | All except x | **Nothing** (nothing to subtract from) |
+
+The same opt-in-only rule applies to MCP and settings:
+
+- **MCP servers.** An omitted or empty `mcp:` map on a quiet pack resolves to no servers (a normal pack defaults to every server the manifest declares, enabled). Opt specific servers in with an explicit entry: `mcp: { srv-a: { enabled: true } }`.
+- **Harness settings.** A quiet pack with `configs/` files does not contribute settings unless `settings.enabled: true` is set explicitly. A normal pack contributes its settings by default unless `settings.enabled: false` opts out.
 
 This is the right default for large external catalogs. Install the whole pack, then selectively activate what you need:
 
@@ -121,9 +126,14 @@ packs:
       include: [deploy, triage]
     rules:
       include: [code-review]
+    mcp:
+      atlassian:
+        enabled: true
+    settings:
+      enabled: true
 ```
 
-Only the three named items sync. Everything else in the pack stays on disk but doesn't load. Use `aipack search` to discover what's available.
+Only the three named items, the atlassian MCP server, and the pack's settings fragment sync. Everything else in the pack stays on disk but doesn't load. Use `aipack search` to discover what's available.
 
 Three ways to get `quiet: true` on a profile entry:
 

@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -385,6 +387,61 @@ func TestParsePackManifest_MissingSchemaVersionRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "schema_version") {
 		t.Errorf("error should mention schema_version; got: %v", err)
+	}
+}
+
+func TestSavePackManifest_NormalizesV1ToV2(t *testing.T) {
+	// Regression: a valid v1 pack.json (schema_version: 1 + nested
+	// mcp object) used to round-trip through Load → Save as
+	// schema_version: 1 + flat mcp array, because SavePackManifest
+	// serialized the in-memory PackManifest.MCP []string as an array
+	// without updating SchemaVersion. The next read of the saved file
+	// then failed rejectMCPShapeMismatch with "v1 expects nested
+	// object; got flat array." Install, update, and extract all
+	// re-save the manifest, so consumers of v1 packs hit this on the
+	// first sync after install.
+	t.Parallel()
+
+	v1 := []byte(`{
+		"schema_version": 1,
+		"name": "my-pack",
+		"root": ".",
+		"mcp": {
+			"servers": {
+				"alpha": {"default_allowed_tools": ["one"]},
+				"beta": {}
+			}
+		}
+	}`)
+
+	m, err := ParsePackManifest(v1)
+	if err != nil {
+		t.Fatalf("ParsePackManifest(v1): %v", err)
+	}
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "pack.json")
+	if err := SavePackManifest(out, m); err != nil {
+		t.Fatalf("SavePackManifest: %v", err)
+	}
+
+	saved, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read saved: %v", err)
+	}
+	if !strings.Contains(string(saved), `"schema_version": 2`) {
+		t.Errorf("saved manifest still declares legacy schema_version; got:\n%s", saved)
+	}
+
+	reparsed, err := ParsePackManifest(saved)
+	if err != nil {
+		t.Fatalf("ParsePackManifest(saved): %v — round-trip produced invalid manifest:\n%s", err, saved)
+	}
+	if reparsed.SchemaVersion != PackSchemaVersion {
+		t.Errorf("reparsed SchemaVersion = %d, want %d", reparsed.SchemaVersion, PackSchemaVersion)
+	}
+	if !slices.Equal(reparsed.MCP, []string{"alpha", "beta"}) {
+		t.Errorf("reparsed.MCP = %v, want [alpha beta]", reparsed.MCP)
 	}
 }
 

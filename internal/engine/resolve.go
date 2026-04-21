@@ -105,25 +105,25 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]doma
 	var warnings []domain.Warning
 
 	for _, rp := range resolvedPacks {
-		rules, w, err := e.parseRules(rp.Root, rp.Rules, rp.Name)
+		rules, w, err := e.parseRules(rp)
 		if err != nil {
 			return nil, warnings, err
 		}
 		warnings = append(warnings, w...)
 
-		agents, w, err := e.parseAgents(rp.Root, rp.Agents, rp.Name)
+		agents, w, err := e.parseAgents(rp)
 		if err != nil {
 			return nil, warnings, err
 		}
 		warnings = append(warnings, w...)
 
-		workflows, w, err := e.parseWorkflows(rp.Root, rp.Workflows, rp.Name)
+		workflows, w, err := e.parseWorkflows(rp)
 		if err != nil {
 			return nil, warnings, err
 		}
 		warnings = append(warnings, w...)
 
-		skills, w, err := e.parseSkills(rp.Root, rp.Skills, rp.Name)
+		skills, w, err := e.parseSkills(rp)
 		if err != nil {
 			return nil, warnings, err
 		}

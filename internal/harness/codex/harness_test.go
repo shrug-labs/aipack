@@ -1522,6 +1522,72 @@ func TestCapture_NativeAgent_MultipleRealWorldAgents(t *testing.T) {
 	}
 }
 
+// TestCaptureNativeAgents_FlatOnly verifies that captureNativeAgents reads
+// only direct child .toml files of agentsDir and ignores any TOML nested
+// in subdirectories — agents are flat by definition (id is the harness
+// invocation handle and must equal the file basename).
+func TestCaptureNativeAgents_FlatOnly(t *testing.T) {
+	t.Parallel()
+	agentsDir := t.TempDir()
+
+	writeTOML := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(agentsDir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Flat agent — captured.
+	writeTOML("flat.toml", `name = "flat"
+description = "Flat agent"
+developer_instructions = "flat body"
+`)
+	// Agent with name omitted — name falls back to file basename.
+	writeTOML("explorer.toml", `description = "No name field"
+developer_instructions = "explorer body"
+`)
+	// Nested TOML — must be silently ignored.
+	writeTOML("group/should-skip.toml", `name = "should-skip"
+description = "nested — must be ignored"
+developer_instructions = "body"
+`)
+	// Non-TOML file — must be ignored even if it contains a name key.
+	writeTOML("README.md", `name = "ignore me"`)
+
+	res := &harness.CaptureResult{}
+	captureNativeAgents(agentsDir, res)
+
+	names := map[string]bool{}
+	for _, a := range res.Agents {
+		names[a.Name] = true
+	}
+	for _, want := range []string{"flat", "explorer"} {
+		if !names[want] {
+			t.Errorf("missing agent name %q; got %v", want, names)
+		}
+	}
+	if len(res.Agents) != 2 {
+		t.Errorf("expected 2 agents, got %d: %v", len(res.Agents), names)
+	}
+	if names["should-skip"] {
+		t.Errorf("nested TOML was captured; got %v", names)
+	}
+
+	gotWriteDsts := map[string]bool{}
+	for _, w := range res.Writes {
+		gotWriteDsts[filepath.ToSlash(w.Dst)] = true
+	}
+	for _, want := range []string{"agents/flat.md", "agents/explorer.md"} {
+		if !gotWriteDsts[want] {
+			t.Errorf("missing Write for %q; got %v", want, gotWriteDsts)
+		}
+	}
+}
+
 // --- Helpers ---
 
 func writeDsts(writes []domain.WriteAction) []string {

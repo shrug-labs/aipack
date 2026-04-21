@@ -437,17 +437,21 @@ func categoryFromDst(dst string) domain.PackCategory {
 	return domain.PackCategory(parts[0])
 }
 
+// relPathFromDst returns the slashed ID for a dst path produced by a harness
+// Plan or capture. Subdirectories in the dst are preserved in the returned ID.
 func relPathFromDst(cat domain.PackCategory, dst string, kind domain.CopyKind) string {
-	base := filepath.Base(dst)
-	if kind == domain.CopyKindDir || cat == domain.CategorySettings {
-		return base
+	if cat == domain.CategorySettings {
+		return filepath.Base(dst)
 	}
-	// Promoted skills land as skills/<id>/SKILL.md — extract the skill ID
-	// from the parent directory instead of using the leaf filename.
-	if cat == domain.CategorySkills && base == domain.SkillEntryFile {
-		return filepath.Base(filepath.Dir(dst))
+	// Dir copies (captured skill directories) arrive as `skills/<id>` without
+	// the `/SKILL.md` suffix MatchPrimaryContentFile expects.
+	if kind == domain.CopyKindDir {
+		return strings.TrimPrefix(filepath.ToSlash(dst), cat.DirName()+"/")
 	}
-	return strings.TrimSuffix(base, filepath.Ext(base))
+	if _, id, ok := domain.MatchPrimaryContentFile(dst); ok {
+		return id
+	}
+	return strings.TrimSuffix(filepath.Base(dst), filepath.Ext(dst))
 }
 
 func sourcePathForMCP(res harness.CaptureResult) string {

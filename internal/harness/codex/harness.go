@@ -285,8 +285,10 @@ var agentTOMLKnownKeys = map[string]bool{
 	"mcp_servers": true, "skills": true,
 }
 
-// captureNativeAgents reads .toml files from agentsDir and reconstructs
-// domain.Agent objects with the Harness map populated from Codex-specific fields.
+// captureNativeAgents reads agentsDir for direct child .toml files and
+// reconstructs domain.Agent objects with the Harness map populated from
+// Codex-specific fields. When a TOML omits `name`, the file basename
+// (extension stripped) becomes the name.
 func captureNativeAgents(agentsDir string, res *harness.CaptureResult) {
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
@@ -297,20 +299,20 @@ func captureNativeAgents(agentsDir string, res *harness.CaptureResult) {
 			continue
 		}
 		src := filepath.Join(agentsDir, e.Name())
-		raw, err := os.ReadFile(src)
-		if err != nil {
+		raw, readErr := os.ReadFile(src)
+		if readErr != nil {
 			res.Warnings = append(res.Warnings, domain.Warning{
 				Path:    src,
-				Message: fmt.Sprintf("read native agent TOML: %v", err),
+				Message: fmt.Sprintf("read native agent TOML: %v", readErr),
 			})
 			continue
 		}
 
 		var parsed map[string]any
-		if err := toml.Unmarshal(raw, &parsed); err != nil {
+		if unmarshalErr := toml.Unmarshal(raw, &parsed); unmarshalErr != nil {
 			res.Warnings = append(res.Warnings, domain.Warning{
 				Path:    src,
-				Message: fmt.Sprintf("parse native agent TOML: %v", err),
+				Message: fmt.Sprintf("parse native agent TOML: %v", unmarshalErr),
 			})
 			continue
 		}

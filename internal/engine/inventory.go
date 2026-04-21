@@ -64,7 +64,12 @@ func (e *Engine) buildPackInventory(configDir string, pk domain.Pack, now time.T
 	}
 
 	if len(manifest.Skills) > 0 {
-		skills, _, err := e.parseSkills(packRoot, manifest.Skills, pk.Name)
+		skills, _, err := e.parseSkills(config.ResolvedPack{
+			Name:     pk.Name,
+			Root:     packRoot,
+			Manifest: manifest,
+			Skills:   manifest.Skills,
+		})
 		if err != nil {
 			return domain.PackInventory{}, fmt.Errorf("parsing skills for pack %q: %w", pk.Name, err)
 		}

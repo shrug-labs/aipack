@@ -10,13 +10,15 @@ import (
 	"github.com/shrug-labs/aipack/internal/engine"
 )
 
-// CaptureContentDir reads files matching ext from srcDir, creates flat
-// CopyActions (Dst = dstDir/{filename}), and calls parse for each file.
-// The parse callback receives (raw bytes, name without extension, absolute
-// source path) and should parse the content and append to results; returning
-// an error adds a parse warning. If srcDir does not exist, returns nil slices.
+// CaptureContentDir reads files matching ext directly under srcDir and
+// produces CopyActions whose Dst is the pack-relative path the file would
+// occupy in a saved pack. The cat parameter routes the filename through
+// IDFromHarnessFilename (rules decode `__` → `/`; other categories pass
+// through). The parse callback receives raw bytes, the canonical id, and
+// the absolute source path; returning an error adds a parse warning.
 func CaptureContentDir(
 	srcDir, dstDir, ext string,
+	cat domain.PackCategory,
 	parse func(raw []byte, name, srcPath string) error,
 ) ([]domain.CopyAction, []domain.Warning) {
 	var copies []domain.CopyAction
@@ -30,12 +32,15 @@ func CaptureContentDir(
 		return copies, warnings
 	}
 
+	lowerExt := strings.ToLower(ext)
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ext) {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), lowerExt) {
 			continue
 		}
 		src := filepath.Join(srcDir, e.Name())
-		dst := filepath.Join(dstDir, e.Name())
+		harnessName := strings.TrimSuffix(e.Name(), ext)
+		canonicalID := cat.IDFromHarnessFilename(harnessName)
+		dst := filepath.Join(dstDir, filepath.FromSlash(canonicalID)+ext)
 		copies = append(copies, domain.CopyAction{Src: src, Dst: dst, Kind: domain.CopyKindFile})
 
 		raw, readErr := os.ReadFile(src)
@@ -43,8 +48,7 @@ func CaptureContentDir(
 			warnings = append(warnings, domain.Warning{Path: src, Message: fmt.Sprintf("reading file: %v", readErr)})
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), ext)
-		if parseErr := parse(raw, name, src); parseErr != nil {
+		if parseErr := parse(raw, canonicalID, src); parseErr != nil {
 			warnings = append(warnings, domain.Warning{Path: src, Message: fmt.Sprintf("parse error: %v", parseErr)})
 		}
 	}
@@ -59,8 +63,7 @@ func CaptureContentDir(
 // ParseAgent is an optional custom agent parser (e.g., for reverse-transforming
 // harness-native schema). If nil, agents are parsed with engine.ParseAgentBytes.
 func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []byte, name, src string) (domain.Agent, error)) {
-	// Rules.
-	copies, warnings := CaptureContentDir(dirs.Rules, "rules", ".md",
+	copies, warnings := CaptureContentDir(dirs.Rules, "rules", ".md", domain.CategoryRules,
 		func(raw []byte, name, src string) error {
 			r, err := engine.ParseRuleBytes(raw, name, "")
 			if err != nil {
@@ -73,14 +76,13 @@ func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
-	// Agents.
 	agentParser := parseAgent
 	if agentParser == nil {
 		agentParser = func(raw []byte, name, _ string) (domain.Agent, error) {
 			return engine.ParseAgentBytes(raw, name, "")
 		}
 	}
-	copies, warnings = CaptureContentDir(dirs.Agents, "agents", ".md",
+	copies, warnings = CaptureContentDir(dirs.Agents, "agents", ".md", domain.CategoryAgents,
 		func(raw []byte, name, src string) error {
 			a, err := agentParser(raw, name, src)
 			if err != nil {
@@ -93,8 +95,7 @@ func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
-	// Workflows.
-	copies, warnings = CaptureContentDir(dirs.Workflows, "workflows", ".md",
+	copies, warnings = CaptureContentDir(dirs.Workflows, "workflows", ".md", domain.CategoryWorkflows,
 		func(raw []byte, name, src string) error {
 			w, err := engine.ParseWorkflowBytes(raw, name, "")
 			if err != nil {
@@ -107,8 +108,8 @@ func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
-	// Skills.
-	skillCopies, skills := CaptureSkills(dirs.Skills, "skills")
+	skillCopies, skills, skillWarnings := CaptureSkills(dirs.Skills, "skills")
 	res.Copies = append(res.Copies, skillCopies...)
 	res.Skills = append(res.Skills, skills...)
+	res.Warnings = append(res.Warnings, skillWarnings...)
 }

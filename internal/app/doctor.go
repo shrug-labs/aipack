@@ -1146,31 +1146,21 @@ func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack, fix bool) C
 		packRoot := rp.Root
 		manifest := rp.Manifest
 
-		// Check each content vector.
-		type vectorCheck struct {
-			kind     string
-			dir      string
-			suffix   string
-			declared []string
+		// Rules: ids preserve the slashed relative path.
+		if onDisk, err := config.DiscoverIDs(filepath.Join(packRoot, "rules"), ".md"); err == nil {
+			drifts = appendDrift(drifts, rp.Name, "rules", onDisk, manifest.Rules)
 		}
-		checks := []vectorCheck{
-			{"rules", filepath.Join(packRoot, "rules"), ".md", manifest.Rules},
-			{"agents", filepath.Join(packRoot, "agents"), ".md", manifest.Agents},
-			{"workflows", filepath.Join(packRoot, "workflows"), ".md", manifest.Workflows},
+		// Agents and workflows: leaf ids; subdirectories under the category
+		// root are organizational only.
+		if onDisk, _, err := config.DiscoverIDsByLeaf(filepath.Join(packRoot, "agents"), "agents", ".md"); err == nil {
+			drifts = appendDrift(drifts, rp.Name, "agents", onDisk, manifest.Agents)
 		}
-
-		for _, vc := range checks {
-			onDisk, err := config.DiscoverIDs(vc.dir, vc.suffix)
-			if err != nil {
-				continue
-			}
-			drifts = appendDrift(drifts, rp.Name, vc.kind, onDisk, vc.declared)
+		if onDisk, _, err := config.DiscoverIDsByLeaf(filepath.Join(packRoot, "workflows"), "workflows", ".md"); err == nil {
+			drifts = appendDrift(drifts, rp.Name, "workflows", onDisk, manifest.Workflows)
 		}
-
-		// Skills.
-		onDiskSkills, err := config.DiscoverSkills(filepath.Join(packRoot, "skills"))
-		if err == nil {
-			drifts = appendDrift(drifts, rp.Name, "skills", onDiskSkills, manifest.Skills)
+		// Skills: leaf ids from directory names.
+		if onDisk, _, err := config.DiscoverSkills(filepath.Join(packRoot, "skills")); err == nil {
+			drifts = appendDrift(drifts, rp.Name, "skills", onDisk, manifest.Skills)
 		}
 	}
 

@@ -1,31 +1,73 @@
 package domain
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 )
 
 const SkillEntryFile = "SKILL.md"
 
-// MatchPrimaryContentFile matches a pack-relative path against the primary
-// content file patterns for authored categories (rules, agents, workflows,
-// skills). Returns the category, resource ID, and true on match.
+// RuleHarnessSeparator encodes `/` in slashed rule ids at the harness
+// filename level. Only rules encode; other content types use leaf ids
+// verbatim.
+//
+// The decode in IDFromHarnessFilename is a plain ReplaceAll, so a rule id
+// containing this literal would round-trip ambiguously. Manifest validation
+// in `internal/config/pack_inventory.go` rejects authored rule ids
+// containing `__` for that reason — the validator and the decode are
+// coupled. Don't relax one without the other.
+const RuleHarnessSeparator = "__"
+
+// HarnessFilename returns the basename (no extension) for an id of this
+// category — encoded for rules, verbatim otherwise.
+func (c PackCategory) HarnessFilename(id string) string {
+	if c == CategoryRules {
+		return strings.ReplaceAll(id, "/", RuleHarnessSeparator)
+	}
+	return id
+}
+
+// IDFromHarnessFilename inverts HarnessFilename.
+func (c PackCategory) IDFromHarnessFilename(name string) string {
+	if c == CategoryRules {
+		return strings.ReplaceAll(name, RuleHarnessSeparator, "/")
+	}
+	return name
+}
+
+// MatchPrimaryContentFile maps a pack-relative path to (category, id, true).
+// Rules preserve the slashed path as id (nested authoring is part of the id).
+// Agents, workflows, and skills accept any depth; the id is the leaf (the
+// subdirectory is authoring organization, not part of the id).
 func MatchPrimaryContentFile(rel string) (PackCategory, string, bool) {
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) < 2 {
+	slashed := filepath.ToSlash(rel)
+	idx := strings.IndexByte(slashed, '/')
+	if idx <= 0 || idx == len(slashed)-1 {
 		return "", "", false
 	}
-	switch PackCategory(parts[0]) {
-	case CategoryRules, CategoryAgents, CategoryWorkflows:
-		if len(parts) != 2 || !strings.HasSuffix(parts[1], ".md") {
+	cat := PackCategory(slashed[:idx])
+	rest := slashed[idx+1:]
+	switch cat {
+	case CategoryRules:
+		if !strings.HasSuffix(rest, ".md") {
 			return "", "", false
 		}
-		return PackCategory(parts[0]), strings.TrimSuffix(parts[1], ".md"), true
+		return cat, strings.TrimSuffix(rest, ".md"), true
+	case CategoryAgents, CategoryWorkflows:
+		if !strings.HasSuffix(rest, ".md") {
+			return "", "", false
+		}
+		return cat, path.Base(strings.TrimSuffix(rest, ".md")), true
 	case CategorySkills:
-		if len(parts) != 3 || parts[2] != SkillEntryFile {
+		if !strings.HasSuffix(rest, "/"+SkillEntryFile) {
 			return "", "", false
 		}
-		return CategorySkills, parts[1], true
+		dir := strings.TrimSuffix(rest, "/"+SkillEntryFile)
+		if dir == "" {
+			return "", "", false
+		}
+		return CategorySkills, path.Base(dir), true
 	default:
 		return "", "", false
 	}

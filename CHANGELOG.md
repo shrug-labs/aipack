@@ -6,6 +6,23 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.24.0]
+
+### Added
+
+- **Subdirectory authoring for all content vectors.** Rules: `rules/team-a/style.md` → id `team-a/style`; the harness filename escapes `/` to `__` (`team-a__style.md`), so same-leaf rules in different folders coexist within one pack. Agents, workflows, and skills: subdirectories are organizational only — the id is the file basename (or the skill's parent directory name), and same-leaf entries within one pack are rejected at discovery. `prompts/`, `mcp/`, `profiles/`, and `registries/` also autodiscover recursively. `aipack save` round-trips nested content back to the authored pack-source path for every capture shape — per-file copies (rules/agents/workflows), skill directory copies, and content-writes (native-TOML agents on Codex, promoted agents/workflows on Cline and OpenCode-promote) — so edits made in the harness never leave a flat duplicate alongside the original.
+
+### Changed
+
+- **`__` is reserved in authored rule ids** (harness escape for `/`); manifest validation rejects the literal.
+- **Agent, workflow, and skill ids may not contain `/`** — the id is always the leaf; subdirectories under those category roots are filesystem-only organization, never part of the id.
+- **Skills capture requires `SKILL.md`.** Bare subdirectories are skipped; previously captured as empty skills.
+- **Quiet packs now opt out of MCP servers and settings by default.** A quiet profile entry with no explicit `mcp:` map no longer falls back to the manifest-derived default (all declared servers enabled), and a quiet pack with config files no longer contributes settings unless `settings.enabled: true` is set. Explicit profile entries still override — `mcp: {srv: {enabled: true}}` and `settings.enabled: true` work as escape hatches, matching existing quiet semantics for content vectors (opt-in only). Previously `aipack pack add -q` on a pack declaring multiple MCP servers would trigger last-wins collisions and unresolved-ref warnings against other packs' configs.
+
+### Fixed
+
+- **`pack install` of a v1 pack no longer writes an inconsistent manifest.** `SavePackManifest` always stamps `schema_version: 2` — the in-memory `PackManifest.MCP` is a flat `[]string` regardless of source shape, so the serialized form is always v2. Previously, installing a valid v1 pack (`schema_version: 1` + nested `mcp: {servers: {...}}`) rewrote the manifest as `schema_version: 1` + flat `mcp` array, which the strict parser then rejected on the next read ("v1 expects nested object; got flat array"). Install, update, and extract all re-save the manifest, so consumers of v1 packs hit this on every sync after install.
+
 ## [0.23.0]
 
 ### Added

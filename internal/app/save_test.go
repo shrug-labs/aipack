@@ -776,6 +776,165 @@ func TestRunRoundTrip_SkillDir_NoFalseConflict_AfterSync(t *testing.T) {
 	}
 }
 
+// TestRunRoundTrip_NestedSkill_WritesToOriginalPath pins the save contract
+// for skills authored under organizational subdirectories. Pack source lives
+// at `<pack>/skills/group/alpha/SKILL.md`; the harness receives a flat
+// `<harness>/skills/alpha/SKILL.md` on sync. When the user edits that file
+// and runs save, the change must land on the original nested path — not at
+// `<pack>/skills/alpha/` which would duplicate the skill and break the next
+// sync's same-leaf collision check.
+func TestRunRoundTrip_NestedSkill_WritesToOriginalPath(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+	writeSaveTestManifest(t, packRoot, "my-pack")
+
+	// Pack authored with nested skill.
+	nestedPackSkillDir := filepath.Join(packRoot, "skills", "group", "alpha")
+	if err := os.MkdirAll(nestedPackSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origContent := []byte("---\ndescription: alpha\n---\nbody\n")
+	if err := os.WriteFile(filepath.Join(nestedPackSkillDir, "SKILL.md"), origContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Harness has the skill at the flat location (as sync would have written).
+	harnessSkillDir := filepath.Join(projectDir, ".claude", "skills", "alpha")
+	if err := os.MkdirAll(harnessSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	harnessFile := filepath.Join(harnessSkillDir, "SKILL.md")
+	if err := os.WriteFile(harnessFile, origContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ledger records the harness file's digest from sync.
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		harnessFile: {SourcePack: "my-pack", Digest: domain.SingleFileDigest(origContent)},
+	})
+
+	// User edits the harness file.
+	modified := []byte("---\ndescription: alpha\n---\nupdated body\n")
+	if err := os.WriteFile(harnessFile, modified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := stubHarness{
+		id: "claudecode",
+		capture: harness.CaptureResult{
+			Copies: []domain.CopyAction{{
+				Src: harnessSkillDir, Dst: "skills/alpha", Kind: domain.CopyKindDir,
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	if _, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope: "project", ProjectDir: projectDir,
+			Harnesses: []domain.Harness{"claudecode"}, Home: home,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+	}, reg); err != nil {
+		t.Fatalf("RunRoundTrip: %v", err)
+	}
+
+	// The nested original must carry the update.
+	got, err := os.ReadFile(filepath.Join(nestedPackSkillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read nested pack SKILL.md: %v", err)
+	}
+	if string(got) != string(modified) {
+		t.Errorf("nested pack SKILL.md = %q, want updated %q", got, modified)
+	}
+	// And no flat duplicate should appear — the next sync would reject it
+	// as a same-leaf collision.
+	flatDup := filepath.Join(packRoot, "skills", "alpha")
+	if _, err := os.Stat(flatDup); err == nil {
+		t.Errorf("save created flat duplicate at %s; nested skill save must update original path only", flatDup)
+	}
+}
+
+// TestRunRoundTrip_NestedAgent_WritesToOriginalPath pins the save contract
+// for agents authored under organizational subdirectories. Same shape as
+// the nested-skill test above but exercises the per-file CopyAction path
+// (agents/workflows come as CopyKindFile with `agents/<id>.md` dst).
+func TestRunRoundTrip_NestedAgent_WritesToOriginalPath(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+	writeSaveTestManifest(t, packRoot, "my-pack")
+
+	// Pack has a nested agent.
+	nestedAgentDir := filepath.Join(packRoot, "agents", "team-a")
+	if err := os.MkdirAll(nestedAgentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origContent := []byte("---\nname: reviewer\n---\nagent body\n")
+	nestedAgentFile := filepath.Join(nestedAgentDir, "reviewer.md")
+	if err := os.WriteFile(nestedAgentFile, origContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Harness has the agent flat (as sync would have written).
+	harnessAgentFile := filepath.Join(projectDir, ".claude", "agents", "reviewer.md")
+	if err := os.MkdirAll(filepath.Dir(harnessAgentFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(harnessAgentFile, origContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		harnessAgentFile: {SourcePack: "my-pack", Digest: domain.SingleFileDigest(origContent)},
+	})
+
+	modified := []byte("---\nname: reviewer\n---\nupdated body\n")
+	if err := os.WriteFile(harnessAgentFile, modified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := stubHarness{
+		id: "claudecode",
+		capture: harness.CaptureResult{
+			Copies: []domain.CopyAction{{
+				Src: harnessAgentFile, Dst: "agents/reviewer.md", Kind: domain.CopyKindFile,
+			}},
+			Agents: []domain.Agent{{
+				Name: "reviewer", Raw: modified, SourcePack: "my-pack",
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	if _, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope: "project", ProjectDir: projectDir,
+			Harnesses: []domain.Harness{"claudecode"}, Home: home,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+	}, reg); err != nil {
+		t.Fatalf("RunRoundTrip: %v", err)
+	}
+
+	got, err := os.ReadFile(nestedAgentFile)
+	if err != nil {
+		t.Fatalf("read nested pack agent: %v", err)
+	}
+	if string(got) != string(modified) {
+		t.Errorf("nested pack agent = %q, want updated %q", got, modified)
+	}
+	flatDup := filepath.Join(packRoot, "agents", "reviewer.md")
+	if _, err := os.Stat(flatDup); err == nil {
+		t.Errorf("save created flat duplicate at %s; nested agent save must update original path only", flatDup)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Content writes (promoted agents/workflows) in round-trip
 // ---------------------------------------------------------------------------
@@ -877,6 +1036,110 @@ func TestRunRoundTrip_ContentWrite_SavedDirectly(t *testing.T) {
 	}
 	if entry.Digest != modifiedDigest {
 		t.Errorf("ledger digest = %q, want SourceDigest %q", entry.Digest, modifiedDigest)
+	}
+}
+
+// TestRunRoundTrip_NestedAgent_ContentWriteHonorsAuthoredPath pins the save
+// contract for agents authored under organizational subdirectories and
+// captured via the WriteAction path (native-TOML agents on Codex, promoted
+// agents on Cline/OpenCode-promote). A flat Dst of `agents/<id>.md` must
+// resolve through the manifest's RelPath to the original nested location —
+// otherwise the save creates `<packRoot>/agents/<id>.md` alongside the
+// authored `<packRoot>/agents/team-a/<id>.md`, which trips the same-leaf
+// collision in DiscoverIDsByLeaf on the next sync and bricks sync until
+// reconciled.
+//
+// Companion to TestRunRoundTrip_NestedAgent_WritesToOriginalPath (which
+// covers the CopyKindFile path used by harnesses that keep native agents
+// as `.md` files). Together they pin both capture shapes against the
+// nested-authoring invariant.
+func TestRunRoundTrip_NestedAgent_ContentWriteHonorsAuthoredPath(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+	writeSaveTestManifest(t, packRoot, "my-pack")
+
+	// Pack has a nested agent authored under an organizational subdir.
+	nestedAgentDir := filepath.Join(packRoot, "agents", "team-a")
+	if err := os.MkdirAll(nestedAgentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origAgent := []byte("---\nname: reviewer\n---\nagent body\n")
+	nestedAgentFile := filepath.Join(nestedAgentDir, "reviewer.md")
+	if err := os.WriteFile(nestedAgentFile, origAgent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Harness has the agent materialized as a promoted SKILL.md (as Cline or
+	// OpenCode-promote would produce) or as a native TOML (Codex). The Write
+	// shape is identical — Dst is the flat `agents/reviewer.md`.
+	skillFile := filepath.Join(projectDir, ".agents", "skills", "reviewer", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origSkill := []byte("---\nname: reviewer\nsource_type: agent\n---\n\nagent body\n")
+	if err := os.WriteFile(skillFile, origSkill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origSkillDigest := domain.SingleFileDigest(origSkill)
+
+	// User edits the promoted SKILL.md.
+	modifiedSkill := []byte("---\nname: reviewer\nsource_type: agent\n---\n\nupdated body\n")
+	if err := os.WriteFile(skillFile, modifiedSkill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modifiedSkillDigest := domain.SingleFileDigest(modifiedSkill)
+	reRendered := []byte("---\nname: reviewer\n---\nupdated body\n")
+
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		skillFile: {SourcePack: "my-pack", Digest: origSkillDigest},
+	})
+
+	stub := stubHarness{
+		id: "codex",
+		capture: harness.CaptureResult{
+			Writes: []domain.WriteAction{{
+				Src:          skillFile,
+				Dst:          "agents/reviewer.md",
+				Content:      reRendered,
+				IsContent:    true,
+				SourceDigest: modifiedSkillDigest,
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	// Use Force=true to proceed past the conflict detection that compares
+	// the pack file bytes against the Write's re-rendered bytes — in a real
+	// flow the pack file holds the authored baseline, differs from the
+	// re-rendered output, and the user resolves by forcing save. The test's
+	// subject is the dst resolution, not the conflict-detection policy.
+	if _, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope: "project", ProjectDir: projectDir,
+			Harnesses: []domain.Harness{"codex"}, Home: home,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+		Force:     true,
+	}, reg); err != nil {
+		t.Fatalf("RunRoundTrip: %v", err)
+	}
+
+	// The nested original must carry the re-rendered content.
+	got, err := os.ReadFile(nestedAgentFile)
+	if err != nil {
+		t.Fatalf("read nested pack agent: %v", err)
+	}
+	if string(got) != string(reRendered) {
+		t.Errorf("nested pack agent = %q, want re-rendered %q", got, reRendered)
+	}
+	// And no flat duplicate may appear — the next sync would reject it
+	// as a same-leaf collision.
+	flatDup := filepath.Join(packRoot, "agents", "reviewer.md")
+	if _, err := os.Stat(flatDup); err == nil {
+		t.Errorf("save created flat duplicate at %s; nested agent Write must resolve to authored path", flatDup)
 	}
 }
 

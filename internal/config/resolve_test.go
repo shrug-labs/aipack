@@ -1790,9 +1790,9 @@ func TestResolveProfile_QuietPackMCPStillDelivered(t *testing.T) {
 		"mcp/srv-a.json":     `{"name":"srv-a","command":["echo","hi"]}`,
 	})
 
-	// Quiet suppresses content vectors but MCP is controlled by its own
-	// mcp: map in the profile, not by quiet. A quiet pack with an MCP
-	// server explicitly enabled should still deliver it.
+	// Quiet suppresses manifest-derived MCP defaults (same opt-in semantics
+	// as content vectors), but an explicit profile entry overrides quiet:
+	// a quiet pack with an MCP server explicitly enabled still delivers it.
 	cfg := ProfileConfig{
 		SchemaVersion: ProfileSchemaVersion,
 		Packs: []PackEntry{{
@@ -1824,6 +1824,152 @@ func TestResolveProfile_QuietPackMCPStillDelivered(t *testing.T) {
 	}
 	if len(srv.AllowedTools) != 0 || len(srv.AlwaysAllowedTools) != 0 {
 		t.Fatalf("expected silent tool lists, got allowed=%v always=%v", srv.AllowedTools, srv.AlwaysAllowedTools)
+	}
+}
+
+// TestResolveProfile_QuietPackEmptyMCPOmitsManifestServers pins the fix for
+// the quiet-MCP gap: a quiet profile entry with no explicit mcp: map must
+// NOT fall back to the manifest-derived default (all servers enabled). The
+// observed regression was that `aipack pack add -q` on a pack declaring
+// multiple MCP servers triggered last-wins collisions and {params.*}
+// unresolved warnings against other packs' configs.
+func TestResolveProfile_QuietPackEmptyMCPOmitsManifestServers(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-mcp", PackManifest{
+		SchemaVersion: 2,
+		Name:          "quiet-mcp",
+		Version:       "1.0.0",
+		Root:          ".",
+		MCP:           []string{"srv-a", "srv-b"},
+	}, map[string]string{
+		"mcp/srv-a.json": `{"name":"srv-a","command":["echo","a"]}`,
+		"mcp/srv-b.json": `{"name":"srv-b","command":["echo","b"]}`,
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-mcp",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			// No explicit MCP map → must resolve to empty under quiet.
+		}},
+	}
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("expected 1 pack, got %d", len(packs))
+	}
+	if len(packs[0].MCP) != 0 {
+		t.Fatalf("quiet pack with no explicit mcp selection must deliver no servers, got %v", packs[0].MCP)
+	}
+}
+
+// TestResolveProfile_NonQuietPackEmptyMCPInheritsManifestServers pins the
+// non-quiet default: an empty mcp: map still defaults to manifest-declared
+// servers, so packs that add new servers upstream are picked up without
+// requiring the consumer to re-declare every server.
+func TestResolveProfile_NonQuietPackEmptyMCPInheritsManifestServers(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "open-mcp", PackManifest{
+		SchemaVersion: 2,
+		Name:          "open-mcp",
+		Version:       "1.0.0",
+		Root:          ".",
+		MCP:           []string{"srv-a", "srv-b"},
+	}, map[string]string{
+		"mcp/srv-a.json": `{"name":"srv-a","command":["echo","a"]}`,
+		"mcp/srv-b.json": `{"name":"srv-b","command":["echo","b"]}`,
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "open-mcp",
+			Enabled: BoolPtr(true),
+		}},
+	}
+	packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(packs) != 1 || len(packs[0].MCP) != 2 {
+		t.Fatalf("non-quiet pack with empty mcp: map should inherit both manifest servers, got %v", packs[0].MCP)
+	}
+}
+
+// TestResolveProfile_QuietPackSettingsDefaultSkipped pins the quiet-settings
+// gap fix: a quiet pack that has config files but no explicit settings
+// opt-in must NOT be added to settingsPacks. The settings branch previously
+// ignored quiet entirely — a quiet pack with a configs/ directory would
+// contribute settings just like a non-quiet pack.
+func TestResolveProfile_QuietPackSettingsDefaultSkipped(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-cfg", PackManifest{
+		SchemaVersion: 2,
+		Name:          "quiet-cfg",
+		Version:       "1.0.0",
+		Root:          ".",
+		Configs:       PackConfigs{HarnessSettings: map[string][]string{"claudecode": {"settings.local.json"}}},
+	}, map[string]string{
+		"configs/claudecode/settings.local.json": `{"theme":"dark"}`,
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "quiet-cfg",
+			Enabled: BoolPtr(true),
+			Quiet:   true,
+			// Settings.Enabled is nil — under quiet this must NOT contribute.
+		}},
+	}
+	_, settingsPacks, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(settingsPacks) != 0 {
+		t.Fatalf("quiet pack without explicit Settings.Enabled must not contribute settings, got %v", settingsPacks)
+	}
+}
+
+// TestResolveProfile_QuietPackSettingsExplicitOptIn verifies the explicit
+// opt-in escape hatch: a quiet pack with Settings.Enabled: true still
+// contributes settings. This matches the MCP escape hatch (explicit mcp:
+// map wins over the quiet default).
+func TestResolveProfile_QuietPackSettingsExplicitOptIn(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "quiet-cfg-opt-in", PackManifest{
+		SchemaVersion: 2,
+		Name:          "quiet-cfg-opt-in",
+		Version:       "1.0.0",
+		Root:          ".",
+		Configs:       PackConfigs{HarnessSettings: map[string][]string{"claudecode": {"settings.local.json"}}},
+	}, map[string]string{
+		"configs/claudecode/settings.local.json": `{"theme":"dark"}`,
+	})
+
+	cfg := ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:     "quiet-cfg-opt-in",
+			Enabled:  BoolPtr(true),
+			Quiet:    true,
+			Settings: PackSettingsConfig{Enabled: BoolPtr(true)},
+		}},
+	}
+	_, settingsPacks, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(settingsPacks) != 1 || settingsPacks[0] != "quiet-cfg-opt-in" {
+		t.Fatalf("quiet pack with Settings.Enabled: true must contribute settings, got %v", settingsPacks)
 	}
 }
 

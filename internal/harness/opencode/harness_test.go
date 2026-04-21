@@ -611,9 +611,7 @@ func TestBuildInstructionsSpec_Empty(t *testing.T) {
 
 func TestBuildInstructionsSpec_PointsAtRenderedDir(t *testing.T) {
 	t.Parallel()
-	// Use filepath.Join so the path separators match the host OS — the
-	// production code calls filepath.Join internally, and comparing against
-	// a hardcoded Unix-style string would fail on Windows.
+	// Use filepath.Join so the path separators match the host OS.
 	renderedDir := filepath.Join(t.TempDir(), "opencode", "rules")
 	spec := BuildInstructionsSpec(renderedDir)
 	if !spec.Manage {

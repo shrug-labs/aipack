@@ -30,6 +30,32 @@ type PackShowEntry struct {
 	Prompts     []string `json:"prompts"`
 	MCPServers  []string `json:"mcp_servers"`
 	Extras      []string `json:"extras,omitempty"`
+
+	// manifest is populated at construction time so ContentPath / ContentSize
+	// can resolve nested authored files via PackManifest.RelPath. Unexported
+	// to stay out of JSON output.
+	manifest config.PackManifest
+}
+
+// ContentPath returns the absolute on-disk path of a content item, honoring
+// any organizational subdirectories the manifest's RelPath knows about.
+func (e PackShowEntry) ContentPath(category domain.PackCategory, id string) string {
+	return filepath.Join(e.Path, filepath.FromSlash(e.manifest.RelPath(category, id)))
+}
+
+// ContentSize returns the on-disk size of a content item, or -1 on error.
+func (e PackShowEntry) ContentSize(category domain.PackCategory, id string) int64 {
+	fp := e.ContentPath(category, id)
+	kind := domain.CopyKindFile
+	if category == domain.CategorySkills {
+		fp = filepath.Dir(fp)
+		kind = domain.CopyKindDir
+	}
+	size, err := fileOrDirSize(fp, kind)
+	if err != nil {
+		return -1
+	}
+	return size
 }
 
 // PinLabel returns a human-readable label for the lockfile pin:
@@ -185,6 +211,7 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Prompts = m.Prompts
 		entry.MCPServers = slices.Clone(m.MCP)
 		entry.Extras = m.Extras
+		entry.manifest = m
 	}
 
 	if m, ok := meta[name]; ok {

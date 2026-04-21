@@ -261,6 +261,50 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 
 		savedCount := 0
 
+		// Cache pack manifests for path resolution. Authored agents/workflows/
+		// skills may live under organizational subdirectories within their
+		// pack source; the manifest's RelPath returns the actual on-disk
+		// location so save writes back to the original nested path instead
+		// of creating a flat duplicate at the canonical location.
+		packManifests := map[string]config.PackManifest{}
+		loadManifest := func(packName, packRoot string) config.PackManifest {
+			if m, loaded := packManifests[packName]; loaded {
+				return m
+			}
+			var m config.PackManifest
+			if loadedM, err := config.LoadPackManifest(filepath.Join(packRoot, "pack.json")); err == nil {
+				_ = config.DiscoverContent(&loadedM, packRoot)
+				m = loadedM
+			}
+			packManifests[packName] = m
+			return m
+		}
+		// resolvePackDst maps a harness-relative Dst (as emitted by Plan or
+		// Capture) to the absolute pack-source path it should land on,
+		// honoring organizational subdirectories for authored content via the
+		// manifest's RelPath. isDir distinguishes captured skill directories —
+		// they arrive as `skills/<id>` without the `/SKILL.md` suffix that
+		// MatchPrimaryContentFile expects.
+		//
+		// Called from both the Copies loop (where isDir = c.Kind == CopyKindDir)
+		// and the Writes loop (always false — Writes are always files). Both
+		// paths must resolve nested authored locations so promoted and
+		// native-TOML agent/workflow saves don't flatten into a duplicate.
+		resolvePackDst := func(packName, packRoot, dst string, isDir bool) string {
+			if isDir {
+				if id, ok := strings.CutPrefix(filepath.ToSlash(dst), domain.CategorySkills.DirName()+"/"); ok && id != "" && !strings.ContainsRune(id, '/') {
+					skillFile := loadManifest(packName, packRoot).RelPath(domain.CategorySkills, id)
+					skillDir := strings.TrimSuffix(skillFile, "/"+domain.SkillEntryFile)
+					return filepath.Join(packRoot, filepath.FromSlash(skillDir))
+				}
+			}
+			cat, id, ok := domain.MatchPrimaryContentFile(dst)
+			if !ok {
+				return filepath.Join(packRoot, filepath.FromSlash(dst))
+			}
+			return filepath.Join(packRoot, filepath.FromSlash(loadManifest(packName, packRoot).RelPath(cat, id)))
+		}
+
 		// Content files (rules, agents, workflows, skills).
 		for _, c := range res.Copies {
 			src := filepath.Clean(c.Src)
@@ -320,7 +364,7 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 				continue
 			}
 
-			dst := filepath.Join(packRoot, filepath.FromSlash(c.Dst))
+			dst := resolvePackDst(packName, packRoot, c.Dst, c.Kind == domain.CopyKindDir)
 
 			// Pack-side conflict: check if pack file also diverged from ledger.
 			// For directories with per-file ledger entries (from sync), compare
@@ -428,7 +472,13 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 				continue
 			}
 
-			dst := filepath.Join(packRoot, filepath.FromSlash(w.Dst))
+			// Writes are always files, so isDir=false. Content writes
+			// (IsContent: true) cover native-TOML agents (Codex) and promoted
+			// agents/workflows (Cline, OpenCode-promote) — all of which land
+			// in authored category directories and must honor nested authoring.
+			// Settings writes fall through the !ok branch of MatchPrimaryContentFile
+			// and keep their raw Dst, so configs/.../settings.* is unaffected.
+			dst := resolvePackDst(packName, packRoot, w.Dst, false)
 
 			if w.IsContent {
 				// Content write — save re-rendered content directly.

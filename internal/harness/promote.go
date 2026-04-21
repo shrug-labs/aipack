@@ -11,7 +11,6 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
-	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // SourceType discriminates promoted content in SKILL.md frontmatter.
@@ -129,24 +128,20 @@ func ParsePromotedFrontmatter(raw []byte) (PromotedFrontmatter, []byte, error) {
 	return fm, body, nil
 }
 
-// CapturePromotedContent scans skillsDir for subdirectories containing
-// SKILL.md files. It reads the enriched frontmatter to determine whether
-// each entry was originally an agent, workflow, or plain skill, and populates
-// the CaptureResult accordingly.
+// CapturePromotedContent reads skillsDir for direct child directories
+// containing a SKILL.md. The enriched SKILL.md frontmatter determines
+// whether the entry is reconstructed as an agent, workflow, or plain skill.
+// The directory leaf name becomes the content name.
 func CapturePromotedContent(skillsDir string, res *CaptureResult) {
-	dirs := util.ListSubDirs(skillsDir)
-	for _, d := range dirs {
-		name := filepath.Base(d)
-		skillFile := filepath.Join(d, "SKILL.md")
-
-		raw, err := os.ReadFile(skillFile)
-		if err != nil {
-			// No SKILL.md — treat as plain skill directory (copy as-is).
-			res.Copies = append(res.Copies, domain.CopyAction{
-				Src: d, Dst: filepath.Join("skills", name), Kind: domain.CopyKindDir,
+	walkWarnings := listSkillDirs(skillsDir, func(abs, name string) {
+		skillFile := filepath.Join(abs, domain.SkillEntryFile)
+		raw, readErr := os.ReadFile(skillFile)
+		if readErr != nil {
+			res.Warnings = append(res.Warnings, domain.Warning{
+				Path:    skillFile,
+				Message: fmt.Sprintf("read SKILL.md: %v", readErr),
 			})
-			res.Skills = append(res.Skills, domain.Skill{Name: name, DirPath: d})
-			continue
+			return
 		}
 
 		fm, body, parseErr := ParsePromotedFrontmatter(raw)
@@ -156,10 +151,10 @@ func CapturePromotedContent(skillsDir string, res *CaptureResult) {
 				Message: fmt.Sprintf("parse promoted frontmatter: %v", parseErr),
 			})
 			res.Copies = append(res.Copies, domain.CopyAction{
-				Src: d, Dst: filepath.Join("skills", name), Kind: domain.CopyKindDir,
+				Src: abs, Dst: filepath.Join("skills", name), Kind: domain.CopyKindDir,
 			})
-			res.Skills = append(res.Skills, domain.Skill{Name: name, DirPath: d})
-			continue
+			res.Skills = append(res.Skills, domain.Skill{Name: name, DirPath: abs})
+			return
 		}
 
 		switch fm.SourceType {
@@ -170,11 +165,12 @@ func CapturePromotedContent(skillsDir string, res *CaptureResult) {
 		default:
 			// Plain skill — directory copy.
 			res.Copies = append(res.Copies, domain.CopyAction{
-				Src: d, Dst: filepath.Join("skills", name), Kind: domain.CopyKindDir,
+				Src: abs, Dst: filepath.Join("skills", name), Kind: domain.CopyKindDir,
 			})
-			res.Skills = append(res.Skills, domain.Skill{Name: name, DirPath: d})
+			res.Skills = append(res.Skills, domain.Skill{Name: name, DirPath: abs})
 		}
-	}
+	})
+	res.Warnings = append(res.Warnings, walkWarnings...)
 }
 
 // CaptureAsAgent reconstructs a domain.Agent from promoted frontmatter and

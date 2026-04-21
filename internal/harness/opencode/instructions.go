@@ -20,11 +20,13 @@ type SkillsSpec struct {
 	Desired []string
 }
 
-// BuildInstructionsSpec builds the instructions spec for OpenCode. Pass the
-// managed rules directory that aipack writes profile-filtered rules into;
-// pointing instructions there — rather than at each pack's source —
-// means profile enable/disable takes effect at runtime. Empty renderedDir
-// means "nothing to manage".
+// BuildInstructionsSpec builds the instructions spec for OpenCode. Pass
+// the managed rules directory that aipack writes profile-filtered rules
+// into; pointing instructions there — rather than at each pack's source —
+// means profile enable/disable takes effect at runtime. Encoded nested
+// rule filenames (`team-a__style.md`) stay flat in renderedDir, so the
+// single `<dir>/*.md` glob loads them. Empty renderedDir means "nothing
+// to manage".
 func BuildInstructionsSpec(renderedDir string) InstructionsSpec {
 	if renderedDir == "" {
 		return InstructionsSpec{Manage: false}

@@ -21,6 +21,27 @@ func (p ProfilePackInfo) HasConfigs() bool {
 	return p.Manifest.Configs.HasAnyConfigs()
 }
 
+// ContentPath returns the absolute on-disk path of a content item, honoring
+// any organizational subdirectories the manifest's RelPath knows about.
+func (p ProfilePackInfo) ContentPath(category domain.PackCategory, id string) string {
+	return filepath.Join(p.Root, filepath.FromSlash(p.Manifest.RelPath(category, id)))
+}
+
+// ContentSize returns the on-disk size of a content item, or -1 on error.
+func (p ProfilePackInfo) ContentSize(category domain.PackCategory, id string) int64 {
+	fp := p.ContentPath(category, id)
+	kind := domain.CopyKindFile
+	if category == domain.CategorySkills {
+		fp = filepath.Dir(fp)
+		kind = domain.CopyKindDir
+	}
+	size, err := fileOrDirSize(fp, kind)
+	if err != nil {
+		return -1
+	}
+	return size
+}
+
 // ContentItem represents a single content item (rule, agent, etc.) with its
 // resolved selection state across packs.
 type ContentItem struct {
@@ -301,24 +322,9 @@ func PackContentSizes(packs []ProfilePackInfo) map[string]int64 {
 		prefix := fmt.Sprintf("%d:", pi)
 		for _, cat := range domain.AllPackCategories() {
 			for _, id := range p.Manifest.ContentIDs(cat) {
-				sizes[prefix+cat.DirName()+"/"+id] = PackContentSize(p.Root, cat, id)
+				sizes[prefix+cat.DirName()+"/"+id] = p.ContentSize(cat, id)
 			}
 		}
 	}
 	return sizes
-}
-
-// PackContentSize returns the on-disk size of a content item.
-func PackContentSize(root string, category domain.PackCategory, id string) int64 {
-	fp := filepath.Join(root, filepath.FromSlash(category.PrimaryRelPath(id)))
-	kind := domain.CopyKindFile
-	if category == domain.CategorySkills {
-		fp = filepath.Dir(fp)
-		kind = domain.CopyKindDir
-	}
-	size, err := fileOrDirSize(fp, kind)
-	if err != nil {
-		return -1
-	}
-	return size
 }

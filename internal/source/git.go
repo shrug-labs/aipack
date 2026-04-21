@@ -258,6 +258,14 @@ func runAndCaptureStderr(cmd *exec.Cmd) (stdout, stderr []byte, err error) {
 //     short ConnectTimeout so an unreachable host fails quickly. ssh-agent
 //     auth still works; only passphrase prompts for locked on-disk keys are
 //     refused. Git for Windows bundles OpenSSH which honors these options.
+//     StrictHostKeyChecking=accept-new is load-bearing: under BatchMode the
+//     default `ask` becomes a hard refusal on any host not already in
+//     known_hosts, which breaks first-run clones against github/bitbucket on
+//     a fresh machine. `accept-new` lets first-connect succeed without
+//     prompting, persists the key to known_hosts (so later ops in any tool
+//     verify against the cached entry), and still refuses if a cached key
+//     changes. Do not tighten to `yes` (breaks first-run) or loosen to `no`
+//     (silent TOFU every time, loses key-rotation detection).
 //   - SSH_ASKPASS_REQUIRE=never — OpenSSH 8.4+ hard-disables the fallback
 //     askpass GUI even when DISPLAY is set. No-op on older ssh.
 //   - GCM_INTERACTIVE=Never — blocks Git Credential Manager's GUI popup on

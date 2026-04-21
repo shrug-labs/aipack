@@ -319,11 +319,13 @@ func captureMCP(home string, res *harness.CaptureResult) error {
 	return nil
 }
 
-// captureRulesAndWorkflows captures rules and workflows from their separate
-// directories. Agents are not captured here — they live as promoted skills
-// and are handled by capturePromotedContent.
+// captureRulesAndWorkflows captures rules and workflows from their
+// directories. Agents are handled separately by capturePromotedContent
+// (they live as promoted skills). Both scans are non-recursive, so the
+// project layout where `.clinerules/workflows/` nests inside `.clinerules/`
+// separates them naturally.
 func captureRulesAndWorkflows(res *harness.CaptureResult, dirs harness.ContentDirs) {
-	copies, warnings := harness.CaptureContentDir(dirs.Rules, "rules", ".md",
+	copies, warnings := harness.CaptureContentDir(dirs.Rules, "rules", ".md", domain.CategoryRules,
 		func(raw []byte, name, src string) error {
 			r, err := engine.ParseRuleBytes(raw, name, "")
 			if err != nil {
@@ -336,7 +338,7 @@ func captureRulesAndWorkflows(res *harness.CaptureResult, dirs harness.ContentDi
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
-	copies, warnings = harness.CaptureContentDir(dirs.Workflows, "workflows", ".md",
+	copies, warnings = harness.CaptureContentDir(dirs.Workflows, "workflows", ".md", domain.CategoryWorkflows,
 		func(raw []byte, name, src string) error {
 			w, err := engine.ParseWorkflowBytes(raw, name, "")
 			if err != nil {

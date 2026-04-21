@@ -50,10 +50,13 @@ func (f Fragment) Apply(plan *Plan) {
 	}
 }
 
-// addContentWrites is the shared implementation for AddRuleWrites, AddWorkflowWrites, and AddAgentWrites.
-func (f *Fragment) addContentWrites(baseDir, subDir string, items []writableContent) {
+// addContentWrites is the shared implementation for AddRuleWrites,
+// AddWorkflowWrites, and AddAgentWrites. Rules encode the harness filename
+// via HarnessFilename; other categories use the name verbatim.
+func (f *Fragment) addContentWrites(baseDir, subDir string, cat PackCategory, items []writableContent) {
 	for _, item := range items {
-		dst := filepath.Join(baseDir, subDir, item.writeName()+".md")
+		filename := cat.HarnessFilename(item.writeName()) + ".md"
+		dst := filepath.Join(baseDir, subDir, filename)
 		f.Writes = append(f.Writes, WriteAction{
 			Dst:        dst,
 			Content:    item.writeRaw(),
@@ -70,7 +73,7 @@ func (f *Fragment) AddRuleWrites(baseDir, subDir string, rules []Rule) {
 	for i := range rules {
 		items[i] = rules[i]
 	}
-	f.addContentWrites(baseDir, subDir, items)
+	f.addContentWrites(baseDir, subDir, CategoryRules, items)
 }
 
 // AddWorkflowWrites appends WriteActions for each workflow using Raw bytes.
@@ -79,7 +82,7 @@ func (f *Fragment) AddWorkflowWrites(baseDir, subDir string, workflows []Workflo
 	for i := range workflows {
 		items[i] = workflows[i]
 	}
-	f.addContentWrites(baseDir, subDir, items)
+	f.addContentWrites(baseDir, subDir, CategoryWorkflows, items)
 }
 
 // AddAgentWrites appends WriteActions for each agent using Raw bytes.
@@ -88,7 +91,7 @@ func (f *Fragment) AddAgentWrites(baseDir, subDir string, agents []Agent) {
 	for i := range agents {
 		items[i] = agents[i]
 	}
-	f.addContentWrites(baseDir, subDir, items)
+	f.addContentWrites(baseDir, subDir, CategoryAgents, items)
 }
 
 // AddSkillCopies appends CopyActions for each skill directory.

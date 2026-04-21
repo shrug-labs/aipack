@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -194,12 +193,6 @@ func (t *treeModel) cursorNode() *treeNode {
 	return &t.nodes[t.cursor]
 }
 
-// contentPath resolves the absolute file path for a content item given its
-// pack root, category, and id.
-func contentPath(root string, category domain.PackCategory, id string) string {
-	return filepath.Join(root, filepath.FromSlash(category.PrimaryRelPath(id)))
-}
-
 // filePath returns the absolute file path for the item at the cursor.
 // Returns "" for category nodes.
 func (t *treeModel) filePath() string {
@@ -210,7 +203,7 @@ func (t *treeModel) filePath() string {
 	if n.packIdx < 0 || n.packIdx >= len(t.packs) {
 		return ""
 	}
-	return contentPath(t.packs[n.packIdx].Root, n.category, n.id)
+	return t.packs[n.packIdx].ContentPath(n.category, n.id)
 }
 
 // toggle flips the enabled state of the item at the cursor.

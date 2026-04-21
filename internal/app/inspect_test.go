@@ -252,6 +252,16 @@ func TestRelPathFromDst(t *testing.T) {
 			cat:  domain.CategorySettings, dst: "settings.json",
 			kind: domain.CopyKindFile, want: "settings.json",
 		},
+		{
+			name: "nested rule preserves subdir (rules support nesting)",
+			cat:  domain.CategoryRules, dst: "rules/group-a/triage.md",
+			kind: domain.CopyKindFile, want: "group-a/triage",
+		},
+		{
+			name: "two-deep nested rule preserves subdirs",
+			cat:  domain.CategoryRules, dst: "rules/group/sub/gamma.md",
+			kind: domain.CopyKindFile, want: "group/sub/gamma",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

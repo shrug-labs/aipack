@@ -188,6 +188,97 @@ func TestValidatePackInventory_RejectsBadManifestEntries(t *testing.T) {
 	}
 }
 
+func TestValidatePackInventory_RejectsInvalidIDChars(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		manifest PackManifest
+		wantErr  string
+	}{
+		{
+			name: "rule id with __ is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Rules: []string{"foo__bar"},
+			},
+			wantErr: `pack "demo" rules id "foo__bar" must not contain "__"`,
+		},
+		{
+			name: "rule id with three underscores is rejected (contains __)",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Rules: []string{"foo___bar"},
+			},
+			wantErr: `pack "demo" rules id "foo___bar" must not contain "__"`,
+		},
+		{
+			name: "agent id with `/` is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Agents: []string{"team/reviewer"},
+			},
+			wantErr: "pack \"demo\" agents id \"team/reviewer\" must not contain `/`",
+		},
+		{
+			name: "workflow id with `/` is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Workflows: []string{"team/deploy"},
+			},
+			wantErr: "pack \"demo\" workflows id \"team/deploy\" must not contain `/`",
+		},
+		{
+			name: "skill id with `/` is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Skills: []string{"team/oncall"},
+			},
+			wantErr: "pack \"demo\" skills id \"team/oncall\" must not contain `/`",
+		},
+	}
+
+	for _, tt := range tests {
+		tc := tt
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validatePackInventory("demo", t.TempDir(), tc.manifest)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidatePackInventory_AcceptsSlashedRuleIDs confirms rules can carry
+// nested ids — only `__` is reserved.
+func TestValidatePackInventory_AcceptsSlashedRuleIDs(t *testing.T) {
+	t.Parallel()
+	packRoot := t.TempDir()
+	for _, p := range []string{
+		"rules/team-a/style.md",
+		"rules/team-b/style.md",
+		"rules/group/sub/deep.md",
+	} {
+		full := filepath.Join(packRoot, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("body"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := PackManifest{
+		SchemaVersion: 2, Name: "demo", Root: ".",
+		Rules: []string{"team-a/style", "team-b/style", "group/sub/deep"},
+	}
+	if err := validatePackInventory("demo", packRoot, manifest); err != nil {
+		t.Fatalf("validatePackInventory: %v", err)
+	}
+}
+
 func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -256,6 +347,86 @@ func TestValidatePackInventory_MCPServerNameMismatch(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidatePackInventory_NestedMCPAndPromptIDs confirms that slashed
+// content IDs (produced by recursive autodiscovery) round-trip through
+// pack-inventory validation on every host OS — i.e. the path build must
+// `filepath.FromSlash` the id before joining, so on Windows the resulting
+// path uses native separators end-to-end instead of mixing `\` and `/`.
+func TestValidatePackInventory_NestedMCPAndPromptIDs(t *testing.T) {
+	t.Parallel()
+	packRoot := t.TempDir()
+
+	// Nested MCP server: mcp/group/srv.json
+	mcpNested := filepath.Join(packRoot, "mcp", "group")
+	if err := os.MkdirAll(mcpNested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(mcpNested, "srv.json"),
+		[]byte(`{"name":"group/srv","command":["echo"]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nested prompt: prompts/team/review.md
+	promptNested := filepath.Join(packRoot, "prompts", "team")
+	if err := os.MkdirAll(promptNested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(promptNested, "review.md"),
+		[]byte("body"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := PackManifest{
+		SchemaVersion: 2,
+		Name:          "demo",
+		Root:          ".",
+		MCP:           []string{"group/srv"},
+		Prompts:       []string{"team/review"},
+	}
+	if err := validatePackInventory("demo", packRoot, manifest); err != nil {
+		t.Fatalf("validatePackInventory: %v", err)
+	}
+}
+
+// TestDiscoverContent_NestedMCPAndPromptsAutodiscover confirms recursive
+// autodiscovery populates manifest fields with slashed IDs for nested
+// MCP and prompt files (matching the recursive-discovery contract for
+// every content vector).
+func TestDiscoverContent_NestedMCPAndPromptsAutodiscover(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	for _, p := range []string{
+		"mcp/group/srv.json",
+		"prompts/team/review.md",
+	} {
+		full := filepath.Join(root, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := PackManifest{SchemaVersion: 2, Name: "demo", Root: "."}
+	if err := DiscoverContent(&m, root); err != nil {
+		t.Fatalf("DiscoverContent: %v", err)
+	}
+	if len(m.MCP) != 1 || m.MCP[0] != "group/srv" {
+		t.Errorf("MCP = %v, want [group/srv]", m.MCP)
+	}
+	if len(m.Prompts) != 1 || m.Prompts[0] != "team/review" {
+		t.Errorf("Prompts = %v, want [team/review]", m.Prompts)
 	}
 }
 

@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
-	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // Harness is the v2 harness interface. Each harness adapter implements this to
@@ -154,20 +154,57 @@ func PlannedMCPServers(source []domain.MCPServer, captured map[string]domain.MCP
 	return out
 }
 
-// CaptureSkills scans skillsDir for sub-directories and returns CopyActions
-// (with dst prefixed by dstPrefix) and Skill values for each.
-func CaptureSkills(skillsDir, dstPrefix string) ([]domain.CopyAction, []domain.Skill) {
-	dirs := util.ListSubDirs(skillsDir)
+// listSkillDirs reads skillsDir non-recursively and invokes visit(abs, name)
+// for each direct child directory containing a regular SKILL.md. Bundled
+// assets (including a nested SKILL.md fixture) stay part of that skill.
+// Non-ENOENT stat errors on the root or on a child's SKILL.md surface as
+// warnings; ENOENT is silent.
+func listSkillDirs(skillsDir string, visit func(abs, name string)) []domain.Warning {
+	var warnings []domain.Warning
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			warnings = append(warnings, domain.Warning{
+				Path: skillsDir, Message: fmt.Sprintf("reading skills dir: %v", err),
+			})
+		}
+		return warnings
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		entryPath := filepath.Join(skillsDir, e.Name(), domain.SkillEntryFile)
+		entryStat, statErr := os.Stat(entryPath)
+		if statErr != nil {
+			if !os.IsNotExist(statErr) {
+				warnings = append(warnings, domain.Warning{
+					Path: entryPath, Message: fmt.Sprintf("stat SKILL.md: %v", statErr),
+				})
+			}
+			continue
+		}
+		if !entryStat.Mode().IsRegular() {
+			continue
+		}
+		visit(filepath.Join(skillsDir, e.Name()), e.Name())
+	}
+	return warnings
+}
+
+// CaptureSkills reads skillsDir for direct child directories containing
+// SKILL.md and returns CopyActions (dst prefixed by dstPrefix), Skill
+// values, and any walk warnings. Skill.Name is the directory's leaf name.
+func CaptureSkills(skillsDir, dstPrefix string) ([]domain.CopyAction, []domain.Skill, []domain.Warning) {
 	var copies []domain.CopyAction
 	var skills []domain.Skill
-	for _, d := range dirs {
-		name := filepath.Base(d)
+	warnings := listSkillDirs(skillsDir, func(abs, name string) {
 		copies = append(copies, domain.CopyAction{
-			Src: d, Dst: filepath.Join(dstPrefix, name), Kind: domain.CopyKindDir,
+			Src: abs, Dst: filepath.Join(dstPrefix, name), Kind: domain.CopyKindDir,
 		})
-		skills = append(skills, domain.Skill{Name: name, DirPath: d})
-	}
-	return copies, skills
+		skills = append(skills, domain.Skill{Name: name, DirPath: abs})
+	})
+	return copies, skills, warnings
 }
 
 // Registry manages harness adapter instances.

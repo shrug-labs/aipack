@@ -672,14 +672,10 @@ func packTabCategories() []domain.PackCategory {
 // contentFilePath resolves the absolute file path for a content item.
 func (m packsModel) contentFilePath(ci contentItem) string {
 	item := m.currentItem()
-	if item == nil {
+	if item == nil || item.entry.Path == "" {
 		return ""
 	}
-	root := item.entry.Path
-	if root == "" {
-		return ""
-	}
-	return contentPath(root, ci.category, ci.id)
+	return item.entry.ContentPath(ci.category, ci.id)
 }
 
 func (m packsModel) currentContentItem() *contentItem {

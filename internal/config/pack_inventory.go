@@ -45,26 +45,48 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		return err
 	}
 
-	if err := validateManifestContent(packName, packRoot, domain.CategoryRules, manifest.Rules); err != nil {
+	for _, id := range manifest.Rules {
+		if strings.Contains(id, domain.RuleHarnessSeparator) {
+			return fmt.Errorf("pack %q rules id %q must not contain %q (reserved as the harness escape for `/`)",
+				packName, id, domain.RuleHarnessSeparator)
+		}
+	}
+	for _, label := range []struct {
+		name string
+		ids  []string
+	}{
+		{capAgents, manifest.Agents},
+		{capWorkflows, manifest.Workflows},
+		{capSkills, manifest.Skills},
+	} {
+		for _, id := range label.ids {
+			if strings.ContainsRune(id, '/') {
+				return fmt.Errorf("pack %q %s id %q must not contain `/` (only rules support subdirectory authoring)",
+					packName, label.name, id)
+			}
+		}
+	}
+
+	if err := validateManifestContent(packName, packRoot, manifest, domain.CategoryRules, manifest.Rules); err != nil {
 		return err
 	}
-	if err := validateManifestContent(packName, packRoot, domain.CategoryAgents, manifest.Agents); err != nil {
+	if err := validateManifestContent(packName, packRoot, manifest, domain.CategoryAgents, manifest.Agents); err != nil {
 		return err
 	}
-	if err := validateManifestContent(packName, packRoot, domain.CategoryWorkflows, manifest.Workflows); err != nil {
+	if err := validateManifestContent(packName, packRoot, manifest, domain.CategoryWorkflows, manifest.Workflows); err != nil {
 		return err
 	}
-	if err := validateManifestContent(packName, packRoot, domain.CategorySkills, manifest.Skills); err != nil {
+	if err := validateManifestContent(packName, packRoot, manifest, domain.CategorySkills, manifest.Skills); err != nil {
 		return err
 	}
 	for _, id := range manifest.Prompts {
-		path := filepath.Join(packRoot, "prompts", id+".md")
+		path := filepath.Join(packRoot, "prompts", filepath.FromSlash(id)+".md")
 		if err := requireFile(path); err != nil {
 			return fmt.Errorf("pack %q prompts %q missing: %w", packName, id, err)
 		}
 	}
 	for _, name := range manifest.MCP {
-		path := filepath.Join(packRoot, "mcp", name+".json")
+		path := filepath.Join(packRoot, "mcp", filepath.FromSlash(name)+".json")
 		if err := requireFile(path); err != nil {
 			return fmt.Errorf("pack %q mcp server %q missing: %w", packName, name, err)
 		}
@@ -83,9 +105,9 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 	return nil
 }
 
-func validateManifestContent(packName string, packRoot string, kind domain.PackCategory, ids []string) error {
+func validateManifestContent(packName string, packRoot string, manifest PackManifest, kind domain.PackCategory, ids []string) error {
 	for _, id := range ids {
-		path := filepath.Join(packRoot, filepath.FromSlash(kind.PrimaryRelPath(id)))
+		path := filepath.Join(packRoot, filepath.FromSlash(manifest.RelPath(kind, id)))
 		if err := requireFile(path); err != nil {
 			return fmt.Errorf("pack %q %s %q missing: %w", packName, kind.DirName(), id, err)
 		}

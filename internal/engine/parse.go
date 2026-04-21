@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -27,14 +28,15 @@ type parseSpec[T any, FM any] struct {
 	build func(id string, fm FM, body, raw []byte, path, sourcePack string) T
 }
 
-// parseContent reads and parses pack content files, returning typed structs.
-// SourcePack is set at parse time — no retroactive attribution needed.
-func parseContent[T any, FM any](spec parseSpec[T, FM], readFile func(string) ([]byte, error), packRoot string, ids []string, sourcePack string) ([]T, []domain.Warning, error) {
+// parseContent reads and parses pack content files for the spec's category
+// from the resolved pack. Path resolution goes through `rp.Manifest.RelPath`,
+// which honors organizational subdirectories under non-rule category roots.
+func parseContent[T any, FM any](spec parseSpec[T, FM], readFile func(string) ([]byte, error), rp config.ResolvedPack) ([]T, []domain.Warning, error) {
 	var items []T
 	var warnings []domain.Warning
 
-	for _, id := range ids {
-		path := filepath.Join(packRoot, filepath.FromSlash(spec.kind.PrimaryRelPath(id)))
+	for _, id := range rp.ContentIDs(spec.kind) {
+		path := filepath.Join(rp.Root, filepath.FromSlash(rp.Manifest.RelPath(spec.kind, id)))
 		raw, err := readFile(path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading %s %s: %w", spec.label, path, err)
@@ -56,7 +58,7 @@ func parseContent[T any, FM any](spec parseSpec[T, FM], readFile func(string) ([
 			}
 		}
 
-		items = append(items, spec.build(id, fm, body, raw, path, sourcePack))
+		items = append(items, spec.build(id, fm, body, raw, path, rp.Name))
 	}
 	return items, warnings, nil
 }
@@ -120,20 +122,20 @@ var skillSpec = parseSpec[domain.Skill, domain.SkillFrontmatter]{
 // File-based parse wrappers (used by profile resolution)
 // ---------------------------------------------------------------------------
 
-func (e *Engine) parseRules(packRoot string, ids []string, sourcePack string) ([]domain.Rule, []domain.Warning, error) {
-	return parseContent(ruleSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
+func (e *Engine) parseRules(rp config.ResolvedPack) ([]domain.Rule, []domain.Warning, error) {
+	return parseContent(ruleSpec, e.FS.ReadFile, rp)
 }
 
-func (e *Engine) parseAgents(packRoot string, ids []string, sourcePack string) ([]domain.Agent, []domain.Warning, error) {
-	return parseContent(agentSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
+func (e *Engine) parseAgents(rp config.ResolvedPack) ([]domain.Agent, []domain.Warning, error) {
+	return parseContent(agentSpec, e.FS.ReadFile, rp)
 }
 
-func (e *Engine) parseWorkflows(packRoot string, ids []string, sourcePack string) ([]domain.Workflow, []domain.Warning, error) {
-	return parseContent(workflowSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
+func (e *Engine) parseWorkflows(rp config.ResolvedPack) ([]domain.Workflow, []domain.Warning, error) {
+	return parseContent(workflowSpec, e.FS.ReadFile, rp)
 }
 
-func (e *Engine) parseSkills(packRoot string, ids []string, sourcePack string) ([]domain.Skill, []domain.Warning, error) {
-	skills, warnings, err := parseContent(skillSpec, e.FS.ReadFile, packRoot, ids, sourcePack)
+func (e *Engine) parseSkills(rp config.ResolvedPack) ([]domain.Skill, []domain.Warning, error) {
+	skills, warnings, err := parseContent(skillSpec, e.FS.ReadFile, rp)
 	if err != nil {
 		return skills, warnings, err
 	}

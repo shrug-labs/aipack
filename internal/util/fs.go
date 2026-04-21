@@ -332,23 +332,6 @@ func ResolveSymlinksInDir(dir string) error {
 	return nil
 }
 
-// ListSubDirs returns sorted absolute paths of subdirectories in dir.
-func ListSubDirs(dir string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		out = append(out, filepath.Join(dir, e.Name()))
-	}
-	slices.Sort(out)
-	return out
-}
-
 // ShortHash returns the first 7 characters of a hash string for display.
 func ShortHash(h string) string {
 	if len(h) > 7 {

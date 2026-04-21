@@ -73,34 +73,24 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | Field | Type | Description |
 |-------|------|-------------|
 | `version` | string | Pack version (convention: `YYYY.MM.DD` or semver) |
-| `rules` | string[] | Explicit rule IDs. If omitted, auto-discovered from `rules/*.md` |
-| `agents` | string[] | Explicit agent IDs. If omitted, auto-discovered from `agents/*.md` |
-| `workflows` | string[] | Explicit workflow IDs. If omitted, auto-discovered from `workflows/*.md` |
-| `skills` | string[] | Explicit skill IDs. If omitted, auto-discovered from `skills/*/SKILL.md` |
-| `prompts` | string[] | Local prompt library IDs. Not synced to harnesses — used for pack-internal prompt management only. |
-| `mcp` | string[] | Explicit MCP server IDs. If omitted, auto-discovered from `mcp/*.json`. See [Section 6](#6-mcp-servers). |
+| `rules` | string[] | Explicit rule IDs. Auto-discovered from `rules/**/*.md`. Slashed ids allowed (`team-a/style`); literal `__` reserved. |
+| `agents` | string[] | Explicit agent IDs (flat — no slashes). Auto-discovered from `agents/**/*.md`; the file basename is the id, the subdirectory is authoring organization. |
+| `workflows` | string[] | Explicit workflow IDs (flat — no slashes). Auto-discovered from `workflows/**/*.md`; the file basename is the id. |
+| `skills` | string[] | Explicit skill IDs (flat — no slashes). Auto-discovered from `skills/**/SKILL.md`; the immediate parent directory's name is the id. |
+| `prompts` | string[] | Local prompt library IDs. Not synced to harnesses — used for pack-internal prompt management only. Auto-discovered from `prompts/**/*.md`. |
+| `mcp` | string[] | Explicit MCP server IDs. Auto-discovered from `mcp/**/*.json`. See [Section 6](#6-mcp-servers). |
 | `configs` | object | Harness settings and plugin inventory (see [Section 7](#7-configurations)) |
-| `profiles` | string[] | Profile IDs. If omitted, auto-discovered from `profiles/*.yaml` |
-| `registries` | string[] | Registry IDs. If omitted, auto-discovered from `registries/*.yaml` |
+| `profiles` | string[] | Profile IDs. Auto-discovered from `profiles/**/*.yaml` |
+| `registries` | string[] | Registry IDs. Auto-discovered from `registries/**/*.yaml` |
 | `extras` | string[] | Relative paths to bundled assets (scripts, data files, helper source) preserved through install. Referenced via `{pack:root}` in MCP configs. Max 50 entries. Must not collide with standard content directories. |
 
 ### Content discovery
 
-When a content vector field is **empty** — omitted, null, or an empty array — the sync engine discovers content by scanning the corresponding directory:
-
-| Vector | Discovery pattern |
-|--------|------------------|
-| Rules | `rules/*.md` |
-| Agents | `agents/*.md` |
-| Workflows | `workflows/*.md` |
-| Skills | `skills/*/SKILL.md` (subdirectories containing a `SKILL.md` entry point) |
-| Profiles | `profiles/*.yaml` |
-| Registries | `registries/*.yaml` |
-| MCP | `mcp/*.json` |
-
-An **explicit non-empty array** (`"rules": ["rule-one", "rule-two"]`) acts as a filter — only listed IDs are included, even if the directory contains more files.
+When a content vector field is **empty** — omitted, null, or an empty array — the sync engine discovers content by scanning the corresponding directory recursively. An **explicit non-empty array** acts as a filter — only listed IDs are included, even if the directory contains more files.
 
 Minimal packs need only a `pack.json` with name and schema version — the directory structure is the inventory.
+
+**Subdirectories are allowed everywhere.** For rules they're part of the id (`rules/team-a/style.md` → `team-a/style`); the harness filename encodes `/` as `__` (`team-a__style.md`). For agents, workflows, and skills the subdirectory is authoring organization only — the id is always the file basename (or skill directory name). Two same-leaf entries within one pack collide; rename one. Cross-pack same-leaf goes through the existing collision strategy.
 
 ## 3. Content Format
 

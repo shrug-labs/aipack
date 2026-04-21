@@ -53,6 +53,41 @@ type PackManifest struct {
 	// Configs inventories harness settings files shipped with the pack.
 	// This is used for validation and deterministic settings pack selection.
 	Configs PackConfigs `json:"configs,omitzero"`
+
+	// resolvedPaths maps id → pack-relative path, populated by DiscoverContent.
+	// For agents/workflows/skills, where authoring permits organizational
+	// subdirectories under the category root, the on-disk path may differ
+	// from the canonical PrimaryRelPath. RelPath consults this first and
+	// falls back to PrimaryRelPath when no override is recorded.
+	resolvedPaths map[domain.PackCategory]map[string]string
+}
+
+// RelPath returns the pack-relative path for a content item. Agents,
+// workflows, and skills may live under organizational subdirectories within
+// their category root (e.g. `agents/team-a/foo.md` for id `foo`); when
+// DiscoverContent has recorded the actual path, it wins. Otherwise the
+// canonical PackCategory.PrimaryRelPath is returned.
+func (m PackManifest) RelPath(cat domain.PackCategory, id string) string {
+	if m.resolvedPaths != nil {
+		if catMap, ok := m.resolvedPaths[cat]; ok {
+			if p, ok := catMap[id]; ok {
+				return p
+			}
+		}
+	}
+	return cat.PrimaryRelPath(id)
+}
+
+// SetResolvedPath records the actual on-disk path for a content id (test
+// helper / discovery use).
+func (m *PackManifest) SetResolvedPath(cat domain.PackCategory, id, relPath string) {
+	if m.resolvedPaths == nil {
+		m.resolvedPaths = map[domain.PackCategory]map[string]string{}
+	}
+	if m.resolvedPaths[cat] == nil {
+		m.resolvedPaths[cat] = map[string]string{}
+	}
+	m.resolvedPaths[cat][id] = relPath
 }
 
 type PackConfigs struct {
@@ -278,17 +313,19 @@ func (m PackManifest) ContentPaths() []string {
 	paths := []string{"pack.json"}
 
 	for _, id := range m.Rules {
-		paths = append(paths, domain.CategoryRules.PrimaryRelPath(id))
+		paths = append(paths, m.RelPath(domain.CategoryRules, id))
 	}
 	for _, id := range m.Agents {
-		paths = append(paths, domain.CategoryAgents.PrimaryRelPath(id))
+		paths = append(paths, m.RelPath(domain.CategoryAgents, id))
 	}
 	for _, id := range m.Workflows {
-		paths = append(paths, domain.CategoryWorkflows.PrimaryRelPath(id))
+		paths = append(paths, m.RelPath(domain.CategoryWorkflows, id))
 	}
 	for _, id := range m.Skills {
-		// Trailing "/" so git archive fetches the entire directory recursively.
-		paths = append(paths, filepath.ToSlash(filepath.Join(domain.CategorySkills.DirName(), id))+"/")
+		// Trailing "/" so git archive fetches the entire skill directory.
+		// RelPath returns the SKILL.md path; strip it to get the dir.
+		skillFile := m.RelPath(domain.CategorySkills, id)
+		paths = append(paths, strings.TrimSuffix(skillFile, "/"+domain.SkillEntryFile)+"/")
 	}
 	for _, id := range m.Prompts {
 		paths = append(paths, filepath.ToSlash(filepath.Join("prompts", id+".md")))
@@ -409,7 +446,15 @@ func (v *ExtrasValidator) ValidateEntry(ext string) (string, error) {
 // SavePackManifest writes a pack manifest to disk as formatted JSON.
 // The manifest describes what content exists on disk. User preferences
 // (approved/declined categories) are stored in sync-config, not here.
+//
+// SchemaVersion is always stamped to PackSchemaVersion before serialization.
+// The in-memory struct's MCP field is a flat []string (parseV1Manifest
+// normalizes v1's nested shape into it), so the serialized form is always
+// v2. Without this stamp, round-tripping a v1 pack through load → save
+// produces schema_version: 1 + flat mcp array, which ParsePackManifest then
+// rejects as a shape/version mismatch.
 func SavePackManifest(path string, m PackManifest) error {
+	m.SchemaVersion = PackSchemaVersion
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err

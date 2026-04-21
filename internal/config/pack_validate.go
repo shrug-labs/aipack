@@ -90,6 +90,12 @@ func (v *packValidator) validateManifestAndInventory() {
 		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, fmt.Sprintf("pack %q root could not be resolved", manifest.Name))
 		return
 	}
+	// Populate resolvedPaths so validation can find files authored under
+	// organizational subdirectories (agents/workflows/skills).
+	if err := DiscoverContent(&manifest, resolvedRoot); err != nil {
+		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
+		return
+	}
 	if err := validatePackInventory(manifest.Name, resolvedRoot, manifest); err != nil {
 		v.addFinding("pack.json", FindingCategoryInventory, FindingSeverityError, err.Error())
 	}
