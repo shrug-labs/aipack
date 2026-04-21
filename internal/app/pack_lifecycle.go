@@ -300,6 +300,17 @@ func packRenameInLedger(eng *engine.Engine, path, oldName, newName string) (bool
 	return true, nil
 }
 
+// boolPtrIf returns &true when v is true, else nil. Used to convert a
+// registry-entry `Quiet bool` hint into the PackInstallRequest tri-state
+// override — a false hint means "no opinion," so nil propagates and the
+// lockfile inheritance rule applies.
+func boolPtrIf(v bool) *bool {
+	if !v {
+		return nil
+	}
+	return &v
+}
+
 // packRecordOrigin saves the install metadata for a pack in the lockfile.
 func packRecordOrigin(configDir, name string, meta config.InstalledPackMeta) error {
 	return mutateLockfile(configDir, func(lf *config.Lockfile) error {
@@ -359,7 +370,22 @@ func saveProfile(profilePath string, cfg *config.ProfileConfig) error {
 }
 
 // PackAdd adds a pack entry to the named profile.
-func PackAdd(configDir string, profileName string, packName string, quiet bool, stdout io.Writer) error {
+//
+// quietOverride controls whether the entry is marked quiet:
+//
+//   - nil — inherit from the lockfile's InstallQuiet. New entries take the
+//     lockfile value; existing entries are not touched.
+//   - *true — force quiet. New entries are created quiet; existing entries
+//     are promoted to quiet.
+//   - *false — force non-quiet. New entries are non-quiet; existing entries
+//     are demoted from quiet. Surfaced by `--no-quiet` on `pack add` /
+//     `pack install --add` when the user wants to override a pack that
+//     was installed quietly.
+//
+// Inheriting from the lockfile is the feature that makes `-q` at install
+// time persist: once the lockfile records InstallQuiet=true, every profile
+// add defaults to quiet without re-specifying the flag.
+func PackAdd(configDir string, profileName string, packName string, quietOverride *bool, stdout io.Writer) error {
 	profilePath := filepath.Join(configDir, "profiles", profileName+".yaml")
 
 	cfg, err := config.LoadProfile(profilePath)
@@ -370,27 +396,36 @@ func PackAdd(configDir string, profileName string, packName string, quiet bool, 
 		return fmt.Errorf("parsing profile: %w", err)
 	}
 
-	// Check if pack already exists; set Quiet only when explicitly requested.
+	// Compute effective quiet for a new entry: explicit override wins,
+	// otherwise inherit the install-time InstallQuiet from the lockfile.
+	effectiveQuiet := false
+	if quietOverride != nil {
+		effectiveQuiet = *quietOverride
+	} else if lf, lfErr := config.EnsureLockfileMigrated(configDir); lfErr == nil {
+		if meta, ok := lf.Packs[packName]; ok {
+			effectiveQuiet = meta.InstallQuiet
+		}
+	}
+
 	packExists := false
+	modified := false
 	for i, p := range cfg.Packs {
 		if p.Name == packName {
 			packExists = true
-			if quiet {
-				cfg.Packs[i].Quiet = true
+			if quietOverride != nil && cfg.Packs[i].Quiet != *quietOverride {
+				cfg.Packs[i].Quiet = *quietOverride
+				modified = true
 			}
 			break
 		}
 	}
-	modified := false
 	if !packExists {
 		enabled := true
 		cfg.Packs = append(cfg.Packs, config.PackEntry{
 			Name:    packName,
 			Enabled: &enabled,
-			Quiet:   quiet,
+			Quiet:   effectiveQuiet,
 		})
-		modified = true
-	} else if quiet {
 		modified = true
 	}
 
@@ -402,7 +437,7 @@ func PackAdd(configDir string, profileName string, packName string, quiet bool, 
 
 	if !packExists {
 		label := "pack"
-		if quiet {
+		if effectiveQuiet {
 			label = "quiet pack"
 		}
 		fmt.Fprintf(stdout, "Added %s %q to profile %q\n", label, packName, profileName)
@@ -584,7 +619,7 @@ func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdo
 			SubPath:      entry.Path,
 			Name:         name,
 			Add:          false,
-			Quiet:        entry.Quiet,
+			Quiet:        boolPtrIf(entry.Quiet),
 			ContentPaths: entry.ContentPaths,
 		}
 		if installErr := installFn(ctx, installReq, stdout); installErr != nil {

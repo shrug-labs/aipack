@@ -41,10 +41,23 @@ type PackInstallRequest struct {
 	// installs default to domain.BundledAll() when With is nil.
 	With domain.BundledSet
 
-	// Quiet marks the pack entry in the profile with quiet: true so that
-	// omitted vector selectors resolve to nothing. Set from --quiet flag
-	// or registry entry quiet hint.
-	Quiet bool
+	// Quiet controls the pack's install-time quiet-by-nature state, stored
+	// as InstallQuiet on the lockfile. When this pack is added to any
+	// profile (via --add, `pack add`, or the TUI), the new profile entry's
+	// Quiet flag defaults to the lockfile's InstallQuiet unless explicitly
+	// overridden.
+	//
+	//   nil   — no explicit flag. On first install InstallQuiet=false. On
+	//           re-install preserve the existing InstallQuiet.
+	//   *true — `-q` was passed. Set InstallQuiet=true; new profile adds
+	//           default to quiet.
+	//   *false — `--no-quiet` was passed. Set InstallQuiet=false; new
+	//           profile adds default to non-quiet.
+	//
+	// Registry entries that declare `quiet: true` hydrate this as &true
+	// when the user didn't pass a flag, so registry-installed packs inherit
+	// the intended quiet-by-nature state.
+	Quiet *bool
 
 	// ContentPaths maps content types to directories within the repo for packs
 	// that don't follow the standard pack layout. Stored in sync-config.
@@ -72,6 +85,24 @@ type PackInstallRequest struct {
 // PacksDir returns the canonical pack installation directory.
 func PacksDir(configDir string) string {
 	return filepath.Join(configDir, "packs")
+}
+
+// resolveInstallQuiet computes the InstallQuiet value to stamp on a pack's
+// lockfile meta at install time. Explicit flags win; without a flag a
+// re-install preserves the existing value so `pack update` and `pack
+// install` without `-q` don't accidentally demote a quiet-installed pack.
+func resolveInstallQuiet(configDir, packName string, override *bool) bool {
+	if override != nil {
+		return *override
+	}
+	lf, err := config.EnsureLockfileMigrated(configDir)
+	if err != nil {
+		return false
+	}
+	if meta, ok := lf.Packs[packName]; ok {
+		return meta.InstallQuiet
+	}
+	return false
 }
 
 func packStagingDir(configDir string) string {
@@ -223,6 +254,7 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	meta := config.InstalledPackMeta{
 		Origin: packDir, Method: method, InstalledAt: now.UTC().Format(time.RFC3339),
 		Approved: approvedList, Declined: declinedList,
+		InstallQuiet: resolveInstallQuiet(req.ConfigDir, name, req.Quiet),
 	}
 	// Populate drift-detection baseline so doctor broken_refs and
 	// sync drift reports work before the first sync runs.
@@ -412,6 +444,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 		Ref: info.Ref, SubPath: info.SubPath, CommitHash: result.commitHash,
 		ContentPaths: req.ContentPaths,
 		Approved:     approvedList, Declined: declinedList,
+		InstallQuiet: resolveInstallQuiet(req.ConfigDir, name, req.Quiet),
 	}
 	// Populate drift-detection baseline so doctor broken_refs and
 	// sync drift reports work before the first sync runs. The ref is

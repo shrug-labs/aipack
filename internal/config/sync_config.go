@@ -58,6 +58,15 @@ type InstalledPackMeta struct {
 	Approved     []domain.BundledCategory       `yaml:"approved,omitempty"`      // bundled categories the user accepted
 	Declined     []domain.BundledCategory       `yaml:"declined,omitempty"`      // bundled categories the user declined
 	Resolved     *domain.PackInventory          `yaml:"resolved,omitempty"`      // last resolved content inventory (drift detection baseline)
+
+	// InstallQuiet records whether the pack was installed with `-q` (quiet
+	// by nature). It is the source of truth for "every profile this pack
+	// lands in should default to quiet." Set at install time; preserved
+	// across `pack update` and re-install unless the user explicitly passes
+	// a new `-q` or `--no-quiet`. Consulted by PackAdd when creating a new
+	// profile entry and by the TUI's add-pack flow. Unset (false) means the
+	// pack was installed normally, so profile adds default to non-quiet.
+	InstallQuiet bool `yaml:"install_quiet,omitempty"`
 }
 
 // SyncConfig is user-level configuration (one level above profiles).

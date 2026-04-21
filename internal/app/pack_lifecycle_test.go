@@ -165,7 +165,7 @@ func TestPackAdd_QuietUpdatesExistingEntry(t *testing.T) {
 	config.EnsureInit(configDir)
 
 	var out bytes.Buffer
-	PackAdd(configDir, "default", "my-pack", false, &out)
+	PackAdd(configDir, "default", "my-pack", nil, &out)
 
 	cfg, _ := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
 	for _, p := range cfg.Packs {
@@ -175,7 +175,8 @@ func TestPackAdd_QuietUpdatesExistingEntry(t *testing.T) {
 	}
 
 	out.Reset()
-	PackAdd(configDir, "default", "my-pack", true, &out)
+	t2 := true
+	PackAdd(configDir, "default", "my-pack", &t2, &out)
 
 	cfg, _ = config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
 	var found *config.PackEntry
@@ -186,6 +187,104 @@ func TestPackAdd_QuietUpdatesExistingEntry(t *testing.T) {
 	}
 	if found == nil || !found.Quiet {
 		t.Fatal("expected Quiet=true after re-add")
+	}
+}
+
+// TestPackAdd_InheritsInstallQuietFromLockfile pins the feature: once a
+// pack is installed with InstallQuiet=true on its lockfile meta, every
+// profile add of that pack defaults to quiet without needing `-q` again.
+// This is the v0.25.0 fix for "I thought installing -q made the pack
+// quiet-by-nature" — the quiet intent now persists on the lockfile and
+// PackAdd consults it when creating a new profile entry.
+func TestPackAdd_InheritsInstallQuietFromLockfile(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	config.EnsureInit(configDir)
+
+	// Simulate a pack installed with -q by writing its lockfile meta.
+	if err := packRecordOrigin(configDir, "quiet-pack", config.InstalledPackMeta{
+		Origin: "/tmp/src", Method: config.MethodLink, InstalledAt: "2026-04-21T00:00:00Z",
+		InstallQuiet: true,
+	}); err != nil {
+		t.Fatalf("packRecordOrigin: %v", err)
+	}
+
+	// PackAdd without an explicit override — should inherit Quiet=true.
+	var out bytes.Buffer
+	if err := PackAdd(configDir, "default", "quiet-pack", nil, &out); err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	cfg, _ := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	var found *config.PackEntry
+	for i := range cfg.Packs {
+		if cfg.Packs[i].Name == "quiet-pack" {
+			found = &cfg.Packs[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("pack not added to profile")
+	}
+	if !found.Quiet {
+		t.Error("new profile entry should inherit Quiet=true from lockfile InstallQuiet")
+	}
+}
+
+// TestPackAdd_NoQuietOverrideDemotesQuietInstall verifies the explicit
+// demote path: `pack add --no-quiet` (quietOverride = &false) forces the
+// profile entry to non-quiet even when the lockfile says the pack was
+// installed quietly.
+func TestPackAdd_NoQuietOverrideDemotesQuietInstall(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	config.EnsureInit(configDir)
+
+	if err := packRecordOrigin(configDir, "pack-x", config.InstalledPackMeta{
+		Origin: "/tmp/src", Method: config.MethodLink, InstalledAt: "2026-04-21T00:00:00Z",
+		InstallQuiet: true,
+	}); err != nil {
+		t.Fatalf("packRecordOrigin: %v", err)
+	}
+
+	var out bytes.Buffer
+	f := false
+	if err := PackAdd(configDir, "default", "pack-x", &f, &out); err != nil {
+		t.Fatalf("PackAdd: %v", err)
+	}
+
+	cfg, _ := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	for _, p := range cfg.Packs {
+		if p.Name == "pack-x" && p.Quiet {
+			t.Error("--no-quiet override should force Quiet=false even when InstallQuiet=true")
+		}
+	}
+}
+
+// TestResolveInstallQuiet_PreservesOnReinstall pins the re-install
+// preservation rule: when no explicit flag is passed, a re-install keeps
+// the existing InstallQuiet so `pack install --add` (no -q) doesn't
+// silently demote a pack that was originally installed with -q.
+func TestResolveInstallQuiet_PreservesOnReinstall(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	config.EnsureInit(configDir)
+
+	if err := packRecordOrigin(configDir, "preserve-pack", config.InstalledPackMeta{
+		Origin: "/tmp/src", Method: config.MethodLink, InstalledAt: "2026-04-21T00:00:00Z",
+		InstallQuiet: true,
+	}); err != nil {
+		t.Fatalf("packRecordOrigin: %v", err)
+	}
+
+	if got := resolveInstallQuiet(configDir, "preserve-pack", nil); !got {
+		t.Error("nil override on a pack with InstallQuiet=true should return true (preserve)")
+	}
+	f := false
+	if got := resolveInstallQuiet(configDir, "preserve-pack", &f); got {
+		t.Error("*false override should force InstallQuiet=false regardless of lockfile")
+	}
+	if got := resolveInstallQuiet(configDir, "unknown-pack", nil); got {
+		t.Error("unknown pack with nil override should default to false")
 	}
 }
 
@@ -321,7 +420,7 @@ func TestPackInstallMissing(t *testing.T) {
 		PackInstallMissing(context.Background(), PackInstallMissingRequest{
 			ConfigDir: configDir, ProfileName: "test", PackInstallFn: fake,
 		}, &out)
-		if !captured.Quiet {
+		if captured.Quiet == nil || !*captured.Quiet {
 			t.Error("Quiet not propagated")
 		}
 		if captured.ContentPaths[domain.CategorySkills] != "tools/agent/skills" {

@@ -187,7 +187,8 @@ type PackInstallCmd struct {
 	Copy      bool     `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
 	With      []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
 	Missing   bool     `help:"Install all missing packs from the active profile" short:"m"`
-	Quiet     bool     `help:"Mark as quiet (omitted vector selectors include nothing)" short:"q"`
+	Quiet     bool     `help:"Install as quiet-by-nature — omitted profile-entry selectors include nothing; persists via lockfile so future profile adds default to quiet" short:"q"`
+	NoQuiet   bool     `help:"Force non-quiet install even if a prior lockfile entry says quiet. Mutually exclusive with -q." name:"no-quiet"`
 	Rules     string   `help:"Extract rules from this directory within the repo" name:"rules"`
 	Skills    string   `help:"Extract skills from this directory within the repo" name:"skills"`
 	Agents    string   `help:"Extract agents from this directory within the repo" name:"agents"`
@@ -362,13 +363,17 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
+	quietOverride, err := resolveQuietFlags(c.Quiet, c.NoQuiet)
+	if err != nil {
+		return err
+	}
 	req := app.PackInstallRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 		Add:       c.Add,
 		Profile:   profile,
 		With:      with,
-		Quiet:     c.Quiet,
+		Quiet:     quietOverride,
 		Ref:       ref,
 	}
 	// CLI content flags take precedence over registry entry content_paths.
@@ -409,8 +414,11 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		if req.Name == "" {
 			req.Name = path // use the registry key as the pack name
 		}
-		if entry.Quiet {
-			req.Quiet = true
+		// A registry hint of `quiet: true` only applies when the user
+		// didn't pass either flag; explicit -q / --no-quiet always wins.
+		if entry.Quiet && req.Quiet == nil {
+			t := true
+			req.Quiet = &t
 		}
 		if len(entry.ContentPaths) > 0 {
 			req.ContentPaths = entry.ContentPaths
@@ -638,7 +646,8 @@ func (c *PackRenameCmd) Run(ctx context.Context, g *Globals) error {
 type PackAddCmd struct {
 	Name    string `arg:"" help:"Name of the installed pack to add to the profile" predictor:"pack"`
 	Profile string `help:"Profile to add the pack to (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
-	Quiet   bool   `help:"Add as quiet (omitted vector selectors include nothing)" short:"q"`
+	Quiet   bool   `help:"Force quiet profile entry (omitted vector selectors include nothing). Overrides the lockfile default." short:"q"`
+	NoQuiet bool   `help:"Force non-quiet profile entry even if the pack was installed quietly. Mutually exclusive with -q." name:"no-quiet"`
 }
 
 func (c *PackAddCmd) Help() string {
@@ -672,7 +681,29 @@ func (c *PackAddCmd) Run(ctx context.Context, g *Globals) error {
 		return fmt.Errorf("pack %q is not installed (run 'aipack pack install' first)", c.Name)
 	}
 
-	return app.PackAdd(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, c.Quiet, g.Stdout)
+	quietOverride, err := resolveQuietFlags(c.Quiet, c.NoQuiet)
+	if err != nil {
+		return err
+	}
+	return app.PackAdd(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, quietOverride, g.Stdout)
+}
+
+// resolveQuietFlags converts the CLI pair (-q / --no-quiet) to the tri-state
+// *bool that app.PackAdd and app.PackInstall expect. nil means "no explicit
+// flag, inherit from the lockfile." Both flags true is a usage error.
+func resolveQuietFlags(quiet, noQuiet bool) (*bool, error) {
+	if quiet && noQuiet {
+		return nil, fmt.Errorf("-q and --no-quiet are mutually exclusive")
+	}
+	if quiet {
+		t := true
+		return &t, nil
+	}
+	if noQuiet {
+		f := false
+		return &f, nil
+	}
+	return nil, nil
 }
 
 // --- pack remove (profile) ---

@@ -6,6 +6,17 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.25.0]
+
+### Changed
+
+- **`pack install -q` is now a pack property, not a per-add flag.** The lockfile records `install_quiet: true` at install time, and every subsequent profile-add of that pack (via `pack install --add`, `pack add`, registry auto-add, TUI) defaults to `quiet: true` without re-specifying the flag. Previously `-q` only affected the one profile add at install time; removing the pack from a profile and re-adding silently demoted it to non-quiet, and a `pack install --add` after a TUI wipe of the profile entry did the same. Quiet intent now persists across profile edits, removals, and cross-profile adds. An explicit `--no-quiet` on `pack install` or `pack add` overrides the lockfile hint when you genuinely want a quiet-installed pack to be non-quiet in one specific profile. `pack update` and re-install preserve the existing lockfile `install_quiet` unless a new explicit flag is passed — your quiet state survives version bumps.
+
+### Added
+
+- **`install_quiet` field on lockfile `InstalledPackMeta`.** Source of truth for a pack's quiet-by-nature state. `omitempty` so old lockfiles round-trip unchanged; packs installed before this release read as `install_quiet: false` and inherit the v0.24.x semantics until the next `pack install -q`.
+- **`--no-quiet` flag on `pack install` and `pack add`.** Explicit override that forces the profile entry to non-quiet (and for `pack install`, stamps `install_quiet: false` on the lockfile). Mutually exclusive with `-q`.
+
 ## [0.24.1]
 
 ### Fixed

@@ -1728,7 +1728,7 @@ func TestPackInstall_URL_QuietAddsQuietInProfile(t *testing.T) {
 		ConfigDir: configDir,
 		Add:       true,
 		Profile:   "default",
-		Quiet:     true,
+		Quiet:     boolPtrIf(true),
 		RunGitFn:  fakeCloneGitFn(t, "quiet-pack"),
 		URLOKFn:   func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:     func() time.Time { return fixedNow },
@@ -1837,7 +1837,7 @@ func TestPackInstall_Path_QuietAddsQuietInProfile(t *testing.T) {
 		ConfigDir: configDir,
 		Add:       true,
 		Profile:   "default",
-		Quiet:     true,
+		Quiet:     boolPtrIf(true),
 		Link:      true,
 	}, &out)
 	if err != nil {
