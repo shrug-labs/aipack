@@ -1510,7 +1510,7 @@ func TestCodex_MultipleAgents_EachRegisteredInConfigTOML(t *testing.T) {
 		if !strings.Contains(config, name) {
 			t.Errorf("config.toml missing agent registration for %q", name)
 		}
-		configFileRef := "./agents/" + name + ".toml"
+		configFileRef := filepath.Join(projectDir, ".codex", "agents", name+".toml")
 		if !strings.Contains(config, configFileRef) {
 			t.Errorf("config.toml missing config_file reference %q", configFileRef)
 		}

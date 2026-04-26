@@ -110,9 +110,10 @@ func addNativeAgents(
 		})
 		f.Desired = append(f.Desired, dst)
 
-		// Registration entry for config.toml — config_file is relative to config.toml.
-		configFile := "./agents/" + name + ".toml"
-		regs[name] = BuildAgentRegistration(name, desc, configFile)
+		// Codex accepts relative config_file paths in some code paths, but
+		// app-backed clients can deserialize the agents table without a base
+		// path. Use the destination path we already resolved for sync.
+		regs[name] = BuildAgentRegistration(name, desc, filepath.Clean(dst))
 	}
 	return regs, warnings
 }

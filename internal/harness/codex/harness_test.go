@@ -944,7 +944,7 @@ func TestNativeAgents_GeneratesToml(t *testing.T) {
 	if !ok {
 		t.Fatal("expected registration entry for reviewer")
 	}
-	if reg["config_file"] != "./agents/reviewer.toml" {
+	if reg["config_file"] != wantDst {
 		t.Fatalf("config_file = %v", reg["config_file"])
 	}
 }

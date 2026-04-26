@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -383,6 +384,10 @@ func TestAddNativeAgents_MultipleAgents(t *testing.T) {
 	}
 	if _, ok := regs["reviewer"]; !ok {
 		t.Fatal("missing reviewer registration")
+	}
+	wantConfigFile := filepath.Join("/project", ".codex", "agents", "explorer.toml")
+	if got := regs["explorer"]["config_file"]; got != wantConfigFile {
+		t.Fatalf("explorer config_file = %v, want %v", got, wantConfigFile)
 	}
 }
 

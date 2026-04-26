@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.25.1]
+
+### Fixed
+
+- **Codex native agent registrations now use absolute `config_file` paths.** `aipack sync` previously wrote `[agents.<name>] config_file = './agents/<name>.toml'` in `.codex/config.toml`. Some Codex clients deserialize the agents table without a base path and reject that relative path with `AbsolutePathBuf deserialized without a base path in agents`. Sync now registers the resolved `.codex/agents/<name>.toml` destination path instead.
+
 ## [0.25.0]
 
 ### Changed
