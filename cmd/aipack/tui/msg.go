@@ -213,6 +213,12 @@ type editorFinishedMsg struct {
 	err      error
 }
 
+// systemOpenErrorMsg is sent when the OS open command fails to start.
+// Success is silent — the opened app runs detached, so no completion event.
+type systemOpenErrorMsg struct {
+	err error
+}
+
 // packInstalledMsg is sent after a pack is installed via the packs tab.
 type packInstalledMsg struct {
 	name string

@@ -125,7 +125,117 @@ func TestPreviewModel_HelpText(t *testing.T) {
 	if !strings.Contains(help, "e:edit") {
 		t.Fatalf("expected help to mention e:edit, got %q", help)
 	}
+	if !strings.Contains(help, "o:open") {
+		t.Fatalf("expected help to mention o:open, got %q", help)
+	}
 	if !strings.Contains(help, "esc:close") {
 		t.Fatalf("expected help to mention esc:close, got %q", help)
+	}
+}
+
+func TestResolveEditorCommand(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		editor     string
+		visual     string
+		goos       string
+		wantSource string
+		wantName   string
+		wantArgs   []string
+	}{
+		{
+			name:       "editor with args",
+			editor:     "code --wait",
+			visual:     "vim",
+			goos:       "linux",
+			wantSource: "EDITOR",
+			wantName:   "code",
+			wantArgs:   []string{"--wait"},
+		},
+		{
+			name:       "visual fallback",
+			visual:     "nvim -O",
+			goos:       "darwin",
+			wantSource: "VISUAL",
+			wantName:   "nvim",
+			wantArgs:   []string{"-O"},
+		},
+		{
+			name:       "windows default",
+			goos:       "windows",
+			wantSource: "default",
+			wantName:   "notepad.exe",
+		},
+		{
+			name:       "unix default",
+			goos:       "linux",
+			wantSource: "default",
+			wantName:   "vi",
+		},
+		{
+			name:       "quoted executable path",
+			editor:     `"C:\Program Files\Notepad++\notepad++.exe" -multiInst`,
+			goos:       "windows",
+			wantSource: "EDITOR",
+			wantName:   `C:\Program Files\Notepad++\notepad++.exe`,
+			wantArgs:   []string{"-multiInst"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveEditorCommand(tt.editor, tt.visual, tt.goos)
+			if err != nil {
+				t.Fatalf("resolveEditorCommand: %v", err)
+			}
+			if got.source != tt.wantSource {
+				t.Fatalf("source = %q, want %q", got.source, tt.wantSource)
+			}
+			if got.name != tt.wantName {
+				t.Fatalf("name = %q, want %q", got.name, tt.wantName)
+			}
+			if strings.Join(got.args, "\x00") != strings.Join(tt.wantArgs, "\x00") {
+				t.Fatalf("args = %#v, want %#v", got.args, tt.wantArgs)
+			}
+		})
+	}
+}
+
+func TestResolveEditorCommand_UnterminatedQuote(t *testing.T) {
+	t.Parallel()
+	_, err := resolveEditorCommand(`"C:\Program Files\Vim\vim.exe`, "", "windows")
+	if err == nil {
+		t.Fatal("expected unterminated quote error")
+	}
+	if !strings.Contains(err.Error(), "unterminated quote") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSystemOpenCommand(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		goos     string
+		wantName string
+		wantArgs []string
+	}{
+		{"darwin", "open", []string{"file.md"}},
+		{"linux", "xdg-open", []string{"file.md"}},
+		{"freebsd", "xdg-open", []string{"file.md"}},
+		{"windows", "cmd", []string{"/c", "start", "", "file.md"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			t.Parallel()
+			name, args := systemOpenCommand(tt.goos, "file.md")
+			if name != tt.wantName {
+				t.Fatalf("name = %q, want %q", name, tt.wantName)
+			}
+			if strings.Join(args, "\x00") != strings.Join(tt.wantArgs, "\x00") {
+				t.Fatalf("args = %#v, want %#v", args, tt.wantArgs)
+			}
+		})
 	}
 }

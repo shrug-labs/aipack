@@ -227,6 +227,10 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if msg, ok := msg.(systemOpenErrorMsg); ok {
+		m.statusText = errorStyle.Render(fmt.Sprintf("open: %v", msg.err))
+		return m, nil
+	}
 	if msg, ok := msg.(editorFinishedMsg); ok {
 		if msg.err != nil {
 			m.statusText = errorStyle.Render(fmt.Sprintf("editor: %v", msg.err))
@@ -382,6 +386,8 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.showWarnings()
 		case "e", "i":
 			return m.editCurrentFile()
+		case "o":
+			return m.openCurrentFile()
 		case ".":
 			return m.openActionMenu()
 		case "t", "enter":
@@ -1298,8 +1304,8 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			d := m.addPackDialog()
 			m.dialog = &d
 			return m, nil
-		case actEditFile:
-			return m, openFileInEditor(item.path)
+		case actEditFile, actOpenFile:
+			return m, launchFile(msg.value, item.path)
 		case actDuplicate:
 			d := newTextInputDialog(dialogDuplicateProfile,
 				fmt.Sprintf("Duplicate %q as:", item.name))
@@ -1338,10 +1344,10 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 					return m, saveProfile(m.cfg.ConfigDir, item.name, item.cfg)
 				}
 			}
-		case actEditManifest:
+		case actEditManifest, actOpenFile:
 			if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
 				pe := item.cfg.Packs[m.profiles.packCursor]
-				return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "packs", pe.Name, "pack.json"))
+				return m, launchFile(msg.value, filepath.Join(m.cfg.ConfigDir, "packs", pe.Name, "pack.json"))
 			}
 		case actUpdate:
 			if item := m.profiles.currentItem(); item != nil && m.profiles.packCursor < len(item.cfg.Packs) {
@@ -1354,6 +1360,9 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 		}
 	case dialogActionSync:
 		// actEditSyncConfig handled above.
+		if msg.value == actOpenFile {
+			return m, openFileWithSystem(filepath.Join(m.cfg.ConfigDir, "sync-config.yaml"))
+		}
 		return m, nil
 	case dialogActionPackTab:
 		switch msg.value {
@@ -1361,9 +1370,9 @@ func (m rootModel) handleActionMenuResult(msg dialogResultMsg) (tea.Model, tea.C
 			d := newTextInputDialog(dialogCreatePack, "New pack name:")
 			m.dialog = &d
 			return m, nil
-		case actEditManifest:
+		case actEditManifest, actOpenFile:
 			if pi := m.packs.currentItem(); pi != nil {
-				return m, openFileInEditor(filepath.Join(m.cfg.ConfigDir, "packs", pi.entry.Name, "pack.json"))
+				return m, launchFile(msg.value, filepath.Join(m.cfg.ConfigDir, "packs", pi.entry.Name, "pack.json"))
 			}
 		case actInstall:
 			// Pre-fill with registry name if an uninstalled registry item is selected.
@@ -1441,9 +1450,9 @@ func (m rootModel) handleSaveActionResult(msg dialogResultMsg) (tea.Model, tea.C
 			m.saveTab.diffView = &dv
 			return m, m.saveTab.loadCandidateDiff(*c)
 		}
-	case actEditFile:
+	case actEditFile, actOpenFile:
 		if f := m.saveTab.currentFile(); f != nil {
-			return m, openFileInEditor(f.HarnessPath)
+			return m, launchFile(msg.value, f.HarnessPath)
 		}
 	case actDeleteFile:
 		if f := m.saveTab.currentFile(); f != nil {
@@ -1728,13 +1737,29 @@ func (m rootModel) countPendingSaves() int {
 // editCurrentFile opens $EDITOR for content files in browsing panels.
 // Config/structural files are edited via action menus instead.
 func (m rootModel) editCurrentFile() (tea.Model, tea.Cmd) {
+	if fp := m.currentBrowsingFilePath(); fp != "" {
+		return m, openFileInEditor(fp)
+	}
+	return m, nil
+}
+
+// openCurrentFile hands the same browsing-panel files to the OS default
+// opener (`open` / `xdg-open` / `cmd /c start`). Detached — TUI keeps running.
+func (m rootModel) openCurrentFile() (tea.Model, tea.Cmd) {
+	if fp := m.currentBrowsingFilePath(); fp != "" {
+		return m, openFileWithSystem(fp)
+	}
+	return m, nil
+}
+
+// currentBrowsingFilePath resolves the file under the cursor in browsing
+// panels. Returns "" when the focus is on something that isn't a file.
+func (m rootModel) currentBrowsingFilePath() string {
 	switch m.activeTab {
 	case tabProfiles:
 		if m.profiles.focus == panelTree {
 			if item := m.profiles.currentItem(); item != nil && item.tree != nil {
-				if fp := item.tree.filePath(); fp != "" {
-					return m, openFileInEditor(fp)
-				}
+				return item.tree.filePath()
 			}
 		}
 	case tabPacks:
@@ -1742,14 +1767,12 @@ func (m rootModel) editCurrentFile() (tea.Model, tea.Cmd) {
 			if m.packs.contentCursor >= 0 && m.packs.contentCursor < len(m.packs.contentItems) {
 				ci := m.packs.contentItems[m.packs.contentCursor]
 				if !ci.isHeader {
-					if fp := m.packs.contentFilePath(ci); fp != "" {
-						return m, openFileInEditor(fp)
-					}
+					return m.packs.contentFilePath(ci)
 				}
 			}
 		}
 	}
-	return m, nil
+	return ""
 }
 
 func (m rootModel) View() string {
@@ -1881,6 +1904,7 @@ const (
 	actEditFile       = "Edit file"
 	actEditManifest   = "Edit manifest"
 	actEditSyncConfig = "Edit sync-config"
+	actOpenFile       = "Open file"
 )
 
 // openActionMenu opens a context-sensitive action dialog based on the current focus.
@@ -1924,7 +1948,7 @@ func (m rootModel) openProfileActions() (tea.Model, tea.Cmd) {
 	if names := m.unregisteredPacks(); len(names) > 0 {
 		actions = append(actions, actProfileAddPack)
 	}
-	actions = append(actions, actDelete, actEditFile)
+	actions = append(actions, actOpenFile, actEditFile, actDelete)
 	if len(m.packs.items) > 0 {
 		actions = append(actions, actUpdateAll)
 	}
@@ -1948,7 +1972,7 @@ func (m rootModel) openPackRosterActions() (tea.Model, tea.Cmd) {
 		} else {
 			actions = append(actions, actSettingsDisable)
 		}
-		actions = append(actions, actEditManifest)
+		actions = append(actions, actOpenFile, actEditManifest)
 	}
 	if len(m.packs.items) > 0 {
 		actions = append(actions, actUpdateAll)
@@ -1979,7 +2003,7 @@ func (m rootModel) openTreeActions() (tea.Model, tea.Cmd) {
 	// save inventory) live inside the picker itself so the tree menu
 	// stays focused on the two most common intents.
 	if n.category == domain.CategoryMCP {
-		actions := []string{actEditFile, actMCPToolList}
+		actions := []string{actOpenFile, actEditFile, actMCPToolList}
 		d := newListSelectDialog(dialogActionTree,
 			fmt.Sprintf("Actions for %s/%s:", n.category, n.id),
 			actions)
@@ -1994,7 +2018,7 @@ func (m rootModel) openTreeActions() (tea.Model, tea.Cmd) {
 			actions = append(actions, actSetOverride)
 		}
 	}
-	actions = append(actions, actEditFile)
+	actions = append(actions, actOpenFile, actEditFile)
 	d := newListSelectDialog(dialogActionTree,
 		fmt.Sprintf("Actions for %s/%s:", n.category, n.id),
 		actions)
@@ -2020,10 +2044,10 @@ func (m rootModel) handleTreeAction(msg dialogResultMsg) (tea.Model, tea.Cmd) {
 		m.profiles = m.profiles.setOverride(n.packIdx, n.category, n.id)
 	case actRemoveOverride:
 		m.profiles = m.profiles.removeOverride(n.packIdx, n.category, n.id)
-	case actEditFile:
+	case actEditFile, actOpenFile:
 		fp := item.tree.filePath()
 		if fp != "" {
-			return m, openFileInEditor(fp)
+			return m, launchFile(msg.value, fp)
 		}
 		return m, nil
 	case actMCPToolList:
@@ -2070,7 +2094,7 @@ func (m rootModel) openPackTabActions() (tea.Model, tea.Cmd) {
 	}
 	actions = append(actions, actCreatePack)
 	if installed {
-		actions = append(actions, actEditManifest, actPackDelete)
+		actions = append(actions, actOpenFile, actEditManifest, actPackDelete)
 	}
 
 	d := newListSelectDialog(dialogActionPackTab, "Pack actions:", actions)
@@ -2089,7 +2113,7 @@ func (m rootModel) openPackContentActions() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var actions []string
-	actions = append(actions, actEditFile)
+	actions = append(actions, actOpenFile, actEditFile)
 	// Only offer move if there are other installed packs.
 	if len(m.packs.items) >= 2 {
 		actions = append(actions, actMoveToPack)
@@ -2105,12 +2129,12 @@ func (m rootModel) handlePackContentAction(msg dialogResultMsg) (tea.Model, tea.
 	if !msg.confirmed {
 		return m, nil
 	}
-	if msg.value == actEditFile {
+	if msg.value == actEditFile || msg.value == actOpenFile {
 		if m.packs.contentCursor >= 0 && m.packs.contentCursor < len(m.packs.contentItems) {
 			ci := m.packs.contentItems[m.packs.contentCursor]
 			if !ci.isHeader {
 				if fp := m.packs.contentFilePath(ci); fp != "" {
-					return m, openFileInEditor(fp)
+					return m, launchFile(msg.value, fp)
 				}
 			}
 		}
@@ -2159,7 +2183,7 @@ func (m rootModel) handleContentMoveTo(msg dialogResultMsg) (tea.Model, tea.Cmd)
 }
 
 func (m rootModel) openSyncActions() (tea.Model, tea.Cmd) {
-	d := newListSelectDialog(dialogActionSync, "Sync actions:", []string{actEditSyncConfig})
+	d := newListSelectDialog(dialogActionSync, "Sync actions:", []string{actOpenFile, actEditSyncConfig})
 	m.dialog = &d
 	return m, nil
 }
@@ -2174,7 +2198,7 @@ func (m rootModel) openSaveActions() (tea.Model, tea.Cmd) {
 		m.statusText = dimStyle.Render("no actions available")
 		return m, nil
 	}
-	actions := []string{actPreview, actViewDiff, actEditFile, actDeleteFile, actSaveToPack}
+	actions := []string{actPreview, actViewDiff, actOpenFile, actEditFile, actDeleteFile, actSaveToPack}
 	d := newListSelectDialog(dialogActionSave,
 		fmt.Sprintf("Actions for %s:", filepath.Base(f.HarnessPath)), actions)
 	m.dialog = &d
@@ -2255,19 +2279,19 @@ func (m rootModel) helpText() string {
 		case panelPacks:
 			base = "j/k:navigate  J/K:reorder  space:toggle  enter:tree  .:actions │ esc:back"
 		case panelTree:
-			base = "j/k:navigate  space:toggle  enter:preview  e:edit  .:actions │ v:plan  s:sync  ctrl+s:save │ esc:back"
+			base = "j/k:navigate  space:toggle  enter:preview  e:edit  o:open  .:actions │ v:plan  s:sync  ctrl+s:save │ esc:back"
 			if item := m.profiles.currentItem(); item != nil && item.tree != nil {
 				if n := item.tree.cursorNode(); n != nil && n.kind == nodeItem && n.category == domain.CategoryMCP {
-					base = "j/k:navigate  space:toggle  enter/t:tools  e:edit  .:actions │ v:plan  s:sync  ctrl+s:save │ esc:back"
+					base = "j/k:navigate  space:toggle  enter/t:tools  e:edit  o:open  .:actions │ v:plan  s:sync  ctrl+s:save │ esc:back"
 				}
 			}
 		}
 	case tabPacks:
 		switch m.packs.focus {
 		case packPanelContent:
-			return "j/k:navigate  enter:preview  e:edit  .:actions │ esc:back"
+			return "j/k:navigate  enter:preview  e:edit  o:open  .:actions │ esc:back"
 		case packPanelPreview:
-			return "j/k:scroll  enter:preview  e:edit  .:actions │ esc:back"
+			return "j/k:scroll  enter:preview  e:edit  o:open  .:actions │ esc:back"
 		default:
 			return "j/k:navigate  enter:content  .:actions  r:refresh │ 1-5/tab:switch  esc:quit"
 		}

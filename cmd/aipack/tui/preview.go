@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -107,6 +109,8 @@ func (m previewModel) Update(msg tea.Msg) (previewModel, tea.Cmd) {
 		switch msg.String() {
 		case "e", "i":
 			return m, m.openEditor()
+		case "o":
+			return m, openFileWithSystem(m.filePath)
 		}
 	}
 
@@ -149,7 +153,7 @@ func (m previewModel) View() string {
 }
 
 func (m previewModel) helpText() string {
-	return "j/k:scroll  i/e:edit  esc:close"
+	return "j/k:scroll  i/e:edit  o:open  esc:close"
 }
 
 // openEditor spawns $EDITOR via tea.ExecProcess (suspends TUI).
@@ -157,19 +161,142 @@ func (m previewModel) openEditor() tea.Cmd {
 	return openFileInEditor(m.filePath)
 }
 
+type editorCommand struct {
+	source string
+	raw    string
+	name   string
+	args   []string
+}
+
 // openFileInEditor spawns $EDITOR for the given file path, suspending the TUI.
 func openFileInEditor(filePath string) tea.Cmd {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = os.Getenv("VISUAL")
+	editor, err := resolveEditorCommand(os.Getenv("EDITOR"), os.Getenv("VISUAL"), runtime.GOOS)
+	if err != nil {
+		return editorErrorCmd(filePath, err)
 	}
-	if editor == "" {
-		editor = "vi"
+	editorPath, err := exec.LookPath(editor.name)
+	if err != nil {
+		return editorErrorCmd(filePath, fmt.Errorf("editor command %q from %s is not available: %w; set EDITOR or VISUAL to an installed editor", editor.raw, editor.source, err))
 	}
-	c := exec.Command(editor, filePath)
+	args := append([]string{}, editor.args...)
+	args = append(args, filePath)
+	c := exec.Command(editorPath, args...)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{filePath: filePath, err: err}
 	})
+}
+
+func editorErrorCmd(filePath string, err error) tea.Cmd {
+	return func() tea.Msg {
+		return editorFinishedMsg{filePath: filePath, err: err}
+	}
+}
+
+func resolveEditorCommand(editor, visual, goos string) (editorCommand, error) {
+	raw := strings.TrimSpace(editor)
+	source := "EDITOR"
+	if raw == "" {
+		raw = strings.TrimSpace(visual)
+		source = "VISUAL"
+	}
+	if raw == "" {
+		source = "default"
+		if goos == "windows" {
+			raw = "notepad.exe"
+		} else {
+			raw = "vi"
+		}
+	}
+	parts, err := splitEditorCommand(raw)
+	if err != nil {
+		return editorCommand{}, fmt.Errorf("parse editor command %q from %s: %w", raw, source, err)
+	}
+	return editorCommand{
+		source: source,
+		raw:    raw,
+		name:   parts[0],
+		args:   parts[1:],
+	}, nil
+}
+
+func splitEditorCommand(s string) ([]string, error) {
+	var parts []string
+	var b strings.Builder
+	var quote rune
+	for _, r := range s {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			b.WriteRune(r)
+			continue
+		}
+		switch {
+		case r == '\'' || r == '"':
+			quote = r
+		case unicode.IsSpace(r):
+			if b.Len() > 0 {
+				parts = append(parts, b.String())
+				b.Reset()
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated quote %q", string(quote))
+	}
+	if b.Len() > 0 {
+		parts = append(parts, b.String())
+	}
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+	return parts, nil
+}
+
+// openFileWithSystem hands the file to the OS default opener (`open` on
+// macOS, `xdg-open` on Linux, `cmd /c start` on Windows). The launched
+// app runs detached — the TUI does not suspend and there is no completion
+// event. Only Start() failures surface, via systemOpenErrorMsg.
+func openFileWithSystem(filePath string) tea.Cmd {
+	name, args := systemOpenCommand(runtime.GOOS, filePath)
+	return func() tea.Msg {
+		c := exec.Command(name, args...)
+		if err := c.Start(); err != nil {
+			return systemOpenErrorMsg{err: fmt.Errorf("launch %s: %w", name, err)}
+		}
+		// Reap the launcher (open/xdg-open/cmd) so it doesn't sit as a
+		// zombie until the TUI exits. The launcher itself returns in ms
+		// after spawning the real GUI app.
+		go func() { _ = c.Wait() }()
+		return nil
+	}
+}
+
+// launchFile dispatches to openFileInEditor or openFileWithSystem based
+// on which action the caller is handling. Lets each Edit/Open case in
+// the action handlers collapse to one branch.
+func launchFile(action, filePath string) tea.Cmd {
+	if action == actOpenFile {
+		return openFileWithSystem(filePath)
+	}
+	return openFileInEditor(filePath)
+}
+
+// systemOpenCommand returns the executable + args for opening a file
+// with the OS default handler on the given platform.
+func systemOpenCommand(goos, filePath string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{filePath}
+	case "windows":
+		// `start` is a cmd.exe builtin; the empty "" is the window-title arg.
+		return "cmd", []string{"/c", "start", "", filePath}
+	default:
+		return "xdg-open", []string{filePath}
+	}
 }
 
 // loadPreview reads a markdown file asynchronously, parses frontmatter,

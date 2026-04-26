@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.25.2]
+
+### Added
+
+- **`o` opens the focused file with the OS default app.** The manage TUI binds `o` alongside `e:edit` across browsing panels and the preview overlay, and adds an `Open file` entry to every context action menu (`.`) that already offered `Edit file` / `Edit manifest` / `Edit sync-config`. `o` invokes `open` on macOS, `xdg-open` on Linux, and `cmd /c start` on Windows; the launched app runs detached so the TUI does not suspend, and Start failures surface in the status bar. Customize what opens by setting OS-level file associations (Finder "Open With → Change All", `xdg-mime default`, Windows "Always use this app").
+
+### Fixed
+
+- **TUI file editing now has a Windows fallback and supports editor arguments.** The manage TUI previously fell back to `vi` everywhere and passed `$EDITOR` as a single executable name, so Windows users often saw nothing happen and values like `code --wait` failed. The editor launcher now falls back to `notepad.exe` on Windows, keeps `vi` on Unix-like systems, splits quoted editor commands into executable plus args, and reports a clear status-bar error when the editor cannot be launched.
+
 ## [0.25.1]
 
 ### Fixed
