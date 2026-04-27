@@ -4,7 +4,7 @@ What aipack puts on your machine, how to configure it, and how to manage it. For
 
 ## Config directory layout
 
-`aipack init` bootstraps `~/.config/aipack/`. All subsequent commands read from and write to this tree. On Windows the config directory is `%APPDATA%\aipack` instead. In WSL, Linux paths apply — see the [FAQ](./faq.md) for WSL-specific guidance.
+`aipack init` bootstraps the config directory below. All subsequent commands read from and write to this tree. The exact path depends on platform — see [Per-platform locations](#per-platform-locations) for the resolution rule and override flag.
 
 ```
 ~/.config/aipack/
@@ -39,6 +39,19 @@ Project-scope state for the current directory also appears locally:
 ```
 
 Directories are created with mode `0700`, files with `0600`.
+
+### Per-platform locations
+
+aipack derives the config directory from `os.UserHomeDir()` and a fixed suffix. It does **not** consult `XDG_CONFIG_HOME` or `APPDATA` — setting either of those does not move the config directory.
+
+| Platform | Config directory |
+|---|---|
+| Linux | `~/.config/aipack/` |
+| macOS | `~/.config/aipack/` (not `~/Library/Application Support/`) |
+| Windows | `%APPDATA%\aipack\` (i.e. `<home>\AppData\Roaming\aipack\`) |
+| WSL | Linux paths apply, even when invoking from a Windows shell — see the [FAQ](./faq.md). |
+
+To use a different location, pass `--config-dir <path>` to any command. There is no environment-variable override.
 
 ## sync-config.yaml
 

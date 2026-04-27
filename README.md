@@ -211,7 +211,7 @@ aipack supports multiple registry sources. Each source is cached locally and fet
 - `aipack registry fetch <url>` adds and fetches a single source.
 - `aipack registry fetch` (bare) fetches all configured sources.
 - `aipack registry sources` lists configured sources and their cache status.
-- Sources are saved to `registry_sources` in `sync-config.yaml` and cached in `~/.config/aipack/registries/`.
+- Sources are saved to `registry_sources` in `sync-config.yaml` and cached in `~/.config/aipack/registries/` (`%APPDATA%\aipack\registries\` on Windows).
 - Both HTTPS and SSH git URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts.
 - Git repos are auto-detected from `.git` suffix, `git@` prefix, `ssh://` scheme, or `--ref`/`--path` flags.
 - The compiled-in default points at `registry.yaml` in `shrug-labs/packs` and is used when no sources are configured.

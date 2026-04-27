@@ -37,7 +37,7 @@ See the [README](../README.md#install) for version pinning and other install opt
 aipack init
 ```
 
-This creates the config directory (`~/.config/aipack/`), a default profile, and fetches the public pack registry so pack names are immediately discoverable.
+This creates the config directory (`~/.config/aipack/`, or `%APPDATA%\aipack\` on Windows), a default profile, and fetches the public pack registry so pack names are immediately discoverable.
 
 ## Install your first pack
 
