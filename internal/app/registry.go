@@ -234,7 +234,7 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		}
 		n, err := registryFetchOne(ctx, oneReq, &sc, stdout)
 		if err != nil {
-			fmt.Fprintf(stdout, "warning: %s: %v\n", src.Name, err)
+			printRegistryWarning(stdout, src.Name, err)
 			continue
 		}
 		succeeded++
@@ -250,7 +250,7 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		return fmt.Errorf("saving sync-config: %w", err)
 	}
 
-	if len(sources) > 1 {
+	if len(sources) > 1 && stdout != nil {
 		fmt.Fprintf(stdout, "%d source(s), %d total pack(s)\n", len(sources), totalPacks)
 	}
 	return nil
@@ -279,6 +279,10 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	if name == "" {
 		derived := config.DeriveSourceName(url, filePath)
 		name = config.UniqueSourceName(derived, url, filePath, sc.RegistrySources)
+	}
+
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Fetching %s from %s\n", name, url)
 	}
 
 	// Fetch remote registry bytes.
@@ -346,11 +350,24 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 
 	// Update search index (best-effort).
 	if err := indexRegistryEntries(remote, req.ConfigDir); err != nil {
-		fmt.Fprintf(stdout, "warning: index update failed: %v\n", err)
+		printRegistryWarning(stdout, "index update failed", err)
 	}
 
-	fmt.Fprintf(stdout, "%s: %d pack(s) (from %s)\n", name, len(remote.Packs), url)
+	if stdout != nil {
+		fmt.Fprintf(stdout, "%s: %d pack(s) (from %s)\n", name, len(remote.Packs), url)
+	}
 	return len(remote.Packs), nil
+}
+
+func printRegistryWarning(w io.Writer, label string, err error) {
+	if w == nil {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(w, "warning: %s: %v\n", label, err)
+		return
+	}
+	fmt.Fprintf(w, "warning: %s\n", label)
 }
 
 // upsertRegistrySource adds or updates a source in the sync-config sources list.
@@ -493,9 +510,12 @@ func RegistryDeepIndex(ctx context.Context, req RegistryDeepIndexRequest, stdout
 		if entry.Repo == "" {
 			continue
 		}
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Deep-indexing %s from %s\n", name, entry.Repo)
+		}
 		resources, err := deepIndexOnePack(entry, cloneFn)
 		if err != nil {
-			fmt.Fprintf(stdout, "warning: deep-index %s: %v\n", name, err)
+			printDeepIndexWarning(stdout, name, err)
 			continue
 		}
 
@@ -510,14 +530,27 @@ func RegistryDeepIndex(ctx context.Context, req RegistryDeepIndexRequest, stdout
 			Source:      "deep-index",
 		}
 		if err := db.UpdateDeepIndex(packInfo, resources); err != nil {
-			fmt.Fprintf(stdout, "warning: deep-index %s: %v\n", name, err)
+			printDeepIndexWarning(stdout, name, err)
 			continue
 		}
 		indexed++
 	}
 
-	fmt.Fprintf(stdout, "Deep-indexed %d pack(s) from registry (%d total)\n", indexed, len(reg.Packs))
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Deep-indexed %d pack(s) from registry (%d total)\n", indexed, len(reg.Packs))
+	}
 	return nil
+}
+
+func printDeepIndexWarning(w io.Writer, pack string, err error) {
+	if w == nil {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(w, "warning: deep-index %s: %v\n", pack, err)
+		return
+	}
+	fmt.Fprintf(w, "warning: deep-index %s\n", pack)
 }
 
 // deepIndexOnePack clones a registry pack into a temp dir and extracts

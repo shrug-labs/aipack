@@ -6,6 +6,22 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.26.0]
+
+### Added
+
+- **Harness settings templates expand `{env:*}`, `{params.*}`, and `{pack:root}` references.** Pack-provided files like `configs/codex/config.toml` can use machine-local paths; unresolved references fail sync. Codex and opencode now write base-only settings (claudecode already did); `--skip-settings` still suppresses them.
+
+### Changed
+
+- **Live progress for slow operations.** `pack update`, `pack install`, `mcp inspect-tools`, and `registry fetch` stream phase lines (cloning, extracting, probing, connected, listing tools, fetching, deep-indexing) to stdout. `pack update --all` suppresses phase lines so concurrent workers don't interleave; sync output is unchanged.
+- **TUI live progress on the packs tab.** Pack updates show a per-row spinner, ✓/✗ glyph, batch status during `update --all`, and a `Checked` timestamp on the detail panel; pack installs show a status-bar phase spinner. Esc cancels in-flight operations. Bundled-content checklist Esc cancels the whole install/update; space toggles, enter confirms. MCP tool picker also gains a live probe spinner.
+
+### Fixed
+
+- **`aipack update` on Homebrew-managed binaries** points at `brew upgrade aipack` instead of failing with `creating temp file in /usr/local/bin: ... permission denied`.
+- **`pack install` no longer prints a `Changes:` block or `Content unchanged.` line.** Re-installing with different `-w` flags was leaking bundled-content filter side effects as fake content drift; integrity is still recorded for `pack update`'s drift detection.
+
 ## [0.25.2]
 
 ### Added

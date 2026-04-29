@@ -68,7 +68,6 @@ func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
 	}
 	reg := harness.NewRegistry(claudeHarness, codexHarness)
 
-	var stdout, stderr bytes.Buffer
 	result, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
@@ -77,7 +76,7 @@ func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
 			Home:       home,
 		},
 		DryRun: true,
-	}, reg, &stdout, &stderr)
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
@@ -113,7 +112,6 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 		roots: []string{managedRoot},
 	})
 
-	var stdout, stderr bytes.Buffer
 	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
@@ -122,7 +120,7 @@ func TestRunSync_DryRunDoesNotMigrateLedgers(t *testing.T) {
 			Home:       home,
 		},
 		DryRun: true,
-	}, reg, &stdout, &stderr)
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
@@ -196,7 +194,7 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 		},
 	)
 
-	var stdout, stderr bytes.Buffer
+	var out bytes.Buffer
 	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
@@ -205,13 +203,13 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 			Home:       home,
 		},
 		DryRun: true,
-	}, reg, &stdout, &stderr)
+	}, reg, &out, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
 
-	if got := stdout.String(); got != "plan: 0 file ops from 0 content, 2 identical\n" {
-		t.Fatalf("stdout = %q, want %q", got, "plan: 0 file ops from 0 content, 2 identical\n")
+	if got := out.String(); got != "plan: 0 file ops from 0 content, 2 identical\n" {
+		t.Fatalf("output = %q, want %q", got, "plan: 0 file ops from 0 content, 2 identical\n")
 	}
 }
 
@@ -236,7 +234,8 @@ func TestRunSync_WritesLedgerToExplicitConfigDir(t *testing.T) {
 		roots: []string{filepath.Join(projectDir, ".codex")},
 	})
 
-	var stdout, stderr bytes.Buffer
+	// TestRunSync_WritesLedgerToExplicitConfigDir doesn't assert on stdout
+	// or stderr, only on filesystem state, so drop the writers entirely.
 	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			ConfigDir:  configDir,
@@ -246,7 +245,7 @@ func TestRunSync_WritesLedgerToExplicitConfigDir(t *testing.T) {
 			Home:       home,
 		},
 		Yes: true,
-	}, reg, &stdout, &stderr)
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
@@ -403,14 +402,13 @@ func TestProcessEmbeddedRegistries_MergesIntoRegistryCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var stderr bytes.Buffer
 	warnings := processEmbeddedRegistries(domain.Profile{
 		Packs: []domain.Pack{{
 			Name:       "demo",
 			Root:       packRoot,
 			Registries: []string{"default"},
 		}},
-	}, configDir, &stderr)
+	}, configDir, nil)
 	if len(warnings) > 0 {
 		t.Fatalf("processEmbeddedRegistries warnings: %v", warnings)
 	}

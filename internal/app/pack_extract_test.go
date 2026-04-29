@@ -855,15 +855,15 @@ func TestExtractPackContent_StandardPack_Extras(t *testing.T) {
 	srcDir := t.TempDir()
 	manifest := config.PackManifest{
 		SchemaVersion: 2, Name: "with-extras", Version: "1.0.0", Root: ".",
-		Extras: []string{"wrappers", "mcp-servers/oci-api", "bootstrap.sh"},
+		Extras: []string{"wrappers", "mcp-servers/cloud-api", "bootstrap.sh"},
 	}
 	config.SavePackManifest(filepath.Join(srcDir, "pack.json"), manifest)
 
 	os.MkdirAll(filepath.Join(srcDir, "wrappers"), 0o755)
 	os.WriteFile(filepath.Join(srcDir, "wrappers", "proxy.py"),
 		[]byte("proxy content"), 0o644)
-	os.MkdirAll(filepath.Join(srcDir, "mcp-servers", "oci-api"), 0o755)
-	os.WriteFile(filepath.Join(srcDir, "mcp-servers", "oci-api", "main.py"),
+	os.MkdirAll(filepath.Join(srcDir, "mcp-servers", "cloud-api"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "mcp-servers", "cloud-api", "main.py"),
 		[]byte("api content"), 0o644)
 	os.WriteFile(filepath.Join(srcDir, "bootstrap.sh"),
 		[]byte("#!/bin/sh\necho hello\n"), 0o644)
@@ -882,12 +882,12 @@ func TestExtractPackContent_StandardPack_Extras(t *testing.T) {
 		wantContent string
 		wantDir     bool
 	}{
-		"wrappers/proxy.py":           {"proxy content", false},
-		"mcp-servers/oci-api/main.py": {"api content", false},
-		"bootstrap.sh":                {"#!/bin/sh\necho hello\n", false},
-		"rules/r.md":                  {"---\nname: r\n---\nbody\n", false},
-		"wrappers":                    {"", true},
-		"mcp-servers/oci-api":         {"", true},
+		"wrappers/proxy.py":             {"proxy content", false},
+		"mcp-servers/cloud-api/main.py": {"api content", false},
+		"bootstrap.sh":                  {"#!/bin/sh\necho hello\n", false},
+		"rules/r.md":                    {"---\nname: r\n---\nbody\n", false},
+		"wrappers":                      {"", true},
+		"mcp-servers/cloud-api":         {"", true},
 	}
 	for path, want := range checks {
 		full := filepath.Join(staging, path)

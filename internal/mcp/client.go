@@ -49,7 +49,12 @@ type ProbeResult struct {
 //
 // The env parameter overlays additional environment variables on top of
 // the current process environment. Pass nil for no overlay.
-func ProbeStdio(ctx context.Context, command []string, env map[string]string) (*ProbeResult, error) {
+//
+// stdout (when non-nil) receives `  connected (stdio)` and `  listing tools`
+// lines for live progress; events (when non-nil) receives the same
+// milestones as ProbeEvent values. Lifecycle starting/done/error events are
+// emitted by Probe.
+func ProbeStdio(ctx context.Context, command []string, env map[string]string, stdoutW io.Writer, events chan<- ProbeEvent) (*ProbeResult, error) {
 	if len(command) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
@@ -132,6 +137,15 @@ func ProbeStdio(ctx context.Context, command []string, env map[string]string) (*
 	}); err != nil {
 		return nil, fmt.Errorf("send initialized: %w", err)
 	}
+
+	if stdoutW != nil {
+		fmt.Fprintln(stdoutW, "  connected (stdio)")
+	}
+	emitProbeEvent(events, ProbeEvent{Transport: "stdio", Phase: ProbePhaseConnected})
+	if stdoutW != nil {
+		fmt.Fprintln(stdoutW, "  listing tools")
+	}
+	emitProbeEvent(events, ProbeEvent{Phase: ProbePhaseListingTools})
 
 	if err := writeMessage(stdin, &jsonrpcRequest{
 		JSONRPC: "2.0",

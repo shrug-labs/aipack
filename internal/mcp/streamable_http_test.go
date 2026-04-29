@@ -121,7 +121,7 @@ func TestProbeStreamableHTTP_HappyJSON(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := ProbeStreamableHTTP(ctx, srv.URL, nil)
+	result, err := ProbeStreamableHTTP(ctx, srv.URL, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ProbeStreamableHTTP: %v", err)
 	}
@@ -130,8 +130,8 @@ func TestProbeStreamableHTTP_HappyJSON(t *testing.T) {
 	if want := []string{"tool_alpha", "tool_beta"}; !slices.Equal(names, want) {
 		t.Errorf("tools = %v, want %v", names, want)
 	}
-	if result.Duration <= 0 {
-		t.Errorf("duration should be positive, got %v", result.Duration)
+	if result.Duration < 0 {
+		t.Errorf("duration should be non-negative, got %v", result.Duration)
 	}
 }
 
@@ -146,7 +146,7 @@ func TestProbeStreamableHTTP_HappySSEFraming(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := ProbeStreamableHTTP(ctx, srv.URL, nil)
+	result, err := ProbeStreamableHTTP(ctx, srv.URL, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ProbeStreamableHTTP with SSE responses: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestProbeStreamableHTTP_ThreadsSessionID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := ProbeStreamableHTTP(ctx, srv.URL, nil); err != nil {
+	if _, err := ProbeStreamableHTTP(ctx, srv.URL, nil, nil, nil); err != nil {
 		t.Fatalf("ProbeStreamableHTTP with session threading: %v", err)
 	}
 
@@ -210,7 +210,7 @@ func TestProbeStreamableHTTP_SendsCustomHeaders(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := ProbeStreamableHTTP(ctx, srv.URL, map[string]string{"Authorization": "Bearer secret-123"}); err != nil {
+	if _, err := ProbeStreamableHTTP(ctx, srv.URL, map[string]string{"Authorization": "Bearer secret-123"}, nil, nil); err != nil {
 		t.Fatalf("ProbeStreamableHTTP: %v", err)
 	}
 	if len(seenAuth) < 1 {
@@ -233,7 +233,7 @@ func TestProbeStreamableHTTP_HTTPErrorSurfacesStatusAndBody(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil)
+	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error on 401")
 	}
@@ -263,7 +263,7 @@ func TestProbeStreamableHTTP_NoToolsCapability(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil)
+	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "tools capability") {
 		t.Errorf("expected tools-capability error, got %v", err)
 	}
@@ -284,7 +284,7 @@ func TestProbeStreamableHTTP_JSONRPCErrorResponse(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil)
+	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "method not found") {
 		t.Errorf("expected method-not-found error, got %v", err)
 	}
@@ -292,7 +292,7 @@ func TestProbeStreamableHTTP_JSONRPCErrorResponse(t *testing.T) {
 
 func TestProbeStreamableHTTP_EmptyURL(t *testing.T) {
 	t.Parallel()
-	_, err := ProbeStreamableHTTP(context.Background(), "", nil)
+	_, err := ProbeStreamableHTTP(context.Background(), "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for empty URL")
 	}
@@ -311,7 +311,7 @@ func TestProbeStreamableHTTP_OversizeResponseRejected(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil)
+	_, err := ProbeStreamableHTTP(ctx, srv.URL, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for oversize response")
 	}

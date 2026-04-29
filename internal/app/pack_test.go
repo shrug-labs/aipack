@@ -53,6 +53,78 @@ func writeEmptyProfile(t *testing.T, configDir string, profileName string) {
 	}
 }
 
+func TestPackInstall_EmitsEvents(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "evt-pack")
+
+	events := make(chan PackInstallEvent, 8)
+	go func() {
+		// Drain so the install goroutine never blocks if we miscounted.
+		for range events {
+		}
+	}()
+	err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		Events:    events,
+	}, nil)
+	close(events)
+	if err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	// Re-run with a synchronous collector to verify the phase sequence.
+	configDir2 := t.TempDir()
+	collected := []PackInstallEvent{}
+	collectCh := make(chan PackInstallEvent, 8)
+	done := make(chan struct{})
+	go func() {
+		for ev := range collectCh {
+			collected = append(collected, ev)
+		}
+		close(done)
+	}()
+	err = PackInstall(context.Background(), PackInstallRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir2,
+		Link:      true,
+		Events:    collectCh,
+	}, nil)
+	close(collectCh)
+	<-done
+	if err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	// Must start with Starting and end with Done. Linking flow must emit
+	// the Linking phase between them. No Err event on success.
+	if len(collected) < 3 {
+		t.Fatalf("expected ≥3 events, got %d: %+v", len(collected), collected)
+	}
+	if collected[0].Phase != PackInstallPhaseStarting {
+		t.Errorf("first event phase = %q, want %q", collected[0].Phase, PackInstallPhaseStarting)
+	}
+	last := collected[len(collected)-1]
+	if !last.Done || last.Err != nil {
+		t.Errorf("last event = %+v, want Done=true Err=nil", last)
+	}
+	sawLinking := false
+	for _, ev := range collected {
+		if ev.Phase == PackInstallPhaseLinking {
+			sawLinking = true
+		}
+		if ev.Err != nil {
+			t.Errorf("unexpected Err on event %+v", ev)
+		}
+	}
+	if !sawLinking {
+		t.Errorf("expected a Linking phase in: %+v", collected)
+	}
+}
+
 func TestPackInstall_Link(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
@@ -1900,7 +1972,7 @@ func TestPackLifecycle_InstallListUpdateShowRemove(t *testing.T) {
 	results, _ := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir, Name: "lifecycle-pack",
 		NowFn: func() time.Time { return fixedNow },
-	}, &out)
+	}, &out, nil)
 	if results[0].Status != StatusUpdated {
 		t.Fatalf("Update: %q", results[0].Status)
 	}

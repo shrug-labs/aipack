@@ -134,11 +134,12 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	sp := ctx.Profile.SettingsPackName(domain.HarnessCodex)
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 	hasAgents := len(agentRegs) > 0
+	hasManagedKeys := hasMCP || hasAgents
+	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
 
-	decision := engine.ClassifySettings(hasMCP || hasAgents, hasMCP || hasAgents, ctx.SkipSettings)
+	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
 	var mcpRendered []byte
 	if decision.EmitSettings {
-		base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
 		out, _, err := RenderBytes(base, ctx.Profile.MCPServers, agentRegs)
 		if err != nil {
 			return err

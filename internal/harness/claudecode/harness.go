@@ -148,8 +148,8 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessClaudeCode, "settings.local.json")
 	hasMCP := len(ctx.Profile.MCPServers) > 0
-	hasManagedContent := hasMCP || len(base) > 0
-	decision := engine.ClassifySettings(hasMCP, hasManagedContent, ctx.SkipSettings)
+	hasManagedKeys := hasMCP // claudecode has no agent registrations or other managed-content sources
+	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
 	if decision.EmitSettings {
 		out, err := RenderSettingsBytes(base, ctx.Profile.MCPServers)
 		if err != nil {

@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"context"
+	"time"
+
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/mcp"
 )
 
 // profilesLoadedMsg is sent after the initial profile listing completes.
@@ -225,6 +229,30 @@ type packInstalledMsg struct {
 	err  error
 }
 
+// packInstallReadyMsg signals that a streaming pack-install has started.
+// The worker goroutine fills eventCh as PackInstall emits phase events;
+// once eventCh closes, the terminal outcome lands on resultCh. cancel is
+// the ctx cancellation handle the Esc handler invokes.
+type packInstallReadyMsg struct {
+	eventCh  <-chan app.PackInstallEvent
+	resultCh <-chan packInstallResult
+	cancel   context.CancelFunc
+	packName string // best-effort label for the status bar
+}
+
+// packInstallResult carries the terminal outcome of a streaming install
+// from the worker goroutine to the TUI loop, before being lifted into
+// packInstalledMsg by readNextInstallEvent.
+type packInstallResult struct {
+	name string
+	err  error
+}
+
+// packInstallProgressMsg carries one phase event from a streaming install.
+type packInstallProgressMsg struct {
+	event app.PackInstallEvent
+}
+
 // packRemovedMsg is sent after a pack is removed via the packs tab.
 type packRemovedMsg struct {
 	name string
@@ -236,6 +264,22 @@ type packUpdatedMsg struct {
 	name    string
 	results []app.PackUpdateResult
 	err     error
+}
+
+// packUpdateReadyMsg signals that a streaming pack-update operation has
+// started. The worker goroutine fills eventCh as PackUpdate emits progress
+// events; once eventCh closes, the terminal outcome lands on resultCh.
+// cancel is the ctx cancellation handle the Esc handler invokes.
+type packUpdateReadyMsg struct {
+	eventCh  <-chan app.PackUpdateEvent
+	resultCh <-chan packUpdateResult
+	cancel   context.CancelFunc
+	packName string
+}
+
+// packProgressMsg carries one event from a streaming pack-update.
+type packProgressMsg struct {
+	event app.PackUpdateEvent
 }
 
 // bundledApprovedMsg is sent after the user confirms bundled content candidates via the checklist.
@@ -309,6 +353,35 @@ type mcpProbeResultMsg struct {
 	err   error
 }
 
+// mcpProbeStreamResult carries the terminal outcome of a streaming MCP
+// probe from the worker goroutine to the TUI loop, before being lifted
+// into mcpProbeResultMsg by readNextProbeEvent.
+type mcpProbeStreamResult struct {
+	tools []string
+	err   error
+}
+
+// mcpProbeReadyMsg signals that a streaming MCP probe has started. Issued
+// synchronously from probeMCPServer; the worker goroutine fills eventCh
+// with ProbeEvent values as the handshake/listing progresses, then closes
+// eventCh and delivers the terminal result on resultCh.
+type mcpProbeReadyMsg struct {
+	key      mcpProbeKey
+	seq      int
+	eventCh  <-chan mcp.ProbeEvent
+	resultCh <-chan mcpProbeStreamResult
+	cancel   context.CancelFunc
+}
+
+// mcpProbeProgressMsg carries one ProbeEvent for the active probe.
+// The picker's loading view reads event.Phase to render the current phase
+// (starting / connected / listing_tools).
+type mcpProbeProgressMsg struct {
+	key   mcpProbeKey
+	seq   int
+	event mcp.ProbeEvent
+}
+
 type mcpInventorySavedMsg struct {
 	key mcpProbeKey
 	err error
@@ -362,6 +435,15 @@ type savePipelineDoneMsg struct {
 
 // statusClearMsg is sent by a timer to auto-clear transient status text.
 type statusClearMsg struct{ id int }
+
+// packRowClearMsg is sent by a per-row timer to revert a pack row's
+// update decoration after the auto-clear TTL. The handler checks `when`
+// against the row's recorded clearAt to ignore stale ticks (e.g. when
+// the row entered a new update before the previous clear fired).
+type packRowClearMsg struct {
+	packName string
+	when     time.Time
+}
 
 // syncStatus represents the sync state of a profile.
 type syncStatus int

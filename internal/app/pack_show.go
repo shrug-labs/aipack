@@ -14,22 +14,23 @@ import (
 
 // PackShowEntry describes detailed information about an installed pack.
 type PackShowEntry struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`       // pack.json version (informational)
-	Pin         string   `json:"pin,omitempty"` // lockfile version pin: "1.2.3", commit hash, or "" for HEAD
-	Path        string   `json:"path"`
-	Method      string   `json:"method"`
-	Origin      string   `json:"origin"`
-	Ref         string   `json:"ref,omitempty"`
-	CommitHash  string   `json:"commit_hash,omitempty"`
-	InstalledAt string   `json:"installed_at,omitempty"`
-	Rules       []string `json:"rules"`
-	Agents      []string `json:"agents"`
-	Workflows   []string `json:"workflows"`
-	Skills      []string `json:"skills"`
-	Prompts     []string `json:"prompts"`
-	MCPServers  []string `json:"mcp_servers"`
-	Extras      []string `json:"extras,omitempty"`
+	Name          string   `json:"name"`
+	Version       string   `json:"version"`       // pack.json version (informational)
+	Pin           string   `json:"pin,omitempty"` // lockfile version pin: "1.2.3", commit hash, or "" for HEAD
+	Path          string   `json:"path"`
+	Method        string   `json:"method"`
+	Origin        string   `json:"origin"`
+	Ref           string   `json:"ref,omitempty"`
+	CommitHash    string   `json:"commit_hash,omitempty"`
+	InstalledAt   string   `json:"installed_at,omitempty"`
+	LastCheckedAt string   `json:"last_checked_at,omitempty"`
+	Rules         []string `json:"rules"`
+	Agents        []string `json:"agents"`
+	Workflows     []string `json:"workflows"`
+	Skills        []string `json:"skills"`
+	Prompts       []string `json:"prompts"`
+	MCPServers    []string `json:"mcp_servers"`
+	Extras        []string `json:"extras,omitempty"`
 
 	// manifest is populated at construction time so ContentPath / ContentSize
 	// can resolve nested authored files via PackManifest.RelPath. Unexported
@@ -220,6 +221,7 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Ref = m.Ref
 		entry.CommitHash = m.CommitHash
 		entry.InstalledAt = m.InstalledAt
+		entry.LastCheckedAt = m.LastCheckedAt
 		if isPinned(m) {
 			entry.Pin = m.Ref
 		}

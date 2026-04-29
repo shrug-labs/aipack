@@ -112,11 +112,11 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	skills := BuildSkillsSpec(renderedSkillsDir)
 
 	hasMCP := len(ctx.Profile.MCPServers) > 0
-	hasManagedContent := hasMCP || instr.Manage || skills.Manage
-	decision := engine.ClassifySettings(hasMCP, hasManagedContent, ctx.SkipSettings)
+	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
+	hasManagedKeys := hasMCP || instr.Manage || skills.Manage
+	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
 	var mcpRendered []byte
 	if decision.EmitSettings {
-		base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
 		out, renderWarnings, err := RenderBytes(base, ctx.Profile.MCPServers, instr, skills)
 		if err != nil {
 			return fmt.Errorf("render opencode settings: %w", err)

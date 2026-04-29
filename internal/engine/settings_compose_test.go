@@ -2,11 +2,14 @@ package engine
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -512,5 +515,204 @@ func TestComposeConfigFiles_TOML_ParseError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "broken") {
 		t.Errorf("error should mention pack name, got: %v", err)
+	}
+}
+
+// writeCodexSettingsPack creates a pack rooted at <configDir>/packs/<name>
+// with configs/codex/config.toml containing the given settings, and returns
+// a ResolvedPack pointing at it with codex listed under HarnessSettings.
+func writeCodexSettingsPack(t *testing.T, configDir, name string, settings []byte) config.ResolvedPack {
+	t.Helper()
+	root := filepath.Join(configDir, "packs", name)
+	if err := os.MkdirAll(filepath.Join(root, "configs", "codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "configs", "codex", "config.toml"), settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return config.ResolvedPack{
+		Name: name, Root: root,
+		Manifest: config.PackManifest{Configs: config.PackConfigs{
+			HarnessSettings: map[string][]string{string(domain.HarnessCodex): {"config.toml"}},
+		}},
+	}
+}
+
+func TestLoadHarnessSettings_ExpandsTemplateRefs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AIPACK_SETTINGS_HOME", home)
+
+	configDir := t.TempDir()
+	pack := writeCodexSettingsPack(t, configDir, "alpha", []byte(`
+workdir = "{env:AIPACK_SETTINGS_HOME}/codex"
+cache_dir = "{params.cache_dir}"
+
+[tools.local]
+data_dir = "{pack:root}/data"
+`))
+
+	eng := New(nil, nil)
+	bundle, warnings, err := eng.loadHarnessSettings(
+		[]config.ResolvedPack{pack},
+		[]string{"alpha"},
+		[]domain.Harness{domain.HarnessCodex},
+		map[string]string{"cache_dir": "{env:AIPACK_SETTINGS_HOME}/cache"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	var got map[string]any
+	if err := toml.Unmarshal(bundle.FileBytes(domain.HarnessCodex, "config.toml"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["workdir"] != home+"/codex" {
+		t.Errorf("workdir = %v", got["workdir"])
+	}
+	if got["cache_dir"] != home+"/cache" {
+		t.Errorf("cache_dir = %v", got["cache_dir"])
+	}
+	tools, _ := got["tools"].(map[string]any)
+	local, _ := tools["local"].(map[string]any)
+	if local["data_dir"] != filepath.Clean(pack.Root)+"/data" {
+		t.Errorf("tools.local.data_dir = %v", local["data_dir"])
+	}
+}
+
+func TestLoadHarnessSettings_UnresolvedEnvRefErrors(t *testing.T) {
+	const missingEnv = "AIPACK_SETTINGS_MISSING_VAR_12345"
+	old, hadOld := os.LookupEnv(missingEnv)
+	if err := os.Unsetenv(missingEnv); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadOld {
+			_ = os.Setenv(missingEnv, old)
+		} else {
+			_ = os.Unsetenv(missingEnv)
+		}
+	})
+
+	pack := writeCodexSettingsPack(t, t.TempDir(), "alpha",
+		[]byte(`workdir = "{env:`+missingEnv+`}/codex"`))
+
+	eng := New(nil, nil)
+	_, _, err := eng.loadHarnessSettings(
+		[]config.ResolvedPack{pack},
+		[]string{"alpha"},
+		[]domain.Harness{domain.HarnessCodex},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected unresolved env ref error")
+	}
+	for _, want := range []string{"config.toml", "alpha", "workdir", missingEnv} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestLoadHarnessSettings_UnresolvedParamErrors(t *testing.T) {
+	pack := writeCodexSettingsPack(t, t.TempDir(), "alpha",
+		[]byte("model = \"gpt-test\"\nworkdir = \"{params.no_such_key}\"\n"))
+
+	eng := New(nil, nil)
+	_, _, err := eng.loadHarnessSettings(
+		[]config.ResolvedPack{pack},
+		[]string{"alpha"},
+		[]domain.Harness{domain.HarnessCodex},
+		map[string]string{"other_key": "value"},
+	)
+	if err == nil {
+		t.Fatal("expected unresolved param error")
+	}
+	for _, want := range []string{"config.toml", "alpha", "workdir", "no_such_key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestLoadHarnessSettings_MultiPackOnePackUsesRefs(t *testing.T) {
+	t.Setenv("AIPACK_MULTIPACK_VAR", "/from-env")
+
+	configDir := t.TempDir()
+	packA := writeCodexSettingsPack(t, configDir, "alpha",
+		[]byte("model = \"alpha-model\"\nworkdir = \"{env:AIPACK_MULTIPACK_VAR}/a\"\n"))
+	packB := writeCodexSettingsPack(t, configDir, "beta",
+		[]byte("[history]\nsave = false\n"))
+
+	eng := New(nil, nil)
+	bundle, warnings, err := eng.loadHarnessSettings(
+		[]config.ResolvedPack{packA, packB},
+		[]string{"alpha", "beta"},
+		[]domain.Harness{domain.HarnessCodex},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+
+	// Verify by parsing — re-marshal happens in the merge step, so quote
+	// style isn't byte-stable, but the resolved values are.
+	var parsed map[string]any
+	if err := toml.Unmarshal(bundle.FileBytes(domain.HarnessCodex, "config.toml"), &parsed); err != nil {
+		t.Fatalf("merged TOML failed to parse: %v\n%s", err, bundle.FileBytes(domain.HarnessCodex, "config.toml"))
+	}
+	if parsed["model"] != "alpha-model" {
+		t.Errorf("model = %v, want alpha-model", parsed["model"])
+	}
+	if parsed["workdir"] != "/from-env/a" {
+		t.Errorf("workdir = %v, want /from-env/a (env should expand before merge)", parsed["workdir"])
+	}
+	history, _ := parsed["history"].(map[string]any)
+	if history["save"] != false {
+		t.Errorf("history.save = %v, want false (from beta)", history["save"])
+	}
+}
+
+func TestExpandConfigFileRefs_BackslashValueEscapedThroughMarshaller(t *testing.T) {
+	t.Setenv("AIPACK_BS_VAR", `C:\Users\Dave`)
+
+	got, err := expandConfigFileRefs(nil, "",
+		domain.ConfigFile{Filename: "x.toml", Content: []byte(`workdir = "{env:AIPACK_BS_VAR}/sub"` + "\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The marshaller is responsible for escaping; round-trip parse must
+	// return the raw env value.
+	var parsed map[string]any
+	if err := toml.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("expanded TOML failed to parse: %v\n%s", err, got)
+	}
+	if parsed["workdir"] != `C:\Users\Dave/sub` {
+		t.Errorf("workdir = %v, want %s", parsed["workdir"], `C:\Users\Dave/sub`)
+	}
+}
+
+func TestExpandConfigFileRefs_PackRootRequired(t *testing.T) {
+	_, err := expandConfigFileRefs(nil, "",
+		domain.ConfigFile{Filename: "x.json", Content: []byte(`{"data_dir": "{pack:root}/data"}`)})
+	if err == nil || !strings.Contains(err.Error(), "pack:root") {
+		t.Fatalf("expected pack:root error, got %v", err)
+	}
+}
+
+func TestComposeConfigFiles_UnsupportedExtension(t *testing.T) {
+	t.Parallel()
+	files := []domain.ConfigFile{
+		{Filename: "a.yaml", Content: []byte("k: v"), SourcePack: "alpha"},
+		{Filename: "a.yaml", Content: []byte("k: w"), SourcePack: "beta"},
+	}
+	_, _, err := composeConfigFiles(files)
+	if err == nil || !strings.Contains(err.Error(), "unsupported settings file extension") {
+		t.Fatalf("expected unsupported-extension error, got %v", err)
 	}
 }

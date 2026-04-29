@@ -59,7 +59,8 @@ func (e *updateEnv) update(t *testing.T, name string, opts ...func(*PackUpdateRe
 		o(&req)
 	}
 	e.out.Reset()
-	return PackUpdate(context.Background(), req, &e.out)
+	// Keep stdout in the helper so line-shape assertions stay cheap.
+	return PackUpdate(context.Background(), req, &e.out, nil)
 }
 
 func TestPackUpdate_Link_VerifiesTarget(t *testing.T) {
@@ -383,14 +384,19 @@ func TestPackUpdate_All(t *testing.T) {
 
 // TestPackUpdate_All_PreservesOrder pins the user-visible ordering contract
 // of the parallel update loop: regardless of which goroutine finishes first,
-// (1) results[] must match os.ReadDir's alphabetical order and (2) each
-// pack's stdout output must appear in that same order in the combined
-// writer. The race detector running over the normal suite catches any loose
-// shared-state access in the parallel phase.
+// results[] must match os.ReadDir's alphabetical order. The race detector
+// running over the normal suite catches any loose shared-state access in
+// the parallel phase.
 //
 // Five packs against the production packUpdateConcurrency cap of 3 forces
 // at least two packs to wait on the semaphore, so the test exercises the
 // queue path even when individual mock-git calls return instantly.
+//
+// Note: stdout line order is NOT guaranteed in parallel mode. Workers write
+// terminal lines through a shared mutex for line atomicity, not order
+// preservation, so lines appear in completion order rather than alphabetical.
+// This test asserts that every pack's terminal line appears, not their
+// relative position.
 func TestPackUpdate_All_PreservesOrder(t *testing.T) {
 	t.Parallel()
 	e := newUpdateEnv(t)
@@ -425,7 +431,8 @@ func TestPackUpdate_All_PreservesOrder(t *testing.T) {
 		t.Fatalf("expected %d results, got %d", installCount, len(results))
 	}
 
-	// Input order is alphabetical (os.ReadDir guarantee).
+	// results[] order is alphabetical (os.ReadDir guarantee, preserved by
+	// the serial post-phase iteration).
 	for i, want := range names {
 		if results[i].Name != want {
 			t.Errorf("results[%d].Name = %q, want %q (full order: %v)",
@@ -433,22 +440,12 @@ func TestPackUpdate_All_PreservesOrder(t *testing.T) {
 		}
 	}
 
-	// Stdout lines for each pack should appear in input order. Each
-	// clone pack update prints one "Updated (clone): <name>" line.
+	// Every pack's terminal "Updated (clone)" line must appear in the
+	// output (order is no longer guaranteed — see test docstring).
 	out := e.out.String()
-	var positions []int
 	for _, n := range names {
-		idx := strings.Index(out, "Updated (clone): "+n)
-		if idx < 0 {
+		if !strings.Contains(out, "Updated (clone): "+n) {
 			t.Errorf("missing 'Updated (clone): %s' in output:\n%s", n, out)
-			continue
-		}
-		positions = append(positions, idx)
-	}
-	for i := 1; i < len(positions); i++ {
-		if positions[i] < positions[i-1] {
-			t.Errorf("stdout for %s appears before %s (positions=%v):\n%s",
-				names[i], names[i-1], positions, out)
 		}
 	}
 }
@@ -490,7 +487,7 @@ func TestPackUpdate_All_PreCancelledContextMarksAllCancelled(t *testing.T) {
 	results, err := PackUpdate(ctx, PackUpdateRequest{
 		ConfigDir: e.configDir,
 		All:       true,
-	}, &e.out)
+	}, &e.out, nil)
 	if err != nil {
 		t.Fatalf("PackUpdate: %v", err)
 	}
@@ -722,7 +719,7 @@ func TestPackUpdate_Copy_PreferencesCarryForward(t *testing.T) {
 	results, _ := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir, Name: "pref-pack",
 		NowFn: func() time.Time { return fixedNow },
-	}, &out)
+	}, &out, nil)
 	if results[0].Status != StatusUpdated {
 		t.Fatalf("status = %q", results[0].Status)
 	}
@@ -788,7 +785,7 @@ func TestPackUpdate_Copy_CopiesRepoRelativeExtras(t *testing.T) {
 	results, _ := PackUpdate(context.Background(), PackUpdateRequest{
 		ConfigDir: configDir, Name: "copy-pack",
 		NowFn: func() time.Time { return fixedNow },
-	}, &out)
+	}, &out, nil)
 	if results[0].Status != StatusUpdated {
 		t.Fatalf("status = %q", results[0].Status)
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -31,6 +32,15 @@ type packItemDetail struct {
 	entry     app.PackShowEntry
 	fileSizes map[string]int64
 	sizeState asyncState
+
+	// Per-row pack-update streaming state. Zero-valued (asyncPending,
+	// empty type/err, zero clearAt) when no update activity is happening —
+	// the row renders without any update suffix in that case. State machine
+	// driven by packProgressMsg / packUpdatedMsg / packRowClearMsg.
+	updateState   asyncState // pending → loading → loaded/error → pending after auto-clear
+	updateType    string     // last phase/status hint for this row
+	updateErr     error      // populated for asyncError rows
+	updateClearAt time.Time  // wall time at which a terminal row's decoration auto-clears
 }
 
 type asyncState int
@@ -124,6 +134,32 @@ type packsModel struct {
 	// identically (no indicator). Keyed by pack name; value is the
 	// recorded drift entry for tooltip-style hover or future surfacing.
 	driftSet map[string]app.PackDrift
+
+	// activeUpdate is non-nil while a streaming pack update is in flight.
+	// Set on packUpdateReadyMsg; cleared on packUpdatedMsg. Carries the
+	// channels readNextEvent reads from plus the cancel handle the Esc
+	// handler invokes.
+	activeUpdate *activeUpdate
+
+	// activeInstall is non-nil while a streaming pack install is in flight.
+	// Set on packInstallReadyMsg; cleared on packInstalledMsg. Drives the
+	// status-bar spinner + phase text and the Esc cancellation handler.
+	// Install has no per-row decoration (the pack doesn't exist yet) so
+	// progress lives entirely in the status bar.
+	activeInstall *activeInstall
+
+	// Spinner for in-flight rows. A single shared frame across all rows in
+	// asyncLoading state — simpler than per-row, visually fine because all
+	// rows step in unison. Ticks only while activeUpdate is non-nil.
+	spinner spinner.Model
+
+	// Batch counters for the status-bar summary line during update --all.
+	// batchTotal is set when the operation kicks off (1 for single-pack
+	// updates, len(items) for --all); batchInFlight and batchDone update
+	// per progress event. Pending = batchTotal - batchDone - batchInFlight.
+	batchTotal    int
+	batchInFlight int
+	batchDone     int
 }
 
 // packVersionsCacheEntry holds one pack's version-discovery state. The state
@@ -137,11 +173,15 @@ type packVersionsCacheEntry struct {
 }
 
 func newPacksModel(configDir string) packsModel {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(clrLoading)
 	return packsModel{
 		configDir:     configDir,
 		installedMap:  map[string]int{},
 		versionsCache: map[string]packVersionsCacheEntry{},
 		driftSet:      map[string]app.PackDrift{},
+		spinner:       sp,
 	}
 }
 
@@ -283,6 +323,15 @@ func (m packsModel) Update(msg tea.Msg) (packsModel, tea.Cmd) {
 			m.loadErr = fmt.Sprintf("load packs: %v", msg.err)
 			return m, nil
 		}
+		// Preserve per-row update decorations across reload — without this,
+		// the loadPacks fired by packUpdatedMsg wipes the terminal state
+		// (✓ updated, ✗ error, etc.) before the user can see it.
+		prevUpdate := map[string]packItemDetail{}
+		for _, it := range m.items {
+			if it.updateState != asyncPending {
+				prevUpdate[it.entry.Name] = it
+			}
+		}
 		m.items = msg.items
 		m.installedMap = map[string]int{}
 		if m.versionsCache == nil {
@@ -290,6 +339,12 @@ func (m packsModel) Update(msg tea.Msg) (packsModel, tea.Cmd) {
 		}
 		for i, item := range m.items {
 			m.installedMap[item.entry.Name] = i
+			if prev, ok := prevUpdate[item.entry.Name]; ok {
+				m.items[i].updateState = prev.updateState
+				m.items[i].updateType = prev.updateType
+				m.items[i].updateErr = prev.updateErr
+				m.items[i].updateClearAt = prev.updateClearAt
+			}
 		}
 		m.rebuildList()
 
@@ -803,11 +858,16 @@ func (m packsModel) viewListPanel(width, height int) string {
 		// a status view, not just a name list. Lookup is cheap (one map
 		// hit per row); rendered dim so it doesn't fight the pack name.
 		row := cursor + nameStyle.Render(li.name)
+		var updateSuffix string
 		if li.installed {
 			if idx, ok := m.installedMap[li.name]; ok {
 				if pin := m.items[idx].entry.PinLabel(); pin != "" {
 					row += "  " + dimStyle.Render(pin)
 				}
+				// Update-streaming decoration: spinner while in flight,
+				// ✓/✗ glyph when terminal, blank when idle. Lives after
+				// the pin so users read name → pin → drift → status.
+				updateSuffix = formatRowSuffix(m.items[idx], m.spinner)
 			}
 		}
 		// Drift indicator. Drawn after the pin label so users get a
@@ -817,6 +877,9 @@ func (m packsModel) viewListPanel(width, height int) string {
 		// attention is wanted" without escalating to red error styling.
 		if _, drifted := m.driftSet[li.name]; drifted {
 			row += "  " + driftStyle.Render("↑")
+		}
+		if updateSuffix != "" {
+			row += "  " + updateSuffix
 		}
 		lines = append(lines, row)
 	}
@@ -878,6 +941,12 @@ func (m packsModel) viewPackInfoPanel(width, height int) string {
 		}
 		if installedAt := formatInstallDate(item.entry.InstalledAt); installedAt != "" {
 			sb.WriteString(infoField("Installed", installedAt, labelW, innerW) + "\n")
+		}
+		// Checked is the last time we probed the remote — refreshes on every
+		// pack-update probe regardless of outcome. Material evidence the
+		// user just verified the pack even when content was already current.
+		if checkedAt := formatInstallDate(item.entry.LastCheckedAt); checkedAt != "" {
+			sb.WriteString(infoField("Checked", checkedAt, labelW, innerW) + "\n")
 		}
 		src := sourceForMethod(item.entry.Method, item.entry.Origin, item.entry.Path)
 		if item.entry.Method == config.MethodLink || item.entry.Method == config.MethodCopy || item.entry.Method == config.MethodLocal {
@@ -1457,6 +1526,11 @@ func truncateText(s string, width int) string {
 	return string(runes[:max(width-1, 1)]) + "…"
 }
 
+// formatInstallDate renders the lockfile's RFC3339 InstalledAt as a
+// minute-precision local-time string. The timestamp refreshes whenever
+// pack-update writes new content to disk (StatusUpdated path), so a
+// recently-updated pack shows a recent timestamp — material evidence
+// that the user's update actually changed the pack.
 func formatInstallDate(raw string) string {
 	if raw == "" {
 		return ""
@@ -1465,5 +1539,5 @@ func formatInstallDate(raw string) string {
 	if err != nil {
 		return ""
 	}
-	return t.Format("2006-01-02")
+	return t.Local().Format("2006-01-02 15:04")
 }

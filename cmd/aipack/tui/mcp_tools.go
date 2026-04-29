@@ -35,6 +35,18 @@ type mcpProbeRequest struct {
 	seq int
 }
 
+// activeMCPProbe tracks an in-flight streaming MCP probe. The rootModel
+// holds at most one; readNextProbeEvent uses the channels until eventCh
+// closes and the terminal mcpProbeResultMsg lands. cancel propagates ctx
+// cancellation when the user dismisses the picker (esc) or refreshes (r).
+type activeMCPProbe struct {
+	key      mcpProbeKey
+	seq      int
+	eventCh  <-chan mcp.ProbeEvent
+	resultCh <-chan mcpProbeStreamResult
+	cancel   context.CancelFunc
+}
+
 func newMCPProbeKey(packRoot, serverName string) mcpProbeKey {
 	return mcpProbeKey{packRoot: packRoot, server: serverName}
 }
@@ -155,21 +167,41 @@ func (m rootModel) openMCPToolPicker() (tea.Model, tea.Cmd) {
 
 	if ok {
 		m.mcpProbeActive = nil
+		m.cancelInflightMCPProbe()
 		m.picker = &p
 		return m, nil
 	}
 
 	// First open — fire async probe. Show loading indicator while it runs.
+	m.cancelInflightMCPProbe()
 	m.mcpProbeSeq++
 	m.mcpProbeActive = &mcpProbeRequest{key: key, seq: m.mcpProbeSeq}
 	p.loading = true
 	m.picker = &p
-	return m, probeMCPServer(m.ctx, packInfo.Root, n.id, item.cfg.Params, key, m.mcpProbeSeq)
+	return m, tea.Batch(
+		probeMCPServer(m.ctx, packInfo.Root, n.id, item.cfg.Params, key, m.mcpProbeSeq),
+		p.spinner.Tick,
+	)
+}
+
+// cancelInflightMCPProbe cancels any active streaming probe context. The
+// producer goroutine drains its small event buffer, sends its terminal
+// result, closes eventCh, and exits — but the rootModel ignores those
+// stale messages because mcpProbeStream is now nil (or about to be).
+func (m *rootModel) cancelInflightMCPProbe() {
+	if m.mcpProbeStream == nil {
+		return
+	}
+	m.mcpProbeStream.cancel()
+	m.mcpProbeStream = nil
 }
 
 // probeMCPServer starts an MCP server subprocess, performs the JSON-RPC
-// handshake, and calls tools/list. Returns the discovered tool names via
-// mcpProbeResultMsg. Runs as a Bubbletea Cmd (goroutine).
+// handshake, and calls tools/list. Streams mcp.probe.* events through an
+// in-memory channel for the picker's loading view; the terminal result
+// arrives as mcpProbeResultMsg once eventCh closes. Inventory-read /
+// inventory-parse / param-expand failures bypass streaming entirely —
+// they don't run the probe — and surface as a synchronous result.
 func probeMCPServer(ctx context.Context, packRoot, serverName string, params map[string]string, key mcpProbeKey, seq int) tea.Cmd {
 	return func() tea.Msg {
 		path := filepath.Join(packRoot, "mcp", serverName+".json")
@@ -187,14 +219,46 @@ func probeMCPServer(ctx context.Context, packRoot, serverName string, params map
 			return mcpProbeResultMsg{key: key, seq: seq, err: err}
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		result, err := mcp.Probe(probeCtx, expanded)
-		if err != nil {
-			return mcpProbeResultMsg{key: key, seq: seq, err: err}
+		eventCh := make(chan mcp.ProbeEvent, 8)
+		resultCh := make(chan mcpProbeStreamResult, 1)
+		go func() {
+			defer cancel()
+			defer close(eventCh)
+			defer func() {
+				if r := recover(); r != nil {
+					resultCh <- mcpProbeStreamResult{err: fmt.Errorf("panic: %v", r)}
+				}
+			}()
+			result, err := mcp.Probe(probeCtx, expanded, nil, eventCh)
+			if err != nil {
+				resultCh <- mcpProbeStreamResult{err: err}
+				return
+			}
+			names := result.ToolNames()
+			slices.Sort(names)
+			resultCh <- mcpProbeStreamResult{tools: names}
+		}()
+		return mcpProbeReadyMsg{
+			key:      key,
+			seq:      seq,
+			eventCh:  eventCh,
+			resultCh: resultCh,
+			cancel:   cancel,
 		}
-		names := result.ToolNames()
-		slices.Sort(names)
-		return mcpProbeResultMsg{key: key, seq: seq, tools: names}
+	}
+}
+
+// readNextProbeEvent waits for the next event on eventCh; on close, drains
+// resultCh and returns the terminal mcpProbeResultMsg. Re-issued by the
+// rootModel after each mcpProbeProgressMsg so the stream drains at TUI pace.
+func readNextProbeEvent(eventCh <-chan mcp.ProbeEvent, resultCh <-chan mcpProbeStreamResult, key mcpProbeKey, seq int) tea.Cmd {
+	return func() tea.Msg {
+		e, ok := <-eventCh
+		if ok {
+			return mcpProbeProgressMsg{key: key, seq: seq, event: e}
+		}
+		res := <-resultCh
+		return mcpProbeResultMsg{key: key, seq: seq, tools: res.tools, err: res.err}
 	}
 }
 
@@ -208,6 +272,57 @@ func saveMCPInventoryToPack(packRoot, serverName string, tools []string) tea.Cmd
 	}
 }
 
+// handleMCPProbeReady stores the streaming channels on the rootModel and
+// kicks off the read loop plus the picker spinner tick.
+func (m rootModel) handleMCPProbeReady(msg mcpProbeReadyMsg) (tea.Model, tea.Cmd) {
+	if m.mcpProbeActive == nil || m.mcpProbeActive.seq != msg.seq || m.mcpProbeActive.key != msg.key {
+		// Stale or cancelled before ready — drain the goroutine quietly.
+		msg.cancel()
+		return m, nil
+	}
+	m.mcpProbeStream = &activeMCPProbe{
+		key:      msg.key,
+		seq:      msg.seq,
+		eventCh:  msg.eventCh,
+		resultCh: msg.resultCh,
+		cancel:   msg.cancel,
+	}
+	if m.picker != nil && m.picker.id == dialogMCPToolPicker {
+		// Reset phase so the loading view renders the generic "Probing..."
+		// label until the first event lands. Pre-event default avoids a
+		// flash of stale phase text from a previous probe.
+		m.picker.phase = ""
+		m.picker.phaseDetail = ""
+	}
+	cmds := []tea.Cmd{readNextProbeEvent(msg.eventCh, msg.resultCh, msg.key, msg.seq)}
+	if m.picker != nil && m.picker.loading {
+		cmds = append(cmds, m.picker.spinner.Tick)
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// handleMCPProbeProgress updates the picker's phase label from the latest
+// event and re-issues the read loop. Stale events (probe was superseded
+// by a refresh) are dropped.
+func (m rootModel) handleMCPProbeProgress(msg mcpProbeProgressMsg) (tea.Model, tea.Cmd) {
+	if m.mcpProbeStream == nil || m.mcpProbeStream.seq != msg.seq || m.mcpProbeStream.key != msg.key {
+		return m, nil
+	}
+	if m.picker != nil && m.picker.loading && m.picker.id == dialogMCPToolPicker {
+		// Skip listing_tools when connected is already showing — they
+		// fire back-to-back from the transport functions, and connected
+		// carries the richer "Connected via <transport>. Listing tools..."
+		// label that subsumes the bare listing_tools UX.
+		if msg.event.Phase == mcp.ProbePhaseListingTools && m.picker.phase == mcp.ProbePhaseConnected {
+			// Keep current phase. Still re-issue the read loop below.
+		} else {
+			m.picker.phase = msg.event.Phase
+			m.picker.phaseDetail = msg.event.Transport
+		}
+	}
+	return m, readNextProbeEvent(m.mcpProbeStream.eventCh, m.mcpProbeStream.resultCh, m.mcpProbeStream.key, m.mcpProbeStream.seq)
+}
+
 // handleMCPProbeResult processes the async probe result while the tri-state
 // picker dialog is open. On success the picker items are rebuilt from the
 // live tool list; on failure the static fallback items (already populated)
@@ -217,11 +332,14 @@ func (m rootModel) handleMCPProbeResult(msg mcpProbeResultMsg) (tea.Model, tea.C
 		return m, nil
 	}
 	m.mcpProbeActive = nil
+	m.mcpProbeStream = nil
 
 	if m.picker == nil || m.picker.id != dialogMCPToolPicker {
 		return m, nil
 	}
 	m.picker.loading = false
+	m.picker.phase = ""
+	m.picker.phaseDetail = ""
 
 	if msg.err != nil {
 		m.picker.loadingErr = msg.err.Error()

@@ -211,7 +211,7 @@ func runSync(ctx context.Context, eng *engine.Engine, configDir, profileName, pr
 			Force:      true,
 			Yes:        true,
 			Quiet:      true,
-		}, reg, io.Discard, io.Discard)
+		}, reg, nil, nil)
 		warnings = append(warnings, syncWarnings...)
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, warnings: warnings, err: err}
@@ -232,7 +232,21 @@ func saveSyncConfig(configDir string, cfg config.SyncConfig) tea.Cmd {
 	}
 }
 
-// installPack installs a pack from a path, URL, or registry name.
+// activeInstall tracks an in-flight streaming pack install on packsModel.
+// Lives between packInstallReadyMsg and packInstalledMsg. Esc invokes cancel.
+type activeInstall struct {
+	eventCh  <-chan app.PackInstallEvent
+	resultCh <-chan packInstallResult
+	cancel   context.CancelFunc
+	packName string
+	phase    app.PackInstallPhase // most recent phase, drives status-bar text
+}
+
+// installPack starts a streaming pack-install. The Cmd's first message is a
+// packInstallReadyMsg carrying the channels and cancellation handle; the
+// TUI loop then drives readNextInstallEvent until eventCh closes and the
+// terminal packInstalledMsg arrives.
+//
 // For bare names (no path separators, not an existing path), it performs a
 // registry lookup — matching the CLI's `pack install` behavior. ref is
 // the user-picked git ref spec (e.g. "1.2.3" semver, "my-pack/v0.3.0"
@@ -256,12 +270,15 @@ func installPack(ctx context.Context, configDir, input, ref string, with domain.
 			regReq := app.RegistryListRequest{ConfigDir: configDir}
 			entry, err := app.RegistryLookup(regReq, input)
 			if err != nil {
-				fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{ConfigDir: configDir}, io.Discard)
+				fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{ConfigDir: configDir}, nil)
 				if fetchErr == nil {
 					entry, err = app.RegistryLookup(regReq, input)
 				}
 			}
 			if err != nil {
+				// Pre-stream failure (registry lookup) bypasses the
+				// streaming infrastructure — return the terminal msg
+				// directly so the TUI clears the transient status.
 				return packInstalledMsg{name: input, err: fmt.Errorf("registry lookup for %q: %w", input, err)}
 			}
 			req.URL = entry.Repo
@@ -275,12 +292,44 @@ func installPack(ctx context.Context, configDir, input, ref string, with domain.
 			req.PackPath = input
 			req.Link = true
 		}
-		err := app.PackInstall(ctx, req, io.Discard)
+		opCtx, cancel := context.WithCancel(ctx)
+		eventCh := make(chan app.PackInstallEvent, 16)
+		resultCh := make(chan packInstallResult, 1)
+		req.Events = eventCh
 		name := req.Name
 		if name == "" {
 			name = filepath.Base(input)
 		}
-		return packInstalledMsg{name: name, err: err}
+		go func() {
+			defer cancel()
+			defer close(eventCh)
+			defer func() {
+				if r := recover(); r != nil {
+					resultCh <- packInstallResult{name: name, err: fmt.Errorf("panic: %v", r)}
+				}
+			}()
+			err := app.PackInstall(opCtx, req, nil)
+			resultCh <- packInstallResult{name: name, err: err}
+		}()
+		return packInstallReadyMsg{
+			eventCh:  eventCh,
+			resultCh: resultCh,
+			cancel:   cancel,
+			packName: name,
+		}
+	}
+}
+
+// readNextInstallEvent waits for the next event on eventCh. When eventCh
+// closes it drains resultCh and returns a terminal packInstalledMsg.
+func readNextInstallEvent(eventCh <-chan app.PackInstallEvent, resultCh <-chan packInstallResult) tea.Cmd {
+	return func() tea.Msg {
+		e, ok := <-eventCh
+		if ok {
+			return packInstallProgressMsg{event: e}
+		}
+		res := <-resultCh
+		return packInstalledMsg{name: res.name, err: res.err}
 	}
 }
 
@@ -325,7 +374,7 @@ func approveBundled(configDir string, results []app.PackUpdateResult, approved d
 				names = append(names, r.Name)
 			}
 		}
-		err := app.PackApproveBundled(configDir, names, approved, io.Discard)
+		err := app.PackApproveBundled(configDir, names, approved, nil)
 		return bundledApprovedMsg{err: err}
 	}
 }
@@ -378,11 +427,31 @@ func loadPackVersions(ctx context.Context, configDir, name string) tea.Cmd {
 // unreachable remote doesn't stall the render loop.
 const tuiVersionLoadTimeout = 5 * time.Second
 
-// updatePack updates one or all installed packs. ref is the value passed
-// to PackUpdateRequest.Ref: empty preserves the current pin (default
-// update behavior), any ref spec moves the pin (semver, commit, branch,
-// namespaced tag), and "latest" clears the pin entirely (the unpin
-// sentinel honored by app.PackUpdate).
+// packUpdateResult carries the terminal outcome of a streaming pack update
+// from the worker goroutine to the TUI loop. Sent on resultCh once
+// app.PackUpdate returns (or panics, recovered and reported via err).
+type packUpdateResult struct {
+	results []app.PackUpdateResult
+	err     error
+}
+
+// activeUpdate tracks an in-flight streaming pack update on packsModel.
+// Lives between packUpdateReadyMsg (operation start) and packUpdatedMsg
+// (terminal). The Esc handler invokes cancel.
+type activeUpdate struct {
+	eventCh  <-chan app.PackUpdateEvent
+	resultCh <-chan packUpdateResult
+	cancel   context.CancelFunc
+	packName string
+}
+
+// updatePack starts a streaming pack-update. The Cmd's first message is a
+// packUpdateReadyMsg carrying the channels and cancellation handle; the
+// TUI loop then drives readNextEvent until eventCh closes and the terminal
+// packUpdatedMsg arrives. Empty `name` plus all=true updates every pack;
+// otherwise updates the named one. ref follows PackUpdateRequest.Ref
+// semantics: empty preserves the current pin, any ref spec moves the pin,
+// "latest" clears the pin entirely.
 func updatePack(ctx context.Context, configDir, name string, all bool, ref string, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
 		req := app.PackUpdateRequest{
@@ -392,8 +461,41 @@ func updatePack(ctx context.Context, configDir, name string, all bool, ref strin
 			Ref:       ref,
 			With:      with,
 		}
-		results, err := app.PackUpdate(ctx, req, io.Discard)
-		return packUpdatedMsg{name: name, results: results, err: err}
+		opCtx, cancel := context.WithCancel(ctx)
+		eventCh := make(chan app.PackUpdateEvent, 32)
+		resultCh := make(chan packUpdateResult, 1)
+		go func() {
+			defer cancel()
+			defer close(eventCh)
+			defer func() {
+				if r := recover(); r != nil {
+					resultCh <- packUpdateResult{err: fmt.Errorf("panic: %v", r)}
+				}
+			}()
+			results, err := app.PackUpdate(opCtx, req, nil, eventCh)
+			resultCh <- packUpdateResult{results: results, err: err}
+		}()
+		return packUpdateReadyMsg{
+			eventCh:  eventCh,
+			resultCh: resultCh,
+			cancel:   cancel,
+			packName: name,
+		}
+	}
+}
+
+// readNextEvent waits for the next event on eventCh. When eventCh closes it
+// drains resultCh and returns a terminal packUpdatedMsg. The TUI re-issues
+// this Cmd after each packProgressMsg to keep the stream draining at TUI
+// pace; events flow through whole so per-row rendering reads them directly.
+func readNextEvent(eventCh <-chan app.PackUpdateEvent, resultCh <-chan packUpdateResult, packName string) tea.Cmd {
+	return func() tea.Msg {
+		e, ok := <-eventCh
+		if ok {
+			return packProgressMsg{event: e}
+		}
+		res := <-resultCh
+		return packUpdatedMsg{name: packName, results: res.results, err: res.err}
 	}
 }
 
@@ -551,7 +653,7 @@ func installFromSearch(ctx context.Context, configDir, name, profile string) tea
 			Add:       true,
 			Profile:   profile,
 		}
-		err = app.PackInstall(ctx, req, io.Discard)
+		err = app.PackInstall(ctx, req, nil)
 		return searchInstallMsg{name: name, err: err}
 	}
 }

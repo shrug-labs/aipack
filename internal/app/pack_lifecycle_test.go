@@ -377,7 +377,7 @@ func TestPackInstallMissing(t *testing.T) {
 		})
 
 		var captured PackInstallRequest
-		fake := func(_ context.Context, req PackInstallRequest, w io.Writer) error {
+		fake := func(_ context.Context, req PackInstallRequest, _ io.Writer) error {
 			captured = req
 			writePackManifest(t, filepath.Join(req.ConfigDir, "packs", req.Name), req.Name)
 			return nil
@@ -411,7 +411,7 @@ func TestPackInstallMissing(t *testing.T) {
 			},
 		})
 		var captured PackInstallRequest
-		fake := func(_ context.Context, req PackInstallRequest, w io.Writer) error {
+		fake := func(_ context.Context, req PackInstallRequest, _ io.Writer) error {
 			captured = req
 			writePackManifest(t, filepath.Join(req.ConfigDir, "packs", req.Name), req.Name)
 			return nil
@@ -438,7 +438,7 @@ func TestPackInstallMissing(t *testing.T) {
 			"gamma": {Repo: "https://example.com/c.git", Ref: "main"},
 		})
 		calls := 0
-		fake := func(_ context.Context, req PackInstallRequest, w io.Writer) error {
+		fake := func(_ context.Context, req PackInstallRequest, _ io.Writer) error {
 			calls++
 			if req.Name == "beta" {
 				return fmt.Errorf("simulated failure")

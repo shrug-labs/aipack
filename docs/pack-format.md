@@ -301,7 +301,7 @@ params:
 
 Syntax: `{env:VAR}`
 
-Environment variable references are resolved at sync time: the placeholder is replaced with the literal value from the process environment. If the variable is not set, the MCP server is skipped entirely and a warning is emitted.
+Environment variable references are resolved at sync time: the placeholder is replaced with the literal value from the process environment. In MCP server definitions, an unset variable skips that server and emits a warning. In harness settings templates, unresolved references fail sync so aipack does not write broken config.
 
 Pack authors write `{env:VAR}` once; the sync engine resolves it identically for all harnesses.
 
@@ -309,7 +309,7 @@ Pack authors write `{env:VAR}` once; the sync engine resolves it identically for
 
 Syntax: `{pack:root}`
 
-Resolves to the absolute path of the installed pack directory. Use this in MCP server `command` arrays and `env` values to reference bundled extras — scripts, binaries, data files — that ship with the pack.
+Resolves to the absolute path of the installed pack directory. Use this in MCP server `command` arrays, MCP `env` values, and harness settings templates to reference bundled extras — scripts, binaries, data files — that ship with the pack.
 
 ```json
 {
@@ -320,7 +320,7 @@ Resolves to the absolute path of the installed pack directory. Use this in MCP s
 }
 ```
 
-Pack root references only work in MCP server definitions. They are resolved at sync time after the pack is installed, so the path is always the concrete location on the user's machine.
+Pack root references are resolved at sync time after the pack is installed, so the path is always the concrete location on the user's machine.
 
 ### 5.4 Expansion order
 
@@ -420,9 +420,9 @@ The manifest declares which files are settings (merged with engine-managed keys)
 }
 ```
 
-**Settings** are base templates containing non-managed user preferences (theme, editor config, non-MCP permissions). The sync engine merges them with computed managed keys (MCP configs, tool permissions, content paths). Multiple packs can contribute settings for the same harness — they are deep-merged in profile order, with the first pack winning at leaf value conflicts.
+**Settings** are base templates containing non-managed user preferences (theme, editor config, non-MCP permissions). String values in settings templates may use `{env:*}`, `{params.*}`, and `{pack:root}` references; aipack expands them before merging. The sync engine then merges settings with computed managed keys (MCP configs, tool permissions, content paths). Multiple packs can contribute settings for the same harness — they are deep-merged in profile order, with the first pack winning at leaf value conflicts. Both the expansion and the merge parse and re-marshal the file, so comments and source key ordering are not preserved in the rendered output.
 
-**Plugins** are pure copies — synced as-is regardless of `--skip-settings`. Same-name plugin files from different packs produce an error.
+**Plugins** are pure copies — synced as-is regardless of `--skip-settings`. Template references are not expanded in plugins; if you need `{env:*}` or `{pack:root}` substitution, declare the file under `harness_settings` instead. Same-name plugin files from different packs produce an error.
 
 ## 8. Composition
 

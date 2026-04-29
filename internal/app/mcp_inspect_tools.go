@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"io"
+
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -38,6 +40,19 @@ type MCPInspectToolsRequest struct {
 	Timeout     time.Duration
 	Save        bool
 	DryRun      bool // preview --save without writing
+	// Stdout (when non-nil) receives live probe phase output during each
+	// server probe. The human-mode single-server CLI passes os.Stdout so
+	// users see live phase progression; JSON mode, --all, and the TUI
+	// consumer pass nil.
+	Stdout io.Writer
+
+	// OnResult is invoked by each worker as soon as its probe completes.
+	// Lets the CLI print per-server summary lines inline (rather than
+	// dumping everything after the whole batch). Optional — nil skips
+	// inline reporting. Called from worker goroutines, so the callback
+	// must be safe for concurrent invocation; the human-mode CLI passes
+	// a closure that writes through a mutex-protected writer.
+	OnResult func(MCPInspectToolsServerResult)
 }
 
 // MCPServerInfo describes an MCP server discovered from installed packs.
@@ -160,6 +175,9 @@ func RunMCPInspectTools(ctx context.Context, req MCPInspectToolsRequest) MCPInsp
 	concurrency := max(1, min(len(targets), 4))
 	parallelBounded(ctx, len(targets), concurrency, func(i int) {
 		results[i] = probeOneInspectTarget(ctx, targets[i], req, timeout, loadParams)
+		if req.OnResult != nil {
+			req.OnResult(results[i])
+		}
 	})
 	result.Results = results
 
@@ -240,7 +258,7 @@ func probeOneInspectTarget(
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	probeResult, probeErr := mcp.Probe(probeCtx, expanded)
+	probeResult, probeErr := mcp.Probe(probeCtx, expanded, req.Stdout, nil)
 	cancel()
 
 	if probeErr != nil {

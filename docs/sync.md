@@ -65,7 +65,7 @@ All managed files — content and config — go through unified diff classificat
 
 `--force` controls conflict resolution. Stale managed files (no longer in the profile) are always removed — sync converges to the profile's desired state. User-modified stale files prompt for confirmation (or require `--yes`).
 
-Config files are computed from pack base configs. `--skip-settings` skips harness settings files but plugins (e.g., `oh-my-opencode.json`) and generated MCP configs (e.g., Cline) still sync.
+Config files are computed from pack base configs. String values in harness settings templates expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. `--skip-settings` skips harness settings files but plugins (e.g., `oh-my-opencode.json`) and generated MCP configs (e.g., Cline) still sync.
 
 The ledger records which pack contributed each managed file (`source_pack` field), enabling save round-trips.
 

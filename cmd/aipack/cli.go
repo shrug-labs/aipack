@@ -80,6 +80,16 @@ func validateProjectDirForScope(scope domain.Scope, projectDir *string) error {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool, extraOpts ...kong.Option) int {
 	goCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Once the first SIGINT/SIGTERM has cancelled the context, restore
+	// the default signal handler so a second ctrl-C forces termination.
+	// Without this, signal.NotifyContext keeps diverting subsequent
+	// signals to a no-op (the context is already cancelled), leaving the
+	// user no way to abort a stuck operation that's not respecting ctx
+	// (e.g. an MCP probe whose subprocess won't die promptly).
+	go func() {
+		<-goCtx.Done()
+		stop()
+	}()
 
 	globals := &Globals{
 		Stdout:   stdout,

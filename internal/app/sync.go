@@ -243,7 +243,9 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		if n, merr := eng.MigrateOldLedgers(req.ConfigDir, req.Scope, req.ProjectDir, req.Harnesses, managedRootsMap); merr != nil {
 			warnings = append(warnings, warningf("ledger-migration", "%v", merr))
 		} else if n > 0 {
-			fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
+			if stderr != nil {
+				fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
+			}
 		}
 	}
 
@@ -291,7 +293,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 			Yes:        req.Yes,
 			DryRun:     req.DryRun,
 			Quiet:      req.Quiet,
-			Stderr:     stderr,
+			Stdout:     stderr,
 			Req:        planReq,
 			StripFuncs: stripFuncs,
 		}
@@ -299,6 +301,9 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		applyWarnings, err := eng.ApplyPlan(ctx, plan, applyReq, managedRoots)
 		warnings = append(warnings, applyWarnings...)
 		if err != nil {
+			if stderr != nil {
+				fmt.Fprintf(stderr, "error: sync: %v\n", err)
+			}
 			return SyncResult{}, warnings, wrapFatalSync("apply plan", err)
 		}
 
@@ -319,6 +324,9 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		if req.Verbose {
 			summary, err := PlanWithDiffs(ctx, eng, profile, req, reg)
 			if err != nil {
+				if stderr != nil {
+					fmt.Fprintf(stderr, "error: sync: %v\n", err)
+				}
 				return SyncResult{}, warnings, wrapFatalSync("compute verbose dry-run diffs", err)
 			}
 			printDryRunVerbose(summary, stdout)
@@ -346,10 +354,15 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 }
 
 // printDrift compares the new per-pack inventories against the previous
-// state in the lockfile and renders a drift report for each pack that
+// state in the lockfile and emits typed drift events for each pack that
 // changed or has broken profile references. Non-fatal on any error.
-func printDrift(out io.Writer, configDir string, profile domain.Profile, newInventories map[string]domain.PackInventory) {
-	if out == nil {
+//
+// Events follow the sync.drift.* taxonomy: a per-pack `report_starting`
+// event, optional `section` events for each populated subsection, then
+// per-item `removed_referenced` / `removed` / `added` / `changed` events
+// with sub-detail events for skill and MCP context.
+func printDrift(stdout io.Writer, configDir string, profile domain.Profile, newInventories map[string]domain.PackInventory) {
+	if stdout == nil {
 		return
 	}
 	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
@@ -371,11 +384,11 @@ func printDrift(out io.Writer, configDir string, profile domain.Profile, newInve
 		}
 		meta, hasMeta := lf.Packs[name]
 		if !hasMeta || meta.Resolved == nil {
-			continue // first sync for this pack — no baseline to diff against
+			continue
 		}
 		diff := engine.DiffInventory(name, *meta.Resolved, newInv)
 		oldRef := meta.Resolved.CapturedAtRef
-		engine.FormatDriftReport(out, diff, brokenByPack[name], oldRef, meta.Ref)
+		engine.EmitDriftReport(stdout, diff, brokenByPack[name], oldRef, meta.Ref)
 	}
 }
 
@@ -476,7 +489,7 @@ func reconcileMCPLedger(ctx context.Context, eng *engine.Engine, plan domain.Pla
 	return nil
 }
 
-func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, w io.Writer) {
+func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, stdout io.Writer) {
 	cfgDir := config.FallbackConfigDir(req.ConfigDir, req.Home)
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
@@ -505,11 +518,22 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 		return domain.NewLedger()
 	}
 
+	emitOp := func(verb, path string) {
+		if stdout == nil {
+			return
+		}
+		if verb == "skip-conflict" {
+			fmt.Fprintf(stdout, "skip(conflict): %s\n", path)
+			return
+		}
+		fmt.Fprintf(stdout, "%s: %s\n", verb, path)
+	}
+
 	var changes, skips int
 	for _, wr := range plan.Writes {
 		kind, err := classifyWriteKind(eng, wr, ledgerForPath(wr.Dst))
 		if err != nil {
-			fmt.Fprintf(w, "create: %s\n", wr.Dst)
+			emitOp("create", wr.Dst)
 			changes++
 			continue
 		}
@@ -517,17 +541,17 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 		case domain.DiffIdentical:
 			skips++
 		case domain.DiffCreate:
-			fmt.Fprintf(w, "create: %s\n", wr.Dst)
+			emitOp("create", wr.Dst)
 			changes++
 		case domain.DiffManaged:
-			fmt.Fprintf(w, "update: %s\n", wr.Dst)
+			emitOp("update", wr.Dst)
 			changes++
 		case domain.DiffConflict:
 			if req.Force {
-				fmt.Fprintf(w, "overwrite: %s\n", wr.Dst)
+				emitOp("overwrite", wr.Dst)
 				changes++
 			} else {
-				fmt.Fprintf(w, "skip(conflict): %s\n", wr.Dst)
+				emitOp("skip-conflict", wr.Dst)
 				skips++
 			}
 		}
@@ -539,22 +563,24 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 		case domain.DiffIdentical:
 			skips++
 		case domain.DiffCreate:
-			fmt.Fprintf(w, "create: %s\n", cp.Dst)
+			emitOp("create", cp.Dst)
 			changes++
 		case domain.DiffManaged:
-			fmt.Fprintf(w, "update: %s\n", cp.Dst)
+			emitOp("update", cp.Dst)
 			changes++
 		case domain.DiffConflict:
 			if req.Force {
-				fmt.Fprintf(w, "overwrite: %s\n", cp.Dst)
+				emitOp("overwrite", cp.Dst)
 				changes++
 			} else {
-				fmt.Fprintf(w, "skip(conflict): %s\n", cp.Dst)
+				emitOp("skip-conflict", cp.Dst)
 				skips++
 			}
 		}
 	}
-	fmt.Fprintf(w, "plan: %d file ops from %s, %d identical\n", changes, counts.String(), skips)
+	if stdout != nil {
+		fmt.Fprintf(stdout, "plan: %d file ops from %s, %d identical\n", changes, counts.String(), skips)
+	}
 }
 
 // classifyCopyKind aggregates per-file classifications for a CopyAction into a
@@ -794,7 +820,9 @@ func processEmbeddedRegistries(profile domain.Profile, cfgDir string, stderr io.
 		return append(warnings, warningf("registry", "indexing embedded registry entries: %v", err))
 	}
 
-	fmt.Fprintf(stderr, "Merged and indexed %d pack(s) from embedded registries\n", len(merged.Packs))
+	if stderr != nil {
+		fmt.Fprintf(stderr, "Merged and indexed %d pack(s) from embedded registries\n", len(merged.Packs))
+	}
 	return warnings
 }
 
@@ -827,15 +855,19 @@ func saveEmbeddedRegistry(configDir string, reg config.Registry) error {
 	return nil
 }
 
-func printDryRunVerbose(summary PlanSummary, w io.Writer) {
+func printDryRunVerbose(summary PlanSummary, stdout io.Writer) {
 	total := summary.TotalChanges()
 	if total == 0 {
-		fmt.Fprintln(w, "plan: no changes")
+		if stdout != nil {
+			fmt.Fprintln(stdout, "plan: no changes")
+		}
 		return
 	}
-	fmt.Fprintf(w, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d settings, %d mcp, %d stale)\n",
-		total, summary.NumRules, summary.NumWorkflows, summary.NumAgents, summary.NumSkills,
-		summary.NumSettings, summary.NumMCP, summary.NumStale)
+	if stdout != nil {
+		fmt.Fprintf(stdout, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d settings, %d mcp, %d stale)\n",
+			total, summary.NumRules, summary.NumWorkflows, summary.NumAgents, summary.NumSkills,
+			summary.NumSettings, summary.NumMCP, summary.NumStale)
+	}
 
 	for _, op := range summary.Ops {
 		label := string(op.Kind)
@@ -843,22 +875,25 @@ func printDryRunVerbose(summary PlanSummary, w io.Writer) {
 			label = string(op.DiffKind)
 		}
 		if op.SourcePack != "" {
-			fmt.Fprintf(w, "\n%s: %s [%s]\n", label, op.Dst, op.SourcePack)
-		} else {
-			fmt.Fprintf(w, "\n%s: %s\n", label, op.Dst)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "\n%s: %s [%s]\n", label, op.Dst, op.SourcePack)
+			}
+		} else if stdout != nil {
+			fmt.Fprintf(stdout, "\n%s: %s\n", label, op.Dst)
 		}
 		if len(op.MergeOps) > 0 {
-			printMergeOps(op.MergeOps, w)
+			printMergeOps(op.MergeOps, stdout)
 		}
-		if op.Diff != "" {
-			fmt.Fprintln(w, op.Diff)
+		if op.Diff != "" && stdout != nil {
+			fmt.Fprintln(stdout, op.Diff)
 		}
 	}
 }
 
-// printMergeOps formats merge operations for verbose dry-run output.
-func printMergeOps(ops []engine.MergeOp, w io.Writer) {
+func printMergeOps(ops []engine.MergeOp, stdout io.Writer) {
 	for _, m := range ops {
-		fmt.Fprintf(w, "  merge %s: %s\n", m.Action, m.Key)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "  merge %s: %s\n", m.Action, m.Key)
+		}
 	}
 }

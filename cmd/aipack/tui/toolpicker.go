@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/shrug-labs/aipack/internal/mcp"
 )
 
 // triState is the per-item state for the MCP tool picker.
@@ -55,6 +58,17 @@ type toolPicker struct {
 	// loading is cleared and items are populated with live tools (or the
 	// static fallback on error).
 	loading bool
+	// phase tracks the most recent mcp.probe.* event type during loading
+	// so the loading view can show "starting", "listing tools", etc.
+	// instead of a generic "Probing server..." message.
+	phase mcp.ProbePhase
+	// phaseDetail carries the Detail field from the most recent probe
+	// event (e.g. transport label "stdio" / "streamable-http" for
+	// mcp.probe.starting). Rendered next to the phase label.
+	phaseDetail string
+	// spinner is the animated loading indicator. Ticks only while loading
+	// is true; the rootModel routes spinner.TickMsg to its Update.
+	spinner spinner.Model
 	// loadingErr is set when the probe fails. Displayed as a dim note
 	// above the static-fallback tool list so users know the inventory may
 	// be stale.
@@ -105,10 +119,14 @@ func pickerMaxVisible(termHeight int) int {
 // newToolPicker creates an MCP tool picker. User-visible states cycle
 // off → ask → auto → off on <space>.
 func newToolPicker(id, title string, items []toolPickerItem) toolPicker {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(clrLoading)
 	return toolPicker{
-		id:    id,
-		title: title,
-		items: items,
+		id:      id,
+		title:   title,
+		items:   items,
+		spinner: sp,
 	}
 }
 
@@ -234,7 +252,7 @@ func (p toolPicker) Update(msg tea.Msg) (toolPicker, tea.Cmd) {
 func (p toolPicker) View() string {
 	content := dialogTitleStyle.Render(p.title) + "\n\n"
 	if p.loading {
-		content += "  " + statusDotLoading + " Probing server...\n"
+		content += "  " + p.spinner.View() + " " + probePhaseLabel(p.phase, p.phaseDetail) + "\n"
 		content += "\n" + dimStyle.Render("  esc:cancel") + "\n"
 		return dialogBorderStyle.Width(max(lipgloss.Width(content)+6, 30)).Render(content)
 	}
@@ -372,6 +390,27 @@ func sendToolPickerResult(id string, confirmed bool, items []toolPickerItem) tea
 func sendToolPickerRefresh(id string) tea.Cmd {
 	return func() tea.Msg {
 		return toolPickerRefreshMsg{id: id}
+	}
+}
+
+// probePhaseLabel turns a probe phase + transport identifier into a human-
+// readable phase label for the picker's loading view.
+func probePhaseLabel(p mcp.ProbePhase, transport string) string {
+	switch p {
+	case mcp.ProbePhaseStarting:
+		if transport != "" {
+			return fmt.Sprintf("Connecting via %s...", transport)
+		}
+		return "Connecting..."
+	case mcp.ProbePhaseConnected:
+		return "Connected. Listing tools..."
+	case mcp.ProbePhaseListingTools:
+		return "Listing tools..."
+	default:
+		// Pre-event default (probe just kicked off, no event observed yet)
+		// or unknown event type. Generic message preserves the historical
+		// "Probing server..." behavior.
+		return "Probing server..."
 	}
 }
 

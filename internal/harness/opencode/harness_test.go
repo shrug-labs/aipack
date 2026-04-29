@@ -256,6 +256,46 @@ func TestPlan_Settings_WithMCP(t *testing.T) {
 	}
 }
 
+func TestPlan_Settings_BaseOnly(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Profile: domain.Profile{
+			BaseSettings: domain.SettingsBundle{
+				domain.HarnessOpenCode: []domain.ConfigFile{
+					{Filename: BaseSettingsFile, Content: []byte(`{"theme":"dark"}`)},
+				},
+			},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(f.Settings) != 1 {
+		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
+	}
+	var root map[string]any
+	if err := json.Unmarshal(f.Settings[0].Desired, &root); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	if root["theme"] != "dark" {
+		t.Fatalf("theme = %v, want dark", root["theme"])
+	}
+
+	ctx.SkipSettings = true
+	f, err = Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan with skip settings: %v", err)
+	}
+	if len(f.Settings) != 0 || len(f.MCP) != 0 {
+		t.Fatalf("skip-settings base-only actions: settings=%d mcp=%d, want none", len(f.Settings), len(f.MCP))
+	}
+}
+
 func TestPlan_Settings_ResolvesEnvAndSkipsMissing(t *testing.T) {
 	t.Setenv("HOME", "/tmp/test-home")
 	t.Setenv("MON_ENV_FILE", "/tmp/mon.env")

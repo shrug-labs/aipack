@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -57,7 +56,7 @@ func (e *contractEnv) sync(profile domain.Profile) SyncResult {
 		Force: true,
 		Yes:   true,
 		Quiet: true,
-	}, e.registry, io.Discard, io.Discard)
+	}, e.registry, nil, nil)
 	if err != nil {
 		e.t.Fatalf("sync: %v", err)
 	}

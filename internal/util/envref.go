@@ -12,6 +12,9 @@ import (
 // {params.*} is canonical; {param.*} and {global.*} are legacy synonyms.
 var ParamRefPrefixes = []string{"{params.", "{param.", "{global."}
 
+// EnvRefPrefix is the literal opener for environment variable references.
+const EnvRefPrefix = "{env:"
+
 // ParamRef represents a parsed parameter reference like {params.key}.
 type ParamRef struct {
 	Prefix string // one of ParamRefPrefixes
@@ -94,7 +97,7 @@ type EnvRef struct {
 func WalkEnvRefs(s string, fn func(ref EnvRef) error) error {
 	offset := 0
 	for {
-		idx := strings.Index(s[offset:], "{env:")
+		idx := strings.Index(s[offset:], EnvRefPrefix)
 		if idx < 0 {
 			return nil
 		}
@@ -108,7 +111,7 @@ func WalkEnvRefs(s string, fn func(ref EnvRef) error) error {
 			return fmt.Errorf("unterminated env reference at offset %d", start)
 		}
 		end := start + endRel + 1
-		name := strings.TrimSpace(s[start+len("{env:") : start+endRel])
+		name := strings.TrimSpace(s[start+len(EnvRefPrefix) : start+endRel])
 		if name == "" {
 			return fmt.Errorf("empty env reference at offset %d", start)
 		}
@@ -123,7 +126,7 @@ func WalkEnvRefs(s string, fn func(ref EnvRef) error) error {
 // named environment variable. Returns an error if a reference is unterminated,
 // empty, or the variable is not set.
 func ExpandEnvRefs(s string) (string, error) {
-	if !strings.Contains(s, "{env:") {
+	if !strings.Contains(s, EnvRefPrefix) {
 		return s, nil
 	}
 	// Collect refs first, then replace right-to-left to preserve offsets.

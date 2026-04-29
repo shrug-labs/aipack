@@ -47,7 +47,7 @@ func TestCountProfileContent_StableAcrossHarnesses(t *testing.T) {
 			},
 		},
 		MCPServers: []domain.MCPServer{
-			{Name: "atlassian"}, {Name: "bitbucket"}, {Name: "dope"}, {Name: "oci"},
+			{Name: "atlassian"}, {Name: "bitbucket"}, {Name: "tickets"}, {Name: "cloud"},
 		},
 	}
 

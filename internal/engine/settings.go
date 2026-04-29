@@ -13,8 +13,8 @@ import (
 // Base settings templates (HarnessSettings) are deep-merged across packs with
 // first-pack-wins semantics. Drop-in plugins (HarnessPlugins) are NOT merged —
 // same-filename collisions across packs produce an error.
-func (e *Engine) loadHarnessSettings(packs []config.ResolvedPack, settingsPacks []string, harnesses []domain.Harness) (domain.SettingsBundle, []domain.Warning, error) {
-	return e.loadHarnessFileBundle(packs, settingsPacks, harnesses, func(m config.PackManifest, h string) []string {
+func (e *Engine) loadHarnessSettings(packs []config.ResolvedPack, settingsPacks []string, harnesses []domain.Harness, params map[string]string) (domain.SettingsBundle, []domain.Warning, error) {
+	return e.loadHarnessFileBundle(packs, settingsPacks, harnesses, params, func(m config.PackManifest, h string) []string {
 		return m.Configs.HarnessSettings[h]
 	}, func(m config.PackManifest, h string) []string {
 		return m.Configs.HarnessPlugins[h]
@@ -32,15 +32,27 @@ type SettingsDecision struct {
 //
 // Decision tree:
 //
-//	!skipSettings && (hasMCP || hasManagedContent) → EmitSettings (full merge)
-//	skipSettings && (hasMCP || hasManagedContent) → EmitMCP with MergeMode (managed keys only)
-//	neither → nothing
-func ClassifySettings(hasMCP, hasManagedContent, skipSettings bool) SettingsDecision {
-	if !skipSettings && (hasMCP || hasManagedContent) {
-		return SettingsDecision{EmitSettings: true}
+//	skipSettings && hasManagedKeys              → EmitMCP with MergeMode (managed keys only)
+//	!skipSettings && (hasManagedKeys || hasBase) → EmitSettings (full merge)
+//	otherwise                                    → nothing
+//
+// hasManagedKeys covers anything aipack injects (MCP servers, agent
+// registrations, managed permissions). hasBase is true when at least one pack
+// contributes a base settings template — emitting it is the only way the
+// template's user preferences (theme, model, history) reach disk.
+//
+// Under skipSettings, base templates are intentionally suppressed: the user
+// asked aipack to not touch their settings, so we only write managed keys
+// when there's something managed to write.
+func ClassifySettings(hasManagedKeys, hasBase, skipSettings bool) SettingsDecision {
+	if skipSettings {
+		if hasManagedKeys {
+			return SettingsDecision{EmitMCP: true, MergeMode: true}
+		}
+		return SettingsDecision{}
 	}
-	if skipSettings && (hasMCP || hasManagedContent) {
-		return SettingsDecision{EmitMCP: true, MergeMode: true}
+	if hasManagedKeys || hasBase {
+		return SettingsDecision{EmitSettings: true}
 	}
 	return SettingsDecision{}
 }
@@ -54,6 +66,7 @@ func (e *Engine) loadHarnessFileBundle(
 	packs []config.ResolvedPack,
 	settingsPacks []string,
 	harnesses []domain.Harness,
+	params map[string]string,
 	settingsFor func(config.PackManifest, string) []string,
 	pluginsFor func(config.PackManifest, string) []string,
 	label string,
@@ -81,6 +94,10 @@ func (e *Engine) loadHarnessFileBundle(
 				b, err := e.FS.ReadFile(filepath.Join(p.Root, "configs", string(h), f))
 				if err != nil {
 					return nil, warnings, fmt.Errorf("loading harness %s %s/%s: %w", label, h, f, err)
+				}
+				b, err = expandConfigFileRefs(params, p.Root, domain.ConfigFile{Filename: f, Content: b, SourcePack: p.Name})
+				if err != nil {
+					return nil, warnings, fmt.Errorf("expanding harness %s %s/%s from pack %q: %w", label, h, f, p.Name, err)
 				}
 				entry, ok := byFilename[f]
 				if !ok {
@@ -115,7 +132,7 @@ func (e *Engine) loadHarnessFileBundle(
 			})
 		}
 
-		// --- Plugins: no merge, collision = error ---
+		// --- Plugins: no merge, no template-ref expansion, collision = error ---
 		pluginSeen := map[string]string{} // filename → source pack
 		for _, p := range contributing {
 			for _, f := range pluginsFor(p.Manifest, string(h)) {

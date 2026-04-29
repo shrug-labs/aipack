@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/signal"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -121,6 +123,7 @@ type rootModel struct {
 	pendingReturnToTools bool                   // when true, bulk menu returns to tool picker instead of tree
 	mcpProbeSeq          int                    // monotonic sequence for async MCP probe requests
 	mcpProbeActive       *mcpProbeRequest       // currently active MCP probe tied to the open picker
+	mcpProbeStream       *activeMCPProbe        // streaming channels for the in-flight probe (M-toolpicker)
 	width                int
 	height               int
 
@@ -209,10 +212,35 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleToolPickerRefresh(msg)
 	}
 
-	// MCP probe result arrives while the tool picker overlay is open.
-	// Handle before the overlay intercept so non-key messages aren't swallowed.
+	// MCP probe streaming + result. All three message types are handled
+	// before the overlay intercept so non-key messages aren't swallowed by
+	// the picker's KeyMsg-only Update.
+	if msg, ok := msg.(mcpProbeReadyMsg); ok {
+		return m.handleMCPProbeReady(msg)
+	}
+	if msg, ok := msg.(mcpProbeProgressMsg); ok {
+		return m.handleMCPProbeProgress(msg)
+	}
 	if msg, ok := msg.(mcpProbeResultMsg); ok {
 		return m.handleMCPProbeResult(msg)
+	}
+
+	// Spinner ticks must be handled before any overlay intercept; the
+	// picker overlay's Update only handles KeyMsg, so a tick reaching it
+	// would be silently dropped and the animation would freeze.
+	if msg, ok := msg.(spinner.TickMsg); ok {
+		var cmds []tea.Cmd
+		if m.packs.activeUpdate != nil || m.packs.activeInstall != nil {
+			var cmd tea.Cmd
+			m.packs.spinner, cmd = m.packs.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		if m.picker != nil && m.picker.loading {
+			var cmd tea.Cmd
+			m.picker.spinner, cmd = m.picker.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	// Preview overlay message handling.
@@ -350,6 +378,23 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "esc":
+			// Cancel an in-flight pack update before any navigation/exit
+			// dispatch. This is the most common Esc context during updates
+			// — the user triggers update from the list panel and the focus
+			// stays there, so without this pre-check Esc would route into
+			// startExit (save-on-exit dialog) instead of cancelling.
+			if m.activeTab == tabPacks && m.packs.activeUpdate != nil {
+				m.packs.activeUpdate.cancel()
+				return m, nil
+			}
+			// Same priority for an in-flight install — Esc kills it before
+			// any navigation/exit dispatch. ctx cancellation surfaces as
+			// context.Canceled in packInstalledMsg.err and the handler
+			// renders "install cancelled" instead of "install error".
+			if m.activeTab == tabPacks && m.packs.activeInstall != nil {
+				m.packs.activeInstall.cancel()
+				return m, nil
+			}
 			// Let sub-models handle esc for internal navigation.
 			if m.activeTab == tabProfiles && m.profiles.focus != panelProfiles {
 				break
@@ -634,9 +679,38 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			loadProfiles(m.cfg.ConfigDir, m.cfg.SyncCfg),
 		)
 	}
+	if msg, ok := msg.(packInstallReadyMsg); ok {
+		m.packs.activeInstall = &activeInstall{
+			eventCh:  msg.eventCh,
+			resultCh: msg.resultCh,
+			cancel:   msg.cancel,
+			packName: msg.packName,
+		}
+		m.statusText = dimStyle.Render(packsInstallStatus(m.packs))
+		return m, tea.Batch(
+			readNextInstallEvent(msg.eventCh, msg.resultCh),
+			m.packs.spinner.Tick,
+		)
+	}
+	if msg, ok := msg.(packInstallProgressMsg); ok {
+		if m.packs.activeInstall != nil {
+			m.packs.activeInstall.phase = msg.event.Phase
+			m.statusText = dimStyle.Render(packsInstallStatus(m.packs))
+		}
+		var cmds []tea.Cmd
+		if ai := m.packs.activeInstall; ai != nil {
+			cmds = append(cmds, readNextInstallEvent(ai.eventCh, ai.resultCh))
+		}
+		return m, tea.Batch(cmds...)
+	}
 	if msg, ok := msg.(packInstalledMsg); ok {
+		m.packs.activeInstall = nil
 		if msg.err != nil {
-			m.statusText = errorStyle.Render(fmt.Sprintf("install error: %v", msg.err))
+			if errors.Is(msg.err, context.Canceled) {
+				m.statusText = dimStyle.Render("install cancelled")
+			} else {
+				m.statusText = errorStyle.Render(fmt.Sprintf("install error: %v", msg.err))
+			}
 		} else {
 			m.statusText = dimStyle.Render(fmt.Sprintf("installed %s", msg.name))
 			m.pendingPackCursorHint = msg.name
@@ -660,9 +734,69 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			loadProfiles(m.cfg.ConfigDir, m.cfg.SyncCfg),
 		)
 	}
+	if msg, ok := msg.(packUpdateReadyMsg); ok {
+		m.packs.activeUpdate = &activeUpdate{
+			eventCh:  msg.eventCh,
+			resultCh: msg.resultCh,
+			cancel:   msg.cancel,
+			packName: msg.packName,
+		}
+		// Seed the batch counters: an empty packName signals --all
+		// (every installed pack is in scope); otherwise a single pack.
+		if msg.packName == "" {
+			m.packs.batchTotal = len(m.packs.items)
+		} else {
+			m.packs.batchTotal = 1
+		}
+		m.packs.batchInFlight = 0
+		m.packs.batchDone = 0
+		m.statusText = dimStyle.Render(packsBatchStatus(m.packs))
+		return m, tea.Batch(
+			readNextEvent(msg.eventCh, msg.resultCh, msg.packName),
+			m.packs.spinner.Tick,
+		)
+	}
+	if msg, ok := msg.(packProgressMsg); ok {
+		var clearCmd tea.Cmd
+		m.packs, clearCmd = m.packs.applyProgress(msg.event)
+		// Refresh the batch summary after every progress event; the auto-clear
+		// for status text rides the existing scheduleStatusClear logic.
+		if m.packs.activeUpdate != nil {
+			m.statusText = dimStyle.Render(packsBatchStatus(m.packs))
+		}
+		var cmds []tea.Cmd
+		if au := m.packs.activeUpdate; au != nil {
+			cmds = append(cmds, readNextEvent(au.eventCh, au.resultCh, au.packName))
+		}
+		if clearCmd != nil {
+			cmds = append(cmds, clearCmd)
+		}
+		return m, tea.Batch(cmds...)
+	}
+	if msg, ok := msg.(packRowClearMsg); ok {
+		m.packs = m.packs.applyRowClear(msg)
+		return m, nil
+	}
 	if msg, ok := msg.(packUpdatedMsg); ok {
+		m.packs.activeUpdate = nil
+		m.packs.batchTotal = 0
+		m.packs.batchInFlight = 0
+		m.packs.batchDone = 0
+		// Translate cancelled results into per-row state before any other
+		// status-text branching — the cancellation decoration lingers and
+		// the "Cancelled update" status text supersedes the per-pack
+		// summary so the user sees the cancel acknowledgment.
+		m.packs = m.packs.applyCancellation(msg.results)
+		// Reconcile any non-cancelled rows still stuck in asyncLoading —
+		// catches code paths that returned a result without emitting a
+		// terminal event (unknown install methods, etc.) so the spinner
+		// doesn't freeze. Returns auto-clear cmds for the rows it touched.
+		var reconcileCmds []tea.Cmd
+		m.packs, reconcileCmds = m.packs.reconcileFromResults(msg.results)
 		if msg.err != nil {
 			m.statusText = errorStyle.Render(fmt.Sprintf("update error: %v", msg.err))
+		} else if anyCancelled(msg.results) {
+			m.statusText = dimStyle.Render("Cancelled update")
 		} else if len(msg.results) > 0 {
 			if msg.name != "" {
 				m.pendingPackCursorHint = msg.name
@@ -696,7 +830,15 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			m.statusText = dimStyle.Render(strings.Join(summaries, ", "))
+			// If any pack actually changed, remind the user to sync — pack
+			// content updated but harnesses won't see it until the next
+			// sync. When everything was up-to-date or a no-op, show the
+			// per-pack summary instead.
+			if anyPackUpdated(msg.results) {
+				m.statusText = dimStyle.Render("Updates complete. Press s to sync to harnesses.")
+			} else {
+				m.statusText = dimStyle.Render(strings.Join(summaries, ", "))
+			}
 			if len(items) > 0 {
 				m.pendingUpdateResults = msg.results
 				d := newChecklistDialog(dialogBundledCandidates, "New bundled content found:", items)
@@ -705,7 +847,9 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusText = dimStyle.Render("updated")
 		}
-		return m, loadPacks(m.cfg.ConfigDir)
+		cmds := []tea.Cmd{loadPacks(m.cfg.ConfigDir)}
+		cmds = append(cmds, reconcileCmds...)
+		return m, tea.Batch(cmds...)
 	}
 	if msg, ok := msg.(bundledApprovedMsg); ok {
 		if msg.err != nil {
@@ -931,6 +1075,7 @@ func (m rootModel) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 // additional pickers that could reuse toolPicker as a sub-model.
 func (m rootModel) handleToolPickerResult(msg toolPickerResultMsg) (tea.Model, tea.Cmd) {
 	m.picker = nil
+	m.cancelInflightMCPProbe()
 	switch msg.id {
 	case dialogMCPToolPicker:
 		return m.handleMCPToolPickerResult(msg)
@@ -959,9 +1104,13 @@ func (m rootModel) handleToolPickerRefresh(_ toolPickerRefreshMsg) (tea.Model, t
 	packInfo := item.tree.packs[n.packIdx]
 	key := newMCPProbeKey(packInfo.Root, n.id)
 
+	m.cancelInflightMCPProbe()
 	m.mcpProbeSeq++
 	m.mcpProbeActive = &mcpProbeRequest{key: key, seq: m.mcpProbeSeq}
-	return m, probeMCPServer(m.ctx, packInfo.Root, n.id, item.cfg.Params, key, m.mcpProbeSeq)
+	return m, tea.Batch(
+		probeMCPServer(m.ctx, packInfo.Root, n.id, item.cfg.Params, key, m.mcpProbeSeq),
+		m.picker.spinner.Tick,
+	)
 }
 
 func (m rootModel) handleDialogResult(msg dialogResultMsg) (tea.Model, tea.Cmd) {
@@ -1173,8 +1322,7 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 				m.dialog = &d
 				return m, nil
 			}
-			d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems()).
-				withConfirmRow("install...")
+			d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems())
 			m.dialog = &d
 			return m, nil
 		}
@@ -1198,8 +1346,7 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 		} else {
 			m.pendingInstallVersion = msg.value
 		}
-		d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems()).
-			withConfirmRow("install...")
+		d := newChecklistDialog(dialogInstallWith, "Include bundled content:", bundledCheckItems())
 		m.dialog = &d
 		return m, nil
 	case dialogInstallWith:
@@ -1207,10 +1354,13 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 		version := m.pendingInstallVersion
 		m.pendingInstallInput = ""
 		m.pendingInstallVersion = ""
-		var with domain.BundledSet
-		if msg.confirmed {
-			with = parseBundledChecklist(msg.values)
+		// Esc cancels the whole install. Treating empty selection as
+		// "install with nothing bundled" silently kicked off work the
+		// user thought they were aborting.
+		if !msg.confirmed {
+			return m, nil
 		}
+		with := parseBundledChecklist(msg.values)
 		m.statusText = dimStyle.Render("installing pack...")
 		return m, installPack(m.ctx, m.cfg.ConfigDir, input, version, with)
 	case dialogPackRemove:
@@ -1225,10 +1375,13 @@ func (m rootModel) handlePackDialogResult(msg dialogResultMsg) (tea.Model, tea.C
 		all := m.pendingUpdateAll
 		m.pendingUpdatePackName = ""
 		m.pendingUpdateAll = false
-		var with domain.BundledSet
-		if msg.confirmed {
-			with = parseBundledChecklist(msg.values)
+		// Esc cancels the whole update. Treating empty selection as
+		// "update with nothing bundled" silently kicked off work the
+		// user thought they were aborting.
+		if !msg.confirmed {
+			return m, nil
 		}
+		with := parseBundledChecklist(msg.values)
 		if all {
 			m.statusText = dimStyle.Render("updating all packs...")
 		} else {
@@ -2257,8 +2410,14 @@ func (m rootModel) statusLine() string {
 		left = fmt.Sprintf(" %s %s (%d %s)", dot, item.name, packCount, noun)
 	}
 
-	// Right side: transient status message (or empty).
+	// Right side: transient status message (or empty). Prefix with the
+	// shared spinner glyph while a pack install is in flight — the install
+	// has no per-row decoration (the pack doesn't exist yet) so the
+	// status bar is the only material evidence the operation is alive.
 	right := m.statusText
+	if m.activeTab == tabPacks && m.packs.activeInstall != nil && right != "" {
+		right = m.packs.spinner.View() + " " + right
+	}
 
 	// Compose: left-align profile, right-align status.
 	leftW := lipgloss.Width(left)

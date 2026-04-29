@@ -63,6 +63,9 @@ func Update(ctx context.Context, currentVersion string, w io.Writer) error {
 	dir := filepath.Dir(realPath)
 	tmp, err := os.CreateTemp(dir, ".aipack-update-*")
 	if err != nil {
+		if os.IsPermission(err) {
+			return notWritableError(realPath, dir)
+		}
 		return fmt.Errorf("creating temp file in %s: %w", dir, err)
 	}
 	tmpPath := tmp.Name()
@@ -150,6 +153,38 @@ func Update(ctx context.Context, currentVersion string, w io.Writer) error {
 
 	fmt.Fprintf(w, "Updated to aipack %s\n", latest)
 	return nil
+}
+
+// notWritableError returns a recovery-suggesting error when the binary's
+// directory is not writable by the current user. This is the typical state
+// for Homebrew-managed installs on Intel Mac (/usr/local/bin is root-owned),
+// where users should run `brew upgrade aipack` rather than `aipack update`.
+// For non-brew prefixes the message is generic; the user is expected to know
+// how their binary was installed.
+func notWritableError(binaryPath, dir string) error {
+	if isBrewPrefix(dir) {
+		return fmt.Errorf(
+			"aipack at %s appears to be managed by Homebrew (directory %s is not user-writable). "+
+				"Run `brew upgrade aipack` instead. "+
+				"(aipack update only works for binaries installed via the install scripts into a user-writable directory.)",
+			binaryPath, dir)
+	}
+	return fmt.Errorf(
+		"aipack cannot self-update: directory %s is not writable by the current user. "+
+			"Use your package manager to upgrade, or reinstall via the install script into a user-writable directory like ~/.local/bin",
+		dir)
+}
+
+// isBrewPrefix reports whether dir matches a Homebrew default install prefix
+// on macOS. Intel brew uses /usr/local/bin (root-owned by default); Apple
+// Silicon brew uses /opt/homebrew/bin (user-owned, so this path is unlikely
+// to fail with permission denied — included for completeness).
+func isBrewPrefix(dir string) bool {
+	switch dir {
+	case "/usr/local/bin", "/opt/homebrew/bin":
+		return true
+	}
+	return false
 }
 
 // AssetName returns the expected release asset name for the current platform.

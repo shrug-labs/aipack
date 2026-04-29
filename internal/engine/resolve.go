@@ -50,7 +50,7 @@ func (e *Engine) Resolve(
 
 	// Step 4: Load harness settings for all harnesses.
 	allH := domain.AllHarnesses()
-	settings, settingsWarnings, err := e.loadHarnessSettings(resolvedPacks, settingsPacks, allH)
+	settings, settingsWarnings, err := e.loadHarnessSettings(resolvedPacks, settingsPacks, allH, profileCfg.Params)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}

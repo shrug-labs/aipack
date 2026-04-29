@@ -1,13 +1,14 @@
 package app
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -33,6 +34,7 @@ type PackUpdateRequest struct {
 	// dispatches. Set from either --ref or --version (CLI alias).
 	Ref              string
 	With             domain.BundledSet                                              // approve these categories for new content; nil = carry forward only
+	Quiet            bool                                                           // suppress phase lines; terminal outcome lines still print
 	RunGitFn         func(ctx context.Context, args ...string) error                // test injection; nil = real git
 	NowFn            func() time.Time                                               // test injection; nil = time.Now
 	GitHashFn        func(ctx context.Context, dir string) (string, error)          // test injection; nil = source.GitHeadHash
@@ -50,6 +52,61 @@ const (
 	StatusError    UpdateStatus = "error"
 )
 
+// PackUpdatePhase identifies a live step in a pack update operation. Empty
+// phase marks a terminal event, where Result or Err is populated.
+type PackUpdatePhase string
+
+const (
+	PackUpdatePhaseStarting       PackUpdatePhase = "starting"
+	PackUpdatePhaseCheckingRemote PackUpdatePhase = "checking_remote"
+	PackUpdatePhaseCloning        PackUpdatePhase = "cloning"
+	PackUpdatePhaseExtracting     PackUpdatePhase = "extracting"
+	PackUpdatePhaseMigrating      PackUpdatePhase = "migrating"
+)
+
+// PackUpdateEvent is emitted for TUI live progress. CLI callers pass nil and
+// read the human output written to stdout instead.
+type PackUpdateEvent struct {
+	Pack   string
+	Phase  PackUpdatePhase
+	Result *PackUpdateResult
+	Err    error
+}
+
+func emitPackUpdateEvent(events chan<- PackUpdateEvent, ev PackUpdateEvent) {
+	if events == nil {
+		return
+	}
+	events <- ev
+}
+
+func refreshedInstalledPackMeta(
+	base config.InstalledPackMeta,
+	origin string,
+	method string,
+	installedAt string,
+	ref string,
+	subPath string,
+	commitHash string,
+	contentPaths map[domain.PackCategory]string,
+	approved []domain.BundledCategory,
+	declined []domain.BundledCategory,
+	resolved *domain.PackInventory,
+) *config.InstalledPackMeta {
+	next := base
+	next.Origin = origin
+	next.Method = method
+	next.InstalledAt = installedAt
+	next.Ref = ref
+	next.SubPath = subPath
+	next.CommitHash = commitHash
+	next.ContentPaths = contentPaths
+	next.Approved = approved
+	next.Declined = declined
+	next.Resolved = resolved
+	return &next
+}
+
 // PackUpdateResult describes the outcome of updating a single pack.
 type PackUpdateResult struct {
 	Name              string             `json:"name"`
@@ -58,7 +115,10 @@ type PackUpdateResult struct {
 	Message           string             `json:"message"`
 	CommitHash        string             `json:"commit_hash,omitempty"`
 	BundledCandidates *BundledCandidates `json:"bundled_candidates,omitempty"` // non-nil when new bundled content is available
+}
 
+type packUpdateOutcome struct {
+	PackUpdateResult
 	manifest      *config.PackManifest
 	updatedMeta   *config.InstalledPackMeta
 	effective     domain.BundledSet // merged approval set (carried-forward + explicit --with)
@@ -77,12 +137,36 @@ type packUpdateContext struct {
 	gitHashFn        func(ctx context.Context, dir string) (string, error)
 	gitLsRemoteFn    func(ctx context.Context, repoURL, ref string) (string, error)
 	listRemoteTagsFn func(ctx context.Context, repoURL string) ([]string, error)
+	quiet            bool
 	stdout           io.Writer
+	stdoutMu         *sync.Mutex
+	events           chan<- PackUpdateEvent
+}
+
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	if w.w == nil {
+		return len(p), nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
+}
+
+func (uctx packUpdateContext) lockedStdout() io.Writer {
+	if uctx.stdout == nil {
+		return nil
+	}
+	return lockedWriter{mu: uctx.stdoutMu, w: uctx.stdout}
 }
 
 // newPackUpdateContext resolves defaults from the request and returns the
 // dependency context used by packUpdateOne.
-func newPackUpdateContext(req PackUpdateRequest, packs map[string]config.InstalledPackMeta, stdout io.Writer) packUpdateContext {
+func newPackUpdateContext(req PackUpdateRequest, packs map[string]config.InstalledPackMeta, stdout io.Writer, events chan<- PackUpdateEvent) packUpdateContext {
 	runGitFn := req.RunGitFn
 	if runGitFn == nil {
 		runGitFn = source.RunGit
@@ -114,12 +198,15 @@ func newPackUpdateContext(req PackUpdateRequest, packs map[string]config.Install
 		gitHashFn:        req.GitHashFn,
 		gitLsRemoteFn:    lsRemoteFn,
 		listRemoteTagsFn: listTagsFn,
+		quiet:            req.Quiet,
 		stdout:           stdout,
+		stdoutMu:         &sync.Mutex{},
+		events:           events,
 	}
 }
 
 // PackUpdate refreshes one or all installed packs.
-func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer) ([]PackUpdateResult, error) {
+func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer, events chan<- PackUpdateEvent) ([]PackUpdateResult, error) {
 	if req.ConfigDir == "" {
 		return nil, fmt.Errorf("config dir is required")
 	}
@@ -129,7 +216,7 @@ func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer) ([
 	if err != nil {
 		return nil, fmt.Errorf("loading lockfile: %w", err)
 	}
-	uctx := newPackUpdateContext(req, lf.Packs, stdout)
+	uctx := newPackUpdateContext(req, lf.Packs, stdout, events)
 
 	var names []string
 	if req.All {
@@ -152,52 +239,66 @@ func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer) ([
 		names = []string{req.Name}
 	}
 
-	// uctx.packs is a read-only map after construction; uctx is copied per
-	// goroutine to override stdout. The only shared filesystem contention
-	// point is the bare-clone cache, which source.UpdateBareCache serializes
-	// per cache key. The post-phase below stays on the main goroutine: the
-	// lockfile is a single shared file (one SaveLockfile call), and bundled
-	// installs write into shared configDir/{profiles,registries} where
+	// uctx.packs is a read-only map after construction. Workers share one
+	// stdout mutex so terminal outcome lines stay line-atomic under --all.
+	// The post-phase below stays on the main goroutine: the lockfile is a
+	// single shared file (one SaveLockfile call), and bundled installs
+	// write into shared configDir/{profiles,registries} where
 	// first-writer-wins on filename collisions must be stable.
-	buffers := make([]*bytes.Buffer, len(names))
-	results := make([]PackUpdateResult, len(names))
-	for i := range buffers {
-		buffers[i] = &bytes.Buffer{}
-	}
+	outcomes := make([]packUpdateOutcome, len(names))
 
 	dispatched := parallelBounded(ctx, len(names), packUpdateConcurrency, func(i int) {
-		local := uctx
-		local.stdout = buffers[i]
-		results[i] = packUpdateOne(ctx, names[i], local)
+		outcomes[i] = packUpdateOne(ctx, names[i], uctx)
+		// Workers hit by Esc-cancellation mid-clone return StatusError with
+		// the underlying ctx-canceled string ("context canceled", git wraps).
+		// Relabel them as "cancelled" so isCancelledResult / anyCancelled in
+		// the TUI render layer treat them as cancellations, not failures.
+		if errors.Is(ctx.Err(), context.Canceled) && outcomes[i].Status == StatusError {
+			outcomes[i].Message = "cancelled"
+		}
 	})
 	for j := dispatched; j < len(names); j++ {
-		results[j] = PackUpdateResult{
-			Name:    names[j],
-			Status:  StatusError,
-			Message: "cancelled",
+		outcomes[j] = packUpdateOutcome{
+			PackUpdateResult: PackUpdateResult{
+				Name:    names[j],
+				Status:  StatusError,
+				Message: "cancelled",
+			},
 		}
 	}
 
+	results := make([]PackUpdateResult, len(outcomes))
 	metaChanged := false
-	for i, r := range results {
-		if buffers[i].Len() > 0 {
-			_, _ = stdout.Write(buffers[i].Bytes())
-		}
-		if r.updatedMeta != nil {
-			lf.Packs[r.Name] = *r.updatedMeta
+	checkedAt := uctx.nowFn().UTC().Format(time.RFC3339)
+	for i, o := range outcomes {
+		results[i] = o.PackUpdateResult
+		if o.updatedMeta != nil {
+			lf.Packs[o.Name] = *o.updatedMeta
 			metaChanged = true
 		}
-		if (r.Status == StatusUpdated || r.Status == StatusUpToDate) && r.manifest != nil {
-			packDir := filepath.Join(uctx.packsDir, r.Name)
+		// Stamp LastCheckedAt for every dispatched probe — success,
+		// up-to-date, OR error. Material evidence to the user that they
+		// just probed this pack, even when content was already current.
+		// Skip never-dispatched cancellations (Status=="cancelled" with
+		// empty Method): we never actually probed those.
+		if o.Status != "" && o.Message != "cancelled" {
+			if meta, ok := lf.Packs[o.Name]; ok {
+				meta.LastCheckedAt = checkedAt
+				lf.Packs[o.Name] = meta
+				metaChanged = true
+			}
+		}
+		if (o.Status == StatusUpdated || o.Status == StatusUpToDate) && o.manifest != nil {
+			packDir := filepath.Join(uctx.packsDir, o.Name)
 			// Auto-install bundled profiles/registries from the carried-forward
 			// approval set when the user has expressed preferences (used --with
 			// at least once). Pre-preference installs only apply on explicit
 			// --with to avoid surprising users who never opted in.
 			bundledWith := req.With
-			if r.explicitPrefs {
-				bundledWith = r.effective
+			if o.explicitPrefs {
+				bundledWith = o.effective
 			}
-			installBundledContent(uctx.configDir, packDir, *r.manifest, bundledWith, stdout)
+			installBundledContent(uctx.configDir, packDir, *o.manifest, bundledWith, stdout)
 		}
 	}
 	if metaChanged {
@@ -208,20 +309,25 @@ func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer) ([
 	return results, nil
 }
 
-func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) PackUpdateResult {
+func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) packUpdateOutcome {
 	packDir := filepath.Join(uctx.packsDir, name)
 	meta, hasMeta := uctx.packs[name]
 	hasExplicitPrefs := len(meta.Approved) > 0 || len(meta.Declined) > 0
 
 	info, err := os.Lstat(packDir)
 	if err != nil {
-		return PackUpdateResult{Name: name, Status: StatusError, Message: fmt.Sprintf("not installed: %v", err)}
+		updateErr := fmt.Errorf("not installed: %w", err)
+		result := PackUpdateResult{Name: name, Status: StatusError, Message: fmt.Sprintf("not installed: %v", err)}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: updateErr})
+		return packUpdateOutcome{PackUpdateResult: result}
 	}
 
 	method := meta.Method
 	if method == "" {
 		method = inferInstallMethod(info.Mode())
 	}
+
+	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseStarting})
 
 	switch method {
 	case config.MethodClone:
@@ -241,9 +347,11 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 
 		switch refClass.Kind {
 		case source.RefSemver, source.RefPartialSemver:
-			resolved, err := resolveSemverRef(ctx, meta.Origin, uctx.ref, refClass, uctx.listRemoteTagsFn, uctx.stdout)
+			resolved, err := resolveSemverRef(ctx, meta.Origin, uctx.ref, refClass, uctx.listRemoteTagsFn, uctx.lockedStdout())
 			if err != nil {
-				return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+				result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+				return packUpdateOutcome{PackUpdateResult: result}
 			}
 			ref = resolved
 			uctx.ref = source.StripVersionPrefix(source.SemverFromRef(resolved))
@@ -284,12 +392,24 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 				}
 			}
 			if !needsReExtract {
+				if !uctx.quiet && uctx.stdout != nil {
+					uctx.stdoutMu.Lock()
+					fmt.Fprintf(uctx.stdout, "Checking remote: %s %s\n", name, meta.Origin)
+					uctx.stdoutMu.Unlock()
+				}
+				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseCheckingRemote})
 				remoteHash, lsErr := uctx.gitLsRemoteFn(ctx, meta.Origin, ref)
 				if lsErr == nil && remoteHash != "" && remoteHash == meta.CommitHash {
-					fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, util.ShortHash(meta.CommitHash))
-					return buildUpToDateResult(name, method,
+					if uctx.stdout != nil {
+						uctx.stdoutMu.Lock()
+						fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, util.ShortHash(meta.CommitHash))
+						uctx.stdoutMu.Unlock()
+					}
+					outcome := buildUpToDateResult(name, method,
 						"already at "+util.ShortHash(meta.CommitHash),
-						filepath.Join(packDir, "pack.json"), meta, uctx, hasExplicitPrefs)
+						filepath.Join(packDir, "pack.json"), packDir, meta.Ref, meta.CommitHash, meta, uctx, hasExplicitPrefs, false)
+					emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+					return outcome
 				}
 				// ls-remote failed or returned different hash — fall through to clone.
 			}
@@ -301,12 +421,22 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 		// subpath, and content_paths packs identically).
 		tmpDir, err := makePackTempDir(uctx.configDir, "clone-*")
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		defer os.RemoveAll(tmpDir)
 		cacheRefDir := source.CacheRefDir(uctx.configDir, meta.Origin)
+		if !uctx.quiet && uctx.stdout != nil {
+			uctx.stdoutMu.Lock()
+			fmt.Fprintf(uctx.stdout, "Cloning %s from %s\n", name, meta.Origin)
+			uctx.stdoutMu.Unlock()
+		}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseCloning})
 		if err := source.EnsureCloneWithRef(ctx, meta.Origin, tmpDir, ref, cacheRefDir, uctx.runGitFn); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		_ = source.UpdateBareCache(ctx, meta.Origin, tmpDir, source.GitCacheDir(uctx.configDir), uctx.runGitFn)
 
@@ -327,54 +457,48 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 			}
 			effective := approved.Merge(uctx.with)
 			if !rawCandidates.AnyApprovedBy(effective) {
-				candidates := rawCandidates.Filter(effective)
-				fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, util.ShortHash(newHash))
-				r := PackUpdateResult{Name: name, Method: method, Status: StatusUpToDate, Message: "already at " + util.ShortHash(newHash), CommitHash: newHash, BundledCandidates: candidates, manifest: &srcManifest, effective: effective, explicitPrefs: hasExplicitPrefs}
-				// Opportunistically backfill the Resolved baseline for
-				// pre-v0.22 installs that never had one. Reads from the
-				// already-installed packDir (same hash as srcRoot which is
-				// about to be deleted), so no network and no extra I/O.
-				var backfilled *domain.PackInventory
-				if meta.Resolved == nil {
-					backfilled = buildResolvedInventory(uctx.configDir, name, packDir, ref, uctx.nowFn(), uctx.stdout)
+				if uctx.stdout != nil {
+					uctx.stdoutMu.Lock()
+					fmt.Fprintf(uctx.stdout, "Up-to-date (clone): %s @ %s\n", name, util.ShortHash(newHash))
+					uctx.stdoutMu.Unlock()
 				}
-				// Persist metadata when --with adds new approvals, the
-				// user is explicitly moving the pin, or we just backfilled
-				// a missing inventory baseline.
-				if uctx.with != nil || pinMoved || backfilled != nil {
-					aList, dList := buildPrefsLists(effective)
-					updated := &config.InstalledPackMeta{
-						Origin: meta.Origin, Method: method, InstalledAt: meta.InstalledAt,
-						Ref: ref, SubPath: meta.SubPath, CommitHash: newHash, ContentPaths: meta.ContentPaths,
-						Approved: aList, Declined: dList,
-						Resolved: meta.Resolved,
-					}
-					if backfilled != nil {
-						updated.Resolved = backfilled
-					}
-					r.updatedMeta = updated
-				}
-				return r
+				outcome := buildUpToDateResult(name, method,
+					"already at "+util.ShortHash(newHash),
+					filepath.Join(srcRoot, "pack.json"), packDir, ref, newHash, meta, uctx, hasExplicitPrefs, pinMoved)
+				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+				return outcome
 			}
 		}
 
+		if !uctx.quiet && uctx.stdout != nil {
+			uctx.stdoutMu.Lock()
+			fmt.Fprintf(uctx.stdout, "Extracting %s\n", name)
+			uctx.stdoutMu.Unlock()
+		}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseExtracting})
 		staging, newManifest, err := extractPackContent(uctx.tempDir, srcRoot, meta.ContentPaths, name, tmpDir)
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		defer os.RemoveAll(staging)
 
 		candidates, effective, err := applyPreferenceFilter(staging, &newManifest, meta, uctx.with)
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
 		if err := util.ReplaceDirAtomic(packDir, staging); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
 		aList, dList := buildPrefsLists(effective)
-		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
+		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.lockedStdout())
 		msg := "updated"
 		if newHash != "" {
 			msg = util.ShortHash(newHash)
@@ -382,60 +506,84 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 				msg = util.ShortHash(meta.CommitHash) + " -> " + util.ShortHash(newHash)
 			}
 		}
-		fmt.Fprintf(uctx.stdout, "Updated (clone): %s %s\n", name, msg)
+		if uctx.stdout != nil {
+			uctx.stdoutMu.Lock()
+			fmt.Fprintf(uctx.stdout, "Updated (clone): %s %s\n", name, msg)
+			uctx.stdoutMu.Unlock()
+		}
 		now := uctx.nowFn()
-		return PackUpdateResult{Name: name, Method: method, Status: StatusUpdated, Message: msg, CommitHash: newHash, BundledCandidates: candidates, manifest: &newManifest, effective: effective, explicitPrefs: hasExplicitPrefs,
-			updatedMeta: &config.InstalledPackMeta{
-				Origin: meta.Origin, Method: method, InstalledAt: now.UTC().Format(time.RFC3339),
-				Ref: ref, SubPath: meta.SubPath, CommitHash: newHash, ContentPaths: meta.ContentPaths,
-				Approved: aList, Declined: dList,
-				// Rebuild inventory from the just-installed packDir so drift
-				// detection has an up-to-date baseline reflecting the new
-				// commit's content. ReplaceDirAtomic above swapped staging
-				// into packDir, so packDir now holds the new content.
-				Resolved: buildResolvedInventory(uctx.configDir, name, packDir, ref, now, uctx.stdout),
-			}}
+		result := PackUpdateResult{Name: name, Method: method, Status: StatusUpdated, Message: msg, CommitHash: newHash, BundledCandidates: candidates}
+		// Rebuild inventory from the just-installed packDir so drift detection
+		// has an up-to-date baseline reflecting the new commit's content.
+		resolved := buildResolvedInventory(uctx.configDir, name, packDir, ref, now, uctx.lockedStdout())
+		outcome := packUpdateOutcome{
+			PackUpdateResult: result,
+			manifest:         &newManifest,
+			effective:        effective,
+			explicitPrefs:    hasExplicitPrefs,
+			updatedMeta: refreshedInstalledPackMeta(meta, meta.Origin, method, now.UTC().Format(time.RFC3339),
+				ref, meta.SubPath, newHash, meta.ContentPaths, aList, dList, resolved),
+		}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+		return outcome
 
 	case config.MethodCopy:
 		origin := meta.Origin
 		if origin == "" {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: "no origin recorded; cannot re-copy"}
+			return packUpdateOutcome{PackUpdateResult: PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: "no origin recorded; cannot re-copy"}}
 		}
 		if _, err := os.Stat(origin); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: fmt.Sprintf("origin not found: %s", origin)}
+			updateErr := fmt.Errorf("origin not found: %s", origin)
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: fmt.Sprintf("origin not found: %s", origin)}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: updateErr})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		oldIntegrity, _ := loadIntegrity(packDir)
 		staging, copyManifest, err := extractLocalPackToStaging(uctx.configDir, origin)
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		defer os.RemoveAll(staging)
 		candidates, effective, err := applyPreferenceFilter(staging, &copyManifest, meta, uctx.with)
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		if err := util.ReplaceDirAtomic(packDir, staging); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
 		aList, dList := buildPrefsLists(effective)
-		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
-		fmt.Fprintf(uctx.stdout, "Updated (copy): %s from %s\n", name, origin)
+		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.lockedStdout())
+		if uctx.stdout != nil {
+			uctx.stdoutMu.Lock()
+			fmt.Fprintf(uctx.stdout, "Updated (copy): %s from %s\n", name, origin)
+			uctx.stdoutMu.Unlock()
+		}
 		now := uctx.nowFn()
-		return PackUpdateResult{Name: name, Method: method, Status: StatusUpdated, Message: "re-copied from " + origin, BundledCandidates: candidates, manifest: &copyManifest, effective: effective, explicitPrefs: hasExplicitPrefs,
-			updatedMeta: &config.InstalledPackMeta{
-				Origin: origin, Method: method, InstalledAt: now.UTC().Format(time.RFC3339),
-				ContentPaths: meta.ContentPaths,
-				Approved:     aList, Declined: dList,
-				Resolved: buildResolvedInventory(uctx.configDir, name, packDir, "", now, uctx.stdout),
-			}}
+		result := PackUpdateResult{Name: name, Method: method, Status: StatusUpdated, Message: "re-copied from " + origin, BundledCandidates: candidates}
+		outcome := packUpdateOutcome{
+			PackUpdateResult: result,
+			manifest:         &copyManifest,
+			effective:        effective,
+			explicitPrefs:    hasExplicitPrefs,
+			updatedMeta: refreshedInstalledPackMeta(meta, origin, method, now.UTC().Format(time.RFC3339),
+				"", "", "", meta.ContentPaths, aList, dList, buildResolvedInventory(uctx.configDir, name, packDir, "", now, uctx.lockedStdout())),
+		}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+		return outcome
 
 	case config.MethodArchive, config.MethodHTTPTarball:
 		// Legacy tarball/archive packs are transparently migrated to clone on
 		// next update. Future updates use the fast clone path with commit hash.
 		origin := meta.Origin
 		if origin == "" {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: "no origin recorded; cannot re-fetch"}
+			return packUpdateOutcome{PackUpdateResult: PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: "no origin recorded; cannot re-fetch"}}
 		}
 
 		// Re-resolve through the registry to pick up ref/origin changes
@@ -464,23 +612,34 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 		// an opaque "not a git repository" error. Detect the shape and
 		// return a targeted remediation message instead.
 		if isLikelyTarballURL(origin) {
-			return PackUpdateResult{
+			msg := fmt.Sprintf("legacy %s install cannot auto-migrate to clone: origin %q is a tarball URL and the registry has no git remap. Reinstall manually with: aipack pack delete %s && aipack pack install --url <git-url>", method, originalOrigin, name)
+			updateErr := fmt.Errorf("%s", msg)
+			result := PackUpdateResult{
 				Name: name, Method: method, Status: StatusError,
-				Message: fmt.Sprintf("legacy %s install cannot auto-migrate to clone: origin %q is a tarball URL and the registry has no git remap. Reinstall manually with: aipack pack delete %s && aipack pack install --url <git-url>", method, originalOrigin, name),
+				Message: msg,
 			}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: updateErr})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
 		// Surface the URL transition so users can spot a registry repoint
 		// (intentional or otherwise) before the new content lands.
 		if origin != originalOrigin {
-			fmt.Fprintf(uctx.stdout, "Migrating %s pack %s: %s -> %s\n", method, name, originalOrigin, origin)
+			if !uctx.quiet && uctx.stdout != nil {
+				uctx.stdoutMu.Lock()
+				fmt.Fprintf(uctx.stdout, "Migrating %s pack %s: %s -> %s\n", method, name, originalOrigin, origin)
+				uctx.stdoutMu.Unlock()
+			}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseMigrating})
 		}
 
 		oldIntegrity, _ := loadIntegrity(packDir)
 
 		stageDir, err := makePackTempDir(uctx.configDir, "update-stage-*")
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		defer os.RemoveAll(stageDir)
 
@@ -495,75 +654,114 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) Pac
 			GitHashFn:    uctx.gitHashFn,
 		}
 		urlInfo := source.PackURLInfo{RepoURL: origin, Ref: ref, SubPath: subPath}
-		result, err := packShallowClone(ctx, installReq, urlInfo, stageDir, io.Discard)
+		// Suppress packShallowClone's "Cloned: ..." line here because the
+		// migration emits its own terminal update line below.
+		result, err := packShallowClone(ctx, installReq, urlInfo, stageDir, nil)
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
+			return packUpdateOutcome{PackUpdateResult: updateResult}
 		}
 
 		// Filter staged content before installing to the final location.
 		candidates, effective, err := applyPreferenceFilter(result.destDir, &result.manifest, meta, uctx.with)
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
+			return packUpdateOutcome{PackUpdateResult: updateResult}
 		}
 
 		if err := util.ReplaceDirAtomic(packDir, result.destDir); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
+			return packUpdateOutcome{PackUpdateResult: updateResult}
 		}
 
-		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.stdout)
+		_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.lockedStdout())
 		aList, dList := buildPrefsLists(effective)
-		fmt.Fprintf(uctx.stdout, "Updated (migrated %s -> clone): %s from %s\n", method, name, origin)
+		if uctx.stdout != nil {
+			uctx.stdoutMu.Lock()
+			fmt.Fprintf(uctx.stdout, "Updated (migrated %s -> clone): %s from %s\n", method, name, origin)
+			uctx.stdoutMu.Unlock()
+		}
 		now := uctx.nowFn()
-		return PackUpdateResult{Name: name, Method: config.MethodClone, Status: StatusUpdated, Message: "migrated from " + method + " to clone", CommitHash: result.commitHash, BundledCandidates: candidates, manifest: &result.manifest, effective: effective, explicitPrefs: hasExplicitPrefs,
-			updatedMeta: &config.InstalledPackMeta{
-				Origin: origin, Method: config.MethodClone, InstalledAt: now.UTC().Format(time.RFC3339),
-				Ref: ref, SubPath: subPath, CommitHash: result.commitHash, ContentPaths: meta.ContentPaths,
-				Approved: aList, Declined: dList,
-				Resolved: buildResolvedInventory(uctx.configDir, name, packDir, ref, now, uctx.stdout),
-			}}
+		updateResult := PackUpdateResult{Name: name, Method: config.MethodClone, Status: StatusUpdated, Message: "migrated from " + method + " to clone", CommitHash: result.commitHash, BundledCandidates: candidates}
+		outcome := packUpdateOutcome{
+			PackUpdateResult: updateResult,
+			manifest:         &result.manifest,
+			effective:        effective,
+			explicitPrefs:    hasExplicitPrefs,
+			updatedMeta: refreshedInstalledPackMeta(meta, origin, config.MethodClone, now.UTC().Format(time.RFC3339),
+				ref, subPath, result.commitHash, meta.ContentPaths, aList, dList,
+				buildResolvedInventory(uctx.configDir, name, packDir, ref, now, uctx.lockedStdout())),
+		}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+		return outcome
 
 	case config.MethodLink:
 		target, err := os.Readlink(packDir)
 		if err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: fmt.Sprintf("readlink: %v", err)}
+			updateErr := fmt.Errorf("readlink: %w", err)
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: fmt.Sprintf("readlink: %v", err)}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: updateErr})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		if _, err := os.Stat(target); err != nil {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: fmt.Sprintf("symlink target missing: %s", target)}
+			updateErr := fmt.Errorf("symlink target missing: %s", target)
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: fmt.Sprintf("symlink target missing: %s", target)}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: updateErr})
+			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
-		fmt.Fprintf(uctx.stdout, "OK (link): %s -> %s\n", name, target)
-		return buildUpToDateResult(name, method, "symlink target exists",
-			filepath.Join(target, "pack.json"), meta, uctx, hasExplicitPrefs)
+		if uctx.stdout != nil {
+			uctx.stdoutMu.Lock()
+			fmt.Fprintf(uctx.stdout, "OK (link): %s -> %s\n", name, target)
+			uctx.stdoutMu.Unlock()
+		}
+		outcome := buildUpToDateResult(name, method, "symlink target exists",
+			filepath.Join(target, "pack.json"), target, meta.Ref, meta.CommitHash, meta, uctx, hasExplicitPrefs, false)
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+		return outcome
 
 	case config.MethodLocal:
-		fmt.Fprintf(uctx.stdout, "OK (local): %s\n", name)
-		r := PackUpdateResult{Name: name, Method: method, Status: StatusUpToDate, Message: "installed in-place"}
+		if uctx.stdout != nil {
+			uctx.stdoutMu.Lock()
+			fmt.Fprintf(uctx.stdout, "OK (local): %s\n", name)
+			uctx.stdoutMu.Unlock()
+		}
+		outcome := packUpdateOutcome{PackUpdateResult: PackUpdateResult{Name: name, Method: method, Status: StatusUpToDate, Message: "installed in-place"}}
 		// Backfill Resolved for pre-v0.22 local installs that never had
 		// an inventory baseline. The pack is already on disk; no network
 		// or re-extraction needed.
 		if meta.Resolved == nil {
-			if inv := buildResolvedInventory(uctx.configDir, name, packDir, meta.Ref, uctx.nowFn(), uctx.stdout); inv != nil {
-				updated := meta
-				updated.Resolved = inv
-				r.updatedMeta = &updated
+			if inv := buildResolvedInventory(uctx.configDir, name, packDir, meta.Ref, uctx.nowFn(), uctx.lockedStdout()); inv != nil {
+				outcome.updatedMeta = refreshedInstalledPackMeta(meta, meta.Origin, method, meta.InstalledAt,
+					meta.Ref, meta.SubPath, meta.CommitHash, meta.ContentPaths, meta.Approved, meta.Declined, inv)
 			}
 		}
-		return r
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+		return outcome
 
 	default:
 		if !hasMeta {
-			return PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: "no install metadata; cannot determine update method"}
+			return packUpdateOutcome{PackUpdateResult: PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: "no install metadata; cannot determine update method"}}
 		}
-		return PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: fmt.Sprintf("unknown method %q", method)}
+		return packUpdateOutcome{PackUpdateResult: PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: fmt.Sprintf("unknown method %q", method)}}
 	}
 }
 
 // packReportPinned reports the status of a pinned pack without updating it.
-func packReportPinned(ctx context.Context, name, method string, meta config.InstalledPackMeta, uctx packUpdateContext) PackUpdateResult {
+func packReportPinned(ctx context.Context, name, method string, meta config.InstalledPackMeta, uctx packUpdateContext) packUpdateOutcome {
 	msg := "pinned at " + pinLabel(meta.Ref)
 	hint := pinHint(ctx, meta, source.IsSemverRef(meta.Ref), uctx)
-	fmt.Fprintf(uctx.stdout, "Pinned (clone): %s %s%s\n", name, msg, hint)
-	return PackUpdateResult{Name: name, Method: method, Status: StatusUpToDate, Message: msg + hint}
+	if uctx.stdout != nil {
+		uctx.stdoutMu.Lock()
+		fmt.Fprintf(uctx.stdout, "Pinned (clone): %s %s\n", name, msg+hint)
+		uctx.stdoutMu.Unlock()
+	}
+	result := PackUpdateResult{Name: name, Method: method, Status: StatusUpToDate, Message: msg + hint}
+	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result})
+	return packUpdateOutcome{PackUpdateResult: result}
 }
 
 // pinHint returns a human-readable status hint for a pinned pack via one
@@ -627,7 +825,19 @@ func pinHint(ctx context.Context, meta config.InstalledPackMeta, semverPin bool,
 // drift detection and doctor broken_refs have a baseline going forward.
 // The backfill runs on the fast path (no new clone), against the already-
 // installed pack content — no network, no extraction.
-func buildUpToDateResult(name, method, message, manifestPath string, meta config.InstalledPackMeta, uctx packUpdateContext, hasExplicitPrefs bool) PackUpdateResult {
+func buildUpToDateResult(
+	name string,
+	method string,
+	message string,
+	manifestPath string,
+	inventoryRoot string,
+	ref string,
+	commitHash string,
+	meta config.InstalledPackMeta,
+	uctx packUpdateContext,
+	hasExplicitPrefs bool,
+	forceMeta bool,
+) packUpdateOutcome {
 	var manifest *config.PackManifest
 	var candidates *BundledCandidates
 	approved := metaApprovedSet(meta)
@@ -637,36 +847,37 @@ func buildUpToDateResult(name, method, message, manifestPath string, meta config
 	}
 	effective := approved.Merge(uctx.with)
 
-	r := PackUpdateResult{
+	result := PackUpdateResult{
 		Name: name, Method: method, Status: StatusUpToDate,
-		Message: message, CommitHash: meta.CommitHash,
+		Message: message, CommitHash: commitHash,
 		BundledCandidates: candidates.Filter(effective),
-		manifest:          manifest, effective: effective, explicitPrefs: hasExplicitPrefs,
+	}
+	outcome := packUpdateOutcome{
+		PackUpdateResult: result,
+		manifest:         manifest,
+		effective:        effective,
+		explicitPrefs:    hasExplicitPrefs,
 	}
 
-	// Pack root for inventory purposes is the manifest's parent directory —
-	// for link packs this is the symlink target, not the packs-dir entry.
 	var backfilled *domain.PackInventory
 	if meta.Resolved == nil {
-		backfilled = buildResolvedInventory(uctx.configDir, name, filepath.Dir(manifestPath), meta.Ref, uctx.nowFn(), uctx.stdout)
+		if inventoryRoot == "" {
+			inventoryRoot = filepath.Dir(manifestPath)
+		}
+		backfilled = buildResolvedInventory(uctx.configDir, name, inventoryRoot, ref, uctx.nowFn(), uctx.lockedStdout())
 	}
 
 	// Record metadata when either the user passed --with (effective may
 	// differ from stored approvals) or we just backfilled a missing
 	// inventory baseline — both require a lockfile write.
-	if uctx.with != nil || backfilled != nil {
+	if uctx.with != nil || forceMeta || backfilled != nil {
 		aList, dList := buildPrefsLists(effective)
-		updated := &config.InstalledPackMeta{
-			Origin: meta.Origin, Method: method, InstalledAt: meta.InstalledAt,
-			Ref: meta.Ref, SubPath: meta.SubPath, CommitHash: meta.CommitHash,
-			ContentPaths: meta.ContentPaths,
-			Approved:     aList, Declined: dList,
-			Resolved: meta.Resolved,
-		}
+		resolved := meta.Resolved
 		if backfilled != nil {
-			updated.Resolved = backfilled
+			resolved = backfilled
 		}
-		r.updatedMeta = updated
+		outcome.updatedMeta = refreshedInstalledPackMeta(meta, meta.Origin, method, meta.InstalledAt,
+			ref, meta.SubPath, commitHash, meta.ContentPaths, aList, dList, resolved)
 	}
-	return r
+	return outcome
 }

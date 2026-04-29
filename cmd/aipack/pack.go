@@ -396,7 +396,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 			fmt.Fprintln(g.Stderr, "Fetching registry...")
 			fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{
 				ConfigDir: cfgDir,
-			}, io.Discard)
+			}, nil)
 			if fetchErr == nil {
 				entry, err = app.RegistryLookup(regReq, path)
 			}
@@ -877,7 +877,8 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 		All:       all,
 		Ref:       c.Ref,
 		With:      with,
-	}, g.Stdout)
+		Quiet:     all,
+	}, g.Stdout, nil)
 	if err != nil {
 		return err
 	}

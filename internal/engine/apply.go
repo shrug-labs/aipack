@@ -18,7 +18,7 @@ type ApplyRequest struct {
 	Yes    bool // auto-confirm stale file deletions
 	DryRun bool
 	Quiet  bool      // suppress diagnostic output (for TUI and --json)
-	Stderr io.Writer // progress diagnostics (create/update/conflict messages); callers must set this
+	Stdout io.Writer // progress diagnostics (create/update/conflict/diff/merge); nil suppresses output
 	Req    PlanRequest
 
 	// StripFuncs maps cleaned file paths to functions that strip only the
@@ -35,9 +35,6 @@ type ApplyRequest struct {
 // as warnings (e.g. stale ledger, failed stale-file removal). Writing
 // failures that leave inconsistent state are fatal errors.
 func (e *Engine) ApplyPlan(ctx context.Context, plan domain.Plan, ar ApplyRequest, managedRoots []string) ([]domain.Warning, error) {
-	if ar.Stderr == nil {
-		ar.Stderr = io.Discard
-	}
 	warnings := make([]domain.Warning, 0, 4)
 
 	if err := validateDestinationsForApply(plan, managedRoots); err != nil {
@@ -211,15 +208,14 @@ func (e *Engine) StaleCandidatesWithLedger(plan domain.Plan, managedRoots []stri
 
 // applyFileDiff applies a single file diff according to policy.
 func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
-	w := ar.Stderr
 	switch d.Kind {
 	case domain.DiffIdentical:
 		return false, nil
 
 	case domain.DiffCreate:
-		if !ar.Quiet {
-			fmt.Fprintf(w, "  create: %s\n", d.Label)
-			printMergeOpsSummary(w, d.MergeOps)
+		if !ar.Quiet && ar.Stdout != nil {
+			fmt.Fprintf(ar.Stdout, "  create: %s\n", d.Label)
+			emitMergeOpsSummary(ar.Stdout, d.MergeOps)
 		}
 		if ar.DryRun {
 			return false, nil
@@ -230,9 +226,9 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		return true, e.FS.WriteFile(d.Dst, d.Desired, 0o644)
 
 	case domain.DiffManaged:
-		if !ar.Quiet {
-			fmt.Fprintf(w, "  update: %s\n", d.Label)
-			printMergeOpsSummary(w, d.MergeOps)
+		if !ar.Quiet && ar.Stdout != nil {
+			fmt.Fprintf(ar.Stdout, "  update: %s\n", d.Label)
+			emitMergeOpsSummary(ar.Stdout, d.MergeOps)
 		}
 		if ar.DryRun {
 			return false, nil
@@ -243,38 +239,37 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		return true, e.FS.WriteFile(d.Dst, d.Desired, 0o644)
 
 	case domain.DiffConflict:
-		if !ar.Quiet {
-			showFileDiff(w, d)
+		if !ar.Quiet && ar.Stdout != nil {
+			emitFileDiff(ar.Stdout, d)
 		}
 		if ar.DryRun {
-			if !ar.Quiet {
-				fmt.Fprintf(w, "  conflict: %s (dry-run, would need --force)\n", d.Label)
+			if !ar.Quiet && ar.Stdout != nil {
+				fmt.Fprintf(ar.Stdout, "  conflict: %s (dry-run, would need --force)\n", d.Label)
 			}
 			return false, nil
 		}
 		if ar.Force {
-			if !ar.Quiet {
-				fmt.Fprintf(w, "  force-apply: %s\n", d.Label)
+			if !ar.Quiet && ar.Stdout != nil {
+				fmt.Fprintf(ar.Stdout, "  force-apply: %s\n", d.Label)
 			}
 			if err := e.FS.MkdirAll(filepath.Dir(d.Dst), 0o755); err != nil {
 				return false, err
 			}
 			return true, e.FS.WriteFile(d.Dst, d.Desired, 0o644)
 		}
-		if !ar.Quiet {
-			fmt.Fprintf(w, "  skip (conflict, use --force to apply): %s\n", d.Label)
+		if !ar.Quiet && ar.Stdout != nil {
+			fmt.Fprintf(ar.Stdout, "  skip (conflict, use --force to apply): %s\n", d.Label)
 		}
 		return false, nil
 	}
 	return false, fmt.Errorf("unhandled diff kind %q for %s", d.Kind, d.Label)
 }
 
-func showFileDiff(w io.Writer, d FileDiff) {
-	if d.Diff == "" {
+func emitFileDiff(w io.Writer, d FileDiff) {
+	if w == nil || d.Diff == "" {
 		return
 	}
-	fmt.Fprintf(w, "\n--- Diff: %s ---\n", d.Label)
-	fmt.Fprintln(w, d.Diff)
+	fmt.Fprintf(w, "\n--- Diff: %s ---\n%s\n", d.Label, d.Diff)
 }
 
 func validatePlanDestinations(plan domain.Plan, allowed []string) error {
@@ -321,9 +316,8 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 	return nil
 }
 
-// printMergeOpsSummary prints a one-line merge summary when ops are present.
-func printMergeOpsSummary(w io.Writer, ops []MergeOp) {
-	if len(ops) == 0 {
+func emitMergeOpsSummary(w io.Writer, ops []MergeOp) {
+	if w == nil || len(ops) == 0 {
 		return
 	}
 	var adds, updates, removes, resets int

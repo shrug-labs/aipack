@@ -46,10 +46,27 @@ func ExpandRefs(params map[string]string, s string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !strings.Contains(out, "{env:") {
+	if !strings.Contains(out, util.EnvRefPrefix) {
 		return out, nil
 	}
 	return util.ExpandEnvRefs(out)
+}
+
+// PackRootRef is the literal token resolved to the installed pack's root path.
+const PackRootRef = "{pack:root}"
+
+func hasTemplateRefs(s string) bool {
+	return util.HasParamRef(s) || strings.Contains(s, util.EnvRefPrefix) || strings.Contains(s, PackRootRef)
+}
+
+func expandTemplateRefs(params map[string]string, packRoot string, s string) (string, error) {
+	if strings.Contains(s, PackRootRef) {
+		if packRoot == "" {
+			return "", fmt.Errorf("unresolved %s reference in %q (content not loaded from a pack)", PackRootRef, s)
+		}
+		s = strings.ReplaceAll(s, PackRootRef, filepath.Clean(packRoot))
+	}
+	return ExpandRefs(params, s)
 }
 
 // expandedMCP holds expanded fields for an MCP server.

@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -93,7 +92,7 @@ func syncAndApply(t *testing.T, profile domain.Profile, scope domain.Scope, proj
 		Force: true,
 		Yes:   true,
 		Quiet: true,
-	}, reg, io.Discard, io.Discard)
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync(%s): %v", hid, err)
 	}
@@ -714,7 +713,7 @@ func TestConvergence_CorruptedOwnedFiles(t *testing.T) {
 				Force: true,
 				Yes:   true,
 				Quiet: true,
-			}, reg, io.Discard, io.Discard)
+			}, reg, nil, nil)
 			if err != nil {
 				t.Errorf("RunSync with corrupted owned files: %v", err)
 			}
@@ -1279,7 +1278,7 @@ func TestConflict_UserEditPreservedWithoutForce(t *testing.T) {
 		Force: false,
 		Yes:   true,
 		Quiet: true,
-	}, reg, io.Discard, io.Discard)
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
@@ -1451,7 +1450,7 @@ func TestDryRun_ProducesPlanWithoutWriting(t *testing.T) {
 		Force:  true,
 		Yes:    true,
 		Quiet:  true,
-	}, reg, io.Discard, io.Discard)
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync dry-run: %v", err)
 	}
@@ -2026,7 +2025,7 @@ func TestCodex_PromotionCollision_SkillAndWorkflowSameName(t *testing.T) {
 		Force: true,
 		Yes:   true,
 		Quiet: true,
-	}, reg, io.Discard, io.Discard)
+	}, reg, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for skill/workflow name collision, got nil")
 	}

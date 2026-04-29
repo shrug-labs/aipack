@@ -13,7 +13,7 @@ import (
 
 // DiffInventory compares two pack inventories and returns the set of
 // categorized changes. Pure function — does not consult the profile.
-// Callers fold the profile in at print time via FormatDriftReport.
+// Callers fold the profile in at print time via EmitDriftReport.
 func DiffInventory(packName string, old, new domain.PackInventory) domain.InventoryDiff {
 	d := domain.InventoryDiff{PackName: packName}
 	d.AddedRules, d.RemovedRules = DiffStrings(old.Rules, new.Rules)
@@ -153,20 +153,25 @@ func sortRefs(refs []domain.RequiredRef) {
 	})
 }
 
-// FormatDriftReport writes a per-pack drift summary to w. It splits removed
-// items into "affects your profile" (referenced via a broken ref for this
-// pack) and "other removals" (not referenced). Empty diffs are skipped.
-// oldVersion and newVersion appear in the header; either may be empty.
-func FormatDriftReport(w io.Writer, diff domain.InventoryDiff, brokenRefs []domain.BrokenRef, oldVersion, newVersion string) {
-	if diff.Empty() && len(brokenRefs) == 0 {
+// EmitDriftReport writes the per-pack inventory diff report. Removed items
+// are split into "affects your profile" (the pack referenced this id via a
+// broken ref) and "other removals" (not referenced). Empty diffs are skipped.
+// oldVersion and newVersion populate the header transition; either may be
+// empty.
+func EmitDriftReport(w io.Writer, diff domain.InventoryDiff, brokenRefs []domain.BrokenRef, oldVersion, newVersion string) {
+	if w == nil || (diff.Empty() && len(brokenRefs) == 0) {
 		return
 	}
 
-	header := fmt.Sprintf("Drift detected in %s", diff.PackName)
+	transition := ""
 	if oldVersion != "" && newVersion != "" && oldVersion != newVersion {
-		header = fmt.Sprintf("%s (%s → %s)", header, oldVersion, newVersion)
+		transition = fmt.Sprintf("%s → %s", oldVersion, newVersion)
 	}
-	fmt.Fprintln(w, header+":")
+	if transition != "" {
+		fmt.Fprintf(w, "Drift detected in %s (%s):\n", diff.PackName, transition)
+	} else {
+		fmt.Fprintf(w, "Drift detected in %s:\n", diff.PackName)
+	}
 
 	brokenByKey := make(map[string]domain.BrokenRef, len(brokenRefs))
 	for _, br := range brokenRefs {
@@ -194,90 +199,122 @@ func FormatDriftReport(w io.Writer, diff domain.InventoryDiff, brokenRefs []doma
 	collect(domain.CategoryMCP, diff.RemovedServers)
 
 	if len(affects) > 0 {
-		fmt.Fprintln(w, "  Removed (affects your profile):")
+		emitDriftSection(w, "removed-referenced")
 		for _, r := range affects {
 			br := brokenByKey[brokenRefKey(r.category, r.id)]
 			fmt.Fprintf(w, "    ! %-8s %-30s — referenced via %s\n", r.category, r.id, refLocation(br))
 		}
 	}
 	if len(other) > 0 {
-		fmt.Fprintln(w, "  Removed (other):")
+		emitDriftSection(w, "removed-other")
 		for _, r := range other {
 			fmt.Fprintf(w, "    - %-8s %s\n", r.category, r.id)
 		}
 	}
+
 	hasAdds := len(diff.AddedRules) > 0 || len(diff.AddedAgents) > 0 ||
 		len(diff.AddedWorkflows) > 0 || len(diff.AddedSkills) > 0 || len(diff.AddedServers) > 0
 	if hasAdds {
-		fmt.Fprintln(w, "  Added:")
-		writeAdds(w, domain.CategoryRules, diff.AddedRules)
-		writeAdds(w, domain.CategoryAgents, diff.AddedAgents)
-		writeAdds(w, domain.CategoryWorkflows, diff.AddedWorkflows)
+		emitDriftSection(w, "added")
+		emitAddedIDs(w, domain.CategoryRules, diff.AddedRules)
+		emitAddedIDs(w, domain.CategoryAgents, diff.AddedAgents)
+		emitAddedIDs(w, domain.CategoryWorkflows, diff.AddedWorkflows)
 		for _, name := range slices.Sorted(maps.Keys(diff.AddedSkills)) {
 			snap := diff.AddedSkills[name]
-			line := fmt.Sprintf("    + %-8s %s", domain.CategorySkills, name)
+			suffix := ""
 			if snap.Description != "" {
-				line += "  — " + snap.Description
+				suffix = "  — " + snap.Description
 			}
-			fmt.Fprintln(w, line)
+			emitDriftAdded(w, domain.CategorySkills, name, suffix)
 			for _, asset := range snap.Assets {
-				fmt.Fprintf(w, "        ship: %s\n", asset)
+				emitDriftDetail(w, "ship: "+asset)
 			}
 		}
 		for _, name := range slices.Sorted(maps.Keys(diff.AddedServers)) {
 			snap := diff.AddedServers[name]
-			line := fmt.Sprintf("    + %-8s %s", domain.CategoryMCP, name)
+			suffix := ""
 			if len(snap.RequiredRefs) > 0 {
 				parts := make([]string, len(snap.RequiredRefs))
 				for i, r := range snap.RequiredRefs {
 					parts[i] = r.Display()
 				}
-				line += fmt.Sprintf("  (requires: %s)", strings.Join(parts, ", "))
+				suffix = fmt.Sprintf("  (requires: %s)", strings.Join(parts, ", "))
 			}
-			fmt.Fprintln(w, line)
+			emitDriftAdded(w, domain.CategoryMCP, name, suffix)
 			if len(snap.AvailableTools) > 0 {
-				fmt.Fprintf(w, "        tools: %s\n", strings.Join(snap.AvailableTools, ", "))
+				emitDriftDetail(w, "tools: "+strings.Join(snap.AvailableTools, ", "))
 			}
 		}
 	}
 
 	if len(diff.ChangedSkills) > 0 || len(diff.ChangedServers) > 0 {
-		fmt.Fprintln(w, "  Changed:")
+		emitDriftSection(w, "changed")
 		for _, name := range slices.Sorted(maps.Keys(diff.ChangedSkills)) {
 			ch := diff.ChangedSkills[name]
-			fmt.Fprintf(w, "    ~ %-8s %s\n", domain.CategorySkills, name)
+			emitDriftChanged(w, domain.CategorySkills, name)
 			if ch.OldDescription != ch.NewDescription {
-				fmt.Fprintf(w, "        description: %q → %q\n", ch.OldDescription, ch.NewDescription)
+				emitDriftDetail(w, fmt.Sprintf("description: %q → %q", ch.OldDescription, ch.NewDescription))
 			}
 			for _, a := range ch.AddedAssets {
-				fmt.Fprintf(w, "        +ship: %s\n", a)
+				emitDriftDetail(w, "+ship: "+a)
 			}
 			for _, a := range ch.RemovedAssets {
-				fmt.Fprintf(w, "        -ship: %s\n", a)
+				emitDriftDetail(w, "-ship: "+a)
 			}
 		}
 		for _, name := range slices.Sorted(maps.Keys(diff.ChangedServers)) {
 			ch := diff.ChangedServers[name]
-			fmt.Fprintf(w, "    ~ %-8s %s\n", domain.CategoryMCP, name)
+			emitDriftChanged(w, domain.CategoryMCP, name)
 			for _, t := range ch.AddedTools {
-				fmt.Fprintf(w, "        +tool: %s\n", t)
+				emitDriftDetail(w, "+tool: "+t)
 			}
 			for _, t := range ch.RemovedTools {
-				fmt.Fprintf(w, "        -tool: %s\n", t)
+				emitDriftDetail(w, "-tool: "+t)
 			}
 			for _, r := range ch.AddedRefs {
-				fmt.Fprintf(w, "        +requires: %s\n", r.Display())
+				emitDriftDetail(w, "+requires: "+r.Display())
 			}
 			for _, r := range ch.RemovedRefs {
-				fmt.Fprintf(w, "        -requires: %s\n", r.Display())
+				emitDriftDetail(w, "-requires: "+r.Display())
 			}
 		}
 	}
 }
 
-func writeAdds(w io.Writer, cat domain.PackCategory, ids []string) {
+func emitDriftSection(w io.Writer, key string) {
+	fmt.Fprintf(w, "  %s:\n", driftSectionHeader(key))
+}
+
+func driftSectionHeader(key string) string {
+	switch key {
+	case "removed-referenced":
+		return "Removed (affects your profile)"
+	case "removed-other":
+		return "Removed (other)"
+	case "added":
+		return "Added"
+	case "changed":
+		return "Changed"
+	default:
+		return key
+	}
+}
+
+func emitDriftAdded(w io.Writer, cat domain.PackCategory, id, suffix string) {
+	fmt.Fprintf(w, "    + %-8s %s%s\n", cat, id, suffix)
+}
+
+func emitDriftChanged(w io.Writer, cat domain.PackCategory, id string) {
+	fmt.Fprintf(w, "    ~ %-8s %s\n", cat, id)
+}
+
+func emitDriftDetail(w io.Writer, detail string) {
+	fmt.Fprintf(w, "        %s\n", detail)
+}
+
+func emitAddedIDs(w io.Writer, cat domain.PackCategory, ids []string) {
 	for _, id := range ids {
-		fmt.Fprintf(w, "    + %-8s %s\n", cat, id)
+		emitDriftAdded(w, cat, id, "")
 	}
 }
 

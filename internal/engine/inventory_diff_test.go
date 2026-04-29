@@ -150,7 +150,17 @@ func TestDiffInventory_ChangedServer(t *testing.T) {
 	}
 }
 
-func TestFormatDriftReport_SplitByBrokenRefs(t *testing.T) {
+// emitDriftReportToBuf is a test helper that runs EmitDriftReport through a
+// Writer reporter and returns the rendered text. The Writer's formatLine
+// cases for sync.drift.* reproduce the same line shapes the pre-writer
+// code emitted, so legacy substring assertions hold without rewriting.
+func emitDriftReportToBuf(diff domain.InventoryDiff, brokenRefs []domain.BrokenRef, oldVersion, newVersion string) string {
+	var buf bytes.Buffer
+	EmitDriftReport(&buf, diff, brokenRefs, oldVersion, newVersion)
+	return buf.String()
+}
+
+func TestEmitDriftReport_SplitByBrokenRefs(t *testing.T) {
 	t.Parallel()
 	diff := domain.InventoryDiff{
 		PackName:       "my-team-pack",
@@ -162,9 +172,7 @@ func TestFormatDriftReport_SplitByBrokenRefs(t *testing.T) {
 		{PackName: "my-team-pack", Category: domain.CategorySkills, Direction: "include", ID: "stale-skill"},
 		{PackName: "my-team-pack", Category: domain.CategoryMCP, Direction: "", ID: "stale-server"},
 	}
-	var buf bytes.Buffer
-	FormatDriftReport(&buf, diff, broken, "v0.2.1", "v0.3.0")
-	out := buf.String()
+	out := emitDriftReportToBuf(diff, broken, "v0.2.1", "v0.3.0")
 
 	wantSubstrings := []string{
 		"Drift detected in my-team-pack (v0.2.1 → v0.3.0):",
@@ -189,7 +197,7 @@ func TestFormatDriftReport_SplitByBrokenRefs(t *testing.T) {
 	}
 }
 
-func TestFormatDriftReport_ChangedSections(t *testing.T) {
+func TestEmitDriftReport_ChangedSections(t *testing.T) {
 	t.Parallel()
 	diff := domain.InventoryDiff{
 		PackName: "p",
@@ -207,9 +215,7 @@ func TestFormatDriftReport_ChangedSections(t *testing.T) {
 			},
 		},
 	}
-	var buf bytes.Buffer
-	FormatDriftReport(&buf, diff, nil, "", "")
-	out := buf.String()
+	out := emitDriftReportToBuf(diff, nil, "", "")
 
 	wantSubstrings := []string{
 		"Changed:",
@@ -227,24 +233,21 @@ func TestFormatDriftReport_ChangedSections(t *testing.T) {
 	}
 }
 
-func TestFormatDriftReport_EmptyDiffNoOutput(t *testing.T) {
+func TestEmitDriftReport_EmptyDiffNoOutput(t *testing.T) {
 	t.Parallel()
-	var buf bytes.Buffer
-	FormatDriftReport(&buf, domain.InventoryDiff{PackName: "p"}, nil, "", "")
-	if buf.Len() != 0 {
-		t.Errorf("empty diff produced output: %q", buf.String())
+	out := emitDriftReportToBuf(domain.InventoryDiff{PackName: "p"}, nil, "", "")
+	if out != "" {
+		t.Errorf("empty diff produced output: %q", out)
 	}
 }
 
-func TestFormatDriftReport_OtherRemovals(t *testing.T) {
+func TestEmitDriftReport_OtherRemovals(t *testing.T) {
 	t.Parallel()
 	diff := domain.InventoryDiff{
 		PackName:     "p",
 		RemovedRules: []string{"stale-rule"},
 	}
-	var buf bytes.Buffer
-	FormatDriftReport(&buf, diff, nil, "", "")
-	out := buf.String()
+	out := emitDriftReportToBuf(diff, nil, "", "")
 	if !strings.Contains(out, "Removed (other):") {
 		t.Errorf("expected 'Removed (other)' section:\n%s", out)
 	}

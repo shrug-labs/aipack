@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -89,7 +90,7 @@ See also: doctor, sync, status`
 }
 
 func (c *MCPInspectToolsCmd) Run(ctx context.Context, g *Globals) error {
-	result := app.RunMCPInspectTools(ctx, app.MCPInspectToolsRequest{
+	req := app.MCPInspectToolsRequest{
 		ConfigDir:   g.ConfigDir,
 		ProfileName: c.Profile,
 		ProfilePath: c.ProfilePath,
@@ -99,7 +100,36 @@ func (c *MCPInspectToolsCmd) Run(ctx context.Context, g *Globals) error {
 		Timeout:     time.Duration(c.Timeout) * time.Second,
 		Save:        c.Save,
 		DryRun:      c.DryRun,
-	})
+	}
+	// Human-mode feedback. Two channels:
+	//
+	//   1. Probe phase lines — only single-server mode. Parallel workers
+	//      interleave the transport-emitted phases (`connected`,
+	//      `listing_tools`) without server attribution into unparseable noise.
+	//   2. Inline per-server summary via OnResult — both single-server
+	//      and --all. Each server's summary prints as soon as its probe
+	//      completes, not after the whole batch. Mutex-serialized to
+	//      avoid interleaved bytes from concurrent workers.
+	//
+	// JSON mode skips both — the structured output is the contract there
+	// and stdout must stay parseable.
+	printedResults := 0
+	var printMu sync.Mutex
+	if !c.JSON {
+		if !c.All && c.Server != "" {
+			req.Stdout = g.Stdout
+		}
+		req.OnResult = func(sr app.MCPInspectToolsServerResult) {
+			printMu.Lock()
+			defer printMu.Unlock()
+			printInspectToolsServerResult(sr, g)
+			printedResults++
+		}
+	}
+	result := app.RunMCPInspectTools(ctx, req)
+	printMu.Lock()
+	resultsAlreadyPrinted := printedResults > 0
+	printMu.Unlock()
 
 	if c.JSON {
 		if err := cmdutil.WriteJSON(g.Stdout, result); err != nil {
@@ -115,7 +145,7 @@ func (c *MCPInspectToolsCmd) Run(ctx context.Context, g *Globals) error {
 		return nil
 	}
 
-	printInspectToolsHuman(result, g)
+	printInspectToolsHuman(result, g, resultsAlreadyPrinted)
 	return exitCodeFor(result)
 }
 
@@ -173,49 +203,67 @@ func printServerList(result app.MCPInspectToolsResult, g *Globals) {
 	fmt.Fprintf(g.Stdout, "Inspect all:       aipack mcp inspect-tools --all\n")
 }
 
-func printInspectToolsHuman(result app.MCPInspectToolsResult, g *Globals) {
+// printInspectToolsServerResult writes the human-readable summary lines
+// for one server's probe outcome. Safe for concurrent invocation when
+// callers serialize via a mutex (the OnResult callback path does this).
+func printInspectToolsServerResult(sr app.MCPInspectToolsServerResult, g *Globals) {
+	switch sr.Status {
+	case app.InspectStatusOK:
+		suffix := ""
+		if sr.Saved || sr.WouldSave {
+			diff := ""
+			if len(sr.Added) > 0 || len(sr.Removed) > 0 {
+				diff = fmt.Sprintf(": +%d -%d", len(sr.Added), len(sr.Removed))
+			}
+			tag := "saved"
+			if sr.WouldSave {
+				tag = "would save"
+			}
+			suffix = fmt.Sprintf(" [%s%s]", tag, diff)
+		}
+		fmt.Fprintf(g.Stdout, "inspecting %s... ok (%d tools, %s)%s\n",
+			sr.ServerName, sr.ToolCount, sr.Duration, suffix)
+		if len(sr.Added) > 0 {
+			fmt.Fprintf(g.Stdout, "  + %s\n", strings.Join(sr.Added, ", "))
+		}
+		if len(sr.Removed) > 0 {
+			fmt.Fprintf(g.Stdout, "  - %s\n", strings.Join(sr.Removed, ", "))
+		}
+
+	case app.InspectStatusSkipped:
+		reason := sr.Error
+		if reason == "" {
+			reason = "unknown"
+		}
+		fmt.Fprintf(g.Stdout, "inspecting %s... skipped (%s)\n", sr.ServerName, reason)
+
+	case app.InspectStatusError:
+		name := sr.ServerName
+		if name == "" {
+			name = "(setup)"
+		}
+		fmt.Fprintf(g.Stderr, "inspecting %s... error: %s\n", name, sr.Error)
+	}
+}
+
+// printInspectToolsHuman prints any results that weren't already streamed
+// inline via OnResult, plus the totals summary. resultsAlreadyPrinted
+// tells whether per-result lines were emitted during the run (single-
+// server inline, --all inline) so we don't double-print.
+func printInspectToolsHuman(result app.MCPInspectToolsResult, g *Globals, resultsAlreadyPrinted bool) {
 	var okCount, skipCount, errCount int
 
 	for _, sr := range result.Results {
 		switch sr.Status {
 		case app.InspectStatusOK:
 			okCount++
-			suffix := ""
-			if sr.Saved || sr.WouldSave {
-				diff := ""
-				if len(sr.Added) > 0 || len(sr.Removed) > 0 {
-					diff = fmt.Sprintf(": +%d -%d", len(sr.Added), len(sr.Removed))
-				}
-				tag := "saved"
-				if sr.WouldSave {
-					tag = "would save"
-				}
-				suffix = fmt.Sprintf(" [%s%s]", tag, diff)
-			}
-			fmt.Fprintf(g.Stdout, "inspecting %s... ok (%d tools, %s)%s\n",
-				sr.ServerName, sr.ToolCount, sr.Duration, suffix)
-			if len(sr.Added) > 0 {
-				fmt.Fprintf(g.Stdout, "  + %s\n", strings.Join(sr.Added, ", "))
-			}
-			if len(sr.Removed) > 0 {
-				fmt.Fprintf(g.Stdout, "  - %s\n", strings.Join(sr.Removed, ", "))
-			}
-
 		case app.InspectStatusSkipped:
 			skipCount++
-			reason := sr.Error
-			if reason == "" {
-				reason = "unknown"
-			}
-			fmt.Fprintf(g.Stdout, "inspecting %s... skipped (%s)\n", sr.ServerName, reason)
-
 		case app.InspectStatusError:
 			errCount++
-			name := sr.ServerName
-			if name == "" {
-				name = "(setup)"
-			}
-			fmt.Fprintf(g.Stderr, "inspecting %s... error: %s\n", name, sr.Error)
+		}
+		if !resultsAlreadyPrinted {
+			printInspectToolsServerResult(sr, g)
 		}
 	}
 

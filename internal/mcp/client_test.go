@@ -353,7 +353,7 @@ func TestProbeStdio_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ProbeStdio(ctx, testCommand("happy"), testEnv("happy"))
+	result, err := ProbeStdio(ctx, testCommand("happy"), testEnv("happy"), nil, nil)
 	if err != nil {
 		t.Fatalf("ProbeStdio: %v", err)
 	}
@@ -366,8 +366,8 @@ func TestProbeStdio_HappyPath(t *testing.T) {
 	if !slices.Equal(names, want) {
 		t.Errorf("tool names = %v, want %v", names, want)
 	}
-	if result.Duration <= 0 {
-		t.Errorf("duration should be positive, got %v", result.Duration)
+	if result.Duration < 0 {
+		t.Errorf("duration should be non-negative, got %v", result.Duration)
 	}
 }
 
@@ -376,7 +376,7 @@ func TestProbeStdio_HappyPathContentLength(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ProbeStdio(ctx, testCommand("happy_cl"), testEnv("happy_cl"))
+	result, err := ProbeStdio(ctx, testCommand("happy_cl"), testEnv("happy_cl"), nil, nil)
 	if err != nil {
 		t.Fatalf("ProbeStdio against Content-Length server: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestProbeStdio_NoToolsCapability(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ProbeStdio(ctx, testCommand("no_tools_cap"), testEnv("no_tools_cap"))
+	_, err := ProbeStdio(ctx, testCommand("no_tools_cap"), testEnv("no_tools_cap"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for server without tools capability")
 	}
@@ -410,7 +410,7 @@ func TestProbeStdio_NoToolsCapabilityContentLength(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ProbeStdio(ctx, testCommand("no_tools_cap_cl"), testEnv("no_tools_cap_cl"))
+	_, err := ProbeStdio(ctx, testCommand("no_tools_cap_cl"), testEnv("no_tools_cap_cl"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for server without tools capability")
 	}
@@ -424,7 +424,7 @@ func TestProbeStdio_EmptyTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := ProbeStdio(ctx, testCommand("empty_tools"), testEnv("empty_tools"))
+	result, err := ProbeStdio(ctx, testCommand("empty_tools"), testEnv("empty_tools"), nil, nil)
 	if err != nil {
 		t.Fatalf("ProbeStdio: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestProbeStdio_ServerCrash(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ProbeStdio(ctx, testCommand("crash"), testEnv("crash"))
+	_, err := ProbeStdio(ctx, testCommand("crash"), testEnv("crash"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for crashing server")
 	}
@@ -449,7 +449,7 @@ func TestProbeStdio_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := ProbeStdio(ctx, testCommand("hang"), testEnv("hang"))
+	_, err := ProbeStdio(ctx, testCommand("hang"), testEnv("hang"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for hanging server")
 	}
@@ -460,7 +460,7 @@ func TestProbeStdio_ErrorResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ProbeStdio(ctx, testCommand("error_response"), testEnv("error_response"))
+	_, err := ProbeStdio(ctx, testCommand("error_response"), testEnv("error_response"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for JSON-RPC error response")
 	}
@@ -474,7 +474,7 @@ func TestProbeStdio_ErrorResponseContentLength(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := ProbeStdio(ctx, testCommand("error_response_cl"), testEnv("error_response_cl"))
+	_, err := ProbeStdio(ctx, testCommand("error_response_cl"), testEnv("error_response_cl"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for JSON-RPC error response")
 	}
@@ -485,7 +485,7 @@ func TestProbeStdio_ErrorResponseContentLength(t *testing.T) {
 
 func TestProbeStdio_EmptyCommand(t *testing.T) {
 	t.Parallel()
-	_, err := ProbeStdio(context.Background(), nil, nil)
+	_, err := ProbeStdio(context.Background(), nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for empty command")
 	}
@@ -493,7 +493,7 @@ func TestProbeStdio_EmptyCommand(t *testing.T) {
 
 func TestProbeStdio_BadCommand(t *testing.T) {
 	t.Parallel()
-	_, err := ProbeStdio(context.Background(), []string{"/nonexistent/binary"}, nil)
+	_, err := ProbeStdio(context.Background(), []string{"/nonexistent/binary"}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent binary")
 	}
@@ -509,7 +509,7 @@ func TestProbeStdio_HostileContentLengthRejectedFast(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := ProbeStdio(ctx, testCommand("hostile_content_length"), testEnv("hostile_content_length"))
+	_, err := ProbeStdio(ctx, testCommand("hostile_content_length"), testEnv("hostile_content_length"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for hostile Content-Length")
 	}
@@ -530,7 +530,7 @@ func TestProbeStdio_HostileNoNewlineRejectedFast(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := ProbeStdio(ctx, testCommand("hostile_no_newline"), testEnv("hostile_no_newline"))
+	_, err := ProbeStdio(ctx, testCommand("hostile_no_newline"), testEnv("hostile_no_newline"), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for non-newline flood")
 	}

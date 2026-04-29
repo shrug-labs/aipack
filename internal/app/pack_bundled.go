@@ -170,7 +170,7 @@ func installBundledProfiles(configDir, packDir string, profiles []string, stdout
 	}
 	profilesDir := filepath.Join(configDir, "profiles")
 	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to create profiles dir: %v\n", err)
+		printBundledWarning(stdout, "failed to create profiles dir", err)
 		return
 	}
 	for _, id := range profiles {
@@ -179,20 +179,20 @@ func installBundledProfiles(configDir, packDir string, profiles []string, stdout
 		dest := filepath.Join(profilesDir, id+".yaml")
 		data, err := os.ReadFile(src)
 		if err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to read bundled profile %s: %v\n", id, err)
+			printBundledWarning(stdout, fmt.Sprintf("failed to read bundled profile %s", id), err)
 			continue
 		}
 		if existing, err := os.ReadFile(dest); err == nil {
 			if !bytes.Equal(existing, data) {
-				fmt.Fprintf(stdout, "Overwriting modified profile %q (copy to a new name to preserve customizations)\n", name)
+				printBundledLine(stdout, fmt.Sprintf("Overwriting modified profile %q (copy to a new name to preserve customizations)", name))
 			}
 		}
 		if err := util.WriteFileAtomicWithPerms(dest, data, 0o700, 0o600); err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to write bundled profile %s: %v\n", dest, err)
+			printBundledWarning(stdout, fmt.Sprintf("failed to write bundled profile %s", dest), err)
 			continue
 		}
-		fmt.Fprintf(stdout, "Installed bundled profile %q\n", name)
-		fmt.Fprintf(stdout, "  To activate: aipack profile set %s\n", name)
+		printBundledLine(stdout, fmt.Sprintf("Installed bundled profile %q", name))
+		printBundledLine(stdout, fmt.Sprintf("  To activate: aipack profile set %s", name))
 	}
 }
 
@@ -217,7 +217,7 @@ func installBundledRegistries(configDir, packDir string, registries []string, st
 		absPath := filepath.Join(packDir, "registries", id+".yaml")
 		reg, err := config.LoadRegistry(absPath)
 		if err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to load registry %s: %v\n", id, err)
+			printBundledWarning(stdout, fmt.Sprintf("failed to load registry %s", id), err)
 			continue
 		}
 		for name, entry := range reg.Packs {
@@ -238,7 +238,7 @@ func installBundledRegistries(configDir, packDir string, registries []string, st
 	if err := indexRegistryEntries(existing, configDir); err != nil {
 		return fmt.Errorf("indexing registry entries: %w", err)
 	}
-	fmt.Fprintf(stdout, "Installed %d bundled registry entry(ies)\n", added)
+	printBundledLine(stdout, fmt.Sprintf("Installed %d bundled registry entry(ies)", added))
 	return nil
 }
 
@@ -249,12 +249,13 @@ func installBundledContent(configDir, packDir string, manifest config.PackManife
 	}
 	if with.Has(domain.BundledRegistries) && len(manifest.Registries) > 0 {
 		if err := installBundledRegistries(configDir, packDir, manifest.Registries, stdout); err != nil {
-			fmt.Fprintf(stdout, "Warning: bundled registry install failed: %v\n", err)
+			printBundledWarning(stdout, "bundled registry install failed", err)
 		}
 	}
 }
 
-// packPreviewBundled prints available bundled content that was not applied.
+// packPreviewBundled emits a single PackInstallInfo event with the multi-line
+// preview block describing available bundled content that was not applied.
 // Used for remote installs when --with is not specified.
 func packPreviewBundled(packDir string, manifest config.PackManifest, stdout io.Writer) {
 	var lines []string
@@ -301,9 +302,14 @@ func packPreviewBundled(packDir string, manifest config.PackManifest, stdout io.
 	}
 
 	if len(lines) > 0 {
-		fmt.Fprintln(stdout, "This pack bundles additional content (use -w to accept, e.g. -w all):")
+		var sb strings.Builder
+		sb.WriteString("This pack bundles additional content (use -w to accept, e.g. -w all):\n")
 		for _, l := range lines {
-			fmt.Fprintln(stdout, l)
+			sb.WriteString(l)
+			sb.WriteString("\n")
+		}
+		if stdout != nil {
+			fmt.Fprint(stdout, sb.String())
 		}
 	}
 }
@@ -320,7 +326,7 @@ func PackApproveBundled(configDir string, packNames []string, approved domain.Bu
 			ConfigDir: configDir,
 			Name:      name,
 			With:      approved,
-		}, stdout)
+		}, stdout, nil)
 		if err != nil {
 			return fmt.Errorf("reapplying bundled content for %s: %w", name, err)
 		}
@@ -335,4 +341,22 @@ func PackApproveBundled(configDir string, packNames []string, approved domain.Bu
 		}
 	}
 	return nil
+}
+
+func printBundledLine(w io.Writer, msg string) {
+	if w == nil {
+		return
+	}
+	fmt.Fprintln(w, msg)
+}
+
+func printBundledWarning(w io.Writer, msg string, err error) {
+	if w == nil {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(w, "Warning: %s: %v\n", msg, err)
+		return
+	}
+	fmt.Fprintf(w, "Warning: %s\n", msg)
 }

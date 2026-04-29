@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -162,7 +161,7 @@ func TestOpenCodeMigration_LegacyPackSourcePathsPruned(t *testing.T) {
 		Force: true,
 		Yes:   true,
 		Quiet: true,
-	}, testRegistry(), io.Discard, io.Discard)
+	}, testRegistry(), nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}

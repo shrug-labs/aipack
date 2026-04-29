@@ -74,12 +74,72 @@ type PackInstallRequest struct {
 	// semver resolution and literal checkout. Empty tracks upstream HEAD.
 	Ref string
 
+	// Events receives live progress events. nil suppresses streaming
+	// (CLI passes nil and reads stdout instead).
+	Events chan<- PackInstallEvent
+
 	// Test injection points:
 	RunGitFn         func(ctx context.Context, args ...string) error
 	URLOKFn          func(ctx context.Context, raw string) (bool, error)
 	NowFn            func() time.Time
 	GitHashFn        func(ctx context.Context, dir string) (string, error)       // nil = source.GitHeadHash
 	ListRemoteTagsFn func(ctx context.Context, repoURL string) ([]string, error) // nil = source.ListRemoteTags
+}
+
+// PackInstallPhase identifies a live step in a pack install operation.
+// Empty phase marks a terminal event, where Err is set on failure or both
+// Err and Phase are empty on success (Done == true on the request struct's
+// matching event).
+type PackInstallPhase string
+
+const (
+	PackInstallPhaseStarting   PackInstallPhase = "starting"
+	PackInstallPhaseProbing    PackInstallPhase = "probing"
+	PackInstallPhaseResolving  PackInstallPhase = "resolving"
+	PackInstallPhaseCloning    PackInstallPhase = "cloning"
+	PackInstallPhaseExtracting PackInstallPhase = "extracting"
+	PackInstallPhaseLinking    PackInstallPhase = "linking"
+	PackInstallPhaseCopying    PackInstallPhase = "copying"
+	PackInstallPhaseIndexing   PackInstallPhase = "indexing"
+)
+
+// PackInstallEvent is emitted for TUI live progress. CLI callers leave
+// req.Events nil and read the human output written to stdout instead.
+//
+// Phase non-empty marks an intermediate state. Phase empty + Err non-nil
+// is a terminal failure; Phase empty + Done true is a terminal success.
+type PackInstallEvent struct {
+	// Pack is a best-effort label (req.Name when set, else input
+	// path/URL). Stable for the duration of one install operation.
+	Pack  string
+	Phase PackInstallPhase
+	Err   error
+	Done  bool
+}
+
+// emitPackInstallEvent pushes ev to events when non-nil. The send is
+// blocking; callers must size the channel buffer to absorb every event a
+// single install emits (currently up to ~9: Starting, Probing, Resolving,
+// Cloning, Extracting, Linking|Copying, Indexing, terminal Err|Done) or
+// risk stalling the install goroutine.
+func emitPackInstallEvent(events chan<- PackInstallEvent, ev PackInstallEvent) {
+	if events == nil {
+		return
+	}
+	events <- ev
+}
+
+// installEventLabel picks a stable label for a pack install event. req.Name
+// when explicit, else the URL or local path the user supplied. Mirrors
+// the labels used in stdout phase lines.
+func installEventLabel(req PackInstallRequest) string {
+	if req.Name != "" {
+		return req.Name
+	}
+	if req.URL != "" {
+		return req.URL
+	}
+	return req.PackPath
 }
 
 // PacksDir returns the canonical pack installation directory.
@@ -130,7 +190,24 @@ func extractLocalPackToStaging(configDir, packDir string) (string, config.PackMa
 }
 
 // PackInstall installs a pack to the canonical location and optionally adds it to a profile.
+//
+// req.Events, when non-nil, receives PackInstallEvent values for live TUI
+// progress. PackInstall always emits a single terminal event (Done on
+// success, Err on failure) so callers can use channel close to drive UI
+// state transitions.
 func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
+	label := installEventLabel(req)
+	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Phase: PackInstallPhaseStarting})
+	err := packInstallDispatch(ctx, req, stdout)
+	if err != nil {
+		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Err: err})
+	} else {
+		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Done: true})
+	}
+	return err
+}
+
+func packInstallDispatch(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
 	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
 	}
@@ -190,11 +267,19 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 		return err
 	}
 
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Installing %s (%s)\n", name, packPath)
+	}
+
 	packsDir := PacksDir(req.ConfigDir)
 	destDir := filepath.Join(packsDir, name)
 
 	if err := os.MkdirAll(packsDir, 0o700); err != nil {
-		return fmt.Errorf("creating packs directory: %w", err)
+		err = fmt.Errorf("creating packs directory: %w", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+		}
+		return err
 	}
 
 	// Resolve effective content preferences. Local installs default to
@@ -218,31 +303,55 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	}
 	if resolvedPackDir == resolvedDestDir {
 		method = config.MethodLocal
-		fmt.Fprintf(stdout, "Already installed: %s (recording in-place)\n", destDir)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Already installed: %s (recording in-place)\n", destDir)
+		}
 	} else if req.Link {
 		method = config.MethodLink
+		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseLinking})
 		packRemoveExisting(destDir, stdout)
 		if err := createLink(packDir, destDir); err != nil {
-			return fmt.Errorf("creating symlink: %w", err)
+			err = fmt.Errorf("creating symlink: %w", err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+			}
+			return err
 		}
-		fmt.Fprintf(stdout, "Linked: %s -> %s\n", destDir, packDir)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Linked: %s -> %s\n", destDir, packDir)
+		}
 	} else {
 		method = config.MethodCopy
+		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseCopying})
 		// Extract to a temp dir first so repo-relative extras are
 		// materialized and rewritten before the atomic install swap.
 		staging, extractedManifest, err := extractLocalPackToStaging(req.ConfigDir, packDir)
 		if err != nil {
-			return fmt.Errorf("extracting pack: %w", err)
+			err = fmt.Errorf("extracting pack: %w", err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+			}
+			return err
 		}
 		defer os.RemoveAll(staging)
 		if err := applyWithFilter(staging, &extractedManifest, with); err != nil {
-			return fmt.Errorf("applying content filter: %w", err)
+			err = fmt.Errorf("applying content filter: %w", err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+			}
+			return err
 		}
 		if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
-			return fmt.Errorf("installing pack to %s: %w", destDir, err)
+			err = fmt.Errorf("installing pack to %s: %w", destDir, err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+			}
+			return err
 		}
 		manifest = extractedManifest
-		fmt.Fprintf(stdout, "Copied: %s -> %s\n", packDir, destDir)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Copied: %s -> %s\n", packDir, destDir)
+		}
 	}
 
 	now := time.Now()
@@ -260,13 +369,17 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	// sync drift reports work before the first sync runs.
 	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, destDir, "", now, stdout)
 	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
+		}
 	}
 
 	// Record content integrity hashes for copy installs.
 	if method == config.MethodCopy {
 		if _, err := saveIntegrity(destDir); err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to record integrity: %v\n", err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "Warning: failed to record integrity: %v\n", err)
+			}
 		}
 	}
 
@@ -274,7 +387,11 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 
 	if req.Add {
 		if err := PackAdd(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
-			return fmt.Errorf("adding pack to profile: %w", err)
+			err = fmt.Errorf("adding pack to profile: %w", err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+			}
+			return err
 		}
 	}
 
@@ -284,27 +401,29 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	return nil
 }
 
-// packWarnMCPServers prints a prominent warning when a pack defines MCP servers.
+// packWarnMCPServers emits a prominent warning when a pack defines MCP servers.
 func packWarnMCPServers(manifest config.PackManifest, stdout io.Writer) {
 	if len(manifest.MCP) == 0 {
 		return
 	}
 	servers := slices.Clone(manifest.MCP)
 	slices.Sort(servers)
-	fmt.Fprintln(stdout, "")
-	fmt.Fprintln(stdout, "WARNING: This pack defines MCP servers (external tool access):")
+	var sb strings.Builder
+	sb.WriteString("\nWARNING: This pack defines MCP servers (external tool access):\n")
 	for _, s := range servers {
-		fmt.Fprintf(stdout, "  %s\n", s)
+		fmt.Fprintf(&sb, "  %s\n", s)
 	}
-	fmt.Fprintln(stdout, "Review MCP server definitions before running 'aipack sync'.")
-	fmt.Fprintln(stdout, "")
+	sb.WriteString("Review MCP server definitions before running 'aipack sync'.\n\n")
+	if stdout != nil {
+		fmt.Fprint(stdout, sb.String())
+	}
 }
 
 // resolveSemverRef expands an exact or partial semver classification to the
 // remote tag's raw spelling. For RefPartialSemver it prints a "Resolved X → Y"
-// hint to stdout. Returns "" with no error for non-semver kinds so callers can
-// treat the result uniformly: only overwrite their ref when resolved != "".
-// displayRef is the user-facing spec used in error messages.
+// hint. Returns "" with no error for non-semver kinds so
+// callers can treat the result uniformly: only overwrite their ref when
+// resolved != "". displayRef is the user-facing spec used in error messages.
 func resolveSemverRef(
 	ctx context.Context,
 	repoURL, displayRef string,
@@ -324,7 +443,9 @@ func resolveSemverRef(
 		if err != nil {
 			return "", fmt.Errorf("resolving partial version %q: %w", displayRef, err)
 		}
-		fmt.Fprintf(stdout, "Resolved %s → %s\n", displayRef, resolved)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Resolved %s → %s\n", displayRef, resolved)
+		}
 		return resolved, nil
 	}
 	return "", nil
@@ -344,19 +465,40 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 		req.Ref = ""
 	}
 
+	// Pack name is unknown until the manifest is read after clone; req.Name
+	// is the user-supplied override (may be empty). Empty Pack renders as
+	// "Installing from <url>" — see formatLine.
+	if stdout != nil {
+		if req.Name == "" {
+			fmt.Fprintf(stdout, "Installing from %s\n", req.URL)
+		} else {
+			fmt.Fprintf(stdout, "Installing %s (%s)\n", req.Name, req.URL)
+		}
+	}
+
 	// Resolve URL info: for SSH/git URLs or when SubPath/Ref/partial version
 	// is pre-set, skip the HTTP probe (ProbePackURL) and go directly to git
 	// operations. Partial semver is treated like an explicit ref for probe
 	// purposes — the user declared git intent and the URL is assumed to be
 	// a clone-able repo, not a GitHub blob URL that needs normalization.
+	label := installEventLabel(req)
 	var info source.PackURLInfo
 	if req.SubPath != "" || req.Ref != "" || refClass.Kind == source.RefPartialSemver || config.IsGitURL(req.URL, "") {
 		info = source.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
 	} else {
+		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Phase: PackInstallPhaseProbing})
 		var err error
 		info, err = source.ProbePackURL(req.URL)
 		if err != nil {
-			return fmt.Errorf("probing URL: %w", err)
+			err = fmt.Errorf("probing URL: %w", err)
+			if stdout != nil {
+				if req.Name == "" {
+					fmt.Fprintf(stdout, "error: %v\n", err)
+				} else {
+					fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+				}
+			}
+			return err
 		}
 
 		// Validate pack.json is accessible if we have a direct URL for it.
@@ -367,10 +509,26 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 			}
 			ok, err := urlOKFn(ctx, info.PackURL)
 			if err != nil {
-				return fmt.Errorf("pack.json check failed for %s: %w", info.PackURL, err)
+				err = fmt.Errorf("pack.json check failed for %s: %w", info.PackURL, err)
+				if stdout != nil {
+					if req.Name == "" {
+						fmt.Fprintf(stdout, "error: %v\n", err)
+					} else {
+						fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+					}
+				}
+				return err
 			}
 			if !ok {
-				return fmt.Errorf("pack.json not found at %s", info.PackURL)
+				err := fmt.Errorf("pack.json not found at %s", info.PackURL)
+				if stdout != nil {
+					if req.Name == "" {
+						fmt.Fprintf(stdout, "error: %v\n", err)
+					} else {
+						fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+					}
+				}
+				return err
 			}
 		}
 	}
@@ -385,7 +543,17 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// Expand exact or partial semver specs to the remote tag's raw spelling.
 	// Partial installs still pin to a single resolved version — they do not
 	// create a channel that auto-updates.
+	if refClass.Kind == source.RefSemver || refClass.Kind == source.RefPartialSemver {
+		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Phase: PackInstallPhaseResolving})
+	}
 	if resolved, err := resolveSemverRef(ctx, info.RepoURL, req.Ref, refClass, listFn, stdout); err != nil {
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
 		return err
 	} else if resolved != "" {
 		req.Ref = resolved
@@ -394,13 +562,15 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 
 	packsDir := PacksDir(req.ConfigDir)
 	if err := os.MkdirAll(packsDir, 0o700); err != nil {
-		return fmt.Errorf("creating packs directory: %w", err)
-	}
-
-	// Capture pre-install integrity so we can show a diff when replacing.
-	var oldIntegrity IntegrityManifest
-	if req.Name != "" {
-		oldIntegrity, _ = loadIntegrity(filepath.Join(packsDir, req.Name))
+		err = fmt.Errorf("creating packs directory: %w", err)
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
+		return err
 	}
 
 	// All remote installs use shallow clone (commit hash + version pinning).
@@ -434,7 +604,11 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	}
 
 	if err := applyWithFilter(result.destDir, &result.manifest, effectiveWith); err != nil {
-		return fmt.Errorf("applying content filter: %w", err)
+		err = fmt.Errorf("applying content filter: %w", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %s: %v\n", result.name, err)
+		}
+		return err
 	}
 
 	name := result.name
@@ -451,22 +625,30 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// captured so the next sync can report the version transition.
 	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, result.destDir, info.Ref, now, stdout)
 	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
+		}
 	}
 
 	packWarnMCPServers(result.manifest, stdout)
 
-	// Record content integrity and show diff when replacing an existing pack.
-	_, changed, _ := saveAndDiffIntegrity(result.destDir, oldIntegrity, stdout)
-	if len(oldIntegrity.Files) > 0 && !changed {
-		fmt.Fprintf(stdout, "Content unchanged.\n")
-	}
+	// Record content integrity for tamper detection by `pack update`. The
+	// diff itself is suppressed here: install is a fresh-state operation
+	// in the user's mental model, and the report leaks bundled-content
+	// filter side effects (pack.json field strip/unstrip and bundled file
+	// add/remove from `-w` flips) that don't reflect upstream drift.
+	// Reserve the integrity diff for `pack update`.
+	_, _ = saveIntegrity(result.destDir)
 
 	installBundledContent(req.ConfigDir, result.destDir, result.manifest, effectiveWith, stdout)
 
 	if req.Add {
 		if err := PackAdd(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
-			return fmt.Errorf("adding pack to profile: %w", err)
+			err = fmt.Errorf("adding pack to profile: %w", err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+			}
+			return err
 		}
 	}
 
@@ -494,7 +676,15 @@ type packInstallResult struct {
 func packShallowClone(ctx context.Context, req PackInstallRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
 	cloneDir, err := makePackTempDir(req.ConfigDir, "clone-*")
 	if err != nil {
-		return packInstallResult{}, fmt.Errorf("creating temp dir: %w", err)
+		err = fmt.Errorf("creating temp dir: %w", err)
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
+		return packInstallResult{}, err
 	}
 	defer os.RemoveAll(cloneDir)
 
@@ -503,8 +693,24 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 	if gitFn == nil {
 		gitFn = source.RunGit
 	}
+	if stdout != nil {
+		if req.Name == "" {
+			fmt.Fprintf(stdout, "Cloning from %s\n", info.RepoURL)
+		} else {
+			fmt.Fprintf(stdout, "Cloning %s from %s\n", req.Name, info.RepoURL)
+		}
+	}
+	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseCloning})
 	if err := source.EnsureCloneWithRef(ctx, info.RepoURL, cloneDir, info.Ref, cacheRefDir, gitFn); err != nil {
-		return packInstallResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
+		err = fmt.Errorf("cloning %s: %w", info.RepoURL, err)
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
+		return packInstallResult{}, err
 	}
 	// Best-effort: seed the bare-repo cache from the local clone for future
 	// --reference reuse. No network call — uses cloneDir as source.
@@ -519,6 +725,7 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 
 	// Extract content into clean staging directory. Use cloneDir as symlink
 	// boundary so subpath packs can resolve symlinks to sibling directories.
+	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseExtracting})
 	staging, manifest, err := extractPackContent(
 		packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, cloneDir,
 	)
@@ -526,7 +733,14 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		// Provide a helpful hint when subpath packs fail to find pack.json.
 		if info.SubPath != "" && errors.Is(err, os.ErrNotExist) {
 			if hint := listClonePacks(cloneDir); hint != "" {
-				return packInstallResult{}, fmt.Errorf("path %q not found in repository; available packs: %s", info.SubPath, hint)
+				err = fmt.Errorf("path %q not found in repository; available packs: %s", info.SubPath, hint)
+			}
+		}
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
 			}
 		}
 		return packInstallResult{}, err
@@ -535,15 +749,28 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 
 	name, err := resolvePackName(req.Name, manifest.Name)
 	if err != nil {
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
 		return packInstallResult{}, err
 	}
 
 	destDir := filepath.Join(packsDir, name)
 	if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
-		return packInstallResult{}, fmt.Errorf("installing pack to %s: %w", destDir, err)
+		err = fmt.Errorf("installing pack to %s: %w", destDir, err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+		}
+		return packInstallResult{}, err
 	}
 
-	fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
+	}
 
 	return packInstallResult{name: name, destDir: destDir, method: config.MethodClone, manifest: manifest, commitHash: commitHash}, nil
 }
@@ -602,7 +829,7 @@ func pinLabel(ref string) string {
 	return util.ShortHash(ref)
 }
 
-// warnPackJSONVersionMismatch prints a non-blocking warning when a pack's
+// warnPackJSONVersionMismatch emits a non-blocking warning when a pack's
 // manifest version has drifted from its git tags, so authors notice the
 // mismatch. No-op for commit hashes, literal refs (branches), "latest",
 // or empty refs. Accepts both flat ("v1.2.3") and namespaced
@@ -618,7 +845,9 @@ func warnPackJSONVersionMismatch(stdout io.Writer, requestedRef, manifestVersion
 	if !source.IsSemverTag(actual) || actual == expected {
 		return
 	}
-	fmt.Fprintf(stdout, "Warning: pack.json version (%s) does not match installed tag version (%s)\n", actual, expected)
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Warning: pack.json version (%s) does not match installed tag version (%s)\n", actual, expected)
+	}
 }
 
 // packProfileName returns the trimmed profile name, defaulting to "default".
@@ -678,16 +907,20 @@ func inferInstallMethod(mode os.FileMode) string {
 	return config.MethodCopy
 }
 
-// packRemoveExisting removes an already-installed pack at destDir, printing
-// what it replaces. Used only for the symlink install path where there is no
-// staging directory to swap in.
+// packRemoveExisting removes an already-installed pack at destDir, emitting
+// a notice for what it replaces. Used only for the symlink install path
+// where there is no staging directory to swap in.
 func packRemoveExisting(destDir string, stdout io.Writer) {
 	if st, err := os.Lstat(destDir); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
 			target, _ := os.Readlink(destDir)
-			fmt.Fprintf(stdout, "Replacing existing link: %s -> %s\n", destDir, target)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "Replacing existing link: %s -> %s\n", destDir, target)
+			}
 		} else if st.IsDir() {
-			fmt.Fprintf(stdout, "Replacing existing copy: %s\n", destDir)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "Replacing existing copy: %s\n", destDir)
+			}
 		}
 		os.RemoveAll(destDir)
 	}

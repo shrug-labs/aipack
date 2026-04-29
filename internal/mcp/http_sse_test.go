@@ -144,7 +144,7 @@ func TestProbeSSE_HappyPath(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := ProbeSSE(ctx, srv.URL+"/", nil)
+	result, err := ProbeSSE(ctx, srv.URL+"/", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ProbeSSE: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestProbeSSE_JSONRPCError(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := ProbeSSE(ctx, srv.URL+"/", nil)
+	_, err := ProbeSSE(ctx, srv.URL+"/", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "method not found") {
 		t.Errorf("expected method-not-found error, got %v", err)
 	}
@@ -192,7 +192,7 @@ func TestProbeSSE_NoToolsCapability(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := ProbeSSE(ctx, srv.URL+"/", nil)
+	_, err := ProbeSSE(ctx, srv.URL+"/", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "tools capability") {
 		t.Errorf("expected tools-capability error, got %v", err)
 	}
@@ -211,7 +211,7 @@ func TestProbeSSE_FirstEventNotEndpoint(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := ProbeSSE(ctx, srv.URL, nil)
+	_, err := ProbeSSE(ctx, srv.URL, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "endpoint") {
 		t.Errorf("expected error about endpoint event, got %v", err)
 	}
@@ -226,7 +226,7 @@ func TestProbeSSE_HTTPErrorOnStreamOpen(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := ProbeSSE(ctx, srv.URL, nil)
+	_, err := ProbeSSE(ctx, srv.URL, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Errorf("expected 403 error, got %v", err)
 	}
@@ -234,7 +234,7 @@ func TestProbeSSE_HTTPErrorOnStreamOpen(t *testing.T) {
 
 func TestProbeSSE_EmptyURL(t *testing.T) {
 	t.Parallel()
-	_, err := ProbeSSE(context.Background(), "", nil)
+	_, err := ProbeSSE(context.Background(), "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for empty URL")
 	}
@@ -265,7 +265,7 @@ func TestProbeSSE_StreamClosesMidFlight(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := ProbeSSE(ctx, srv.URL+"/", nil)
+	_, err := ProbeSSE(ctx, srv.URL+"/", nil, nil, nil)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("expected error when stream closes mid-flight")

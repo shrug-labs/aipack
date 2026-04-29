@@ -175,6 +175,10 @@ var (
 	// without escalating to error severity — drift is informational, not a fault.
 	driftStyle = lipgloss.NewStyle().Foreground(clrWarning)
 
+	// Pack-update row decoration style. Used by formatRowSuffix for the
+	// terse ✓ glyph on terminal-success rows.
+	successStyle = lipgloss.NewStyle().Foreground(clrSuccess)
+
 	previewBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(clrAccent).

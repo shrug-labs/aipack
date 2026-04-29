@@ -2,57 +2,39 @@ package engine
 
 import "testing"
 
-func TestClassifySettings_FullSettings(t *testing.T) {
+func TestClassifySettings(t *testing.T) {
 	t.Parallel()
-	d := ClassifySettings(true, true, false)
-	if !d.EmitSettings {
-		t.Error("expected EmitSettings=true when skipSettings=false and hasManagedContent=true")
-	}
-	if d.EmitMCP {
-		t.Error("expected EmitMCP=false when EmitSettings=true")
-	}
-	if d.MergeMode {
-		t.Error("expected MergeMode=false for full settings")
-	}
-}
+	cases := []struct {
+		name             string
+		hasManagedKeys   bool
+		hasBase          bool
+		skipSettings     bool
+		wantEmitSettings bool
+		wantEmitMCP      bool
+		wantMergeMode    bool
+	}{
+		{name: "managed_and_base", hasManagedKeys: true, hasBase: true, wantEmitSettings: true},
+		{name: "managed_only", hasManagedKeys: true, wantEmitSettings: true},
+		{name: "base_only", hasBase: true, wantEmitSettings: true},
+		{name: "nothing" /* all false */},
 
-func TestClassifySettings_SkipSettingsWithMCP(t *testing.T) {
-	t.Parallel()
-	d := ClassifySettings(true, true, true)
-	if d.EmitSettings {
-		t.Error("expected EmitSettings=false when skipSettings=true")
+		{name: "skip_managed_and_base", hasManagedKeys: true, hasBase: true, skipSettings: true, wantEmitMCP: true, wantMergeMode: true},
+		{name: "skip_managed_only", hasManagedKeys: true, skipSettings: true, wantEmitMCP: true, wantMergeMode: true},
+		{name: "skip_base_only", hasBase: true, skipSettings: true /* nothing emitted */},
+		{name: "skip_nothing", skipSettings: true},
 	}
-	if !d.EmitMCP {
-		t.Error("expected EmitMCP=true when skipSettings=true and hasMCP=true")
-	}
-	if !d.MergeMode {
-		t.Error("expected MergeMode=true when skipSettings=true")
-	}
-}
-
-func TestClassifySettings_NoContent(t *testing.T) {
-	t.Parallel()
-	d := ClassifySettings(false, false, false)
-	if d.EmitSettings {
-		t.Error("expected EmitSettings=false when no content")
-	}
-	if d.EmitMCP {
-		t.Error("expected EmitMCP=false when no content")
-	}
-}
-
-func TestClassifySettings_NoContentSkipSettings(t *testing.T) {
-	t.Parallel()
-	d := ClassifySettings(false, false, true)
-	if d.EmitSettings || d.EmitMCP {
-		t.Error("expected nothing emitted when no content and skipSettings")
-	}
-}
-
-func TestClassifySettings_MCPOnlyNoSkip(t *testing.T) {
-	t.Parallel()
-	d := ClassifySettings(true, false, false)
-	if !d.EmitSettings {
-		t.Error("expected EmitSettings=true when hasMCP=true and skipSettings=false")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := ClassifySettings(tc.hasManagedKeys, tc.hasBase, tc.skipSettings)
+			if d.EmitSettings != tc.wantEmitSettings {
+				t.Errorf("EmitSettings = %v, want %v", d.EmitSettings, tc.wantEmitSettings)
+			}
+			if d.EmitMCP != tc.wantEmitMCP {
+				t.Errorf("EmitMCP = %v, want %v", d.EmitMCP, tc.wantEmitMCP)
+			}
+			if d.MergeMode != tc.wantMergeMode {
+				t.Errorf("MergeMode = %v, want %v", d.MergeMode, tc.wantMergeMode)
+			}
+		})
 	}
 }

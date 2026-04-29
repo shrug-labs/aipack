@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,7 +173,7 @@ func TestReconcileStaleEntries_NonInteractive_WarnsForUserModifiedFiles(t *testi
 		{Dst: fileB, Content: []byte("content-b"), SourcePack: "pack1"},
 	})
 
-	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	ar := ApplyRequest{Quiet: true}
 	if _, err := eng.ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatal(err)
 	}
@@ -193,8 +192,7 @@ func TestReconcileStaleEntries_NonInteractive_WarnsForUserModifiedFiles(t *testi
 	plan2 := buildPlan(dir, nil)
 	plan2.Ledger = plan.Ledger
 	ar2 := ApplyRequest{
-		Quiet:  true,
-		Stderr: io.Discard,
+		Quiet: true,
 	}
 	warnings, err := engNonInteractive.ApplyPlan(context.Background(), plan2, ar2, []string{dir})
 	if err != nil {
@@ -232,7 +230,7 @@ func TestReconcileStaleEntries_UserModifiedFilePreserved(t *testing.T) {
 	})
 
 	// First sync: create the file and ledger entry.
-	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	ar := ApplyRequest{Quiet: true}
 	if _, err := eng.ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatal(err)
 	}
@@ -247,8 +245,7 @@ func TestReconcileStaleEntries_UserModifiedFilePreserved(t *testing.T) {
 	plan2 := buildPlan(dir, nil)
 	plan2.Ledger = plan.Ledger
 	ar2 := ApplyRequest{
-		Quiet:  true,
-		Stderr: io.Discard,
+		Quiet: true,
 	}
 	if _, err := engDecline.ApplyPlan(context.Background(), plan2, ar2, []string{dir}); err != nil {
 		t.Fatal(err)
@@ -270,7 +267,7 @@ func TestReconcileStaleEntries_UserModifiedFileDeleted(t *testing.T) {
 		{Dst: file, Content: []byte("original"), SourcePack: "pack1"},
 	})
 
-	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	ar := ApplyRequest{Quiet: true}
 	if _, err := eng.ApplyPlan(context.Background(), plan, ar, []string{dir}); err != nil {
 		t.Fatal(err)
 	}
@@ -285,8 +282,7 @@ func TestReconcileStaleEntries_UserModifiedFileDeleted(t *testing.T) {
 	plan2 := buildPlan(dir, nil)
 	plan2.Ledger = plan.Ledger
 	ar2 := ApplyRequest{
-		Quiet:  true,
-		Stderr: io.Discard,
+		Quiet: true,
 	}
 	if _, err := engConfirm.ApplyPlan(context.Background(), plan2, ar2, []string{dir}); err != nil {
 		t.Fatal(err)
@@ -332,7 +328,7 @@ func TestReconcileStaleEntries_OwnedFileStrippedNotDeleted(t *testing.T) {
 			MergeMode: true,
 		}},
 	}
-	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	ar := ApplyRequest{Quiet: true}
 	if _, err := eng.ApplyPlan(context.Background(), plan, ar, []string{dir, settingsFile}); err != nil {
 		t.Fatal(err)
 	}
@@ -359,9 +355,8 @@ func TestReconcileStaleEntries_OwnedFileStrippedNotDeleted(t *testing.T) {
 	}
 
 	ar2 := ApplyRequest{
-		Yes:    true,
-		Quiet:  true,
-		Stderr: io.Discard,
+		Yes:   true,
+		Quiet: true,
 		StripFuncs: map[string]func([]byte) ([]byte, error){
 			filepath.Clean(settingsFile): stripFn,
 		},
@@ -419,7 +414,7 @@ func TestReconcileStaleEntries_OwnedFileStripError_WarnsNotDeletes(t *testing.T)
 		Ledger:   filepath.Join(dir, ".aipack", "ledger.json"),
 		Settings: []domain.SettingsAction{{Dst: settingsFile, Desired: content, Harness: domain.HarnessClaudeCode, Label: ".claude.json", MergeMode: true}},
 	}
-	ar := ApplyRequest{Quiet: true, Stderr: io.Discard}
+	ar := ApplyRequest{Quiet: true}
 	if _, err := eng.ApplyPlan(context.Background(), plan, ar, []string{dir, settingsFile}); err != nil {
 		t.Fatal(err)
 	}
@@ -427,9 +422,8 @@ func TestReconcileStaleEntries_OwnedFileStripError_WarnsNotDeletes(t *testing.T)
 	// Second sync with a strip function that always errors.
 	plan2 := domain.Plan{Desired: map[string]struct{}{}, Ledger: plan.Ledger}
 	ar2 := ApplyRequest{
-		Yes:    true,
-		Quiet:  true,
-		Stderr: io.Discard,
+		Yes:   true,
+		Quiet: true,
 		StripFuncs: map[string]func([]byte) ([]byte, error){
 			filepath.Clean(settingsFile): func([]byte) ([]byte, error) {
 				return nil, fmt.Errorf("simulated strip error")

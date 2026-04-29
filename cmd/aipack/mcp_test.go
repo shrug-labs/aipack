@@ -84,8 +84,14 @@ func TestMCPInspectTools_UnknownServer_ExitUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, code := runApp(t, "mcp", "inspect-tools", "does-not-exist", "--config-dir", configDir)
+	stdout, stderr, code := runApp(t, "mcp", "inspect-tools", "does-not-exist", "--config-dir", configDir)
 	if code != cmdutil.ExitUsage {
 		t.Fatalf("expected ExitUsage (%d) for unknown server, got %d", cmdutil.ExitUsage, code)
+	}
+	if stdout != "" {
+		t.Fatalf("unknown-server error should not write stdout, got: %q", stdout)
+	}
+	if !strings.Contains(stderr, "does-not-exist") {
+		t.Fatalf("unknown-server error should be reported on stderr, got: %q", stderr)
 	}
 }

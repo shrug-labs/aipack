@@ -27,7 +27,12 @@ import (
 // Per-event body size is bounded by maxMCPMessageBytes (via readSSEEvent) so
 // a malicious or runaway server cannot grow the parent process by streaming
 // without framing — matching the same cap stdio and streamable-http enforce.
-func ProbeSSE(ctx context.Context, endpointURL string, headers map[string]string) (*ProbeResult, error) {
+//
+// stdout (when non-nil) receives `  connected (sse)` and `  listing tools`
+// lines for live progress; events (when non-nil) receives the same
+// milestones as ProbeEvent values. Lifecycle starting/done/error events are
+// emitted by Probe.
+func ProbeSSE(ctx context.Context, endpointURL string, headers map[string]string, stdout io.Writer, events chan<- ProbeEvent) (*ProbeResult, error) {
 	if endpointURL == "" {
 		return nil, fmt.Errorf("empty URL")
 	}
@@ -187,6 +192,15 @@ func ProbeSSE(ctx context.Context, endpointURL string, headers map[string]string
 	}); err != nil {
 		return nil, fmt.Errorf("send initialized: %w", err)
 	}
+
+	if stdout != nil {
+		fmt.Fprintln(stdout, "  connected (sse)")
+	}
+	emitProbeEvent(events, ProbeEvent{Transport: "sse", Phase: ProbePhaseConnected})
+	if stdout != nil {
+		fmt.Fprintln(stdout, "  listing tools")
+	}
+	emitProbeEvent(events, ProbeEvent{Phase: ProbePhaseListingTools})
 
 	toolsResp, err := sendRequest(2, "tools/list", map[string]any{})
 	if err != nil {

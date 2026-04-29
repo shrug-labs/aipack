@@ -322,7 +322,7 @@ func packRecordOrigin(configDir, name string, meta config.InstalledPackMeta) err
 // buildResolvedInventory is a best-effort wrapper around
 // engine.BuildPackInventory used at install/update/rename time to keep the
 // lockfile's Resolved baseline populated without waiting for the first
-// sync. Logs a warning on failure and returns nil — the caller should
+// sync. Emits a warning on failure and returns nil — the caller should
 // record install metadata either way; a missing Resolved block just
 // degrades drift detection and doctor broken_refs until the next sync
 // rebuilds it. Stamps CapturedAtRef so drift reports can show the
@@ -435,14 +435,18 @@ func PackAdd(configDir string, profileName string, packName string, quietOverrid
 		}
 	}
 
+	var detail string
 	if !packExists {
 		label := "pack"
 		if effectiveQuiet {
 			label = "quiet pack"
 		}
-		fmt.Fprintf(stdout, "Added %s %q to profile %q\n", label, packName, profileName)
+		detail = fmt.Sprintf("Added %s %q to profile %q\n", label, packName, profileName)
 	} else {
-		fmt.Fprintf(stdout, "Pack %q already in profile %q\n", packName, profileName)
+		detail = fmt.Sprintf("Pack %q already in profile %q\n", packName, profileName)
+	}
+	if stdout != nil {
+		fmt.Fprint(stdout, detail)
 	}
 	return nil
 }

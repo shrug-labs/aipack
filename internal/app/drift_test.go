@@ -96,7 +96,7 @@ func TestRunSync_DriftOutput_RemovedRuleAppearsInReport(t *testing.T) {
 		{PackName: "my-pack", Category: domain.CategoryRules, Direction: "include", ID: "rule-b"},
 	}
 
-	var stdout bytes.Buffer
+	var out bytes.Buffer
 	reg := testRegistry()
 	_, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
 		TargetSpec: TargetSpec{
@@ -110,11 +110,11 @@ func TestRunSync_DriftOutput_RemovedRuleAppearsInReport(t *testing.T) {
 		Quiet:  true,
 		DryRun: true, // dry-run is enough: drift output runs before the dry-run early return
 		NowFn:  func() time.Time { return time.Unix(0, 0) },
-	}, reg, &stdout, &stdout)
+	}, reg, &out, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
-	out := stdout.String()
+	got := out.String()
 	wantSubstrings := []string{
 		"Drift detected in my-pack",
 		"Removed (affects your profile):",
@@ -122,8 +122,8 @@ func TestRunSync_DriftOutput_RemovedRuleAppearsInReport(t *testing.T) {
 		"referenced via rules.include",
 	}
 	for _, s := range wantSubstrings {
-		if !strings.Contains(out, s) {
-			t.Errorf("drift output missing %q:\n---\n%s---", s, out)
+		if !strings.Contains(got, s) {
+			t.Errorf("drift output missing %q:\n---\n%s---", s, got)
 		}
 	}
 }
@@ -158,7 +158,7 @@ func TestRunSync_DriftWriteback_AfterSuccessfulApply(t *testing.T) {
 		Yes:   true,
 		Quiet: true,
 		NowFn: func() time.Time { return time.Unix(1713000000, 0).UTC() },
-	}, reg, new(bytes.Buffer), new(bytes.Buffer))
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestRunSync_DriftWriteback_SkippedOnDryRun(t *testing.T) {
 		Yes:    true,
 		Quiet:  true,
 		NowFn:  func() time.Time { return time.Unix(0, 0) },
-	}, reg, new(bytes.Buffer), new(bytes.Buffer))
+	}, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestRunSync_DriftOutput_NoBaselineSkipsSilently(t *testing.T) {
 	// No lockfile seeded — first sync. Drift output should be empty.
 	profile := driftProfile("my-pack", packRoot, []string{"rule-a"}, nil)
 
-	var stdout bytes.Buffer
+	var out bytes.Buffer
 	reg := testRegistry()
 	_, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
 		TargetSpec: TargetSpec{
@@ -256,11 +256,11 @@ func TestRunSync_DriftOutput_NoBaselineSkipsSilently(t *testing.T) {
 		Yes:    true,
 		Quiet:  true,
 		NowFn:  func() time.Time { return time.Unix(0, 0) },
-	}, reg, &stdout, &stdout)
+	}, reg, &out, nil)
 	if err != nil {
 		t.Fatalf("RunSync: %v", err)
 	}
-	if strings.Contains(stdout.String(), "Drift detected") {
-		t.Errorf("unexpected drift output on first sync:\n%s", stdout.String())
+	if strings.Contains(out.String(), "Drift detected") {
+		t.Errorf("unexpected drift output on first sync:\n%s", out.String())
 	}
 }

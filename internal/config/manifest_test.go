@@ -184,7 +184,7 @@ func TestContentPaths_IncludesExtrasDirs(t *testing.T) {
 		SchemaVersion: 1,
 		Name:          "extras-test",
 		Root:          ".",
-		Extras:        []string{"wrappers", "mcp-servers/oci-api", "bootstrap.sh"},
+		Extras:        []string{"wrappers", "mcp-servers/cloud-api", "bootstrap.sh"},
 	}
 
 	paths := m.ContentPaths()
@@ -192,7 +192,7 @@ func TestContentPaths_IncludesExtrasDirs(t *testing.T) {
 
 	expected := []string{
 		"bootstrap.sh",
-		"mcp-servers/oci-api",
+		"mcp-servers/cloud-api",
 		"pack.json",
 		"wrappers",
 	}
@@ -261,7 +261,7 @@ func TestExtrasStagingName(t *testing.T) {
 		want  string
 	}{
 		{"wrappers", "wrappers"},
-		{"mcp-servers/oci-api", "mcp-servers/oci-api"},
+		{"mcp-servers/cloud-api", "mcp-servers/cloud-api"},
 		{"../shared-scripts", "shared-scripts"},
 		{"../../shared/lib", "shared/lib"},
 		{"../scripts/auth.sh", "scripts/auth.sh"},

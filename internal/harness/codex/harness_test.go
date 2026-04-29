@@ -328,6 +328,47 @@ func TestPlan_Project_Settings(t *testing.T) {
 	}
 }
 
+func TestPlan_Project_BaseSettingsOnly(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Profile: domain.Profile{
+			BaseSettings: domain.SettingsBundle{
+				domain.HarnessCodex: []domain.ConfigFile{
+					{Filename: "config.toml", Content: []byte("model = \"gpt-test\"\n")},
+				},
+			},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(f.Settings) != 1 {
+		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
+	}
+
+	var root map[string]any
+	if err := toml.Unmarshal(f.Settings[0].Desired, &root); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	if root["model"] != "gpt-test" {
+		t.Fatalf("model = %v, want gpt-test", root["model"])
+	}
+
+	ctx.SkipSettings = true
+	f, err = Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan with skip settings: %v", err)
+	}
+	if len(f.Settings) != 0 || len(f.MCP) != 0 {
+		t.Fatalf("skip-settings base-only actions: settings=%d mcp=%d, want none", len(f.Settings), len(f.MCP))
+	}
+}
+
 // --- Render tests ---
 
 func TestRenderBytes_MergesBase(t *testing.T) {
@@ -470,7 +511,7 @@ func TestRenderBytes_ToolNamesWithSpecialCharsRoundTrip(t *testing.T) {
 	servers := []domain.MCPServer{
 		{
 			Name:               "oci",
-			Command:            []string{"oci-mcp"},
+			Command:            []string{"cloud-mcp"},
 			Env:                map[string]string{},
 			AllowedTools:       specialNames,
 			AlwaysAllowedTools: specialNames,

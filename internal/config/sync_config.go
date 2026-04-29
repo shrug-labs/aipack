@@ -48,16 +48,17 @@ const (
 // without a v-prefix) or a commit hash represents a pin; anything else
 // (branch name, empty) tracks upstream.
 type InstalledPackMeta struct {
-	Origin       string                         `yaml:"origin"`                  // abs path or URL
-	Method       string                         `yaml:"method"`                  // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodLocal
-	InstalledAt  string                         `yaml:"installed_at"`            // RFC3339
-	Ref          string                         `yaml:"ref,omitempty"`           // git ref (URL only)
-	SubPath      string                         `yaml:"sub_path,omitempty"`      // subdirectory within cloned repo
-	CommitHash   string                         `yaml:"commit_hash,omitempty"`   // git HEAD SHA at install/update time
-	ContentPaths map[domain.PackCategory]string `yaml:"content_paths,omitempty"` // content type -> directory path within clone (nil = standard layout)
-	Approved     []domain.BundledCategory       `yaml:"approved,omitempty"`      // bundled categories the user accepted
-	Declined     []domain.BundledCategory       `yaml:"declined,omitempty"`      // bundled categories the user declined
-	Resolved     *domain.PackInventory          `yaml:"resolved,omitempty"`      // last resolved content inventory (drift detection baseline)
+	Origin        string                         `yaml:"origin"`                    // abs path or URL
+	Method        string                         `yaml:"method"`                    // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodLocal
+	InstalledAt   string                         `yaml:"installed_at"`              // RFC3339; refreshed only when content changes (StatusUpdated path)
+	LastCheckedAt string                         `yaml:"last_checked_at,omitempty"` // RFC3339; refreshed on every probe (StatusUpdated, StatusUpToDate, StatusError) — material evidence the user verified the pack
+	Ref           string                         `yaml:"ref,omitempty"`             // git ref (URL only)
+	SubPath       string                         `yaml:"sub_path,omitempty"`        // subdirectory within cloned repo
+	CommitHash    string                         `yaml:"commit_hash,omitempty"`     // git HEAD SHA at install/update time
+	ContentPaths  map[domain.PackCategory]string `yaml:"content_paths,omitempty"`   // content type -> directory path within clone (nil = standard layout)
+	Approved      []domain.BundledCategory       `yaml:"approved,omitempty"`        // bundled categories the user accepted
+	Declined      []domain.BundledCategory       `yaml:"declined,omitempty"`        // bundled categories the user declined
+	Resolved      *domain.PackInventory          `yaml:"resolved,omitempty"`        // last resolved content inventory (drift detection baseline)
 
 	// InstallQuiet records whether the pack was installed with `-q` (quiet
 	// by nature). It is the source of truth for "every profile this pack

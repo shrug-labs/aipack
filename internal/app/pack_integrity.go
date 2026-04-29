@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -130,31 +131,38 @@ func diffIntegrity(old, new IntegrityManifest) IntegrityCheckResult {
 	return r
 }
 
-// printIntegrityDiff prints a human-readable summary of integrity changes.
-func printIntegrityDiff(diff IntegrityCheckResult, stdout io.Writer) {
+// formatIntegrityDiff returns the multi-line per-file diff body (sans the
+// "Changes:\n" header). Each line is one of "  + path", "  ~ path", "  - path"
+// terminated with "\n". Returns "" when the diff has no changes.
+func formatIntegrityDiff(diff IntegrityCheckResult) string {
 	if !diff.HasChanges() {
-		return
+		return ""
 	}
+	var sb strings.Builder
 	for _, f := range diff.Added {
-		fmt.Fprintf(stdout, "  + %s\n", f)
+		fmt.Fprintf(&sb, "  + %s\n", f)
 	}
 	for _, f := range diff.Modified {
-		fmt.Fprintf(stdout, "  ~ %s\n", f)
+		fmt.Fprintf(&sb, "  ~ %s\n", f)
 	}
 	for _, f := range diff.Removed {
-		fmt.Fprintf(stdout, "  - %s\n", f)
+		fmt.Fprintf(&sb, "  - %s\n", f)
 	}
+	return sb.String()
 }
 
 // saveAndDiffIntegrity saves the integrity manifest for packDir and, if
-// oldIntegrity is non-empty, computes and prints the diff. Returns the new
-// manifest, whether any content changed, and whether a save error occurred.
-// When saveErr is true, callers should not trust the changed flag (it is
-// conservatively set to true so updates are not skipped).
+// oldIntegrity is non-empty, emits an integrity.changed event with the full
+// diff body. Returns the new manifest, whether any content changed, and
+// whether a save error occurred. When saveErr is true, callers should not
+// trust the changed flag (it is conservatively set to true so updates are
+// not skipped).
 func saveAndDiffIntegrity(packDir string, oldIntegrity IntegrityManifest, stdout io.Writer) (newManifest IntegrityManifest, changed bool, saveErr bool) {
 	newIntegrity, err := saveIntegrity(packDir)
 	if err != nil {
-		fmt.Fprintf(stdout, "Warning: failed to record integrity: %v\n", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Warning: failed to record integrity: %v\n", err)
+		}
 		// Return changed=true so callers don't skip an update due to our failure.
 		return newIntegrity, true, true
 	}
@@ -163,8 +171,9 @@ func saveAndDiffIntegrity(packDir string, oldIntegrity IntegrityManifest, stdout
 	}
 	diff := diffIntegrity(oldIntegrity, newIntegrity)
 	if diff.HasChanges() {
-		fmt.Fprintf(stdout, "Changes:\n")
-		printIntegrityDiff(diff, stdout)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Changes:\n%s", formatIntegrityDiff(diff))
+		}
 	}
 	return newIntegrity, diff.HasChanges(), false
 }

@@ -50,7 +50,7 @@ func TestPackList_JSON_WithPack(t *testing.T) {
 		ConfigDir: configDir,
 		Link:      true,
 		Add:       false,
-	}, os.NewFile(0, os.DevNull))
+	}, nil)
 
 	stdout, stderr, code := runApp(t, "pack", "list", "--config-dir", configDir, "--json")
 	if code != cmdutil.ExitOK {
@@ -155,7 +155,7 @@ func TestPackVersions_CopyPackRejects(t *testing.T) {
 	if err := app.PackInstall(context.Background(), app.PackInstallRequest{
 		PackPath:  packDir,
 		ConfigDir: configDir,
-	}, os.NewFile(0, os.DevNull)); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("seeding pack install: %v", err)
 	}
 
@@ -274,9 +274,16 @@ func TestPackUpdate_VersionWithoutName(t *testing.T) {
 // rejection.
 func TestPackUpdate_NonSemverVersionTreatedAsLiteralRef(t *testing.T) {
 	t.Parallel()
-	_, stderr, code := runApp(t, "pack", "update", "my-pack", "--version", "main")
+	configDir := t.TempDir()
+	stdout, stderr, code := runApp(t, "pack", "update", "my-pack", "--version", "main", "--config-dir", configDir)
 	if code == cmdutil.ExitOK {
 		t.Fatal("pack update against missing pack should fail")
+	}
+	if strings.Contains(stdout, "error:") {
+		t.Fatalf("pack update errors should be reported on stderr only, got stdout: %s", stdout)
+	}
+	if !strings.Contains(stderr, "my-pack") || !strings.Contains(stderr, "not installed") {
+		t.Fatalf("pack update error should mention missing pack on stderr, got: %s", stderr)
 	}
 	if strings.Contains(stderr, "invalid version") {
 		t.Fatalf("unified ref model should not reject 'main' as invalid version; stderr: %s", stderr)

@@ -2254,12 +2254,12 @@ func TestResolveProfile_QuietCatalogSelectiveInclude(t *testing.T) {
 	root := t.TempDir()
 	installPackForResolveTest(t, root, "catalog", PackManifest{
 		SchemaVersion: 2, Name: "catalog", Version: "2.0.0", Root: ".",
-		Rules:  []string{"verbose-logging", "audit-trail"},
+		Rules:  []string{"verbose-logging", "change-log"},
 		Skills: []string{"deploy", "triage", "rollback", "debug", "migrate"},
 		MCP:    []string{},
 	}, map[string]string{
 		"rules/verbose-logging.md": "---\nname: verbose-logging\n---\nb\n",
-		"rules/audit-trail.md":     "---\nname: audit-trail\n---\nb\n",
+		"rules/change-log.md":      "---\nname: change-log\n---\nb\n",
 		"skills/deploy/SKILL.md":   "---\nname: deploy\ndescription: d\n---\nb\n",
 		"skills/triage/SKILL.md":   "---\nname: triage\ndescription: d\n---\nb\n",
 		"skills/rollback/SKILL.md": "---\nname: rollback\ndescription: d\n---\nb\n",

@@ -1132,6 +1132,73 @@ func TestPackInstalledMsg_Error(t *testing.T) {
 	}
 }
 
+func TestPackInstall_StreamingShowsPhaseInStatus(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+
+	// Ready: streaming install starts. Status bar should announce a phase.
+	eventCh := make(chan app.PackInstallEvent, 4)
+	resultCh := make(chan packInstallResult, 1)
+	cancelled := false
+	cancel := func() { cancelled = true }
+	result, _ := m.Update(packInstallReadyMsg{
+		eventCh:  eventCh,
+		resultCh: resultCh,
+		cancel:   cancel,
+		packName: "demo-pack",
+	})
+	rm := result.(rootModel)
+	if rm.packs.activeInstall == nil {
+		t.Fatal("expected activeInstall to be set after Ready msg")
+	}
+	if !strings.Contains(rm.statusText, "demo-pack") {
+		t.Errorf("status text should name the pack, got %q", rm.statusText)
+	}
+
+	// Progress event updates the phase verb.
+	result, _ = rm.Update(packInstallProgressMsg{
+		event: app.PackInstallEvent{Pack: "demo-pack", Phase: app.PackInstallPhaseCloning},
+	})
+	rm = result.(rootModel)
+	if !strings.Contains(rm.statusText, "cloning") {
+		t.Errorf("status text should reflect Cloning phase, got %q", rm.statusText)
+	}
+	if rm.packs.activeInstall.phase != app.PackInstallPhaseCloning {
+		t.Errorf("activeInstall.phase = %q, want cloning", rm.packs.activeInstall.phase)
+	}
+
+	// Terminal: install complete clears activeInstall.
+	result, _ = rm.Update(packInstalledMsg{name: "demo-pack"})
+	rm = result.(rootModel)
+	if rm.packs.activeInstall != nil {
+		t.Error("expected activeInstall cleared on packInstalledMsg")
+	}
+	if !strings.Contains(rm.statusText, "installed demo-pack") {
+		t.Errorf("expected installed status, got %q", rm.statusText)
+	}
+	if cancelled {
+		t.Error("cancel must not fire on successful completion")
+	}
+}
+
+func TestPackInstall_CancelledRendersAsCancelled(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+
+	result, _ := m.Update(packInstalledMsg{
+		name: "demo-pack",
+		err:  context.Canceled,
+	})
+	rm := result.(rootModel)
+	if !strings.Contains(rm.statusText, "cancelled") {
+		t.Errorf("expected 'cancelled' in status, got %q", rm.statusText)
+	}
+	if strings.Contains(rm.statusText, "error") {
+		t.Errorf("ctx-cancel should not render as error, got %q", rm.statusText)
+	}
+}
+
 func TestPackRemovedMsg_ReloadsPacksAndProfiles(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})
@@ -1146,22 +1213,41 @@ func TestPackRemovedMsg_ReloadsPacksAndProfiles(t *testing.T) {
 	}
 }
 
-func TestPackUpdatedMsg_ShowsSummary(t *testing.T) {
+func TestPackUpdatedMsg_ShowsBridgeWhenAnyPackUpdated(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})
 
 	result, cmd := m.Update(packUpdatedMsg{
 		name: "test-pack",
 		results: []app.PackUpdateResult{
-			{Name: "test-pack", Status: "updated"},
+			{Name: "test-pack", Status: app.StatusUpdated},
 		},
 	})
 	rm := result.(rootModel)
-	if !strings.Contains(rm.statusText, "test-pack: updated") {
-		t.Fatalf("expected status text to contain update summary, got %q", rm.statusText)
+	if !strings.Contains(rm.statusText, "Press s to sync") {
+		t.Fatalf("expected mental-model bridge to sync, got %q", rm.statusText)
 	}
 	if cmd == nil {
 		t.Fatal("expected loadPacks reload command")
+	}
+}
+
+func TestPackUpdatedMsg_ShowsSummaryWhenAllUpToDate(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+
+	result, _ := m.Update(packUpdatedMsg{
+		name: "test-pack",
+		results: []app.PackUpdateResult{
+			{Name: "test-pack", Status: app.StatusUpToDate},
+		},
+	})
+	rm := result.(rootModel)
+	if strings.Contains(rm.statusText, "Press s to sync") {
+		t.Fatalf("expected no sync bridge when nothing updated, got %q", rm.statusText)
+	}
+	if !strings.Contains(rm.statusText, "test-pack") {
+		t.Fatalf("expected per-pack summary fallback, got %q", rm.statusText)
 	}
 }
 

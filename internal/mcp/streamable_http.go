@@ -28,7 +28,12 @@ import (
 // http.NewRequestWithContext. Per-response body reads are capped at
 // maxMCPMessageBytes so a hostile server cannot OOM the probe with a
 // gigabyte JSON blob or an unbounded SSE stream.
-func ProbeStreamableHTTP(ctx context.Context, url string, headers map[string]string) (*ProbeResult, error) {
+//
+// stdout (when non-nil) receives `  connected (<transport>)` and
+// `  listing tools` lines for live progress; events (when non-nil) receives
+// the same milestones as ProbeEvent values. Lifecycle starting/done/error
+// events are emitted by Probe.
+func ProbeStreamableHTTP(ctx context.Context, url string, headers map[string]string, stdout io.Writer, events chan<- ProbeEvent) (*ProbeResult, error) {
 	if url == "" {
 		return nil, fmt.Errorf("empty URL")
 	}
@@ -63,6 +68,15 @@ func ProbeStreamableHTTP(ctx context.Context, url string, headers map[string]str
 	}); err != nil {
 		return nil, fmt.Errorf("send initialized: %w", err)
 	}
+
+	if stdout != nil {
+		fmt.Fprintln(stdout, "  connected (streamable-http)")
+	}
+	emitProbeEvent(events, ProbeEvent{Transport: "streamable-http", Phase: ProbePhaseConnected})
+	if stdout != nil {
+		fmt.Fprintln(stdout, "  listing tools")
+	}
+	emitProbeEvent(events, ProbeEvent{Phase: ProbePhaseListingTools})
 
 	toolsResp, _, err := httpRPCRequest(ctx, client, url, sessionID, headers, &jsonrpcRequest{
 		JSONRPC: "2.0",
