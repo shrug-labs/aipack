@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -269,6 +271,261 @@ func TestPackUpdate_Copy_ReCopies(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(e.configDir, "packs", "test-pack", "rules", "test-rule.md"))
 	if string(got) != "new content\n" {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestPackUpdate_Clone_DryRunMakesNoMutations(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
+
+	// Snapshot lockfile state pre-update.
+	lfPath := config.LockfilePath(e.configDir)
+	lfBefore, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Update would land new content under fakeHash2 with a fresh rule.
+	bareCloneCalls := 0
+	updateGit := func(_ context.Context, args ...string) error {
+		if len(args) >= 2 && args[0] == "clone" && args[1] == "--bare" {
+			bareCloneCalls++
+		}
+		if len(args) >= 1 && args[0] == "clone" {
+			dir := args[len(args)-1]
+			writePackManifest(t, dir, "my-pack")
+			os.MkdirAll(filepath.Join(dir, "rules"), 0o755)
+			os.WriteFile(filepath.Join(dir, "rules", "would-update.md"),
+				[]byte("---\nname: would-update\n---\nshould-not-land\n"), 0o644)
+		}
+		return nil
+	}
+
+	results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		r.DryRun = true
+		r.RunGitFn = updateGit
+		r.GitHashFn = fakeHashFn(fakeHash2)
+	})
+	if err != nil {
+		t.Fatalf("update --dry-run: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want %q", results[0].Status, StatusUpdated)
+	}
+	if !results[0].DryRun {
+		t.Fatalf("expected DryRun=true, got %+v", results[0])
+	}
+
+	// Pack content must NOT have the new file.
+	packDir := filepath.Join(e.configDir, "packs", "my-pack")
+	if _, err := os.Stat(filepath.Join(packDir, "rules", "would-update.md")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not have written would-update.md")
+	}
+
+	// Lockfile entry must be unchanged (no commit hash bump, no LastCheckedAt persisted).
+	lfAfter, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMeta := lfBefore.Packs["my-pack"]
+	afterMeta := lfAfter.Packs["my-pack"]
+	if beforeMeta.CommitHash != afterMeta.CommitHash {
+		t.Fatalf("dry-run modified lockfile commit hash: %s -> %s", beforeMeta.CommitHash, afterMeta.CommitHash)
+	}
+	if beforeMeta.LastCheckedAt != afterMeta.LastCheckedAt {
+		t.Fatalf("dry-run modified LastCheckedAt: %q -> %q", beforeMeta.LastCheckedAt, afterMeta.LastCheckedAt)
+	}
+	if bareCloneCalls != 0 {
+		t.Fatalf("dry-run should not update bare git cache, got %d bare clone call(s)", bareCloneCalls)
+	}
+
+	// Output should mention "Would update" not "Updated".
+	if !strings.Contains(e.out.String(), "Would update") {
+		t.Fatalf("dry-run output missing 'Would update' marker: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "Changes:\n") {
+		t.Fatalf("dry-run output missing changes section: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "  + rules/would-update.md\n") {
+		t.Fatalf("dry-run output missing added file: %s", e.out.String())
+	}
+	if strings.Contains(e.out.String(), "\nUpdated (clone)") {
+		t.Fatalf("dry-run output should not include 'Updated (clone)' line: %s", e.out.String())
+	}
+}
+
+// TestPackUpdate_Copy_DryRunMakesNoMutations covers the copy update path's
+// dry-run gate. The clone test above uses fakeCloneGitFn; copy goes through
+// the local-source branch in pack_update.go, with its own atomic-move
+// gate at line 581.
+func TestPackUpdate_Copy_DryRunMakesNoMutations(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	manifest := config.PackManifest{
+		SchemaVersion: 2, Name: "copy-pack", Version: "1.0.0", Root: ".",
+		Rules: []string{"existing"},
+	}
+	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
+	os.MkdirAll(filepath.Join(packDir, "rules"), 0o700)
+	os.WriteFile(filepath.Join(packDir, "rules", "existing.md"), []byte("---\nname: existing\n---\nold body\n"), 0o600)
+
+	e := newUpdateEnv(t)
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: e.configDir,
+		NowFn: func() time.Time { return fixedNow },
+	}, &e.out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	// Snapshot lockfile pre-update.
+	lfPath := config.LockfilePath(e.configDir)
+	lfBefore, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMeta := lfBefore.Packs["copy-pack"]
+
+	// Stage source-side changes that would be picked up by a real update.
+	os.WriteFile(filepath.Join(packDir, "rules", "existing.md"), []byte("---\nname: existing\n---\nfresh body\n"), 0o600)
+	os.WriteFile(filepath.Join(packDir, "rules", "would-add.md"), []byte("---\nname: would-add\n---\nshould-not-land\n"), 0o600)
+
+	results, err := e.update(t, "copy-pack", func(r *PackUpdateRequest) { r.DryRun = true })
+	if err != nil {
+		t.Fatalf("update --dry-run: %v", err)
+	}
+	if len(results) != 1 || !results[0].DryRun {
+		t.Fatalf("expected single dry-run result, got %+v", results)
+	}
+
+	// New file must NOT be present in installed pack.
+	installedDir := filepath.Join(e.configDir, "packs", "copy-pack")
+	if _, err := os.Stat(filepath.Join(installedDir, "rules", "would-add.md")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not have copied new rule file")
+	}
+	// Existing file must NOT have been refreshed.
+	got, _ := os.ReadFile(filepath.Join(installedDir, "rules", "existing.md"))
+	if strings.Contains(string(got), "fresh body") {
+		t.Fatalf("dry-run should not have copied refreshed content, got %q", got)
+	}
+
+	// Lockfile unchanged.
+	lfAfter, _ := config.LoadLockfile(lfPath)
+	afterMeta := lfAfter.Packs["copy-pack"]
+	if beforeMeta.LastCheckedAt != afterMeta.LastCheckedAt {
+		t.Fatalf("dry-run modified LastCheckedAt: %q -> %q", beforeMeta.LastCheckedAt, afterMeta.LastCheckedAt)
+	}
+
+	if !strings.Contains(e.out.String(), "Would update") {
+		t.Fatalf("dry-run output missing 'Would update' marker: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "Changes:\n") {
+		t.Fatalf("dry-run output missing changes section: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "  + rules/would-add.md\n") {
+		t.Fatalf("dry-run output missing added file: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "  ~ rules/existing.md\n") {
+		t.Fatalf("dry-run output missing modified file: %s", e.out.String())
+	}
+	if strings.Contains(e.out.String(), "\nUpdated (copy)") {
+		t.Fatalf("dry-run output should not include 'Updated (copy)' line: %s", e.out.String())
+	}
+}
+
+// TestPackUpdate_Archive_DryRunMakesNoMutations covers the archive update
+// path's dry-run gate. Archive update full-replaces the installed pack via
+// atomic move at pack_update.go:879; dry-run must skip that.
+func TestPackUpdate_Archive_DryRunMakesNoMutations(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	archives := [][]byte{
+		buildPackZip(t, map[string]string{
+			"repo-main/pack.json":    `{"schema_version":2,"name":"archive-dryrun","version":"1.0.0","root":"."}`,
+			"repo-main/rules/foo.md": "old\n",
+		}),
+		buildPackZip(t, map[string]string{
+			"repo-main/pack.json":      `{"schema_version":2,"name":"archive-dryrun","version":"2.0.0","root":"."}`,
+			"repo-main/rules/foo.md":   "new\n",
+			"repo-main/rules/added.md": "should-not-land\n",
+		}),
+	}
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idx := hits
+		if idx >= len(archives) {
+			idx = len(archives) - 1
+		}
+		hits++
+		w.Write(archives[idx])
+	}))
+	defer srv.Close()
+	archiveURL := srv.URL + "/pack.zip"
+
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		URL:       archiveURL,
+		Archive:   true,
+		ConfigDir: e.configDir,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &e.out); err != nil {
+		t.Fatalf("install archive: %v", err)
+	}
+
+	lfPath := config.LockfilePath(e.configDir)
+	lfBefore, _ := config.LoadLockfile(lfPath)
+	beforeMeta := lfBefore.Packs["archive-dryrun"]
+
+	results, err := e.update(t, "archive-dryrun", func(r *PackUpdateRequest) { r.DryRun = true })
+	if err != nil {
+		t.Fatalf("update --dry-run: %v", err)
+	}
+	if len(results) != 1 || !results[0].DryRun {
+		t.Fatalf("expected single dry-run result, got %+v", results)
+	}
+	if results[0].Method != config.MethodArchive {
+		t.Fatalf("method = %q, want archive", results[0].Method)
+	}
+	// Two archive fetches (install + dry-run check); a real update would also be 2.
+	if hits < 2 {
+		t.Fatalf("archive fetches = %d, want at least 2", hits)
+	}
+
+	// New file must NOT be present.
+	installedDir := filepath.Join(PacksDir(e.configDir), "archive-dryrun")
+	if _, err := os.Stat(filepath.Join(installedDir, "rules", "added.md")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not have copied new archive content")
+	}
+	// Existing file unchanged.
+	got, _ := os.ReadFile(filepath.Join(installedDir, "rules", "foo.md"))
+	if string(got) != "old\n" {
+		t.Fatalf("rules/foo.md = %q, want unchanged 'old\\n'", got)
+	}
+
+	// Lockfile unchanged.
+	lfAfter, _ := config.LoadLockfile(lfPath)
+	afterMeta := lfAfter.Packs["archive-dryrun"]
+	if beforeMeta.LastCheckedAt != afterMeta.LastCheckedAt {
+		t.Fatalf("dry-run modified LastCheckedAt: %q -> %q", beforeMeta.LastCheckedAt, afterMeta.LastCheckedAt)
+	}
+
+	if !strings.Contains(e.out.String(), "Would update") {
+		t.Fatalf("dry-run output missing 'Would update' marker: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "Changes:\n") {
+		t.Fatalf("dry-run output missing changes section: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "  + rules/added.md\n") {
+		t.Fatalf("dry-run output missing added archive file: %s", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "  ~ rules/foo.md\n") {
+		t.Fatalf("dry-run output missing modified archive file: %s", e.out.String())
+	}
+	if strings.Contains(e.out.String(), "\nUpdated (archive)") {
+		t.Fatalf("dry-run output should not include 'Updated (archive)' line: %s", e.out.String())
 	}
 }
 
@@ -1055,6 +1312,157 @@ func TestPackUpdate_HTTPTarballMigratesToClone(t *testing.T) {
 	}
 	if got.CommitHash != fakeHash2 {
 		t.Errorf("lockfile commit_hash = %q, want %q", got.CommitHash, fakeHash2)
+	}
+}
+
+func TestPackUpdate_HTTPTarballDryRunDoesNotSeedGitCache(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	packDir := filepath.Join(PacksDir(e.configDir), "legacy-dryrun")
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifest(t, packDir, "legacy-dryrun")
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "old.md"), []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lfPath := config.LockfilePath(e.configDir)
+	lf := config.Lockfile{
+		LockVersion: config.LockfileVersion,
+		Packs: map[string]config.InstalledPackMeta{
+			"legacy-dryrun": {
+				Origin:      "https://github.com/example/legacy-dryrun",
+				Method:      config.MethodHTTPTarball,
+				InstalledAt: fixedNow.UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	if err := config.SaveLockfile(lfPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	bareCloneCalls := 0
+	results, err := e.update(t, "legacy-dryrun", func(r *PackUpdateRequest) {
+		r.DryRun = true
+		r.RunGitFn = func(_ context.Context, args ...string) error {
+			if len(args) >= 2 && args[0] == "clone" && args[1] == "--bare" {
+				bareCloneCalls++
+				return nil
+			}
+			if len(args) >= 1 && args[0] == "clone" {
+				dir := args[len(args)-1]
+				writePackManifest(t, dir, "legacy-dryrun")
+				if err := os.MkdirAll(filepath.Join(dir, "rules"), 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, "rules", "new.md"), []byte("new\n"), 0o600)
+			}
+			return nil
+		}
+		r.GitHashFn = fakeHashFn(fakeHash2)
+	})
+	if err != nil {
+		t.Fatalf("update --dry-run: %v", err)
+	}
+	if len(results) != 1 || !results[0].DryRun {
+		t.Fatalf("expected single dry-run result, got %+v", results)
+	}
+	if bareCloneCalls != 0 {
+		t.Fatalf("legacy dry-run should not seed bare git cache, got %d bare clone call(s)", bareCloneCalls)
+	}
+	if _, err := os.Stat(filepath.Join(packDir, "rules", "new.md")); !os.IsNotExist(err) {
+		t.Fatalf("legacy dry-run should not install cloned content")
+	}
+	lfAfter, err := config.LoadLockfile(lfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := lfAfter.Packs["legacy-dryrun"]
+	if got.Method != config.MethodHTTPTarball {
+		t.Fatalf("dry-run migrated lockfile method: %q", got.Method)
+	}
+	if got.CommitHash != "" {
+		t.Fatalf("dry-run wrote commit hash: %q", got.CommitHash)
+	}
+}
+
+func TestPackUpdate_ArchiveURLFullReplacesPack(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	archives := [][]byte{
+		buildPackZip(t, map[string]string{
+			"repo-main/pack.json":    `{"schema_version":2,"name":"archive-pack","version":"1.0.0","root":"."}`,
+			"repo-main/rules/foo.md": "old\n",
+			"repo-main/rules/old.md": "delete me\n",
+		}),
+		buildPackZip(t, map[string]string{
+			"repo-main/pack.json":    `{"schema_version":2,"name":"archive-pack","version":"1.0.1","root":"."}`,
+			"repo-main/rules/foo.md": "new\n",
+		}),
+	}
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idx := hits
+		if idx >= len(archives) {
+			idx = len(archives) - 1
+		}
+		hits++
+		w.Write(archives[idx])
+	}))
+	defer srv.Close()
+	archiveURL := srv.URL + "/pack.zip"
+
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		URL:       archiveURL,
+		Archive:   true,
+		ConfigDir: e.configDir,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &e.out); err != nil {
+		t.Fatalf("install archive: %v", err)
+	}
+
+	results, err := e.update(t, "archive-pack")
+	if err != nil {
+		t.Fatalf("update archive: %v", err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("status = %q, want updated", results[0].Status)
+	}
+	if results[0].Method != config.MethodArchive {
+		t.Fatalf("method = %q, want %q", results[0].Method, config.MethodArchive)
+	}
+	if hits != 2 {
+		t.Fatalf("archive fetches = %d, want 2", hits)
+	}
+
+	packDir := filepath.Join(PacksDir(e.configDir), "archive-pack")
+	got, err := os.ReadFile(filepath.Join(packDir, "rules", "foo.md"))
+	if err != nil {
+		t.Fatalf("read updated archive rule: %v", err)
+	}
+	if string(got) != "new\n" {
+		t.Fatalf("rules/foo.md = %q, want new content", got)
+	}
+	if _, err := os.Stat(filepath.Join(packDir, "rules", "old.md")); !os.IsNotExist(err) {
+		t.Fatalf("old archive file still exists after full replacement: %v", err)
+	}
+
+	lf, err := config.LoadLockfile(config.LockfilePath(e.configDir))
+	if err != nil {
+		t.Fatalf("LoadLockfile: %v", err)
+	}
+	meta := lf.Packs["archive-pack"]
+	if meta.Method != config.MethodArchive {
+		t.Fatalf("lockfile method = %q, want %q", meta.Method, config.MethodArchive)
+	}
+	if meta.Origin != archiveURL {
+		t.Fatalf("origin = %q, want %q", meta.Origin, archiveURL)
+	}
+	if meta.CommitHash != "" {
+		t.Fatalf("commit_hash = %q, want empty for archive update", meta.CommitHash)
 	}
 }
 

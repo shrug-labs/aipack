@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -14,8 +16,8 @@ import (
 )
 
 type TraceCmd struct {
-	Type        string  `arg:"" enum:"rule,agent,workflow,skill,mcp" help:"Resource type to trace" predictor:"trace-type"`
-	Name        string  `arg:"" help:"Resource name (rule name, agent name, skill name, MCP server name)" predictor:"resource"`
+	Type        string  `arg:"" help:"Resource type or exact resource name" predictor:"resource"`
+	Name        string  `arg:"" optional:"" help:"Resource name when type is provided" predictor:"resource"`
 	Profile     string  `help:"Profile name (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	ProfilePath string  `help:"Direct path to a profile YAML file" name:"profile-path" type:"path"`
 	Scope       string  `help:"Scope: project|global (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
@@ -34,6 +36,9 @@ Useful for debugging content routing issues — "why didn't my rule appear?"
 or "which pack is this agent coming from?"
 
 Examples:
+  # Trace a resource by exact name
+  aipack trace anti-slop
+
   # Trace a rule
   aipack trace rule anti-slop
 
@@ -53,6 +58,11 @@ func (c *TraceCmd) Validate() error {
 	if c.Scope == string(domain.ScopeGlobal) && c.ProjectDir != nil {
 		return fmt.Errorf("--project-dir is not valid for --scope global")
 	}
+	if c.Name != "" {
+		if _, err := normalizeTraceType(c.Type); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -62,43 +72,15 @@ func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 		return ExitError{Code: exitCode}
 	}
 
-	scope, err := cmdutil.ResolveScopeDefault(c.Scope, loaded.syncCfg.Defaults.Scope)
+	resType, resName, ok, err := resolveTraceArgs(loaded.profile, c.Type, c.Name, g.Stderr)
 	if err != nil {
 		return err
 	}
-	if err := validateProjectDirForScope(scope, c.ProjectDir); err != nil {
-		fmt.Fprintln(g.Stderr, "ERROR:", err)
-		return ExitError{Code: cmdutil.ExitUsage}
+	if !ok {
+		return ExitError{Code: cmdutil.ExitFail}
 	}
 
-	projectDir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	if scope == domain.ScopeProject && c.ProjectDir != nil {
-		projectDir, err = filepath.Abs(*c.ProjectDir)
-		if err != nil {
-			return err
-		}
-	}
-
-	hs, err := cmdutil.ResolveHarnessesOptional(c.Harness, loaded.syncCfg.Defaults.Harnesses)
-	if err != nil {
-		return err
-	}
-
-	eng := engine.New(nil, nil)
-	result, err := app.RunTrace(ctx, eng, loaded.profile, app.TraceRequest{
-		TargetSpec: app.TargetSpec{
-			ConfigDir:  loaded.configDir,
-			Scope:      scope,
-			ProjectDir: projectDir,
-			Harnesses:  hs,
-			Home:       config.HomeDir(),
-		},
-		ResourceType: c.Type,
-		ResourceName: c.Name,
-	}, g.Registry)
+	result, err := c.runResolved(ctx, g, loaded, resType, resName)
 	if err != nil {
 		return err
 	}
@@ -112,6 +94,46 @@ func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 		return ExitError{Code: cmdutil.ExitFail}
 	}
 	return nil
+}
+
+func (c *TraceCmd) runResolved(ctx context.Context, g *Globals, loaded loadedProfile, resType, resName string) (app.TraceResult, error) {
+	scope, err := cmdutil.ResolveScopeDefault(c.Scope, loaded.syncCfg.Defaults.Scope)
+	if err != nil {
+		return app.TraceResult{}, err
+	}
+	if err := validateProjectDirForScope(scope, c.ProjectDir); err != nil {
+		fmt.Fprintln(g.Stderr, "ERROR:", err)
+		return app.TraceResult{}, ExitError{Code: cmdutil.ExitUsage}
+	}
+
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return app.TraceResult{}, err
+	}
+	if scope == domain.ScopeProject && c.ProjectDir != nil {
+		projectDir, err = filepath.Abs(*c.ProjectDir)
+		if err != nil {
+			return app.TraceResult{}, err
+		}
+	}
+
+	hs, err := cmdutil.ResolveHarnessesOptional(c.Harness, loaded.syncCfg.Defaults.Harnesses)
+	if err != nil {
+		return app.TraceResult{}, err
+	}
+
+	eng := engine.New(nil, nil)
+	return app.RunTrace(ctx, eng, loaded.profile, app.TraceRequest{
+		TargetSpec: app.TargetSpec{
+			ConfigDir:  loaded.configDir,
+			Scope:      scope,
+			ProjectDir: projectDir,
+			Harnesses:  hs,
+			Home:       config.HomeDir(),
+		},
+		ResourceType: resType,
+		ResourceName: resName,
+	}, g.Registry)
 }
 
 func printTraceHuman(result app.TraceResult, g *Globals) {
@@ -140,5 +162,56 @@ func printTraceHuman(result app.TraceResult, g *Globals) {
 			harness = "?"
 		}
 		fmt.Fprintf(g.Stdout, "    %s: %s [%s]\n", harness, d.Path, d.State)
+	}
+}
+
+func resolveTraceArgs(profile domain.Profile, first, second string, stderr io.Writer) (string, string, bool, error) {
+	if second != "" {
+		resType, err := normalizeTraceType(first)
+		return resType, second, err == nil, err
+	}
+	name := strings.TrimSpace(first)
+	candidates := app.FindTraceCandidates(profile, name)
+	switch len(candidates) {
+	case 0:
+		fmt.Fprintf(stderr, "resource %q not found in active profile\n", name)
+		fmt.Fprintf(stderr, "Try: %s\n", shellCommand("aipack", "search", name))
+		return "", "", false, nil
+	case 1:
+		return candidates[0].ResourceType, candidates[0].ResourceName, true, nil
+	default:
+		printTraceCandidates(stderr, name, candidates)
+		return "", "", false, nil
+	}
+}
+
+func normalizeTraceType(raw string) (string, error) {
+	cat, ok := domain.ParseSingularLabel(strings.ToLower(strings.TrimSpace(raw)))
+	if !ok || !isTraceableCategory(cat) {
+		return "", fmt.Errorf("invalid resource type %q (valid: rule, agent, workflow, skill, plugin, mcp)", raw)
+	}
+	if cat == domain.CategoryMCP {
+		return "mcp", nil
+	}
+	return strings.ToLower(cat.SingularLabel()), nil
+}
+
+func isTraceableCategory(cat domain.PackCategory) bool {
+	switch cat {
+	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills, domain.CategoryPlugins, domain.CategoryMCP:
+		return true
+	default:
+		return false
+	}
+}
+
+func printTraceCandidates(w io.Writer, name string, candidates []app.TraceCandidate) {
+	fmt.Fprintf(w, "Multiple resources named %q in active profile:\n", name)
+	for _, candidate := range candidates {
+		fmt.Fprintf(w, "  %-8s pack=%s\n", candidate.ResourceType, candidate.Pack)
+	}
+	fmt.Fprintln(w, "\nRun one explicit command:")
+	for _, candidate := range candidates {
+		fmt.Fprintf(w, "  %s\n", shellCommand("aipack", "trace", candidate.ResourceType, candidate.ResourceName))
 	}
 }

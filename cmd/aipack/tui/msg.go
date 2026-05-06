@@ -2,59 +2,27 @@ package tui
 
 import (
 	"context"
-	"time"
 
+	"github.com/shrug-labs/aipack/cmd/aipack/tui/common"
+	dialogoverlay "github.com/shrug-labs/aipack/cmd/aipack/tui/screens/overlays/dialog"
+	pickeroverlay "github.com/shrug-labs/aipack/cmd/aipack/tui/screens/overlays/picker"
+	planviewoverlay "github.com/shrug-labs/aipack/cmd/aipack/tui/screens/overlays/planview"
+	packsscreen "github.com/shrug-labs/aipack/cmd/aipack/tui/screens/packs"
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/mcp"
 )
 
-// profilesLoadedMsg is sent after the initial profile listing completes.
-type profilesLoadedMsg struct {
-	items []profileItem
-	err   error
-}
+type packsLoadedMsg = packsscreen.LoadedMsg
+type packSizesMsg = packsscreen.SizesMsg
+type packVersionsLoadedMsg = packsscreen.VersionsLoadedMsg
+type versionsDebounceMsg = packsscreen.DebounceMsg
+type packDriftLoadedMsg = packsscreen.DriftLoadedMsg
+type registryLoadedMsg = packsscreen.RegistryLoadedMsg
+type indexLoadedMsg = packsscreen.IndexLoadedMsg
 
-// packsLoadedMsg is sent after the installed packs list loads.
-type packsLoadedMsg struct {
-	items []packItemDetail
-	err   error
-}
-
-// syncTargetInfo holds resolved sync target details for display.
-// It embeds app.PlanSummary for counts and ops, adding TUI-specific fields.
-type syncTargetInfo struct {
-	app.PlanSummary
-	harnesses  []string
-	scope      domain.Scope
-	projectDir string
-}
-
-// syncStatusMsg delivers the result of a lazy sync-status check.
-type syncStatusMsg struct {
-	profileName string
-	synced      bool
-	target      syncTargetInfo
-	warnings    []domain.Warning
-	err         error
-}
-
-// fileSizeMsg delivers computed file sizes for a profile's tree.
-type fileSizeMsg struct {
-	profileName string
-	sizes       map[string]int64
-}
-
-// diffLoadedMsg carries the result of an async diff computation for the plan view.
-type diffLoadedMsg struct {
-	dst      string
-	title    string
-	diffText string // unified diff output; empty string for new files
-	isNew    bool   // true when destination file doesn't exist yet
-	newBody  string // desired content for display when isNew is true
-	err      error
-}
+type diffLoadedMsg = planviewoverlay.DiffLoadedMsg
 
 // syncDoneMsg is sent after an actual sync (apply) completes.
 type syncDoneMsg struct {
@@ -64,152 +32,29 @@ type syncDoneMsg struct {
 	err          error
 }
 
-// profileSavedMsg is sent after a profile YAML write completes.
-type profileSavedMsg struct {
-	profileName string
-	err         error
-}
-
-// profileActivatedMsg is sent after sync-config defaults.profile is updated.
-type profileActivatedMsg struct {
-	profileName string
-	err         error
-}
-
-// profileCreatedMsg is sent after a new profile is created.
-type profileCreatedMsg struct {
-	name string
-	err  error
-}
-
-// profileDeletedMsg is sent after a profile is deleted.
-type profileDeletedMsg struct {
-	name string
-	err  error
-}
-
-// packSizesMsg delivers computed file sizes for a single pack.
-type packSizesMsg struct {
-	packName string
-	sizes    map[string]int64
-}
-
-// packVersionsLoadedMsg delivers the result of an async ls-remote tag query
-// for a single pack. Drives both the inline version display in the details
-// panel and the version picker shown before install.
-type packVersionsLoadedMsg struct {
-	packName string
-	versions []app.PackVersion
-	err      error
-}
-
-// versionsDebounceMsg is dispatched by a tea.Tick after a cursor-move delay
-// to fire the deferred version load. The epoch guards against stale ticks:
-// if the user moved the cursor again before the tick fired, a newer tick
-// is already in flight and this one must be discarded. Without this, each
-// keystroke would spawn its own ls-remote while the cursor is still moving.
-type versionsDebounceMsg struct {
-	epoch int
-}
-
-// packDriftLoadedMsg delivers the result of an async pack-drift scan over
-// every installed pack. Drives the drift indicator on list rows. The slice
-// is the *complete* drift state — not a delta — so the receiving model
-// rebuilds its drift set from scratch on each delivery.
-type packDriftLoadedMsg struct {
-	drifted []app.PackDrift
-	err     error
-}
-
-// registryLoadedMsg is sent after the registry finishes loading.
-type registryLoadedMsg struct {
-	items []registryItem
-	err   error
-}
-
 // syncConfigSavedMsg is sent after sync-config is written to disk.
 type syncConfigSavedMsg struct {
 	err     error
 	syncCfg config.SyncConfig
 }
 
-// syncToggleHarnessMsg signals rootModel to toggle a harness in the sync config.
-type syncToggleHarnessMsg struct{ harness string }
-
-// syncCycleScopeMsg signals rootModel to cycle the sync scope.
-type syncCycleScopeMsg struct{}
-
-// syncCycleCollisionMsg signals rootModel to cycle the collision strategy.
-type syncCycleCollisionMsg struct{}
-
-// dialogResultMsg carries the outcome of a dialog overlay.
-type dialogResultMsg struct {
-	id        string
-	confirmed bool
-	value     string
-	values    []string // for checklist dialogs: individually selected items
+type envSetMsg struct {
+	key string
+	err error
 }
 
-// toolPickerResultMsg carries the outcome of the MCP tool picker. Tools not
-// present in either ask or auto are "off" — disabled_tools is computed at
-// save time by comparing the user's selection against pack manifest defaults.
-type toolPickerResultMsg struct {
-	id        string
-	confirmed bool
-	ask       []string // items in the "ask" state → allowed_tools
-	auto      []string // items in the "auto" state → always_allowed_tools
-	bulk      bool     // when true, save then chain to the bulk action menu
+type envUnsetMsg struct {
+	key string
+	err error
 }
 
-// toolPickerRefreshMsg is emitted by the picker when the user presses `r`.
-// The root handler invalidates the cache for the current server and
-// re-fires the probe; the picker stays open in loading state.
-type toolPickerRefreshMsg struct {
-	id string
-}
+type dialogResultMsg = dialogoverlay.ResultMsg
 
-// profileItem holds the state for a single profile in the list.
-type profileItem struct {
-	name         string
-	path         string
-	isActive     bool
-	syncState    syncStatus
-	syncTarget   syncTargetInfo
-	syncErrText  string // non-empty if sync check failed
-	syncWarnings []domain.Warning
-	cfg          config.ProfileConfig
-	tree         *treeModel
-	treeErr      string // non-empty if tree building failed
-	dirty        bool   // true if this profile's config was modified in-memory
-}
+type toolPickerResultMsg = pickeroverlay.ResultMsg
+type toolPickerRefreshMsg = pickeroverlay.RefreshMsg
 
-// previewRequestMsg signals the root model to open a file preview overlay.
-type previewRequestMsg struct {
-	title    string
-	category domain.PackCategory
-	packName string
-	filePath string
-}
-
-// previewLoadedMsg carries the result of an async file read for preview.
-type previewLoadedMsg struct {
-	title       string
-	category    domain.PackCategory
-	packName    string
-	filePath    string
-	frontmatter []fmEntry // parsed YAML frontmatter key-value pairs
-	body        string
-	err         error
-}
-
-// fmEntry is a single frontmatter key-value pair, preserving YAML order.
-type fmEntry struct {
-	key   string
-	value string
-}
-
-// requestAddPackMsg signals rootModel to open the add-pack dialog from the pack roster.
-type requestAddPackMsg struct{}
+type previewLoadedMsg = common.PreviewLoadedMsg
+type fmEntry = common.FrontmatterEntry
 
 // editorFinishedMsg is sent when the $EDITOR process exits.
 type editorFinishedMsg struct {
@@ -223,64 +68,15 @@ type systemOpenErrorMsg struct {
 	err error
 }
 
-// packInstalledMsg is sent after a pack is installed via the packs tab.
-type packInstalledMsg struct {
-	name string
-	err  error
-}
-
-// packInstallReadyMsg signals that a streaming pack-install has started.
-// The worker goroutine fills eventCh as PackInstall emits phase events;
-// once eventCh closes, the terminal outcome lands on resultCh. cancel is
-// the ctx cancellation handle the Esc handler invokes.
-type packInstallReadyMsg struct {
-	eventCh  <-chan app.PackInstallEvent
-	resultCh <-chan packInstallResult
-	cancel   context.CancelFunc
-	packName string // best-effort label for the status bar
-}
-
-// packInstallResult carries the terminal outcome of a streaming install
-// from the worker goroutine to the TUI loop, before being lifted into
-// packInstalledMsg by readNextInstallEvent.
-type packInstallResult struct {
-	name string
-	err  error
-}
-
-// packInstallProgressMsg carries one phase event from a streaming install.
-type packInstallProgressMsg struct {
-	event app.PackInstallEvent
-}
-
-// packRemovedMsg is sent after a pack is removed via the packs tab.
-type packRemovedMsg struct {
-	name string
-	err  error
-}
-
-// packUpdatedMsg is sent after a pack is updated via the packs tab.
-type packUpdatedMsg struct {
-	name    string
-	results []app.PackUpdateResult
-	err     error
-}
-
-// packUpdateReadyMsg signals that a streaming pack-update operation has
-// started. The worker goroutine fills eventCh as PackUpdate emits progress
-// events; once eventCh closes, the terminal outcome lands on resultCh.
-// cancel is the ctx cancellation handle the Esc handler invokes.
-type packUpdateReadyMsg struct {
-	eventCh  <-chan app.PackUpdateEvent
-	resultCh <-chan packUpdateResult
-	cancel   context.CancelFunc
-	packName string
-}
-
-// packProgressMsg carries one event from a streaming pack-update.
-type packProgressMsg struct {
-	event app.PackUpdateEvent
-}
+type packInstalledMsg = packsscreen.InstalledMsg
+type packInstallReadyMsg = packsscreen.InstallReadyMsg
+type packInstallResult = packsscreen.InstallResult
+type packInstallProgressMsg = packsscreen.InstallProgressMsg
+type packRemovedMsg = packsscreen.RemovedMsg
+type packUpdatedMsg = packsscreen.UpdatedMsg
+type packUpdateReadyMsg = packsscreen.UpdateReadyMsg
+type packUpdateResult = packsscreen.UpdateResult
+type packProgressMsg = packsscreen.ProgressMsg
 
 // bundledApprovedMsg is sent after the user confirms bundled content candidates via the checklist.
 type bundledApprovedMsg struct {
@@ -311,15 +107,6 @@ type savePlanContext struct {
 	profileName string
 }
 
-// syncTabSnapshot holds the active profile's sync state,
-// passed from rootModel to syncTabModel to avoid duplication.
-type syncTabSnapshot struct {
-	syncState    syncStatus
-	syncTarget   syncTargetInfo
-	syncErrText  string
-	syncWarnings []domain.Warning
-}
-
 // saveToPackMsg is sent after saving a file to a pack completes.
 type saveToPackMsg struct {
 	harnessPath string
@@ -334,12 +121,6 @@ type moveToPackMsg struct {
 	fromPack string
 	toPack   string
 	err      error
-}
-
-// searchResultsMsg delivers search results from the index DB.
-type searchResultsMsg struct {
-	results []app.SearchResult
-	err     error
 }
 
 // mcpProbeResultMsg delivers the result of an async MCP server probe
@@ -387,51 +168,8 @@ type mcpInventorySavedMsg struct {
 	err error
 }
 
-// searchInstallMsg is sent after a pack is installed from the search tab.
-type searchInstallMsg struct {
-	name string
-	err  error
-}
-
 // packCreatedMsg is sent after a new pack is scaffolded and registered.
-type packCreatedMsg struct {
-	name string
-	err  error
-}
-
-// ---------------------------------------------------------------------------
-// Save pipeline messages
-// ---------------------------------------------------------------------------
-
-// harnessDetectedMsg delivers available harnesses for save stage 1.
-type harnessDetectedMsg struct {
-	harnesses []domain.Harness
-}
-
-// vectorsDiscoveredMsg delivers available content vectors for save stage 2.
-type vectorsDiscoveredMsg struct {
-	vectors []domain.PackCategory
-	err     error
-}
-
-// saveFilesDiscoveredMsg delivers file candidates for save stage 3.
-type saveFilesDiscoveredMsg struct {
-	candidates []app.SaveCandidate
-	warnings   []string
-	err        error
-}
-
-// saveFileDeletedMsg delivers the result of deleting a harness file.
-type saveFileDeletedMsg struct {
-	path string
-	err  error
-}
-
-// savePipelineDoneMsg delivers the result of pipeline execution.
-type savePipelineDoneMsg struct {
-	result *app.SavePipelineResult
-	err    error
-}
+type packCreatedMsg = packsscreen.CreatedMsg
 
 // statusClearMsg is sent by a timer to auto-clear transient status text.
 type statusClearMsg struct{ id int }
@@ -440,18 +178,4 @@ type statusClearMsg struct{ id int }
 // update decoration after the auto-clear TTL. The handler checks `when`
 // against the row's recorded clearAt to ignore stale ticks (e.g. when
 // the row entered a new update before the previous clear fired).
-type packRowClearMsg struct {
-	packName string
-	when     time.Time
-}
-
-// syncStatus represents the sync state of a profile.
-type syncStatus int
-
-const (
-	syncPending syncStatus = iota
-	syncLoading
-	syncSynced
-	syncUnsynced
-	syncError
-)
+type packRowClearMsg = packsscreen.RowClearMsg

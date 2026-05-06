@@ -1,0 +1,132 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/shrug-labs/aipack/main/schemas/mcp-server.schema.json",
+  "title": "aipack MCP server definition",
+  "description": "Schema for authored aipack mcp/*.json server inventory files.",
+  "type": "object",
+  "required": ["name", "transport"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "name": {
+      "$ref": "#/definitions/serverID"
+    },
+    "transport": {
+      "type": "string",
+      "enum": ["stdio", "sse", "streamable-http"]
+    },
+    "timeout": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "env": {
+      "$ref": "#/definitions/stringMap"
+    },
+    "url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "headers": {
+      "$ref": "#/definitions/stringMap"
+    },
+    "available_tools": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ]
+    },
+    "links": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "auth": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "transport": {
+            "const": "stdio"
+          }
+        },
+        "required": ["transport"]
+      },
+      "then": {
+        "required": ["command"],
+        "not": {
+          "anyOf": [
+            {
+              "required": ["url"]
+            },
+            {
+              "required": ["headers"]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "transport": {
+            "enum": ["sse", "streamable-http"]
+          }
+        },
+        "required": ["transport"]
+      },
+      "then": {
+        "required": ["url"],
+        "not": {
+          "anyOf": [
+            {
+              "required": ["command"]
+            },
+            {
+              "required": ["env"]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "serverID": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

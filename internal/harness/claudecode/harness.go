@@ -29,6 +29,8 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 	}
 	mcpPath := filepath.Join(mcpBase, paths.MCPFile)
 	settingsPath := filepath.Join(baseDir, paths.SettingsFile)
+	pluginSettingsPath := filepath.Join(baseDir, ".claude", "settings.json")
+	knownMarketplacesPath := filepath.Join(home, ".claude", "plugins", "known_marketplaces.json")
 
 	l := harness.Layout{
 		ValidationRoots: []string{
@@ -38,6 +40,8 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 			filepath.Join(baseDir, paths.SkillsDir),
 			mcpPath,
 			settingsPath,
+			pluginSettingsPath,
+			knownMarketplacesPath,
 		},
 		RemovePaths: []string{
 			filepath.Join(baseDir, paths.RulesDir),
@@ -56,10 +60,22 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 				Strip: stripManagedPermissions,
 				Reset: func(root map[string]any) { delete(root, "permissions") },
 			},
+			{
+				Path: pluginSettingsPath, Format: harness.FormatJSON,
+				Strip: noopJSONEdit,
+				Reset: noopJSONEdit,
+			},
+			{
+				Path: knownMarketplacesPath, Format: harness.FormatJSON,
+				Strip: noopJSONEdit,
+				Reset: noopJSONEdit,
+			},
 		},
 	}
 	return l
 }
+
+func noopJSONEdit(map[string]any) {}
 
 // stripManagedPermissions removes mcp__* entries from permissions.allow and
 // permissions.deny, preserving non-MCP permission entries.
@@ -113,6 +129,12 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	paths := PathsForScope(ctx.Scope)
 	mcpPath := filepath.Join(ctx.TargetDir, paths.MCPFile)
 	settingsPath := filepath.Join(ctx.TargetDir, paths.SettingsFile)
+	home := ctx.Home
+	if home == "" {
+		home = ctx.TargetDir
+	}
+	pluginSettingsPath := filepath.Join(ctx.TargetDir, ".claude", "settings.json")
+	knownMarketplacesPath := filepath.Join(home, ".claude", "plugins", "known_marketplaces.json")
 
 	if len(ctx.Profile.MCPServers) > 0 {
 		mcpBytes, _, err := RenderMCPBytesFromTyped(ctx.Profile.MCPServers)
@@ -172,7 +194,63 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	}
+	plugins := ctx.Profile.AllPlugins()
+	if len(plugins) > 0 {
+		out, err := RenderPluginSettingsBytes(plugins)
+		if err != nil {
+			return fmt.Errorf("render plugin settings bytes: %w", err)
+		}
+		f.MCP = append(f.MCP, domain.SettingsAction{
+			Dst:          pluginSettingsPath,
+			Desired:      out,
+			Harness:      domain.HarnessClaudeCode,
+			Label:        "settings.json (plugins)",
+			SourcePack:   compositePluginSourcePack(plugins),
+			MergeMode:    true,
+			AdditiveOnly: true,
+		})
+		f.Desired = append(f.Desired, filepath.Clean(pluginSettingsPath))
+
+		if hasSourceMarketplace(plugins) {
+			out, err := RenderKnownMarketplacesBytes(home, plugins)
+			if err != nil {
+				return fmt.Errorf("render known marketplaces bytes: %w", err)
+			}
+			f.MCP = append(f.MCP, domain.SettingsAction{
+				Dst:          knownMarketplacesPath,
+				Desired:      out,
+				Harness:      domain.HarnessClaudeCode,
+				Label:        "known_marketplaces.json",
+				SourcePack:   compositePluginSourcePack(plugins),
+				MergeMode:    true,
+				AdditiveOnly: true,
+			})
+			f.Desired = append(f.Desired, filepath.Clean(knownMarketplacesPath))
+		}
+	}
 	return nil
+}
+
+func hasSourceMarketplace(plugins []domain.Plugin) bool {
+	for _, p := range plugins {
+		if p.HasSourceMarketplace() {
+			return true
+		}
+	}
+	return false
+}
+
+func compositePluginSourcePack(plugins []domain.Plugin) string {
+	if len(plugins) == 0 {
+		return ""
+	}
+	first := plugins[0].SourcePack
+	for _, p := range plugins[1:] {
+		if p.SourcePack != first {
+			return "(composite)"
+		}
+	}
+	return first
 }
 
 // Render produces a Fragment for pack rendering.

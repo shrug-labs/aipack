@@ -15,9 +15,10 @@ type SearchCmd struct {
 	Terms     []string `arg:"" optional:"" help:"Search terms (FTS5 full-text search on name, description, and body)"`
 	Tags      []string `help:"Filter by tags (comma-separated or repeated)" name:"tags" sep:","`
 	Role      string   `help:"Filter by role" name:"role"`
-	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, prompt, pack)" name:"kind" predictor:"kind"`
+	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, prompt, plugin, mcp, pack)" name:"kind" predictor:"kind"`
 	Pack      string   `help:"Filter by pack name" name:"pack" predictor:"pack"`
 	Category  string   `help:"Filter by category (ops, dev, infra, governance, meta)" name:"category" predictor:"category"`
+	Status    string   `help:"Filter by discovery status (installed, registered, inspected)" name:"status"`
 	Installed bool     `help:"Show only installed resources" name:"installed"`
 	Available bool     `help:"Show only available (uninstalled) packs" name:"available"`
 	JSON      bool     `help:"Emit machine-readable JSON" name:"json"`
@@ -47,6 +48,9 @@ Examples:
   # Show only available (uninstalled) packs from the registry
   aipack search --available
 
+  # Show one-off inspected packs
+  aipack search --status inspected
+
   # JSON output for agent consumption
   aipack search 5xx --json
 
@@ -57,6 +61,12 @@ See also: query (for raw SQL), registry list (for browsing the registry)`
 
 func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 	var installed *bool
+	if c.Status != "" && (c.Installed || c.Available) {
+		return fmt.Errorf("--status cannot be combined with --installed or --available")
+	}
+	if c.Status != "" && c.Status != "installed" && c.Status != "registered" && c.Status != "inspected" {
+		return fmt.Errorf("invalid --status %q (valid: installed, registered, inspected)", c.Status)
+	}
 	if c.Installed {
 		t := true
 		installed = &t
@@ -75,6 +85,7 @@ func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 		Pack:      c.Pack,
 		Category:  c.Category,
 		Installed: installed,
+		Status:    c.Status,
 	})
 	if err != nil {
 		return err
@@ -105,7 +116,7 @@ func printSearchResults(w io.Writer, results []app.SearchResult, hasTerms bool) 
 		packs[r.Pack] = true
 	}
 	var parts []string
-	for _, kind := range []string{"rule", "skill", "workflow", "agent", "prompt", "pack"} {
+	for _, kind := range []string{"rule", "skill", "workflow", "agent", "prompt", "plugin", "mcp", "pack"} {
 		if n, ok := kindCounts[kind]; ok {
 			label := kind + "s"
 			if n == 1 {
@@ -128,7 +139,9 @@ func printSearchResults(w io.Writer, results []app.SearchResult, hasTerms bool) 
 			fmt.Fprintln(w)
 		}
 		status := ""
-		if !r.Installed {
+		if r.Status != "" && r.Status != "installed" {
+			status = " (" + r.Status + ")"
+		} else if !r.Installed {
 			status = " (available)"
 		}
 		cat := ""

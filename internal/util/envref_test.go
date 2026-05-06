@@ -139,6 +139,81 @@ func TestExpandEnvRefs_Empty(t *testing.T) {
 	}
 }
 
+func TestExpandEnvRefs_Defaults(t *testing.T) {
+	const missing = "TEST_DEFAULT_MISSING"
+	os.Unsetenv(missing)
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "missing env uses default",
+			in:   "{env:" + missing + ":-https://api.example.com}",
+			want: "https://api.example.com",
+		},
+		{
+			name: "empty default is allowed",
+			in:   "prefix{env:" + missing + ":-}suffix",
+			want: "prefixsuffix",
+		},
+		{
+			name: "default can contain colon",
+			in:   "{env:" + missing + ":-https://api.example.com:8443}",
+			want: "https://api.example.com:8443",
+		},
+		{
+			name: "default can contain slash",
+			in:   "{env:" + missing + ":-/tmp/aipack/cache}",
+			want: "/tmp/aipack/cache",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExpandEnvRefs(tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("ExpandEnvRefs() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExpandEnvRefs_SetValueIgnoresDefault(t *testing.T) {
+	t.Setenv("TEST_DEFAULT_SET", "from-env")
+
+	out, err := ExpandEnvRefs("{env:TEST_DEFAULT_SET:-fallback}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "from-env" {
+		t.Fatalf("ExpandEnvRefs() = %q, want from-env", out)
+	}
+}
+
+func TestExpandEnvRefs_EmptyValueIgnoresDefault(t *testing.T) {
+	t.Setenv("TEST_DEFAULT_EMPTY", "")
+
+	out, err := ExpandEnvRefs("{env:TEST_DEFAULT_EMPTY:-fallback}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Fatalf("ExpandEnvRefs() = %q, want empty string", out)
+	}
+}
+
+func TestExpandEnvRefs_DefaultRejectsNestedRef(t *testing.T) {
+	_, err := ExpandEnvRefs("{env:TEST_DEFAULT_NESTED:-{env:HOME}}")
+	if err == nil {
+		t.Fatal("expected nested default ref error")
+	}
+}
+
 func TestExpandEnvRefs_Unset(t *testing.T) {
 	// Truly unset env vars should error.
 	os.Unsetenv("AIPACK_TEST_TRULY_UNSET")

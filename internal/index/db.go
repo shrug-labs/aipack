@@ -16,7 +16,7 @@ type DB struct {
 
 // schemaVersion is bumped when the DDL changes. On mismatch the index is
 // dropped and recreated — it is a rebuildable cache, not durable state.
-const schemaVersion = 3
+const schemaVersion = 6
 
 // Open opens (or creates) the index database at path, applying schema migrations.
 func Open(path string) (*DB, error) {
@@ -93,7 +93,9 @@ CREATE TABLE IF NOT EXISTS packs (
 	owner TEXT NOT NULL DEFAULT '',
 	contact TEXT NOT NULL DEFAULT '',
 	installed INTEGER NOT NULL DEFAULT 1,
-	source TEXT NOT NULL DEFAULT 'sync'
+	source TEXT NOT NULL DEFAULT 'sync',
+	previous_source TEXT NOT NULL DEFAULT '',
+	last_indexed_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS resources (
@@ -106,7 +108,8 @@ CREATE TABLE IF NOT EXISTS resources (
 	last_updated TEXT NOT NULL DEFAULT '',
 	path TEXT NOT NULL DEFAULT '',
 	body TEXT NOT NULL DEFAULT '',
-	category TEXT NOT NULL DEFAULT ''
+	category TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS tags (

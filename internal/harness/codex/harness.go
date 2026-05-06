@@ -134,13 +134,15 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	sp := ctx.Profile.SettingsPackName(domain.HarnessCodex)
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 	hasAgents := len(agentRegs) > 0
-	hasManagedKeys := hasMCP || hasAgents
+	plugins := ctx.Profile.AllPlugins()
+	hasPlugins := len(plugins) > 0
+	hasManagedKeys := hasMCP || hasAgents || hasPlugins
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
 
 	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
 	var mcpRendered []byte
 	if decision.EmitSettings {
-		out, _, err := RenderBytes(base, ctx.Profile.MCPServers, agentRegs)
+		out, _, err := RenderBytesWithPlugins(base, ctx.Profile.MCPServers, agentRegs, plugins)
 		if err != nil {
 			return err
 		}
@@ -151,7 +153,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
-		managed, _, err := RenderManagedKeysOnly(ctx.Profile.MCPServers, agentRegs)
+		managed, _, err := RenderManagedKeysOnlyWithPlugins(ctx.Profile.MCPServers, agentRegs, plugins)
 		if err != nil {
 			return err
 		}

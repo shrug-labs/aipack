@@ -26,6 +26,8 @@ my-pack/
 │   └── deploy-checklist.md
 ├── agents/                # scoped sub-personas
 │   └── investigator.md
+├── plugins/               # Harness plugin references
+│   └── linear.json
 ├── mcp/                   # MCP server configurations
 │   └── my-server.json
 ├── configs/               # harness settings templates
@@ -47,9 +49,9 @@ my-pack/
 
 ## 2. Manifest (`pack.json`)
 
-The manifest declares pack metadata and, optionally, content inventory. Schema version 1.
+The manifest declares pack metadata and, optionally, content inventory. Schema version 2 is the current format.
 
-A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema.json). Add `"$schema": "./schemas/pack.schema.json"` to pack.json for editor validation.
+A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema.json). Use `"$schema": "https://raw.githubusercontent.com/shrug-labs/aipack/main/schemas/pack.schema.json"` for editor validation, or a relative path if you vendor the schema with your pack.
 
 ```json
 {
@@ -73,13 +75,15 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | Field | Type | Description |
 |-------|------|-------------|
 | `version` | string | Pack version (convention: `YYYY.MM.DD` or semver) |
+| `description` | string | Human-readable pack summary |
 | `rules` | string[] | Explicit rule IDs. Auto-discovered from `rules/**/*.md`. Slashed ids allowed (`team-a/style`); literal `__` reserved. |
 | `agents` | string[] | Explicit agent IDs (flat — no slashes). Auto-discovered from `agents/**/*.md`; the file basename is the id, the subdirectory is authoring organization. |
 | `workflows` | string[] | Explicit workflow IDs (flat — no slashes). Auto-discovered from `workflows/**/*.md`; the file basename is the id. |
 | `skills` | string[] | Explicit skill IDs (flat — no slashes). Auto-discovered from `skills/**/SKILL.md`; the immediate parent directory's name is the id. |
 | `prompts` | string[] | Local prompt library IDs. Not synced to harnesses — used for pack-internal prompt management only. Auto-discovered from `prompts/**/*.md`. |
+| `plugins` | string[] | Harness plugin reference IDs (flat — no slashes). Auto-discovered from `plugins/**/*.json`; the file basename is the id. See [Section 7](#7-plugin-references). |
 | `mcp` | string[] | Explicit MCP server IDs. Auto-discovered from `mcp/**/*.json`. See [Section 6](#6-mcp-servers). |
-| `configs` | object | Harness settings and plugin inventory (see [Section 7](#7-configurations)) |
+| `configs` | object | Harness settings and drop-in plugin inventory (see [Section 8](#8-configurations)) |
 | `profiles` | string[] | Profile IDs. Auto-discovered from `profiles/**/*.yaml` |
 | `registries` | string[] | Registry IDs. Auto-discovered from `registries/**/*.yaml` |
 | `extras` | string[] | Relative paths to bundled assets (scripts, data files, helper source) preserved through install. Referenced via `{pack:root}` in MCP configs. Max 50 entries. Must not collide with standard content directories. |
@@ -90,7 +94,7 @@ When a content vector field is **empty** — omitted, null, or an empty array �
 
 Minimal packs need only a `pack.json` with name and schema version — the directory structure is the inventory.
 
-**Subdirectories are allowed everywhere.** For rules they're part of the id (`rules/team-a/style.md` → `team-a/style`); the harness filename encodes `/` as `__` (`team-a__style.md`). For agents, workflows, and skills the subdirectory is authoring organization only — the id is always the file basename (or skill directory name). Two same-leaf entries within one pack collide; rename one. Cross-pack same-leaf goes through the existing collision strategy.
+**Subdirectories are allowed everywhere.** For rules they're part of the id (`rules/team-a/style.md` → `team-a/style`); the harness filename encodes `/` as `__` (`team-a__style.md`). For agents, workflows, skills, and plugins the subdirectory is authoring organization only — the id is always the file basename (or skill directory name). Two same-leaf entries within one pack collide; rename one. Cross-pack same-leaf goes through the existing collision strategy.
 
 ## 3. Content Format
 
@@ -255,7 +259,7 @@ tools:
   - Grep
   - Glob
 mcp_servers:
-  - atlassian
+  - issue-tracker
 harness:
   codex:
     model_reasoning_effort: xhigh
@@ -277,9 +281,9 @@ Pack content uses placeholder syntax for values that vary by deployment — envi
 
 ### 5.1 Parameter references
 
-Syntax: `{params.KEY}`
+Syntax: `{params.KEY}` or `{params.KEY:-default}`
 
-Parameters are defined in profiles and expanded at sync time. Use parameters for values that differ between users or environments but are known at configuration time.
+Parameters are defined in profiles and expanded at sync time. Use parameters for values that differ between users or environments but are known at configuration time. A `:-default` suffix supplies a literal fallback when the parameter is absent; bare `{params.KEY}` remains strict. Empty defaults are allowed (`{params.optional:-}`), but nested placeholders inside defaults are rejected.
 
 ```json
 {
@@ -299,11 +303,19 @@ params:
 
 ### 5.2 Environment variable references
 
-Syntax: `{env:VAR}`
+Syntax: `{env:VAR}` or `{env:VAR:-default}`
 
-Environment variable references are resolved at sync time: the placeholder is replaced with the literal value from the process environment. In MCP server definitions, an unset variable skips that server and emits a warning. In harness settings templates, unresolved references fail sync so aipack does not write broken config.
+Environment variable references are resolved at sync time: the placeholder is replaced with the literal value from the active config directory's `.env` file first, then from the process environment. `{env:VAR:-default}` uses `default` only when `VAR` is unset; a set-but-empty value remains empty. In MCP server definitions, an unset variable without a default skips that server and emits a warning. In harness settings templates, unresolved references fail sync so aipack does not write broken config.
 
 Pack authors write `{env:VAR}` once; the sync engine resolves it identically for all harnesses.
+
+```json
+{
+  "env": {
+    "API_BASE_URL": "{env:API_BASE_URL:-https://api.example.com}"
+  }
+}
+```
 
 ### 5.3 Pack root references
 
@@ -326,7 +338,7 @@ Pack root references are resolved at sync time after the pack is installed, so t
 
 1. Pack root references (`{pack:root}`) are expanded first, resolving to the installed pack's absolute path.
 2. Parameter references (`{params.*}`) are expanded next, using values from the active profile.
-3. Environment references (`{env:*}`) are then resolved to literal values from the process environment.
+3. Environment references (`{env:*}`) are then resolved to literal values from config-dir `.env`, falling back to the process environment and then any inline default.
 
 This means parameters can contain environment references: `{params.mcp_dir}` could expand to `{env:HOME}/.local/share/mcp-servers`, which then resolves to `/home/user/.local/share/mcp-servers` at sync time.
 
@@ -370,7 +382,7 @@ A formal JSON Schema is available at [`mcp-server.schema.json`](../schemas/mcp-s
 | `env` | object | No | Environment variables passed to the server process |
 | `url` | string | SSE/HTTP only | Server endpoint URL |
 | `headers` | object | No | HTTP headers (SSE/HTTP transports) |
-| `available_tools` | string[] | No | Complete inventory of tools the server provides. Populate or refresh with `aipack mcp inspect-tools <server> --save`. |
+| `available_tools` | string[] or null | No | Complete inventory of tools the server provides. Populate or refresh with `aipack mcp inspect-tools <server> --save`; null means unknown/unprobed. |
 | `links` | string[] | No | Documentation URLs (metadata, not synced to harness) |
 | `auth` | string | No | Authentication notes (metadata, not synced to harness) |
 | `notes` | string | No | Human-readable notes (metadata, not synced to harness) |
@@ -389,9 +401,47 @@ Tool permissions are configured in profiles, not the manifest. See [Profiles —
 
 A silent profile (no `allowed_tools`, `always_allowed_tools`, or `disabled_tools` entries for a server) maps to "no allow list emitted" at the harness — the harness's native default (ask per call) applies. Packs that want to ship opinionated defaults do so through a bundled profile (`profiles/default.yaml`), not the manifest.
 
-## 7. Configurations
+## 7. Plugin References
 
-The `configs/` directory contains harness-specific settings templates and plugins, organized by harness name:
+The `plugins/` directory contains JSON descriptors for harness plugins. A pack carries a reference to a marketplace plugin; it does not vendor plugin code.
+
+```json
+{
+  "source": "github:linear/linear-codex-plugin"
+}
+```
+
+The plugin id comes from the descriptor filename: `plugins/linear.json` declares plugin id `linear`. Descriptor fields are intentionally small:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | string | Yes | Human-readable plugin source reference. |
+| `marketplace` | string | No | Omitted means the harness default marketplace. Bare names are used as-is. Source-prefixed values such as `github:obra/superpowers-marketplace` derive the marketplace name from the path leaf. |
+
+Sync is additive-only in v1. aipack adds or updates plugin enablement in harness config, but removing a descriptor from a pack or profile does not disable or uninstall a plugin from the harness.
+
+Codex writes declarative plugin stanzas to `config.toml`:
+
+```toml
+[plugins."linear@openai-curated"]
+enabled = true
+```
+
+Claude Code writes `enabledPlugins` in `.claude/settings.json`. Source-prefixed marketplaces also add a registration to `~/.claude/plugins/known_marketplaces.json`.
+
+```json
+{
+  "enabledPlugins": {
+    "linear@claude-plugins-official": true
+  }
+}
+```
+
+Codex source-prefixed marketplaces must already be known to the local Codex installation. aipack does not run marketplace install commands.
+
+## 8. Configurations
+
+The `configs/` directory contains harness-specific settings templates and drop-in plugin config files, organized by harness name:
 
 ```
 configs/
@@ -404,7 +454,7 @@ configs/
     └── oh-my-opencode.json
 ```
 
-The manifest declares which files are settings (merged with engine-managed keys) and which are plugins (pure copies):
+The manifest declares which files are settings (merged with engine-managed keys) and which files are drop-in harness plugins (pure copies):
 
 ```json
 {
@@ -422,24 +472,21 @@ The manifest declares which files are settings (merged with engine-managed keys)
 
 **Settings** are base templates containing non-managed user preferences (theme, editor config, non-MCP permissions). String values in settings templates may use `{env:*}`, `{params.*}`, and `{pack:root}` references; aipack expands them before merging. The sync engine then merges settings with computed managed keys (MCP configs, tool permissions, content paths). Multiple packs can contribute settings for the same harness — they are deep-merged in profile order, with the first pack winning at leaf value conflicts. Both the expansion and the merge parse and re-marshal the file, so comments and source key ordering are not preserved in the rendered output.
 
-**Plugins** are pure copies — synced as-is regardless of `--skip-settings`. Template references are not expanded in plugins; if you need `{env:*}` or `{pack:root}` substitution, declare the file under `harness_settings` instead. Same-name plugin files from different packs produce an error.
+**Drop-in harness plugins** are pure copies — synced as-is regardless of `--skip-settings`. Template references are not expanded in these files; if you need `{env:*}` or `{pack:root}` substitution, declare the file under `harness_settings` instead. Same-name plugin files from different packs produce an error. This is separate from first-class `plugins/<id>.json` marketplace references.
 
-## 8. Composition
+## 9. Composition
 
 Packs compose through **profiles** — YAML files that declare which packs to load, how to filter their content, and what parameters to expand. For the full specification including profile structure, vector selectors, layering, overrides, quiet packs, and MCP server configuration, see [Profiles](./profiles.md).
 
-## 9. Distribution
+## 10. Distribution
 
-### 9.1 Git-native installation
+### 10.1 Installation sources
 
-Packs are installed from git repositories. Two fetch strategies are supported:
+Git-backed packs are installed with shallow clone and then extracted into a clean content-only pack directory. Both HTTPS and SSH URLs are supported. Packs can live in a subdirectory of a larger repository (common for team mono-repos).
 
-1. **HTTP tarball** — GitHub HTTPS URLs download a tarball directly (no git binary required).
-2. **Shallow clone** — all other URLs use `git clone --depth 1`.
+Archive-backed packs use static zip, tar, tar.gz, or tgz URLs. Archive installs record `method: archive`, can use `path` to select a subdirectory inside the archive, and are full-replaced on update because they do not carry git refs or commit hashes.
 
-Both HTTPS and SSH URLs are supported. Packs can live in a subdirectory of a larger repository (common for team mono-repos).
-
-### 9.2 Registry
+### 10.2 Registry
 
 A registry maps pack names to source repositories. Format:
 
@@ -452,20 +499,26 @@ packs:
     ref: "main"
     description: "Foundation pack for AI agent configuration"
     owner: "shrug-labs"
-  team-ops:
+  example-pack:
     repo: "git@bitbucket.example.com:TEAM/tools.git"
     path: "ai-pack"
     ref: "main"
     description: "Team operational runbooks and MCP configs"
     owner: "ops-team"
     contact: "ops-team@example.com"
+  team-archive:
+    method: archive
+    url: "https://downloads.example.com/aipack/team-archive.zip"
+    description: "Static archive distribution"
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `repo` | string | Yes | Git repository URL |
-| `path` | string | No | Subdirectory within the repository |
-| `ref` | string | No | Git ref (branch, tag, commit) |
+| `method` | string | No | `clone` (default) or `archive` |
+| `repo` | string | Yes for clone | Git repository URL |
+| `url` | string | Yes for archive | Zip, tar, tar.gz, or tgz archive URL |
+| `path` | string | No | Subdirectory within the repository or archive |
+| `ref` | string | No | Git ref (branch, tag, commit); invalid for archive entries |
 | `description` | string | No | Human-readable description |
 | `owner` | string | No | Pack maintainer or team |
 | `contact` | string | No | Contact information |
@@ -541,10 +594,10 @@ Per-harness rendering details (file paths, config formats, merge behavior) are d
 ```json
 {
   "schema_version": 2,
-  "name": "team-ops",
+  "name": "example-pack",
   "version": "2026.03.12",
   "root": ".",
-  "mcp": ["atlassian", "deploy-tool"],
+  "mcp": ["issue-tracker", "deploy-tool"],
   "configs": {
     "harness_settings": {
       "claudecode": ["settings.local.json"],
@@ -602,7 +655,9 @@ Validates `pack.json` files:
 - Required fields (`schema_version`, `name`, `root`)
 - Pack and content ID naming patterns (`^[a-z0-9][a-z0-9_-]*$`)
 - Content vector arrays with uniqueness constraints
-- MCP server defaults and harness config structure
+- Current `schema_version: 2` MCP server lists and legacy `schema_version: 1` MCP objects
+- Harness settings and drop-in plugin config inventory
+- Current `extras` plus the legacy v1 `include` list used by older packs
 - Strict mode — no unknown properties
 
 ### [`mcp-server.schema.json`](../schemas/mcp-server.schema.json) — MCP Server Definition
@@ -612,7 +667,7 @@ Validates `mcp/*.json` files:
 - Required fields (`name`, `transport`)
 - Transport-conditional requirements (`command` for stdio, `url` for sse/streamable-http)
 - Server name pattern matching filename convention
-- Runtime-only fields rejected (`allowed_tools`, `disabled_tools`, `source_pack` — these are set by profile resolution, not authored)
+- Runtime-only fields rejected (`allowed_tools`, `always_allowed_tools`, `disabled_tools`, `source_pack` — these are set by profile resolution, not authored)
 - Tool inventory uniqueness (`available_tools`)
 - Strict mode — no unknown properties
 
@@ -622,7 +677,7 @@ Add a `$schema` reference to enable editor autocomplete and validation:
 
 ```json
 {
-  "$schema": "../schemas/pack.schema.json",
+  "$schema": "https://raw.githubusercontent.com/shrug-labs/aipack/main/schemas/pack.schema.json",
   "schema_version": 2,
   "name": "my-pack",
   "root": "."

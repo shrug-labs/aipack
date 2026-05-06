@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -155,6 +156,33 @@ func (e *Engine) parseSkills(rp config.ResolvedPack) ([]domain.Skill, []domain.W
 		skills[i].Assets = assets
 	}
 	return skills, warnings, nil
+}
+
+func (e *Engine) parsePlugins(rp config.ResolvedPack) ([]domain.Plugin, []domain.Warning, error) {
+	var plugins []domain.Plugin
+	for _, id := range rp.Plugins {
+		path := filepath.Join(rp.Root, filepath.FromSlash(rp.Manifest.RelPath(domain.CategoryPlugins, id)))
+		raw, err := e.FS.ReadFile(path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading plugin %s: %w", path, err)
+		}
+		var p domain.Plugin
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&p); err != nil {
+			return nil, nil, fmt.Errorf("parsing plugin %s: %w", path, err)
+		}
+		if strings.TrimSpace(p.Source) == "" {
+			return nil, nil, fmt.Errorf("plugin %s: source is required", path)
+		}
+		p.Name = id
+		p.Source = strings.TrimSpace(p.Source)
+		p.Marketplace = strings.TrimSpace(p.Marketplace)
+		p.SourcePath = path
+		p.SourcePack = rp.Name
+		plugins = append(plugins, p)
+	}
+	return plugins, nil, nil
 }
 
 // listSkillAssets returns the sorted list of files under dir (recursively)

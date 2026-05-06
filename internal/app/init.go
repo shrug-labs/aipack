@@ -20,8 +20,9 @@ type InitRequest struct {
 	RegistryFetchFn func(repo, ref, path string) ([]byte, error)
 }
 
-// RunInit initializes the user's config directory with a sync-config.yaml and
-// an empty default profile, then fetches the default registry.
+// RunInit initializes the user's config directory with a sync-config.yaml,
+// an empty default profile, and a local .env placeholder, then fetches the
+// default registry.
 func RunInit(ctx context.Context, req InitRequest, stdout io.Writer) error {
 	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
@@ -47,6 +48,11 @@ func RunInit(ctx context.Context, req InitRequest, stdout io.Writer) error {
 
 	destProfilePath := filepath.Join(req.ConfigDir, "profiles", "default.yaml")
 	if err := writeInitFile(destProfilePath, config.InitProfileBytes, req.Force, stdout); err != nil {
+		return err
+	}
+
+	envPath := config.DotEnvPath(req.ConfigDir)
+	if err := writeInitPlaceholderFile(envPath, config.InitEnvBytes, stdout); err != nil {
 		return err
 	}
 
@@ -76,6 +82,23 @@ func writeInitFile(path string, content []byte, force bool, stdout io.Writer) er
 		}
 		fmt.Fprintf(stdout, "Overwriting: %s\n", path)
 		return util.WriteFileAtomicWithPerms(path, content, 0o700, 0o600)
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+
+	fmt.Fprintf(stdout, "Creating: %s\n", path)
+	return util.WriteFileAtomicWithPerms(path, content, 0o700, 0o600)
+}
+
+func writeInitPlaceholderFile(path string, content []byte, stdout io.Writer) error {
+	st, err := os.Stat(path)
+	if err == nil {
+		if !st.Mode().IsRegular() {
+			return fmt.Errorf("path exists and is not a file: %s", path)
+		}
+		fmt.Fprintf(stdout, "Skip: %s exists\n", path)
+		return nil
 	}
 	if !os.IsNotExist(err) {
 		return err

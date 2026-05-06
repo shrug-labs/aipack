@@ -41,7 +41,7 @@ approval_mode = "approve"
 	// Step 3: sync #2 renders identical managed content (profile unchanged).
 	sync2Managed := sync1Managed
 
-	merged, ops, err := threeWayMergeTOML(onDisk, sync1Managed, sync2Managed)
+	merged, ops, err := threeWayMergeTOML(onDisk, sync1Managed, sync2Managed, false)
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -90,7 +90,7 @@ enabled_tools = ["get_pr", "list_repos"]
 startup_timeout_sec = 10
 `)
 
-	merged, ops, err := threeWayMergeTOML(onDisk, sync1Managed, sync2Managed)
+	merged, ops, err := threeWayMergeTOML(onDisk, sync1Managed, sync2Managed, false)
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}

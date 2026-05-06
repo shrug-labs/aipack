@@ -51,8 +51,8 @@ func TestParseFrontmatter(t *testing.T) {
 				t.Fatalf("expected %d frontmatter entries, got %d", len(tt.wantKeys), len(fm))
 			}
 			for i, key := range tt.wantKeys {
-				if fm[i].key != key {
-					t.Errorf("entry %d: expected key %q, got %q", i, key, fm[i].key)
+				if fm[i].Key != key {
+					t.Errorf("entry %d: expected key %q, got %q", i, key, fm[i].Key)
 				}
 			}
 			if body != tt.wantBody {
@@ -65,11 +65,11 @@ func TestParseFrontmatter(t *testing.T) {
 func TestPreviewModel_ErrorRendering(t *testing.T) {
 	t.Parallel()
 	p := newPreviewModel(80, 40)
-	p.setContent(previewLoadedMsg{
-		title: "missing-rule",
-		err:   fmt.Errorf("open: no such file"),
+	p = p.SetContent(previewLoadedMsg{
+		Title: "missing-rule",
+		Err:   fmt.Errorf("open: no such file"),
 	})
-	view := p.View()
+	view := p.Render()
 	if !strings.Contains(view, "no such file") {
 		t.Fatalf("expected error in view, got:\n%s", view)
 	}
@@ -78,12 +78,12 @@ func TestPreviewModel_ErrorRendering(t *testing.T) {
 func TestPreviewModel_EmptyContent(t *testing.T) {
 	t.Parallel()
 	p := newPreviewModel(80, 40)
-	p.setContent(previewLoadedMsg{
-		title:    "empty-rule",
-		category: domain.CategoryRules,
-		filePath: "/tmp/pack/rules/empty.md",
+	p = p.SetContent(previewLoadedMsg{
+		Title:    "empty-rule",
+		Category: domain.CategoryRules,
+		FilePath: "/tmp/pack/rules/empty.md",
 	})
-	view := p.View()
+	view := p.Render()
 	if !strings.Contains(view, "(empty)") {
 		t.Fatalf("expected (empty) in view, got:\n%s", view)
 	}
@@ -107,21 +107,34 @@ func TestLoadPreview_SkillDirectory(t *testing.T) {
 	cmd := loadPreview("agent-configuration", domain.CategorySkills, "aipack-core", skillDir)
 	msg := cmd().(previewLoadedMsg)
 
-	if msg.err != nil {
-		t.Fatalf("unexpected error: %v", msg.err)
+	if msg.Err != nil {
+		t.Fatalf("unexpected error: %v", msg.Err)
 	}
-	if len(msg.frontmatter) == 0 {
+	if len(msg.Frontmatter) == 0 {
 		t.Fatal("expected frontmatter entries, got none")
 	}
-	if !strings.Contains(msg.body, "Skill body content here") {
-		t.Fatalf("expected skill body in preview, got: %q", msg.body)
+	if !strings.Contains(msg.Body, "Skill body content here") {
+		t.Fatalf("expected skill body in preview, got: %q", msg.Body)
 	}
 }
 
 func TestPreviewModel_HelpText(t *testing.T) {
 	t.Parallel()
 	p := newPreviewModel(80, 40)
-	help := p.helpText()
+	help := p.HelpText()
+	if strings.Contains(help, "e:edit") || strings.Contains(help, "o:open") {
+		t.Fatalf("generic preview help should not mention file actions, got %q", help)
+	}
+	if !strings.Contains(help, "esc:close") {
+		t.Fatalf("expected help to mention esc:close, got %q", help)
+	}
+
+	p = p.SetContent(previewLoadedMsg{
+		Title:    "rule-a",
+		Category: domain.CategoryRules,
+		FilePath: "/tmp/rule-a.md",
+	})
+	help = p.HelpText()
 	if !strings.Contains(help, "e:edit") {
 		t.Fatalf("expected help to mention e:edit, got %q", help)
 	}
@@ -190,14 +203,14 @@ func TestResolveEditorCommand(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveEditorCommand: %v", err)
 			}
-			if got.source != tt.wantSource {
-				t.Fatalf("source = %q, want %q", got.source, tt.wantSource)
+			if got.Source != tt.wantSource {
+				t.Fatalf("source = %q, want %q", got.Source, tt.wantSource)
 			}
-			if got.name != tt.wantName {
-				t.Fatalf("name = %q, want %q", got.name, tt.wantName)
+			if got.Name != tt.wantName {
+				t.Fatalf("name = %q, want %q", got.Name, tt.wantName)
 			}
-			if strings.Join(got.args, "\x00") != strings.Join(tt.wantArgs, "\x00") {
-				t.Fatalf("args = %#v, want %#v", got.args, tt.wantArgs)
+			if strings.Join(got.Args, "\x00") != strings.Join(tt.wantArgs, "\x00") {
+				t.Fatalf("args = %#v, want %#v", got.Args, tt.wantArgs)
 			}
 		})
 	}

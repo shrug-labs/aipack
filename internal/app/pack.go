@@ -23,6 +23,8 @@ type PackInstallRequest struct {
 	PackPath string
 	// URL is a git-accessible repository or pack.json URL to clone/install from (mutually exclusive with PackPath).
 	URL string
+	// Archive treats URL as a static zip/tar archive rather than a git repository.
+	Archive bool
 	// ConfigDir is the config directory (e.g. ~/.config/aipack).
 	ConfigDir string
 	// Name overrides the pack name from pack.json.
@@ -233,6 +235,9 @@ func packInstallDispatch(ctx context.Context, req PackInstallRequest, stdout io.
 	}
 
 	if req.URL != "" {
+		if req.Archive {
+			return packInstallFromArchive(ctx, req, stdout)
+		}
 		return packInstallFromURL(ctx, req, stdout)
 	}
 	return packInstallFromPath(req, stdout)
@@ -574,10 +579,11 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	}
 
 	// All remote installs use shallow clone (commit hash + version pinning).
-	result, err := packShallowClone(ctx, req, info, packsDir, stdout)
+	result, err := packShallowClone(ctx, req, info, stdout, packCloneOptions{UpdateCache: true})
 	if err != nil {
 		return err
 	}
+	defer os.RemoveAll(result.destDir)
 
 	// Verify pack.json version against the requested tag, if both are present.
 	// This educates pack authors when their pack.json version drifts from
@@ -612,6 +618,18 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	}
 
 	name := result.name
+	destDir := filepath.Join(packsDir, name)
+	if err := util.ReplaceDirAtomic(destDir, result.destDir); err != nil {
+		err = fmt.Errorf("installing pack to %s: %w", destDir, err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
+		}
+		return err
+	}
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
+	}
+
 	approvedList, declinedList := buildPrefsLists(effectiveWith)
 	meta := config.InstalledPackMeta{
 		Origin: info.RepoURL, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
@@ -623,7 +641,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// Populate drift-detection baseline so doctor broken_refs and
 	// sync drift reports work before the first sync runs. The ref is
 	// captured so the next sync can report the version transition.
-	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, result.destDir, info.Ref, now, stdout)
+	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, destDir, info.Ref, now, stdout)
 	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
 		if stdout != nil {
 			fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
@@ -638,9 +656,9 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// filter side effects (pack.json field strip/unstrip and bundled file
 	// add/remove from `-w` flips) that don't reflect upstream drift.
 	// Reserve the integrity diff for `pack update`.
-	_, _ = saveIntegrity(result.destDir)
+	_, _ = saveIntegrity(destDir)
 
-	installBundledContent(req.ConfigDir, result.destDir, result.manifest, effectiveWith, stdout)
+	installBundledContent(req.ConfigDir, destDir, result.manifest, effectiveWith, stdout)
 
 	if req.Add {
 		if err := PackAdd(req.ConfigDir, packProfileName(req.Profile), name, req.Quiet, stdout); err != nil {
@@ -653,9 +671,301 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	}
 
 	// Index the pack so search works immediately without requiring sync.
-	_ = indexInstalledPack(req.ConfigDir, name, result.destDir)
+	_ = indexInstalledPack(req.ConfigDir, name, destDir)
 
 	return nil
+}
+
+func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
+	if req.Ref != "" {
+		return fmt.Errorf("--ref/--version is not valid with archive installs")
+	}
+	if stdout != nil {
+		if req.Name == "" {
+			fmt.Fprintf(stdout, "Installing archive from %s\n", req.URL)
+		} else {
+			fmt.Fprintf(stdout, "Installing %s from archive %s\n", req.Name, req.URL)
+		}
+	}
+
+	packsDir := PacksDir(req.ConfigDir)
+	if err := os.MkdirAll(packsDir, 0o700); err != nil {
+		err = fmt.Errorf("creating packs directory: %w", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %v\n", err)
+		}
+		return err
+	}
+
+	result, err := packFetchArchive(ctx, req, stdout)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(result.destDir)
+
+	now := time.Now()
+	if req.NowFn != nil {
+		now = req.NowFn()
+	}
+
+	if req.With == nil {
+		packPreviewBundled(result.destDir, result.manifest, stdout)
+	}
+	effectiveWith := req.With
+	if effectiveWith == nil {
+		effectiveWith = domain.NewBundledSet()
+	}
+
+	if err := applyWithFilter(result.destDir, &result.manifest, effectiveWith); err != nil {
+		err = fmt.Errorf("applying content filter: %w", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %s: %v\n", result.name, err)
+		}
+		return err
+	}
+
+	destDir := filepath.Join(packsDir, result.name)
+	if err := util.ReplaceDirAtomic(destDir, result.destDir); err != nil {
+		err = fmt.Errorf("installing pack to %s: %w", destDir, err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %s: %v\n", result.name, err)
+		}
+		return err
+	}
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Fetched archive: %s -> %s\n", req.URL, destDir)
+	}
+
+	approvedList, declinedList := buildPrefsLists(effectiveWith)
+	meta := config.InstalledPackMeta{
+		Origin: req.URL, Method: config.MethodArchive, InstalledAt: now.UTC().Format(time.RFC3339),
+		SubPath: req.SubPath, ContentPaths: req.ContentPaths,
+		Approved: approvedList, Declined: declinedList,
+		InstallQuiet: resolveInstallQuiet(req.ConfigDir, result.name, req.Quiet),
+	}
+	meta.Resolved = buildResolvedInventory(req.ConfigDir, result.name, destDir, "", now, stdout)
+	if err := packRecordOrigin(req.ConfigDir, result.name, meta); err != nil {
+		if stdout != nil {
+			fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
+		}
+	}
+
+	packWarnMCPServers(result.manifest, stdout)
+	_, _ = saveIntegrity(destDir)
+	installBundledContent(req.ConfigDir, destDir, result.manifest, effectiveWith, stdout)
+
+	if req.Add {
+		if err := PackAdd(req.ConfigDir, packProfileName(req.Profile), result.name, req.Quiet, stdout); err != nil {
+			err = fmt.Errorf("adding pack to profile: %w", err)
+			if stdout != nil {
+				fmt.Fprintf(stdout, "error: %s: %v\n", result.name, err)
+			}
+			return err
+		}
+	}
+
+	_ = indexInstalledPack(req.ConfigDir, result.name, destDir)
+	return nil
+}
+
+func packFetchArchive(ctx context.Context, req PackInstallRequest, stdout io.Writer) (packInstallResult, error) {
+	archiveDir, err := makePackTempDir(req.ConfigDir, "archive-*")
+	if err != nil {
+		err = fmt.Errorf("creating temp dir: %w", err)
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %v\n", err)
+		}
+		return packInstallResult{}, err
+	}
+	defer os.RemoveAll(archiveDir)
+
+	if stdout != nil {
+		if req.Name == "" {
+			fmt.Fprintf(stdout, "Fetching archive %s\n", req.URL)
+		} else {
+			fmt.Fprintf(stdout, "Fetching archive %s from %s\n", req.Name, req.URL)
+		}
+	}
+	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseExtracting})
+	if err := source.FetchHTTPArchive(ctx, req.URL, archiveDir, source.HTTPArchiveOptions{}); err != nil {
+		err = fmt.Errorf("fetching archive %s: %w", req.URL, err)
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
+		return packInstallResult{}, err
+	}
+
+	var packRoot string
+	if req.ContentPaths != nil {
+		packRoot, err = resolveArchiveContentRoot(archiveDir, req.SubPath)
+	} else {
+		packRoot, err = resolveArchivePackRoot(archiveDir, req.SubPath)
+	}
+	if err != nil {
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
+		return packInstallResult{}, err
+	}
+
+	staging, manifest, err := extractPackContent(
+		packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, archiveDir,
+	)
+	if err != nil {
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
+		return packInstallResult{}, err
+	}
+
+	name, err := resolvePackName(req.Name, manifest.Name)
+	if err != nil {
+		os.RemoveAll(staging)
+		if stdout != nil {
+			if req.Name == "" {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(stdout, "error: %s: %v\n", req.Name, err)
+			}
+		}
+		return packInstallResult{}, err
+	}
+	return packInstallResult{name: name, destDir: staging, method: config.MethodArchive, manifest: manifest}, nil
+}
+
+func resolveArchivePackRoot(root, subPath string) (string, error) {
+	subPath = strings.Trim(strings.TrimSpace(subPath), "/")
+	if subPath != "" {
+		if packRoot := archivePackRootCandidate(root, subPath); packRoot != "" {
+			return packRoot, nil
+		}
+		if top, ok := singleTopLevelDir(root); ok {
+			if packRoot := archivePackRootCandidate(top, subPath); packRoot != "" {
+				return packRoot, nil
+			}
+		}
+		if hint := listArchivePacks(root); hint != "" {
+			return "", fmt.Errorf("path %q not found in archive; available packs: %s", subPath, hint)
+		}
+		return "", fmt.Errorf("path %q not found in archive", subPath)
+	}
+
+	if packRoot := archivePackRootCandidate(root, ""); packRoot != "" {
+		return packRoot, nil
+	}
+	if top, ok := singleTopLevelDir(root); ok {
+		if packRoot := archivePackRootCandidate(top, ""); packRoot != "" {
+			return packRoot, nil
+		}
+	}
+	if hint := listArchivePacks(root); hint != "" {
+		return "", fmt.Errorf("pack.json not found at archive root; available packs: %s", hint)
+	}
+	return "", fmt.Errorf("pack.json not found in archive")
+}
+
+func resolveArchiveContentRoot(root, subPath string) (string, error) {
+	subPath = strings.Trim(strings.TrimSpace(subPath), "/")
+	if subPath != "" {
+		if packRoot := archiveContentRootCandidate(root, subPath); packRoot != "" {
+			return packRoot, nil
+		}
+		if top, ok := singleTopLevelDir(root); ok {
+			if packRoot := archiveContentRootCandidate(top, subPath); packRoot != "" {
+				return packRoot, nil
+			}
+		}
+		return "", fmt.Errorf("path %q not found in archive", subPath)
+	}
+	if top, ok := singleTopLevelDir(root); ok {
+		return top, nil
+	}
+	return root, nil
+}
+
+func archivePackRootCandidate(root, subPath string) string {
+	candidate := root
+	if subPath != "" {
+		candidate = filepath.Join(root, filepath.FromSlash(subPath))
+	}
+	if _, err := os.Stat(filepath.Join(candidate, "pack.json")); err == nil {
+		return candidate
+	}
+	return ""
+}
+
+func archiveContentRootCandidate(root, subPath string) string {
+	candidate := root
+	if subPath != "" {
+		candidate = filepath.Join(root, filepath.FromSlash(subPath))
+	}
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		return candidate
+	}
+	return ""
+}
+
+func singleTopLevelDir(root string) (string, bool) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", false
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirs = append(dirs, filepath.Join(root, entry.Name()))
+		} else if entry.Name() == "pack.json" {
+			return "", false
+		}
+	}
+	if len(dirs) != 1 {
+		return "", false
+	}
+	return dirs[0], true
+}
+
+func listArchivePacks(root string) string {
+	var packs []string
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, entry.Name(), "pack.json")); err == nil {
+			packs = append(packs, entry.Name())
+			continue
+		}
+		children, err := os.ReadDir(filepath.Join(root, entry.Name()))
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			if !child.IsDir() {
+				continue
+			}
+			rel := filepath.Join(entry.Name(), child.Name())
+			if _, err := os.Stat(filepath.Join(root, rel, "pack.json")); err == nil {
+				packs = append(packs, filepath.ToSlash(rel))
+			}
+		}
+	}
+	slices.Sort(packs)
+	return strings.Join(packs, ", ")
 }
 
 // packInstallResult holds the output of a remote install operation.
@@ -669,11 +979,15 @@ type packInstallResult struct {
 	commitHash string
 }
 
+type packCloneOptions struct {
+	UpdateCache bool
+}
+
 // packShallowClone installs a pack via shallow git clone. The clone is
 // transient — content is extracted into a clean standard pack layout and the
-// clone is discarded. The installed pack contains only pack content (no .git,
-// no non-pack repo files).
-func packShallowClone(ctx context.Context, req PackInstallRequest, info source.PackURLInfo, packsDir string, stdout io.Writer) (packInstallResult, error) {
+// clone is discarded. The returned destDir is a staging directory; callers
+// apply filtering and atomically move it to the final install location.
+func packShallowClone(ctx context.Context, req PackInstallRequest, info source.PackURLInfo, stdout io.Writer, opts packCloneOptions) (packInstallResult, error) {
 	cloneDir, err := makePackTempDir(req.ConfigDir, "clone-*")
 	if err != nil {
 		err = fmt.Errorf("creating temp dir: %w", err)
@@ -712,9 +1026,11 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		}
 		return packInstallResult{}, err
 	}
-	// Best-effort: seed the bare-repo cache from the local clone for future
-	// --reference reuse. No network call — uses cloneDir as source.
-	_ = source.UpdateBareCache(ctx, info.RepoURL, cloneDir, source.GitCacheDir(req.ConfigDir), gitFn)
+	if opts.UpdateCache {
+		// Best-effort: seed the bare-repo cache from the local clone for future
+		// --reference reuse. No network call — uses cloneDir as source.
+		_ = source.UpdateBareCache(ctx, info.RepoURL, cloneDir, source.GitCacheDir(req.ConfigDir), gitFn)
+	}
 
 	commitHash := resolveGitHash(ctx, cloneDir, req.GitHashFn)
 
@@ -745,10 +1061,10 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		}
 		return packInstallResult{}, err
 	}
-	defer os.RemoveAll(staging)
 
 	name, err := resolvePackName(req.Name, manifest.Name)
 	if err != nil {
+		os.RemoveAll(staging)
 		if stdout != nil {
 			if req.Name == "" {
 				fmt.Fprintf(stdout, "error: %v\n", err)
@@ -758,21 +1074,7 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		}
 		return packInstallResult{}, err
 	}
-
-	destDir := filepath.Join(packsDir, name)
-	if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
-		err = fmt.Errorf("installing pack to %s: %w", destDir, err)
-		if stdout != nil {
-			fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
-		}
-		return packInstallResult{}, err
-	}
-
-	if stdout != nil {
-		fmt.Fprintf(stdout, "Cloned: %s -> %s\n", req.URL, destDir)
-	}
-
-	return packInstallResult{name: name, destDir: destDir, method: config.MethodClone, manifest: manifest, commitHash: commitHash}, nil
+	return packInstallResult{name: name, destDir: staging, method: config.MethodClone, manifest: manifest, commitHash: commitHash}, nil
 }
 
 // listClonePacks returns a comma-separated list of top-level subdirectories in

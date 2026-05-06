@@ -29,6 +29,7 @@ type PackManifest struct {
 	Workflows     []string `json:"workflows,omitempty"`
 	Skills        []string `json:"skills,omitempty"`
 	Prompts       []string `json:"prompts,omitempty"`
+	Plugins       []string `json:"plugins,omitempty"`
 	// MCP holds server IDs — the runtime never sees v1's nested shape.
 	// parseV1Manifest extracts server keys from the legacy object into this
 	// slice so downstream code has a single representation to work with.
@@ -123,8 +124,12 @@ func (m *PackManifest) ContentIDsPtr(cat domain.PackCategory) *[]string {
 		return &m.Workflows
 	case domain.CategorySkills:
 		return &m.Skills
+	case domain.CategoryPrompts:
+		return &m.Prompts
 	case domain.CategoryMCP:
 		return &m.MCP
+	case domain.CategoryPlugins:
+		return &m.Plugins
 	}
 	return nil
 }
@@ -149,6 +154,8 @@ func (pe *PackEntry) VectorSelectorFor(cat domain.PackCategory) *VectorSelector 
 		return &pe.Workflows
 	case domain.CategorySkills:
 		return &pe.Skills
+	case domain.CategoryPlugins:
+		return &pe.Plugins
 	}
 	return nil
 }
@@ -330,6 +337,9 @@ func (m PackManifest) ContentPaths() []string {
 	for _, id := range m.Prompts {
 		paths = append(paths, filepath.ToSlash(filepath.Join("prompts", id+".md")))
 	}
+	for _, id := range m.Plugins {
+		paths = append(paths, m.RelPath(domain.CategoryPlugins, id))
+	}
 	for _, name := range m.MCP {
 		paths = append(paths, filepath.ToSlash(filepath.Join("mcp", name+".json")))
 	}
@@ -360,7 +370,7 @@ func (m PackManifest) ContentPaths() []string {
 // entries must not collide with. Shared between validation and extraction.
 var ExtrasReservedDirs = map[string]struct{}{
 	"rules": {}, "agents": {}, "workflows": {}, "skills": {},
-	"mcp": {}, "configs": {}, "prompts": {}, "profiles": {},
+	"mcp": {}, "plugins": {}, "configs": {}, "prompts": {}, "profiles": {},
 	"registries": {},
 }
 

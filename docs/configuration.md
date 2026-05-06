@@ -1,6 +1,6 @@
 # Configuration and State
 
-What aipack puts on your machine, how to configure it, and how to manage it. For the CLI commands that operate on these files, see the [aipack reference](./aipack.md). For profiles and composition, see [Profiles](./profiles.md). For registry schemas, see the [Pack Format Specification](./pack-format.md#92-registry). For JSON output contracts and environment variables, see the [CLI Specification](./cli-spec.md).
+What aipack puts on your machine, how to configure it, and how to manage it. For the CLI commands that operate on these files, see the [aipack reference](./aipack.md). For profiles and composition, see [Profiles](./profiles.md). For registry schemas, see the [Pack Format Specification](./pack-format.md#102-registry). For JSON output contracts and environment variables, see the [CLI Specification](./cli-spec.md).
 
 ## Config directory layout
 
@@ -9,6 +9,7 @@ What aipack puts on your machine, how to configure it, and how to manage it. For
 ```
 ~/.config/aipack/
 ├── sync-config.yaml          # root configuration — defaults, registry sources
+├── .env                      # local values for {env:*} expansion; created empty by init
 ├── aipack.lock                # installed pack state (machine-managed; do not edit)
 ├── profiles/                  # profile YAML files
 │   ├── default.yaml
@@ -52,6 +53,28 @@ aipack derives the config directory from `os.UserHomeDir()` and a fixed suffix. 
 | WSL | Linux paths apply, even when invoking from a Windows shell — see the [FAQ](./faq.md). |
 
 To use a different location, pass `--config-dir <path>` to any command. There is no environment-variable override.
+
+## .env
+
+`~/.config/aipack/.env` is created empty by `aipack init` and by commands that ensure the config directory exists. Populate it only when you want config-local values for `{env:VAR}` placeholders. aipack reads `.env` during profile resolution before falling back to the process environment, keeping machine-local secrets and paths out of profiles while still making sync deterministic from the config directory.
+
+Supported lines are blank lines, comments, `KEY=value`, and `export KEY=value`. Invalid lines fail resolution with a line-numbered error that does not echo the line content.
+
+Values are stored as raw strings — the parser does not strip surrounding quotes or interpret shell-style escape sequences. `KEY="value with spaces"` makes the literal `"value with spaces"` (quotes included) the value of `KEY`; write `KEY=value with spaces` instead. Leading and trailing whitespace on each value is trimmed; embedded `\n` and `\\` are not expanded. Files saved with a UTF-8 BOM will fail to parse the first key.
+
+You can manage entries through `aipack config env` instead of editing the file by hand:
+
+```bash
+aipack config env list                # keys only (values masked) + total count
+aipack config env list --show         # keys + values (--json supported with both forms)
+aipack config env get API_TOKEN       # print one value
+aipack config env set API_TOKEN abc   # write or replace, preserving comments and export prefixes
+aipack config env unset API_TOKEN     # remove one entry
+aipack config env path                # print absolute path to .env
+aipack config env edit                # open the file in $EDITOR (or VISUAL, falling back to vi/notepad)
+```
+
+`env set` is line-preserving — comments, blank lines, and unrelated entries survive the rewrite, and existing `export KEY=...` prefixes are kept on the rewritten line. The TUI Config tab exposes profile params and config-dir `.env` entries together, with values hidden by default. Values containing newlines are rejected; key validation matches the file parser (letters, digits after the first character, and underscore).
 
 ## sync-config.yaml
 
@@ -121,12 +144,16 @@ packs:
     origin: /Users/x/src/local-pack
     method: link
     installed_at: "2026-03-12T10:00:00Z"
+  archive-pack:
+    origin: https://downloads.example.com/aipack/archive-pack.zip
+    method: archive
+    installed_at: "2026-04-12T09:00:00Z"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `origin` | string | Absolute local path or remote URL |
-| `method` | string | `link`, `copy`, `clone`, or `local`. Legacy `archive` and `http-tarball` entries are migrated to `clone` on next update. |
+| `method` | string | `link`, `copy`, `clone`, `archive`, or `local`. Legacy `http-tarball` entries are migrated to `clone` on next update. |
 | `installed_at` | string | RFC 3339 timestamp |
 | `ref` | string | Git ref at install time (remote only). A semver tag (`v1.2.3`), namespaced tag (`my-pack/v1.2.3`), or commit hash marks the pack as **pinned** and is preserved across `pack update`; a branch name or empty value tracks upstream. The raw remote spelling is stored unchanged so the ref can be checked out directly. `pack install --ref 1.2.3` (and its alias `--version 1.2.3`) resolve to the matching remote tag and record it here — pin state is derived from the ref's shape, not a separate field. |
 | `sub_path` | string | Subdirectory within the repo (remote only) |
@@ -147,11 +174,12 @@ Packs live under `~/.config/aipack/packs/<name>/`. Four install methods produce 
 | `link` | Symlink to source directory | Yes — edits at either location hit the same files | Re-validates symlink target |
 | `copy` | Full copy from local path | No — edits are local only | Re-copies from recorded origin |
 | `clone` | Content-extracted from git clone | No — installed content is a static snapshot | Re-clones from origin, re-extracts content |
+| `archive` | Content-extracted from zip/tar URL | No — installed content is a static snapshot | Re-fetches origin, full-replaces content |
 | `local` | Pack already in packs directory | Yes — it's the source | Registered in-place, no fetch |
 
-`link` is the default for local installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for all remote installs (SSH and HTTPS).
+`link` is the default for local installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for remote git installs (SSH and HTTPS); `archive` is selected by registry entries with `method: archive` or direct installs with `--archive`.
 
-Earlier versions of aipack also offered an `http-tarball` install method for GitHub HTTPS URLs. This method has been removed — clone is faster (with the local clone cache and `--reference`), gives every install a commit hash for fast-path updates, and produces consistent version handling. Existing tarball-installed packs are transparently migrated to clone on the next `pack update`.
+Earlier versions of aipack also offered an `http-tarball` install method for GitHub HTTPS URLs. This method has been removed — clone is faster (with the local clone cache and `--reference`), gives every install a commit hash for fast-path updates, and produces consistent version handling. Existing tarball-installed packs are transparently migrated to clone on the next `pack update`. Archive installs remain supported for static distribution URLs, but they are intentionally unversioned and are re-fetched on every update.
 
 ### Integrity tracking
 
@@ -182,7 +210,7 @@ Registries map pack names to git repositories. Three layers merge at resolution 
 
 When multiple sources define the same pack name, the first source in the list wins (local > cached sources in sync-config order > default).
 
-The registry YAML format is documented in the [Pack Format Specification](./pack-format.md#92-registry).
+The registry YAML format is documented in the [Pack Format Specification](./pack-format.md#102-registry).
 
 ## Ledger
 
@@ -208,7 +236,7 @@ Each entry in the ledger records a content digest (SHA256), the sync timestamp, 
 
 Each time `aipack sync` writes a settings file, it first snapshots the existing content into a `presync/` directory alongside the ledger. This enables `aipack restore` to undo the last sync's settings changes.
 
-Cache files are keyed by `<harness>--<filename>` (e.g., `claudecode--settings.local.json`). An `index.json` manifest maps cache keys to their original file paths. Only settings and plugin files are cached — content files (rules, agents, workflows, skills) are not.
+Cache files are keyed by `<harness>--<filename>` (e.g., `claudecode--settings.local.json`). An `index.json` manifest maps cache keys to their original file paths. Only settings and drop-in plugin files are cached — content files (rules, agents, workflows, skills, plugin descriptors) are not.
 
 The cache is overwritten on every sync. `--dry-run` does not write cache files. `aipack restore --dry-run` previews what would be recovered.
 
@@ -220,9 +248,9 @@ The file is pure optimization — missing, corrupt, or deleted, the next interac
 
 ## Search index
 
-`~/.config/aipack/index.db` is a SQLite database (WAL mode) that powers `aipack search` and `aipack query`. It indexes resource names, descriptions, body text, tags, roles, and categories across all installed packs.
+`~/.config/aipack/index.db` is a SQLite database (WAL mode) that powers `aipack search` and `aipack query`. It indexes resource names, descriptions, body text, tags, roles, categories, and discovery status across installed packs, registry/deep-index entries, and one-off `pack inspect` previews.
 
-The index is rebuildable cache — not durable state. It's populated during `pack install`, `pack update`, and `registry fetch --deep`. If corrupted or deleted, the next index-building operation recreates it. Use `aipack query --schema` to inspect the table structure.
+The index is rebuildable cache — not durable state. It's populated during `pack install`, `pack update`, `registry fetch --deep`, and `pack inspect`. If corrupted or deleted, the next index-building operation recreates it. Use `aipack search --status installed|registered|inspected` to filter by source state, or `aipack query --schema` to inspect the table structure.
 
 ## State management
 

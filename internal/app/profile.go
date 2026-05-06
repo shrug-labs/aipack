@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
@@ -176,11 +177,12 @@ func ProfileSet(req ProfileSetRequest) error {
 
 // ProfileListItem holds display-ready profile information.
 type ProfileListItem struct {
-	Name     string
-	Path     string
-	IsActive bool
-	Config   config.ProfileConfig
-	LoadErr  error
+	Name        string
+	Path        string
+	IsActive    bool
+	Config      config.ProfileConfig
+	LoadErr     error
+	BundledFrom []string
 }
 
 // ProfileListItems lists all profiles with their configs, marking which is active.
@@ -205,9 +207,35 @@ func ProfileListItems(configDir string, syncCfg config.SyncConfig) ([]ProfileLis
 		cfg, loadErr := config.LoadProfile(path)
 		item.Config = cfg
 		item.LoadErr = loadErr
+		item.BundledFrom = ProfileBundledOwners(configDir, name)
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+// ProfileBundledOwners returns installed packs that declare the named bundled profile.
+func ProfileBundledOwners(configDir, profileName string) []string {
+	packsDir := PacksDir(configDir)
+	entries, err := os.ReadDir(packsDir)
+	if err != nil {
+		return nil
+	}
+	var owners []string
+	for _, entry := range entries {
+		if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		packName := entry.Name()
+		manifest, err := config.LoadPackManifest(filepath.Join(packsDir, packName, "pack.json"))
+		if err != nil {
+			continue
+		}
+		if slices.Contains(manifest.Profiles, profileName) {
+			owners = append(owners, packName)
+		}
+	}
+	slices.Sort(owners)
+	return owners
 }
 
 // SaveSyncConfig writes sync-config to disk.

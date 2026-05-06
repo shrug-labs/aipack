@@ -12,12 +12,14 @@ For the CLI commands that trigger sync, see the [aipack reference](./aipack.md).
 | Agents | Individual files in `.claude/agents/` (frontmatter transformed to Claude Code subagent format) | Individual files in `.opencode/agents/` | Native TOML files in `.codex/agents/` + registration in `config.toml` `[agents.<name>]` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) |
 | Workflows | Individual files in `.claude/commands/` | Individual files in `.opencode/commands/` | Promoted to skill dirs in `.agents/skills/` (enriched frontmatter preserves type + metadata for round-trip) | Individual files in `.clinerules/workflows/` |
 | Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.agents/skills/` | Per-skill dirs in `.agents/skills/` |
+| Plugins | `enabledPlugins` in `.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` | Not supported by first-class plugin references | `[plugins."<id>@<marketplace>"] enabled = true` in `config.toml` | Not supported |
 
 ## Scope support
 
 | Vector | Claude Code | OpenCode | Codex | Cline |
 |--------|-------------|----------|-------|-------|
 | Content (rules, agents, workflows, skills) | Project + Global | Project + Global | Project + Global | Project + Global |
+| Plugin references | Project + Global | N/A | Project + Global | N/A |
 | MCP servers | Project + Global | Project + Global | Project + Global | **Global only** |
 | Settings | Project + Global | Project + Global | Project + Global | N/A |
 
@@ -54,18 +56,18 @@ Each harness controls MCP tool access differently. Some harnesses store permissi
 
 ## Settings and merge behavior
 
-| Harness | Settings file | Plugin files | Format | Merge behavior |
+| Harness | Settings file | Drop-in plugin files | Format | Merge behavior |
 |---------|--------------|-------------|--------|----------------|
-| Claude Code | `.claude/settings.local.json` | `.mcp.json` | JSON | **Always three-way merge** — user permissions preserved, only `mcp__*` entries managed |
+| Claude Code | `.claude/settings.local.json`; `.claude/settings.json` for first-class plugins | `.mcp.json` | JSON | **Always three-way merge** — user permissions preserved, only `mcp__*` entries managed. Plugin enablement is additive-only. |
 | OpenCode | `.opencode/opencode.json` | `.opencode/oh-my-opencode.json` | JSON | Template + managed keys overlay. With `--skip-settings`: MergeMode (managed keys only) |
-| Codex | `.codex/config.toml` | None | TOML | Template + MCP table merge. With `--skip-settings`: MergeMode (`mcp_servers` only) |
+| Codex | `.codex/config.toml` | None | TOML | Template + MCP/plugin table merge. With `--skip-settings`: MergeMode (`mcp_servers`, agents, plugins managed keys only). Plugin enablement is additive-only. |
 | Cline | None | `cline_mcp_settings.json` (written to VS Code + standalone Cline global paths) | JSON | Generated from inventory (no base template). Always synced |
 
-`--skip-settings` skips settings files but **plugins always sync** regardless.
+`--skip-settings` skips settings files but MCP configs, drop-in plugins, and first-class plugin references always sync regardless.
 
 ## Environment variable expansion
 
-Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identically at sync time: the placeholder is replaced with the literal value from the process environment. If the variable is not set, the MCP server is skipped entirely and a warning is emitted.
+Pack content uses `{env:VAR}` and `{env:VAR:-default}` placeholders. All harnesses resolve them identically at sync time: the placeholder is replaced with the literal value from the active config directory's `.env` file first, then the process environment, then any inline default. If the variable is not set and no default is provided, the MCP server is skipped entirely and a warning is emitted.
 
 ## Write targets
 
@@ -79,6 +81,9 @@ Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identical
 | Skills | `.claude/skills/<dirname>/` | `~/.claude/skills/<dirname>/` |
 | MCP servers | `.mcp.json` | `~/.claude.json` |
 | Settings | `.claude/settings.local.json` | `~/.claude/settings.local.json` |
+| Plugins | `.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` | `~/.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` |
+
+Claude Code remote MCP transport rendering follows Claude's current config vocabulary: aipack `streamable-http` servers render as `type: "http"`, while `sse` servers render as `type: "sse"`.
 
 **OpenCode** (project + global)
 
@@ -100,6 +105,7 @@ Pack content uses `{env:VAR}` placeholders. All harnesses resolve them identical
 | Workflows | `.agents/skills/<name>/SKILL.md` (promoted) | `~/.agents/skills/<name>/SKILL.md` |
 | Skills | `.agents/skills/<dirname>/` | `~/.agents/skills/<dirname>/` |
 | Settings | `.codex/config.toml` | `~/.codex/config.toml` |
+| Plugins | `.codex/config.toml` | `~/.codex/config.toml` |
 
 **Cline** (content: project + global; MCP: global only)
 
@@ -122,6 +128,8 @@ Keys stripped on save round-trip:
 | Codex | `mcp_servers`, `agents` |
 | Cline | `mcpServers` |
 
+First-class plugin references are additive-only. Save and clean do not remove plugin enablement from harness files.
+
 ## Harness-specific notes
 
 **Claude Code**
@@ -131,6 +139,7 @@ Keys stripped on save round-trip:
 - `CLAUDE.managed.md` is no longer written. On first sync after upgrade, it is automatically removed as a stale managed file. `CLAUDE.md` is no longer touched.
 - Global scope syncs to `~/.claude/{rules,agents,skills,commands}/`.
 - `settings.local.json` always uses three-way merge, even without `--skip-settings`. User-controlled permissions (non-`mcp__` prefix) are always preserved in both `allow` and `deny` arrays.
+- Plugin references write `enabledPlugins` in `.claude/settings.json`. Source-prefixed marketplaces such as `github:owner/marketplace` are registered in `~/.claude/plugins/known_marketplaces.json`.
 - `permissions.deny` blocks tools entirely (deny > ask > allow precedence). Unlike OpenCode's `server_*: false` wildcard, Claude Code cannot use wildcard deny patterns because deny always takes precedence over allow regardless of specificity. Only explicit per-tool deny entries are rendered from `disabled_tools` in the profile config.
 
 **OpenCode**
@@ -142,6 +151,7 @@ Keys stripped on save round-trip:
 - Rules are flattened into a single `AGENTS.override.md`. If an existing `AGENTS.md` exists, its content is preserved below a separator.
 - Agents are rendered as native Codex TOML files in `.codex/agents/<name>.toml`, each containing `name`, `description`, `developer_instructions` (from the agent body), and any `harness.codex` overrides as top-level TOML keys. A registration entry (`[agents.<name>]` with `description` and an absolute `config_file`) is merged into `config.toml`. Referenced MCP servers are resolved from the profile and embedded in the agent TOML. Referenced skills become `skills.config` entries with paths to the rendered skill directories. The `harness` frontmatter block is stripped — it does not appear in the rendered TOML.
 - Workflows are promoted to `.agents/skills/<name>/SKILL.md` with enriched YAML frontmatter that preserves the original type (`source_type: workflow`) for round-trip capture. Skills are copied as directories under the same path.
+- Plugin references merge `[plugins."<id>@<marketplace>"] enabled = true` into `config.toml`. The default marketplace is `openai-curated`.
 - Capture reads `.codex/agents/*.toml` to reconstruct pack agents: `developer_instructions` becomes the agent body, known Codex fields (`model`, `model_reasoning_effort`, etc.) populate `harness.codex` in frontmatter, and embedded MCP server names are extracted to `mcp_servers`.
 - Global config path is always `~/.codex/`.
 

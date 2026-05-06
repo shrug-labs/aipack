@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // TestDiscoverIDs covers slashed-id discovery used for rules/prompts/mcp/
@@ -378,5 +380,27 @@ func TestDiscoverContent_EmptySliceTriggersDiscovery(t *testing.T) {
 	}
 	if len(m.Rules) != 1 || m.Rules[0] != "r1" {
 		t.Fatalf("Rules = %v, want [r1] (empty slice triggers discovery)", m.Rules)
+	}
+}
+
+func TestDiscoverContent_PluginsByLeaf(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "plugins", "team"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plugins", "team", "superpowers.json"), []byte(`{"source":"github:obra/superpowers"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := PackManifest{SchemaVersion: 2, Name: "demo", Root: "."}
+	if err := DiscoverContent(&m, root); err != nil {
+		t.Fatalf("DiscoverContent: %v", err)
+	}
+	if len(m.Plugins) != 1 || m.Plugins[0] != "superpowers" {
+		t.Fatalf("Plugins = %v, want [superpowers]", m.Plugins)
+	}
+	if got := m.RelPath(domain.CategoryPlugins, "superpowers"); got != "plugins/team/superpowers.json" {
+		t.Fatalf("plugin rel path = %q, want plugins/team/superpowers.json", got)
 	}
 }

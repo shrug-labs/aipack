@@ -1,8 +1,12 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +14,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -75,6 +80,180 @@ func TestPackUpdate_HelpReturnsOK(t *testing.T) {
 	if code != cmdutil.ExitOK {
 		t.Fatalf("pack update --help exit=%d, want %d", code, cmdutil.ExitOK)
 	}
+}
+
+func TestPackImport_CLI(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	source := filepath.Join(t.TempDir(), "summary.md")
+	if err := os.WriteFile(source, []byte("Summarize the active incident.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t,
+		"pack", "import", source,
+		"--type", "prompt",
+		"--name", "prompt-pack",
+		"--id", "incident-summary",
+		"--config-dir", configDir,
+	)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack import exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, `Imported Prompt "incident-summary" into pack "prompt-pack"`) {
+		t.Fatalf("stdout missing import summary:\n%s", stdout)
+	}
+	raw, err := os.ReadFile(filepath.Join(configDir, "packs", "prompt-pack", "prompts", "incident-summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "Summarize the active incident.") {
+		t.Fatalf("imported prompt missing body:\n%s", raw)
+	}
+}
+
+func TestPackImport_CLIExistingPack(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packDir := filepath.Join(configDir, "packs", "ops-pack")
+	writePackManifestCmd(t, packDir, "ops-pack")
+
+	source := filepath.Join(t.TempDir(), "triage.md")
+	if err := os.WriteFile(source, []byte("Triage before escalating.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t,
+		"pack", "import", source,
+		"--type", "skill",
+		"--pack", "ops-pack",
+		"--config-dir", configDir,
+	)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack import existing exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, `Imported Skill "triage" into pack "ops-pack"`) {
+		t.Fatalf("stdout missing import summary:\n%s", stdout)
+	}
+	raw, err := os.ReadFile(filepath.Join(packDir, "skills", "triage", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "Triage before escalating.") {
+		t.Fatalf("imported skill missing body:\n%s", raw)
+	}
+}
+
+func TestPackInspect_CLIJSON(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packDir := t.TempDir()
+	writePackManifestCmd(t, packDir, "inspect-pack")
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "safety.md"), []byte("---\nname: safety\ndescription: Safety\n---\n\nSafety body.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "pack", "inspect", packDir, "--config-dir", configDir, "--json")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack inspect exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if got["name"] != "inspect-pack" || got["status"] != "inspected" {
+		t.Fatalf("unexpected inspect JSON: %v", got)
+	}
+	counts, ok := got["counts"].(map[string]any)
+	if !ok || counts["rules"].(float64) != 1 {
+		t.Fatalf("counts = %v", got["counts"])
+	}
+}
+
+func TestPackInspect_CLIClearWipesInspectedRows(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packDir := t.TempDir()
+	writePackManifestCmd(t, packDir, "clear-pack")
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "preview.md"), []byte("---\nname: preview\ndescription: Preview\n---\n\nBody.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, stderr, code := runApp(t, "pack", "inspect", packDir, "--config-dir", configDir); code != cmdutil.ExitOK {
+		t.Fatalf("seeding inspect failed: code=%d stderr=%s", code, stderr)
+	}
+	if stdout, _, code := runApp(t, "search", "--status", "inspected", "--config-dir", configDir, "--json"); code != cmdutil.ExitOK || !strings.Contains(stdout, "clear-pack") {
+		t.Fatalf("expected inspected row before clear, stdout=%s", stdout)
+	}
+
+	stdout, stderr, code := runApp(t, "pack", "inspect", "--clear", "--config-dir", configDir, "--json")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack inspect --clear exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if removed, _ := got["removed"].(float64); removed != 1 {
+		t.Fatalf("expected removed=1, got %v", got)
+	}
+	if stdout, _, code := runApp(t, "search", "--status", "inspected", "--config-dir", configDir, "--json"); code != cmdutil.ExitOK || strings.Contains(stdout, "clear-pack") {
+		t.Fatalf("inspected row should be gone after --clear, stdout=%s", stdout)
+	}
+
+	if _, stderr, code := runApp(t, "pack", "inspect", "--clear", packDir, "--config-dir", configDir); code == cmdutil.ExitOK {
+		t.Fatalf("--clear with input arg must fail; stderr=%s", stderr)
+	}
+}
+
+func TestPackInspect_CLIURLArchiveDoesNotRequireInput(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/pack.json":      `{"schema_version":2,"name":"url-preview","version":"1.0.0","root":"."}`,
+		"repo/prompts/run.md": "Preview prompt.\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := t.TempDir()
+	stdout, stderr, code := runApp(t, "pack", "inspect", "--url", server.URL+"/pack.zip", "--archive", "--config-dir", configDir, "--json")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack inspect --url exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if got["name"] != "url-preview" || got["method"] != config.MethodArchive {
+		t.Fatalf("unexpected inspect JSON: %v", got)
+	}
+}
+
+func buildCLIPackZip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func TestPackUpdate_MutualExclusion(t *testing.T) {

@@ -123,6 +123,48 @@ func TestResolveProfile_VectorSelectorErrors(t *testing.T) {
 	}
 }
 
+func TestResolveProfile_PluginSelectors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	installPackForResolveTest(t, root, "base", PackManifest{
+		SchemaVersion: 2,
+		Name:          "base",
+		Version:       "1",
+		Root:          ".",
+		Plugins:       []string{"linear", "superpowers"},
+	}, map[string]string{
+		"plugins/linear.json":      `{"source":"github:linear/linear-codex-plugin"}`,
+		"plugins/superpowers.json": `{"source":"github:obra/superpowers"}`,
+	})
+
+	include := []string{"superpowers"}
+	packs, _, err := resolveStrict(t, ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "base",
+			Plugins: VectorSelector{Include: &include},
+		}},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if got := packs[0].Plugins; len(got) != 1 || got[0] != "superpowers" {
+		t.Fatalf("Plugins = %v, want [superpowers]", got)
+	}
+
+	unknown := []string{"missing"}
+	_, _, err = resolveStrict(t, ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs: []PackEntry{{
+			Name:    "base",
+			Plugins: VectorSelector{Include: &unknown},
+		}},
+	}, filepath.Join(root, "profile.yaml"), root)
+	if err == nil || !strings.Contains(err.Error(), `pack "base" plugins include references unknown id "missing"`) {
+		t.Fatalf("expected unknown plugin include error, got %v", err)
+	}
+}
+
 func TestResolveProfile_OverrideAndDuplicateErrors(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

@@ -282,6 +282,9 @@ func packPreviewBundled(packDir string, manifest config.PackManifest, stdout io.
 	if len(manifest.Skills) > 0 {
 		contentDirs = append(contentDirs, fmt.Sprintf("%d skills", len(manifest.Skills)))
 	}
+	if len(manifest.Plugins) > 0 {
+		contentDirs = append(contentDirs, fmt.Sprintf("%d plugins", len(manifest.Plugins)))
+	}
 	if len(manifest.Agents) > 0 {
 		contentDirs = append(contentDirs, fmt.Sprintf("%d agents", len(manifest.Agents)))
 	}

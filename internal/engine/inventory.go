@@ -61,6 +61,7 @@ func (e *Engine) buildPackInventory(configDir string, pk domain.Pack, now time.T
 		Rules:         domain.SortedCopy(manifest.Rules),
 		Agents:        domain.SortedCopy(manifest.Agents),
 		Workflows:     domain.SortedCopy(manifest.Workflows),
+		Plugins:       domain.SortedCopy(manifest.Plugins),
 	}
 
 	if len(manifest.Skills) > 0 {

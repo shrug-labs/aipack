@@ -181,7 +181,7 @@ func DiscoverSkills(skillsDir string) ([]string, map[string]string, error) {
 //
 //   - rules, prompts, mcp, profiles, registries: id preserves the slashed
 //     relative path (the directory structure is part of the id).
-//   - agents, workflows, skills: id is the leaf only (subdirectories are
+//   - agents, workflows, skills, plugins: id is the leaf only (subdirectories are
 //     authoring organization). Same-leaf collisions within one pack are an
 //     error. The actual on-disk path is recorded via SetResolvedPath so
 //     downstream callers (parse, validation, save round-trip) find the file.
@@ -218,6 +218,7 @@ func DiscoverContent(m *PackManifest, packRoot string) error {
 	for _, s := range []leafSpec{
 		{field: &m.Agents, dir: "agents", suffix: ".md", dirName: "agents", cat: domain.CategoryAgents},
 		{field: &m.Workflows, dir: "workflows", suffix: ".md", dirName: "workflows", cat: domain.CategoryWorkflows},
+		{field: &m.Plugins, dir: "plugins", suffix: ".json", dirName: "plugins", cat: domain.CategoryPlugins},
 	} {
 		ids, paths, err := DiscoverIDsByLeaf(filepath.Join(packRoot, s.dir), s.dirName, s.suffix)
 		if err != nil {

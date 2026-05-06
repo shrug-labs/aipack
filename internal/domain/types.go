@@ -74,6 +74,7 @@ const (
 	CategoryWorkflows PackCategory = "workflows"
 	CategorySkills    PackCategory = "skills"
 	CategoryMCP       PackCategory = "mcp"
+	CategoryPlugins   PackCategory = "plugins"
 	CategoryPrompts   PackCategory = "prompts"
 	CategorySettings  PackCategory = "settings"
 )
@@ -82,13 +83,18 @@ const (
 // Settings is excluded — it is not user-authored pack content but rather
 // harness configuration derived from MCP server definitions and settings packs.
 func AllPackCategories() []PackCategory {
-	return []PackCategory{CategoryAgents, CategoryMCP, CategoryPrompts, CategoryRules, CategorySkills, CategoryWorkflows}
+	return []PackCategory{CategoryAgents, CategoryMCP, CategoryPlugins, CategoryPrompts, CategoryRules, CategorySkills, CategoryWorkflows}
 }
 
 // AuthoredCategories returns the subset of categories that have authored
 // markdown files with YAML frontmatter (i.e. everything except MCP).
 func AuthoredCategories() []PackCategory {
 	return []PackCategory{CategoryAgents, CategoryRules, CategorySkills, CategoryWorkflows}
+}
+
+// SelectableCategories returns categories controlled by profile vector selectors.
+func SelectableCategories() []PackCategory {
+	return []PackCategory{CategoryAgents, CategoryPlugins, CategoryRules, CategorySkills, CategoryWorkflows}
 }
 
 // IsAuthored returns true for categories with authored markdown+frontmatter files.
@@ -111,7 +117,7 @@ func (c PackCategory) DirName() string {
 
 // Ext returns the file extension for content in this category.
 func (c PackCategory) Ext() string {
-	if c == CategoryMCP {
+	if c == CategoryMCP || c == CategoryPlugins {
 		return ".json"
 	}
 	return ".md"
@@ -139,6 +145,8 @@ func (c PackCategory) Label() string {
 		return "Skills"
 	case CategoryMCP:
 		return "MCP Servers"
+	case CategoryPlugins:
+		return "Plugins"
 	case CategoryPrompts:
 		return "Prompts"
 	case CategorySettings:
@@ -160,6 +168,8 @@ func (c PackCategory) SingularLabel() string {
 		return "Skill"
 	case CategoryMCP:
 		return "MCP Server"
+	case CategoryPlugins:
+		return "Plugin"
 	case CategoryPrompts:
 		return "Prompt"
 	case CategorySettings:
@@ -183,6 +193,8 @@ func ParseSingularLabel(s string) (PackCategory, bool) {
 		return CategorySkills, true
 	case "mcp":
 		return CategoryMCP, true
+	case "plugin":
+		return CategoryPlugins, true
 	case "prompt":
 		return CategoryPrompts, true
 	case "setting":

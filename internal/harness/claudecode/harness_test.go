@@ -193,6 +193,64 @@ func TestPlan_Project_EmptyContent(t *testing.T) {
 	}
 }
 
+func TestPlan_Project_PluginsSettings(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Home:      home,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Plugins: []domain.Plugin{
+					{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "pack-a"},
+					{Name: "superpowers", Source: "github:obra/superpowers", Marketplace: "github:obra/superpowers-marketplace", SourcePack: "pack-a"},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	settingsPath := filepath.Join(projectDir, ".claude", "settings.json")
+	knownPath := filepath.Join(home, ".claude", "plugins", "known_marketplaces.json")
+	var settings, known *domain.SettingsAction
+	for i := range f.MCP {
+		if f.MCP[i].Dst == settingsPath {
+			settings = &f.MCP[i]
+		}
+		if f.MCP[i].Dst == knownPath {
+			known = &f.MCP[i]
+		}
+	}
+	if settings == nil {
+		t.Fatalf("missing plugin settings action for %s; got %+v", settingsPath, f.MCP)
+	}
+	var root map[string]map[string]bool
+	if err := json.Unmarshal(settings.Desired, &root); err != nil {
+		t.Fatalf("unmarshal settings: %v\n%s", err, settings.Desired)
+	}
+	enabled := root["enabledPlugins"]
+	if !enabled["linear@claude-plugins-official"] || !enabled["superpowers@superpowers-marketplace"] {
+		t.Fatalf("enabledPlugins = %v", enabled)
+	}
+
+	if known == nil {
+		t.Fatalf("missing known marketplace action for %s; got %+v", knownPath, f.MCP)
+	}
+	var knownRoot map[string]any
+	if err := json.Unmarshal(known.Desired, &knownRoot); err != nil {
+		t.Fatalf("unmarshal known marketplaces: %v\n%s", err, known.Desired)
+	}
+	if _, ok := knownRoot["superpowers-marketplace"]; !ok {
+		t.Fatalf("known marketplace missing superpowers-marketplace: %v", knownRoot)
+	}
+}
+
 func TestPlan_Global_WritesToGlobalDirs(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

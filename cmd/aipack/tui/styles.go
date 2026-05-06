@@ -1,15 +1,19 @@
 package tui
 
 import (
+	"image/color"
 	"os"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
 	"github.com/muesli/termenv"
+
+	"github.com/shrug-labs/aipack/cmd/aipack/tui/common"
 )
 
-// ac builds an AdaptiveColor for chromatic tokens that work on all backgrounds.
-func ac(light, dark string) lipgloss.AdaptiveColor {
-	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
+// ac builds an adaptive color for chromatic tokens that work on all backgrounds.
+func ac(light, dark string) compat.AdaptiveColor {
+	return compat.AdaptiveColor{Light: lipgloss.Color(light), Dark: lipgloss.Color(dark)}
 }
 
 // --- Background detection ---
@@ -52,11 +56,11 @@ func detectBackground() bgCategory {
 // --- Achromatic color tokens (set by initColors based on background) ---
 
 var (
-	clrDim     lipgloss.TerminalColor
-	clrHelpBar lipgloss.TerminalColor
-	clrSubtle  lipgloss.TerminalColor
-	clrHeader  lipgloss.TerminalColor
-	clrSummary lipgloss.TerminalColor
+	clrDim     color.Color
+	clrHelpBar color.Color
+	clrSubtle  color.Color
+	clrHeader  color.Color
+	clrSummary color.Color
 )
 
 func initColors(cat bgCategory) {
@@ -105,13 +109,6 @@ var (
 	clrError   = ac("160", "196") // red — errors, inactive dots
 	clrWarning = ac("166", "214") // orange — warnings
 	clrLoading = ac("130", "226") // yellow — loading indicator
-
-	clrBlue   = ac("26", "75")   // workflows, preview keys, diff hunks
-	clrGreen  = ac("28", "114")  // rules, diff additions
-	clrPurple = ac("91", "141")  // agents
-	clrTeal   = ac("30", "79")   // skills
-	clrCyan   = ac("31", "81")   // MCP servers
-	clrStale  = ac("124", "203") // stale items
 )
 
 // --- Static styles (chromatic colors only, safe as var declarations) ---
@@ -146,103 +143,18 @@ var (
 			BorderForeground(clrAccent).
 			Padding(0, 2)
 
-	contentStyle = lipgloss.NewStyle().
-			Padding(1, 2)
-
 	statusDotActive   = lipgloss.NewStyle().Foreground(clrSuccess).Render("●")
 	statusDotInactive = lipgloss.NewStyle().Foreground(clrError).Render("○")
 	statusDotLoading  = lipgloss.NewStyle().Foreground(clrLoading).Render("⟳")
-
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(clrAccent)
-
-	dialogBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(clrAccent).
-				Padding(1, 2)
-
-	dialogTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(clrAccent)
-
-	treeCheckOn        = lipgloss.NewStyle().Foreground(clrSuccess).Render("[x]")
-	triCheckAuto       = lipgloss.NewStyle().Foreground(clrSuccess).Render("[■]")
-	treeOverrideWinner = lipgloss.NewStyle().Foreground(clrSuccess).Render("⬡")
-	treeExpanded       = "▼"
-	treeCollapsed      = "▶"
-
-	errorStyle   = lipgloss.NewStyle().Foreground(clrError)
-	warningStyle = lipgloss.NewStyle().Foreground(clrWarning)
-	// driftStyle marks the "remote has moved" indicator on pack list rows.
-	// Reuses warning color so the eye treats it as "your attention is wanted"
-	// without escalating to error severity — drift is informational, not a fault.
-	driftStyle = lipgloss.NewStyle().Foreground(clrWarning)
-
-	// Pack-update row decoration style. Used by formatRowSuffix for the
-	// terse ✓ glyph on terminal-success rows.
-	successStyle = lipgloss.NewStyle().Foreground(clrSuccess)
-
-	previewBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(clrAccent).
-				Padding(0, 1)
-
-	previewTitleStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(clrAccent)
-
-	previewKeyStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(clrBlue)
-
-	// Operation type styles for the sync plan view.
-	opRuleStyle     = lipgloss.NewStyle().Foreground(clrGreen)
-	opWorkflowStyle = lipgloss.NewStyle().Foreground(clrBlue)
-	opAgentStyle    = lipgloss.NewStyle().Foreground(clrPurple)
-	opSkillStyle    = lipgloss.NewStyle().Foreground(clrTeal)
-	opSettingsStyle = lipgloss.NewStyle().Foreground(clrWarning)
-	opMCPStyle      = lipgloss.NewStyle().Foreground(clrCyan)
-	opStaleStyle    = lipgloss.NewStyle().Foreground(clrStale)
-
-	// Diff output styles for the plan diff viewer.
-	diffAddStyle    = lipgloss.NewStyle().Foreground(clrGreen)
-	diffRemoveStyle = lipgloss.NewStyle().Foreground(clrError)
-	diffHunkStyle   = lipgloss.NewStyle().Foreground(clrBlue)
-
-	// Pack color palette — bright for left panel, muted for right panel attribution.
-	// Each entry is an AdaptiveColor: darker on light backgrounds, vivid on dark.
-	packColorsBright = []lipgloss.TerminalColor{
-		ac("26", "75"),   // blue
-		ac("28", "114"),  // green
-		ac("166", "214"), // orange
-		ac("91", "141"),  // purple
-		ac("30", "80"),   // cyan
-		ac("162", "204"), // pink
-		ac("172", "220"), // gold
-		ac("66", "109"),  // teal
-	}
-	packColorsMuted = []lipgloss.TerminalColor{
-		ac("24", "67"),   // blue-gray
-		ac("22", "65"),   // olive
-		ac("130", "172"), // dark orange
-		ac("54", "97"),   // dark purple
-		ac("23", "37"),   // dark cyan
-		ac("88", "131"),  // dark red
-		ac("94", "136"),  // dark yellow
-		ac("30", "66"),   // dark teal
-	}
 )
 
 // --- Dynamic styles (depend on background-detected achromatic tokens) ---
 
 var (
-	inactiveTabStyle    lipgloss.Style
-	tabGapStyle         lipgloss.Style
-	dimStyle            lipgloss.Style
-	helpBarStyle        lipgloss.Style
-	treeCheckOff        string
-	fileSizeStyle       lipgloss.Style
-	panelHeaderStyle    lipgloss.Style
-	panelSubtleStyle    lipgloss.Style
-	categoryHeaderStyle lipgloss.Style
-	contentSummaryStyle lipgloss.Style
+	inactiveTabStyle lipgloss.Style
+	tabGapStyle      lipgloss.Style
+	helpBarStyle     lipgloss.Style
+	panelSubtleStyle lipgloss.Style
 )
 
 func initStyles() {
@@ -256,30 +168,30 @@ func initStyles() {
 		Border(lipgloss.Border{Bottom: "─"}, false, false, true, false).
 		BorderForeground(clrDim)
 
-	dimStyle = lipgloss.NewStyle().Foreground(clrDim)
 	helpBarStyle = lipgloss.NewStyle().Foreground(clrHelpBar)
-	treeCheckOff = lipgloss.NewStyle().Foreground(clrDim).Render("[ ]")
-	fileSizeStyle = lipgloss.NewStyle().Foreground(clrDim)
-	panelHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(clrHeader)
 	panelSubtleStyle = lipgloss.NewStyle().Foreground(clrSubtle)
-	categoryHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(clrHeader)
-	contentSummaryStyle = lipgloss.NewStyle().Foreground(clrSummary)
+
+	// Publish semantic styles to common so overlays and screens reference one
+	// adaptive set instead of hardcoding xterm-256 colors.
+	common.DimStyle = lipgloss.NewStyle().Foreground(clrDim)
+	common.SelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(clrAccent)
+	common.ErrorStyle = lipgloss.NewStyle().Foreground(clrError)
+	common.WarningStyle = lipgloss.NewStyle().Foreground(clrWarning)
+	common.ContentStyle = lipgloss.NewStyle().Padding(1, 2)
+	common.StatusDotActive = statusDotActive
+	common.StatusDotInactive = statusDotInactive
+	common.StatusDotLoading = statusDotLoading
+
+	// Diff styles. Fixed xterm-256 — diff add/remove/hunk colors are a near-
+	// universal terminal convention (green/red/cyan); adaptive selection here
+	// would just produce mud on light terminals.
+	common.DiffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("114"))
+	common.DiffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	common.DiffHunkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
 }
 
 func init() {
 	cat := detectBackground()
 	initColors(cat)
 	initStyles()
-}
-
-// packColorBright returns a style for a pack at the given profile index.
-func packColorBright(idx int) lipgloss.Style {
-	c := packColorsBright[idx%len(packColorsBright)]
-	return lipgloss.NewStyle().Foreground(c)
-}
-
-// packColorMuted returns a muted style for pack attribution in the tree.
-func packColorMuted(idx int) lipgloss.Style {
-	c := packColorsMuted[idx%len(packColorsMuted)]
-	return lipgloss.NewStyle().Foreground(c).Italic(true)
 }

@@ -54,6 +54,10 @@ func composeConfigFiles(files []domain.ConfigFile) ([]byte, []domain.Warning, er
 // (no parse, no re-format); files with refs are parsed, walked, and
 // re-marshalled, which loses comments and key ordering.
 func expandConfigFileRefs(params map[string]string, packRoot string, file domain.ConfigFile) ([]byte, error) {
+	return expandConfigFileRefsWithEnv(params, nil, packRoot, file)
+}
+
+func expandConfigFileRefsWithEnv(params map[string]string, env map[string]string, packRoot string, file domain.ConfigFile) ([]byte, error) {
 	if !hasTemplateRefs(string(file.Content)) {
 		return file.Content, nil
 	}
@@ -67,7 +71,7 @@ func expandConfigFileRefs(params map[string]string, packRoot string, file domain
 	if err != nil {
 		return nil, err
 	}
-	_, changed, err := expandConfigValueRefs(params, packRoot, root, "")
+	_, changed, err := expandConfigValueRefsWithEnv(params, env, packRoot, root, "")
 	if err != nil {
 		return nil, err
 	}
@@ -77,13 +81,13 @@ func expandConfigFileRefs(params map[string]string, packRoot string, file domain
 	return marshal(root)
 }
 
-func expandConfigValueRefs(params map[string]string, packRoot string, value any, path string) (any, bool, error) {
+func expandConfigValueRefsWithEnv(params map[string]string, env map[string]string, packRoot string, value any, path string) (any, bool, error) {
 	switch v := value.(type) {
 	case string:
 		if !hasTemplateRefs(v) {
 			return v, false, nil
 		}
-		out, err := expandTemplateRefs(params, packRoot, v)
+		out, err := expandTemplateRefsWithEnv(params, env, packRoot, v)
 		if err != nil {
 			return nil, false, fmt.Errorf("%s: %w", path, err)
 		}
@@ -91,7 +95,7 @@ func expandConfigValueRefs(params map[string]string, packRoot string, value any,
 	case map[string]any:
 		changed := false
 		for k, child := range v {
-			next, childChanged, err := expandConfigValueRefs(params, packRoot, child, joinConfigPath(path, k))
+			next, childChanged, err := expandConfigValueRefsWithEnv(params, env, packRoot, child, joinConfigPath(path, k))
 			if err != nil {
 				return nil, false, err
 			}
@@ -102,7 +106,7 @@ func expandConfigValueRefs(params map[string]string, packRoot string, value any,
 	case []any:
 		changed := false
 		for i, child := range v {
-			next, childChanged, err := expandConfigValueRefs(params, packRoot, child, joinConfigIndex(path, i))
+			next, childChanged, err := expandConfigValueRefsWithEnv(params, env, packRoot, child, joinConfigIndex(path, i))
 			if err != nil {
 				return nil, false, err
 			}

@@ -147,7 +147,7 @@ func (e *Engine) ComputeSettingsDiffs(settings []domain.SettingsAction, lg domai
 			var mergeOps []MergeOp
 			if fileExists && len(existing) > 0 {
 				prevManaged := lg.PrevManagedOverlay(s.Dst)
-				merged, mops, merr := mergeSettingsKeys(existing, prevManaged, s.Desired, s.Harness)
+				merged, mops, merr := mergeSettingsKeys(existing, prevManaged, s.Desired, s.Harness, s.AdditiveOnly)
 				if merr != nil {
 					return nil, fmt.Errorf("merge %s: %w", s.Label, merr)
 				}
@@ -209,6 +209,11 @@ func (e *Engine) pathDigest(path string) (string, error) {
 		_, _ = h.Write([]byte("\n"))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// PathDigest computes the ledger-compatible digest for a file or directory.
+func (e *Engine) PathDigest(path string) (string, error) {
+	return e.pathDigest(path)
 }
 
 func (e *Engine) collectFiles(root string) (map[string]string, error) {

@@ -25,6 +25,30 @@ func ProbePackURL(raw string) (PackURLInfo, error) {
 	return probePackURL(raw)
 }
 
+// IsHTTPURL reports whether raw is a well-formed http(s) URL with a host.
+// Used to gate the HTTP-fetch branch in pack import.
+func IsHTTPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// LooksLikeURL reports whether s carries an explicit URL marker — a scheme
+// (`scheme://`) or an SSH-style `git@` prefix. Lenient enough to dispatch
+// inspect into the URL branch without parsing.
+func LooksLikeURL(s string) bool {
+	return strings.Contains(s, "://") || strings.HasPrefix(s, "git@")
+}
+
+// IsRemoteInstallInput reports whether s is unambiguously a remote pack
+// reference. Accepts everything LooksLikeURL accepts plus bare host prefixes
+// (`github.com/...`, `bitbucket.org/...`) that humans copy-paste from
+// browsers.
+func IsRemoteInstallInput(s string) bool {
+	return LooksLikeURL(s) ||
+		strings.HasPrefix(s, "github.com/") ||
+		strings.HasPrefix(s, "bitbucket.org/")
+}
+
 // URLOK checks whether the given URL returns an HTTP 2xx response.
 func URLOK(ctx context.Context, raw string) (bool, error) {
 	return urlOK(ctx, raw)

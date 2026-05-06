@@ -35,7 +35,9 @@ type Registry struct {
 
 // RegistryEntry describes a pack available in the registry.
 type RegistryEntry struct {
-	Repo         string                         `yaml:"repo" json:"repo"`
+	Method       string                         `yaml:"method,omitempty" json:"method,omitempty"`
+	Repo         string                         `yaml:"repo,omitempty" json:"repo,omitempty"`
+	URL          string                         `yaml:"url,omitempty" json:"url,omitempty"`
 	Path         string                         `yaml:"path,omitempty" json:"path,omitempty"`
 	Description  string                         `yaml:"description,omitempty" json:"description,omitempty"`
 	Ref          string                         `yaml:"ref,omitempty" json:"ref,omitempty"`
@@ -76,8 +78,38 @@ func ValidateRegistry(reg Registry) []string {
 	var errs []string
 	for _, name := range names {
 		entry := reg.Packs[name]
-		if entry.Repo == "" {
-			errs = append(errs, fmt.Sprintf("pack %q: missing required field repo", name))
+		switch entry.Method {
+		case "", MethodClone:
+			if entry.Repo == "" {
+				errs = append(errs, fmt.Sprintf("pack %q: missing required field repo", name))
+			}
+		case MethodArchive:
+			if entry.URL == "" {
+				errs = append(errs, fmt.Sprintf("pack %q: missing required field url", name))
+			}
+		default:
+			errs = append(errs, fmt.Sprintf("pack %q: unknown method %q", name, entry.Method))
+		}
+		if entry.Method == MethodArchive && entry.Ref != "" {
+			errs = append(errs, fmt.Sprintf("pack %q: ref is not valid for archive entries", name))
+		}
+		for cat, rel := range entry.ContentPaths {
+			if !cat.IsContentPathTarget() {
+				errs = append(errs, fmt.Sprintf("pack %q: invalid content_paths key %q", name, cat))
+				continue
+			}
+			if strings.TrimSpace(rel) == "" {
+				errs = append(errs, fmt.Sprintf("pack %q: content_paths.%s path is required", name, cat))
+				continue
+			}
+			if filepath.IsAbs(rel) {
+				errs = append(errs, fmt.Sprintf("pack %q: content_paths.%s must be relative", name, cat))
+				continue
+			}
+			cleanRel := filepath.Clean(rel)
+			if cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+				errs = append(errs, fmt.Sprintf("pack %q: content_paths.%s escapes source boundary", name, cat))
+			}
 		}
 	}
 	return errs

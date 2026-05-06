@@ -44,6 +44,9 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 	if err := validatePackList(packName, "prompts", manifest.Prompts); err != nil {
 		return err
 	}
+	if err := validatePackList(packName, "plugins", manifest.Plugins); err != nil {
+		return err
+	}
 
 	for _, id := range manifest.Rules {
 		if strings.Contains(id, domain.RuleHarnessSeparator) {
@@ -58,6 +61,7 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		{capAgents, manifest.Agents},
 		{capWorkflows, manifest.Workflows},
 		{capSkills, manifest.Skills},
+		{capPlugins, manifest.Plugins},
 	} {
 		for _, id := range label.ids {
 			if strings.ContainsRune(id, '/') {
@@ -84,6 +88,9 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		if err := requireFile(path); err != nil {
 			return fmt.Errorf("pack %q prompts %q missing: %w", packName, id, err)
 		}
+	}
+	if err := validateManifestContent(packName, packRoot, manifest, domain.CategoryPlugins, manifest.Plugins); err != nil {
+		return err
 	}
 	for _, name := range manifest.MCP {
 		path := filepath.Join(packRoot, "mcp", filepath.FromSlash(name)+".json")

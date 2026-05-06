@@ -25,6 +25,27 @@ func TestProbePackURL_GitHubRepo(t *testing.T) {
 	}
 }
 
+func TestIsRemoteInstallInputRequiresKnownHostBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"github.com/acme/my-pack", true},
+		{"bitbucket.org/team/repo", true},
+		{"github.comevil/acme/my-pack", false},
+		{"bitbucket.orgevil/team/repo", false},
+		{"https://github.com/acme/my-pack", true},
+		{"git@github.com:acme/my-pack.git", true},
+	}
+	for _, tt := range tests {
+		if got := IsRemoteInstallInput(tt.input); got != tt.want {
+			t.Errorf("IsRemoteInstallInput(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestProbePackURL_GitHubRepoWithGitSuffix(t *testing.T) {
 	t.Parallel()
 	info, err := ProbePackURL("https://github.com/acme/my-pack.git")

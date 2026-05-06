@@ -1,8 +1,8 @@
 # Profiles
 
-A profile is a YAML file that defines an agent environment — which packs to draw from, which content is active, which MCP servers connect, and what parameters to expand. It turns a collection of installed packs into a coherent setup.
+A profile is a YAML file that defines an agent environment — which packs to draw from, which content is active, which plugins are enabled, which MCP servers connect, and what parameters to expand. It turns a collection of installed packs into a coherent setup.
 
-Each content vector (rules, skills, workflows, agents, MCP servers) can be filtered per pack with `include` and `exclude` selectors. Packs marked `quiet` include nothing by default — content, MCP servers, and harness settings all activate only when explicitly listed. Parameters expand `{params.*}` placeholders in MCP configs and content, making the same profile portable across environments. Switching profiles changes what's active without reinstalling anything.
+Each selectable content vector (rules, skills, workflows, agents, plugins, MCP servers) can be filtered per pack. Rules, skills, workflows, agents, and plugins use `include` / `exclude` selectors; MCP servers use per-server entries because they also carry tool permissions. Packs marked `quiet` include nothing by default — content, plugins, MCP servers, and harness settings all activate only when explicitly listed. Parameters expand `{params.*}` placeholders in MCP configs and content, making the same profile portable across environments. Switching profiles changes what's active without reinstalling anything.
 
 Profiles live in `~/.config/aipack/profiles/` (on Windows: `%APPDATA%\aipack\profiles\`).
 
@@ -12,23 +12,23 @@ Profiles live in `~/.config/aipack/profiles/` (on Windows: `%APPDATA%\aipack\pro
 schema_version: 2
 
 params:
-  jira_url: "https://jira.example.com"
-  confluence_url: "https://confluence.example.com"
+  tracker_url: "https://tracker.example.com"
+  docs_url: "https://docs.example.com"
 
 packs:
-  - name: team-ops
+  - name: example-pack
     enabled: true
     settings:
       enabled: true
     rules:
       exclude: ["verbose-logging"]
     mcp:
-      atlassian:
+      issue-tracker:
         enabled: true
         allowed_tools:
-          - confluence_search
-          - confluence_get_page
-          - jira_get_issue
+          - docs_search
+          - docs_get_page
+          - get_issue
       build-system:
         enabled: false
 
@@ -36,6 +36,8 @@ packs:
     quiet: true
     skills:
       include: [deploy, triage]
+    plugins:
+      include: [linear]
 
   - name: personal
     overrides:
@@ -47,24 +49,24 @@ packs:
 - **`params`** — key-value pairs expanded into `{params.*}` placeholders throughout pack content and MCP definitions.
 - **`packs`** — ordered list of pack entries. Each entry names an installed pack and optionally filters its content, configures MCP servers, or declares overrides.
 
-Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (normal packs default to `true`; quiet packs default to `false` and need `true` to opt in), vector selectors (`rules`, `skills`, `workflows`, `agents`), `mcp` server config, and `overrides`.
+Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (normal packs default to `true`; quiet packs default to `false` and need `true` to opt in), vector selectors (`rules`, `skills`, `workflows`, `agents`, `plugins`), `mcp` server config, and `overrides`.
 
 ## Parameters
 
-Parameters make profiles portable across environments. Define them once; they expand wherever content uses `{params.*}` placeholders.
+Parameters make profiles portable across environments. Define them once; they expand wherever content uses `{params.*}` placeholders. Use `{params.KEY:-default}` when a value has a safe literal fallback; bare `{params.KEY}` stays strict and fails if the profile omits it.
 
 ```yaml
 params:
-  jira_url: "https://jira.example.com"
+  tracker_url: "https://tracker.example.com"
   team_project: "OPS"
 ```
 
-In an MCP server definition (`mcp/atlassian.json`):
+In an MCP server definition (`mcp/issue-tracker.json`):
 
 ```json
 {
   "command": "uvx",
-  "args": ["mcp-atlassian", "--jira-url", "{params.jira_url}"]
+  "args": ["mcp-issue-tracker", "--url", "{params.tracker_url}"]
 }
 ```
 
@@ -76,11 +78,22 @@ When creating Jira tickets, use project {params.team_project} unless specified o
 
 Two teams using the same pack with different Jira instances need different parameter values, not different packs. Parameters are global to the profile — all packs share the same namespace.
 
-For environment-specific values that shouldn't be committed to a profile, use `{env:VAR}` references instead. See the [Pack Format Specification](./pack-format.md#5-environment-references-and-parameters) for the expansion order.
+For environment-specific values that shouldn't be committed to a profile, use `{env:VAR}` references instead. aipack checks the active config directory's `.env` file before falling back to the process environment. See the [Pack Format Specification](./pack-format.md#5-environment-references-and-parameters) for the expansion order.
+
+To check a profile's required values, run `aipack setup`. It prints the short remediation checklist for missing strict params and env refs. `aipack profile refs` uses the same scan but shows the full reference inventory for diagnostics and JSON automation.
+
+```bash
+aipack setup oncall
+aipack profile refs oncall
+aipack profile set-param oncall tracker_url https://tracker.example.com
+aipack profile unset-param oncall old_param
+```
+
+`aipack setup` is the shorter first-time checklist view over the same data. The TUI exposes param editing from the Profiles tab action menu. Use profile params for stable environment metadata and `{env:*}` for secrets or machine-local values.
 
 ## Vector selectors
 
-Each content vector (`rules`, `skills`, `workflows`, `agents`) can be filtered with `include` or `exclude`. These are mutually exclusive on the same vector — you cannot set both.
+Each profile-selectable vector (`rules`, `skills`, `workflows`, `agents`, `plugins`) can be filtered with `include` or `exclude`. These are mutually exclusive on the same vector — you cannot set both.
 
 | Configuration | Behavior |
 |---------------|----------|
@@ -93,16 +106,18 @@ Both `include` and `exclude` support glob patterns: `include: ["team-*"]` matche
 
 ```yaml
 packs:
-  - name: team-ops
+  - name: example-pack
     rules:
       exclude: ["verbose-logging"]
     skills:
       include: ["deploy-*", "triage"]
+    plugins:
+      include: ["linear"]
 ```
 
 ## Quiet packs
 
-A pack entry marked `quiet: true` flips the default across every delivery mechanism — content vectors, MCP servers, and harness settings. Nothing from the pack activates unless you explicitly list it.
+A pack entry marked `quiet: true` flips the default across every delivery mechanism — content vectors, plugin references, MCP servers, and harness settings. Nothing from the pack activates unless you explicitly list it.
 
 | Configuration | Normal pack | Quiet pack |
 |---------------|------------|------------|
@@ -111,8 +126,9 @@ A pack entry marked `quiet: true` flips the default across every delivery mechan
 | `include: [a, b]` | Only a, b | Only a, b |
 | `exclude: [x]` | All except x | **Nothing** (nothing to subtract from) |
 
-The same opt-in-only rule applies to MCP and settings:
+The same opt-in-only rule applies to plugins, MCP, and settings:
 
+- **Plugins.** Plugin references follow normal vector selector rules. Omitted or empty `plugins:` on a quiet pack resolves to no plugins; opt in with `plugins: { include: [linear] }`.
 - **MCP servers.** An omitted or empty `mcp:` map on a quiet pack resolves to no servers (a normal pack defaults to every server the manifest declares, enabled). Opt specific servers in with an explicit entry: `mcp: { srv-a: { enabled: true } }`.
 - **Harness settings.** A quiet pack with `configs/` files does not contribute settings unless `settings.enabled: true` is set explicitly. A normal pack contributes its settings by default unless `settings.enabled: false` opts out.
 
@@ -126,14 +142,16 @@ packs:
       include: [deploy, triage]
     rules:
       include: [code-review]
+    plugins:
+      include: [linear]
     mcp:
-      atlassian:
+      issue-tracker:
         enabled: true
     settings:
       enabled: true
 ```
 
-Only the three named items, the atlassian MCP server, and the pack's settings fragment sync. Everything else in the pack stays on disk but doesn't load. Use `aipack search` to discover what's available.
+Only the named content items, the linear plugin reference, the issue-tracker MCP server, and the pack's settings fragment sync. Everything else in the pack stays on disk but doesn't load. Use `aipack search` to discover what's available.
 
 Three ways to get `quiet: true` on a profile entry:
 
@@ -143,22 +161,22 @@ Three ways to get `quiet: true` on a profile entry:
 
 ## Role-based profiles
 
-Different profiles scope content and MCP servers to what each context needs. Here are three profiles that draw from the same installed packs:
+Different profiles scope content, plugins, and MCP servers to what each context needs. Here are three profiles that draw from the same installed packs:
 
 **`profiles/default.yaml`** — baseline, everything active:
 
 ```yaml
 schema_version: 2
 params:
-  jira_url: "https://jira.example.com"
-  confluence_url: "https://confluence.example.com"
+  tracker_url: "https://tracker.example.com"
+  docs_url: "https://docs.example.com"
 packs:
-  - name: team-ops
+  - name: example-pack
     enabled: true
     settings:
       enabled: true
     mcp:
-      atlassian: { enabled: true }
+      issue-tracker: { enabled: true }
       build-system: { enabled: true }
   - name: personal
 ```
@@ -168,10 +186,10 @@ packs:
 ```yaml
 schema_version: 2
 params:
-  jira_url: "https://jira.example.com"
-  confluence_url: "https://confluence.example.com"
+  tracker_url: "https://tracker.example.com"
+  docs_url: "https://docs.example.com"
 packs:
-  - name: team-ops
+  - name: example-pack
     enabled: true
     settings:
       enabled: true
@@ -180,7 +198,7 @@ packs:
     workflows:
       include: [design-qa]
     mcp:
-      atlassian: { enabled: true }
+      issue-tracker: { enabled: true }
       build-system: { enabled: false }
   - name: personal
 ```
@@ -190,10 +208,10 @@ packs:
 ```yaml
 schema_version: 2
 params:
-  jira_url: "https://jira.example.com"
-  confluence_url: "https://confluence.example.com"
+  tracker_url: "https://tracker.example.com"
+  docs_url: "https://docs.example.com"
 packs:
-  - name: team-ops
+  - name: example-pack
     enabled: true
     settings:
       enabled: true
@@ -201,8 +219,10 @@ packs:
       include: [triage, monitoring, escalation]
     workflows:
       include: [incident-response]
+    plugins:
+      include: [linear]
     mcp:
-      atlassian: { enabled: true }
+      issue-tracker: { enabled: true }
       build-system: { enabled: true }
       monitoring: { enabled: true }
   - name: personal
@@ -222,11 +242,11 @@ Profiles compose packs from different sources. Packs are processed in order (fir
 ```yaml
 packs:
   - name: community-lib
-  - name: team-ops
+  - name: example-pack
   - name: personal
     overrides:
       rules: ["anti-slop"]      # personal's version replaces community-lib's
-      workflows: ["deploy"]     # personal's version replaces team-ops's
+      workflows: ["deploy"]     # personal's version replaces example-pack's
 ```
 
 Without the `overrides` declaration, duplicate IDs are resolved by the `defaults.collision_strategy` in sync-config.yaml. The default is `last-wins` — the later pack in profile order wins. Set it to `first-wins` for the reverse, or `error` to require explicit overrides for every collision. Explicit `overrides` always take precedence over the strategy.
@@ -255,24 +275,26 @@ aipack sync
 
 `--install` fetches any packs referenced in the profile that aren't installed yet, looking them up in the registry.
 
+Bundled profiles remain owned by the pack that installed them. If you customize one locally, duplicate it first; `pack update` can refresh the bundled copy. The CLI and TUI warn when a profile is known to come from installed pack content.
+
 ## MCP server overrides
 
 Profiles control which MCP servers are active and how their tools are scoped. Each pack that defines MCP servers (in its `mcp/` directory) makes those servers available. The profile enables, disables, and configures them:
 
 ```yaml
 packs:
-  - name: team-ops
+  - name: example-pack
     mcp:
-      atlassian:
+      issue-tracker:
         enabled: true
         allowed_tools:
-          - confluence_search
-          - confluence_get_page
-          - jira_get_issue
+          - docs_search
+          - docs_get_page
+          - get_issue
         always_allowed_tools:
-          - confluence_search
+          - docs_search
         disabled_tools:
-          - confluence_delete_page
+          - docs_delete_page
       build-system:
         enabled: false
 ```

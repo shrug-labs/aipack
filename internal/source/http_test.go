@@ -2,6 +2,7 @@ package source
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -15,6 +16,25 @@ import (
 	"strings"
 	"testing"
 )
+
+func buildTestZip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(files[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
 
 func buildTestTarGz(t *testing.T, files map[string]string) []byte {
 	t.Helper()
@@ -107,6 +127,85 @@ func TestFetchHTTPTarball_HappyPath(t *testing.T) {
 	}
 	if string(got) != `{"name":"test"}` {
 		t.Errorf("pack.json = %q, want %q", got, `{"name":"test"}`)
+	}
+}
+
+func TestFetchHTTPArchive_ZipHappyPath(t *testing.T) {
+	t.Parallel()
+	zipData := buildTestZip(t, map[string]string{
+		"repo-main/pack.json":    `{"name":"zip-pack"}`,
+		"repo-main/rules/foo.md": "# Rule Foo",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	dest := t.TempDir()
+	if err := FetchHTTPArchive(context.Background(), srv.URL+"/pack.zip", dest, HTTPArchiveOptions{}); err != nil {
+		t.Fatalf("FetchHTTPArchive: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "repo-main", "rules", "foo.md"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(got) != "# Rule Foo" {
+		t.Fatalf("extracted = %q", got)
+	}
+}
+
+func TestFetchHTTPArchive_UsesNetrc(t *testing.T) {
+	t.Parallel()
+	zipData := buildTestZip(t, map[string]string{"pack.json": `{"name":"auth-pack"}`})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "alice" || pass != "secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	netrcPath := filepath.Join(t.TempDir(), ".netrc")
+	host := strings.TrimPrefix(srv.URL, "http://")
+	if err := os.WriteFile(netrcPath, []byte("machine "+host+" login alice password secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	err := FetchHTTPArchive(context.Background(), srv.URL+"/pack.zip", dest, HTTPArchiveOptions{NetrcPath: netrcPath})
+	if err != nil {
+		t.Fatalf("FetchHTTPArchive with netrc: %v", err)
+	}
+}
+
+func TestFetchHTTPArchive_RejectsEscapingTarSymlink(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{Name: "repo/link", Typeflag: tar.TypeSymlink, Linkname: "../outside"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+
+	err := FetchHTTPArchive(context.Background(), srv.URL+"/pack.tar.gz", t.TempDir(), HTTPArchiveOptions{})
+	if err == nil || !strings.Contains(err.Error(), "escapes archive boundary") {
+		t.Fatalf("expected escaping symlink error, got %v", err)
 	}
 }
 

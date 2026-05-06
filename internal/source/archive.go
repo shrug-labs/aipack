@@ -15,8 +15,9 @@ import (
 
 // ArchiveOpts controls safety limits for tar extraction.
 type ArchiveOpts struct {
-	MaxFileSize  int64 // per-file limit in bytes; 0 = default (1MB)
-	MaxTotalSize int64 // total extraction limit in bytes; 0 = default (50MB)
+	MaxFileSize                    int64 // per-file limit in bytes; 0 = default (1MB)
+	MaxTotalSize                   int64 // total extraction limit in bytes; 0 = default (50MB)
+	EnforceTopLevelSymlinkBoundary bool
 }
 
 const (
@@ -207,6 +208,11 @@ func ExtractArchive(r io.Reader, destDir string, opts ArchiveOpts) (ExtractArchi
 			if err != nil {
 				return ExtractArchiveResult{}, err
 			}
+			if opts.EnforceTopLevelSymlinkBoundary {
+				if err := validateTarSymlinkBoundary(clean, targetTarPath, hdr.Linkname); err != nil {
+					return ExtractArchiveResult{}, err
+				}
+			}
 			pendingSymlinks = append(pendingSymlinks, PendingSymlink{
 				Dest:          dest,
 				TargetTarPath: targetTarPath,
@@ -230,4 +236,25 @@ func ExtractArchive(r io.Reader, destDir string, opts ArchiveOpts) (ExtractArchi
 	}
 
 	return ExtractArchiveResult{}, nil
+}
+
+func validateTarSymlinkBoundary(entryClean, target, linkname string) error {
+	entryTop := topPathComponent(entryClean)
+	targetTop := topPathComponent(target)
+	if entryTop != "" && targetTop != "" && entryTop != targetTop {
+		return fmt.Errorf("symlink escapes archive boundary in pack archive: %s -> %s (resolves to %s)", entryClean, linkname, target)
+	}
+	return nil
+}
+
+func topPathComponent(path string) string {
+	path = filepath.Clean(path)
+	if path == "." || path == string(filepath.Separator) {
+		return ""
+	}
+	before, _, ok := strings.Cut(filepath.ToSlash(path), "/")
+	if !ok {
+		return path
+	}
+	return before
 }

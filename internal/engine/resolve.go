@@ -30,6 +30,11 @@ func (e *Engine) Resolve(
 	}
 	resolvedPacks, settingsPacks := resolved.Packs, resolved.SettingsPacks
 
+	env, err := config.LoadDotEnv(config.DotEnvPath(configDir))
+	if err != nil {
+		return domain.Profile{}, nil, err
+	}
+
 	var warnings []domain.Warning
 	warnings = append(warnings, resolved.CollisionWarnings...)
 	warnings = append(warnings, brokenRefWarnings(resolved.BrokenRefs)...)
@@ -42,7 +47,7 @@ func (e *Engine) Resolve(
 	warnings = append(warnings, contentWarnings...)
 
 	// Step 3: Build MCP servers (load inventory, expand params, apply permissions).
-	mcpServers, mcpWarnings, err := e.resolveMCPServers(resolvedPacks, profileCfg.Params)
+	mcpServers, mcpWarnings, err := e.resolveMCPServers(resolvedPacks, profileCfg.Params, env)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
@@ -50,7 +55,7 @@ func (e *Engine) Resolve(
 
 	// Step 4: Load harness settings for all harnesses.
 	allH := domain.AllHarnesses()
-	settings, settingsWarnings, err := e.loadHarnessSettings(resolvedPacks, settingsPacks, allH, profileCfg.Params)
+	settings, settingsWarnings, err := e.loadHarnessSettingsWithEnv(resolvedPacks, settingsPacks, allH, profileCfg.Params, env)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
@@ -129,6 +134,12 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]doma
 		}
 		warnings = append(warnings, w...)
 
+		plugins, w, err := e.parsePlugins(rp)
+		if err != nil {
+			return nil, warnings, err
+		}
+		warnings = append(warnings, w...)
+
 		packs = append(packs, domain.Pack{
 			Name:       rp.Name,
 			Version:    rp.Manifest.Version,
@@ -137,6 +148,7 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]doma
 			Agents:     agents,
 			Workflows:  workflows,
 			Skills:     skills,
+			Plugins:    plugins,
 			Registries: rp.Manifest.Registries,
 		})
 	}
@@ -145,11 +157,11 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]doma
 }
 
 // resolveMCPServers loads MCP inventory from packs and builds typed servers.
-func (e *Engine) resolveMCPServers(packs []config.ResolvedPack, params map[string]string) ([]domain.MCPServer, []domain.Warning, error) {
+func (e *Engine) resolveMCPServers(packs []config.ResolvedPack, params map[string]string, env map[string]string) ([]domain.MCPServer, []domain.Warning, error) {
 	inv, err := e.LoadMCPInventoryForPacks(packs)
 	if err != nil {
 		return nil, nil, err
 	}
-	servers, warnings := buildMCPServers(params, packs, inv)
+	servers, warnings := buildMCPServers(params, env, packs, inv)
 	return servers, warnings, nil
 }

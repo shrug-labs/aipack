@@ -59,6 +59,14 @@ func TestExpandRefs_UnresolvedParam(t *testing.T) {
 	}
 }
 
+func TestExpandRefs_UnterminatedParamRef(t *testing.T) {
+	t.Parallel()
+	_, err := ExpandRefs(map[string]string{"region": "us-ashburn-1"}, "Has {params.region")
+	if err == nil {
+		t.Fatal("expected error for unterminated param ref")
+	}
+}
+
 func TestExpandRefs_EnvVar(t *testing.T) {
 	t.Setenv("TEST_EXPAND_VAR", "/resolved/path")
 	out, err := ExpandRefs(nil, "{env:TEST_EXPAND_VAR}/bin")
@@ -87,6 +95,129 @@ func TestExpandRefs_ParamsAndEnv(t *testing.T) {
 	}
 	if out != "https://api.example.com?token=secret123" {
 		t.Errorf("out = %q", out)
+	}
+}
+
+func TestExpandRefs_EnvDefaults(t *testing.T) {
+	t.Setenv("TEST_ENV_DEFAULT_SET", "from-env")
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		in   string
+		want string
+	}{
+		{
+			name: "missing env uses default",
+			in:   "{env:TEST_ENV_DEFAULT_MISSING:-https://api.example.com}",
+			want: "https://api.example.com",
+		},
+		{
+			name: "env map value ignores default",
+			env:  map[string]string{"TEST_ENV_DEFAULT_MAP": "from-map"},
+			in:   "{env:TEST_ENV_DEFAULT_MAP:-fallback}",
+			want: "from-map",
+		},
+		{
+			name: "process env value ignores default",
+			in:   "{env:TEST_ENV_DEFAULT_SET:-fallback}",
+			want: "from-env",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExpandRefsWithEnv(nil, tc.env, tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("ExpandRefsWithEnv() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExpandRefs_ParamDefaults(t *testing.T) {
+	t.Parallel()
+	params := map[string]string{"region": "eu-frankfurt-1"}
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "missing param uses default",
+			in:   "{params.home_region:-us-ashburn-1}",
+			want: "us-ashburn-1",
+		},
+		{
+			name: "present param ignores default",
+			in:   "{params.region:-us-ashburn-1}",
+			want: "eu-frankfurt-1",
+		},
+		{
+			name: "empty default is allowed",
+			in:   "prefix{params.optional:-}suffix",
+			want: "prefixsuffix",
+		},
+		{
+			name: "default can contain colon",
+			in:   "{params.base_url:-https://api.example.com:8443}",
+			want: "https://api.example.com:8443",
+		},
+		{
+			name: "default can contain slash",
+			in:   "{params.cache_dir:-/tmp/aipack/cache}",
+			want: "/tmp/aipack/cache",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ExpandRefs(params, tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("ExpandRefs() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExpandRefs_ParamDefaultRejectsNestedRef(t *testing.T) {
+	t.Parallel()
+
+	_, err := ExpandRefs(nil, "{params.home:-{env:HOME}}")
+	if err == nil {
+		t.Fatal("expected nested default ref error")
+	}
+}
+
+func TestExpandRefsWithEnv_EnvMapPrecedesOS(t *testing.T) {
+	t.Setenv("AIPACK_ENV_PRECEDENCE", "from-os")
+
+	got, err := ExpandRefsWithEnv(nil, map[string]string{"AIPACK_ENV_PRECEDENCE": "from-file"}, "{env:AIPACK_ENV_PRECEDENCE}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-file" {
+		t.Fatalf("ExpandRefsWithEnv() = %q, want from-file", got)
+	}
+}
+
+func TestExpandRefsWithEnv_EnvMapFallsBackToOS(t *testing.T) {
+	t.Setenv("AIPACK_ENV_FALLBACK", "from-os")
+
+	got, err := ExpandRefsWithEnv(nil, map[string]string{"OTHER": "from-file"}, "{env:AIPACK_ENV_FALLBACK}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-os" {
+		t.Fatalf("ExpandRefsWithEnv() = %q, want from-os", got)
 	}
 }
 
@@ -128,6 +259,29 @@ func TestExpandMCPServers_ResolvesEnvVars(t *testing.T) {
 	}
 	if result[0].Env["PATH"] != "/tmp/test-home/bin" {
 		t.Fatalf("Env[PATH] = %q, want /tmp/test-home/bin", result[0].Env["PATH"])
+	}
+}
+
+func TestExpandMCPServers_ResolvesDefaultedEnvRefs(t *testing.T) {
+	t.Parallel()
+	servers := []domain.MCPServer{
+		{
+			Name:      "test",
+			Transport: domain.TransportStdio,
+			Command:   []string{"server"},
+			Env:       map[string]string{"API_BASE_URL": "{env:API_BASE_URL:-https://api.example.com}"},
+		},
+	}
+
+	result, warnings := ExpandMCPServers(servers)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(result))
+	}
+	if got := result[0].Env["API_BASE_URL"]; got != "https://api.example.com" {
+		t.Fatalf("API_BASE_URL = %q, want example default", got)
 	}
 }
 
@@ -277,7 +431,7 @@ func TestExpandMCPServers_PackRootWithParamsAndEnv(t *testing.T) {
 		Name: "test",
 		MCP:  map[string]config.ResolvedMCPServer{"combo": {}},
 	}}
-	result, warnings := buildMCPServers(params, packs, map[string]domain.MCPServer{"combo": servers[0]})
+	result, warnings := buildMCPServers(params, nil, packs, map[string]domain.MCPServer{"combo": servers[0]})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %v", warnings)
 	}

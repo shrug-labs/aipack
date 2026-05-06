@@ -10,11 +10,17 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
+// ErrProfileNoPacks signals that a profile has no packs configured. Callers
+// can match it via errors.Is to surface a first-mile setup hint instead of
+// the raw resolver error.
+var ErrProfileNoPacks = errors.New("profile packs must be configured")
+
 const (
 	capRules     = "rules"
 	capAgents    = "agents"
 	capWorkflows = "workflows"
 	capSkills    = "skills"
+	capPlugins   = "plugins"
 )
 
 type ResolvedPack struct {
@@ -25,6 +31,7 @@ type ResolvedPack struct {
 	Agents    []string
 	Workflows []string
 	Skills    []string
+	Plugins   []string
 	MCP       map[string]ResolvedMCPServer
 }
 
@@ -40,6 +47,8 @@ func (rp ResolvedPack) ContentIDs(cat domain.PackCategory) []string {
 		return rp.Workflows
 	case domain.CategorySkills:
 		return rp.Skills
+	case domain.CategoryPlugins:
+		return rp.Plugins
 	}
 	return nil
 }
@@ -71,7 +80,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		strategy = CollisionLastWins
 	}
 	if len(cfg.Packs) == 0 {
-		return ResolveResult{}, errors.New("profile packs must be configured")
+		return ResolveResult{}, ErrProfileNoPacks
 	}
 
 	var collisions []collisionInfo
@@ -96,6 +105,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		{capAgents, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Agents }, func(pe PackEntry) []string { return pe.Overrides.Agents }},
 		{capWorkflows, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Workflows }, func(pe PackEntry) []string { return pe.Overrides.Workflows }},
 		{capSkills, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Skills }, func(pe PackEntry) []string { return pe.Overrides.Skills }},
+		{capPlugins, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Plugins }, func(pe PackEntry) []string { return pe.Overrides.Plugins }},
 	}
 
 	// Pre-scan: build override owner maps so the declaring pack wins
@@ -170,6 +180,11 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 			return ResolveResult{}, err
 		}
 		brokenRefs = append(brokenRefs, broken...)
+		plugins, broken, err := resolveVector(packName, capPlugins, manifest.Plugins, packCfg.Plugins, quiet, prevInv)
+		if err != nil {
+			return ResolveResult{}, err
+		}
+		brokenRefs = append(brokenRefs, broken...)
 
 		packResolved := ResolvedPack{
 			Name:      packName,
@@ -179,6 +194,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 			Agents:    agents,
 			Workflows: workflows,
 			Skills:    skills,
+			Plugins:   plugins,
 			MCP:       map[string]ResolvedMCPServer{},
 		}
 
@@ -403,6 +419,8 @@ func labelToCategory(label string) domain.PackCategory {
 		return domain.CategoryWorkflows
 	case capSkills:
 		return domain.CategorySkills
+	case capPlugins:
+		return domain.CategoryPlugins
 	}
 	return ""
 }

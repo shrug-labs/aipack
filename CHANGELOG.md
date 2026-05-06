@@ -6,6 +6,55 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.27.0]
+
+### Added
+
+- **The manage TUI now supports mouse clicks** for tabs, screen content, overlays, selectable rows, and modal actions in terminals that report mouse events.
+- **The manage TUI adds a Config tab** for sync defaults, profile params, config-dir `.env` values, and harness defaults instead of hiding those workflows in profile and sync action menus. The tab's `.` action menu can add/edit/delete profile params and add/edit/delete `.env` entries directly.
+- **The manage TUI can drill from Search results into pack details before install.** Search `enter` opens the matching pack and content row in the Packs tab, while installation stays in the Packs tab. Inspected/deep-indexed packs now show indexed metadata and content summaries in Packs even without a local install.
+- **`aipack setup [profile]` shows a missing-param/env checklist** for first-time setup. Params print `profile set-param` commands, env vars print `config env set` commands, and empty profiles print a `pack install <source> --add` hint instead of erroring out.
+- **Reference expansion supports `:-default` fallbacks and config-dir `.env` values.** `{params.workspace:-default}` falls back only when the profile omits `workspace`; `{env:API_BASE_URL:-https://api.example.com}` falls back only when `API_BASE_URL` is unset; `{env:VAR}` reads the active config directory's `.env` before the process environment.
+- **`aipack config env` manages the config-dir `.env` file** that backs `{env:*}` resolution, including list/get/set/unset/path/edit commands with masked list output by default.
+- **`aipack profile refs` reports profile `{params.*}` and `{env:*}` references**, and `profile set-param` / `profile unset-param` edit profile params with warnings before mutating pack-provided profiles.
+- **`aipack pack inspect <source>` previews pack trust signals before install**, including warnings for declared MCP server definitions so external-tool access is visible before install/sync decisions. Discovered resources are indexed as `inspected` for `aipack search --status inspected`; inspected rows expire after 30 days, and `pack inspect --clear` removes them on demand.
+- **`aipack pack import` imports one markdown file into a new or existing pack** as a skill, rule, or prompt, with generated frontmatter when needed.
+- **`aipack pack delete` gained safer planning and removal flags.** The command removes clean rendered files and managed shared settings by default while preserving user-modified paths; `--dry-run`, `--json`, and `--keep-rendered` preview or stop managing the pack without deleting rendered content.
+- **`aipack pack update --dry-run` previews updates with file-level content changes** without mutating disk or lockfile.
+- **Plugin references are first-class pack content.** Packs can declare plugin descriptors, filter them through profile selectors, surface them in show/status/search/trace output, and sync references to Codex and Claude Code.
+- **Static archive pack installs are supported.** Direct installs can pass `--archive`, registries can declare `method: archive`, and updates re-fetch and replace archive installs safely.
+- **`aipack search --kind` accepts `mcp` and `plugin` kinds.**
+- **`aipack registry validate <file>` validates registry YAML** with text or JSON output.
+
+### Changed
+
+- **The manage TUI now runs on Bubble Tea v2** and the screen code is split into dedicated tab and overlay packages behind the shared router path.
+- **The manage TUI tab order is now Profiles, Packs, Sync, Save, Search, Config.** Sync shows the current plan and status together; Profiles keeps pack attribution visible in the content tree and status line.
+- **Search exposes discovery status.** Search results include `status` (`installed`, `registered`, or `inspected`), and the CLI/TUI can filter by those states. Existing `--installed` and `--available` flags remain compatible.
+- **Search reconciles installed state from the lockfile and installed pack directories** before filtering, so stale registry or deep-index rows do not make installed content appear available.
+- **Initialization now prepares config-local `.env`.** `aipack init` and commands that ensure config exists create an empty `.env` placeholder beside `sync-config.yaml`; existing `.env` files are preserved.
+- **Doctor and reference diagnostics now read config-local `.env`.** Missing MCP reference remediation points at `aipack config env set`, and env reference status distinguishes `.env` values from process environment values.
+- **Registry lookup errors now include first-run recovery hints** for foundational public packs such as `aipack-core` and `essentials` when the default public registry has not been fetched.
+- **`aipack trace` no longer requires a resource type for unique active resources.** `trace <name>` resolves exact active-profile matches across rules, agents, workflows, skills, plugins, and MCP servers.
+- **`aipack registry fetch --deep` now indexes prompts, plugin descriptors, and MCP server inventories** alongside rules, agents, workflows, and skills.
+
+### Fixed
+
+- **`aipack pack delete` now clears deleted packs from installed search results** and preserves sibling MCP settings when removing a pack that contributed shared harness settings.
+- **The manage TUI mouse/action surfaces are less surprising.**
+  - Config row hit areas now align with the rendered rows.
+  - Action menu highlights follow mouse hover.
+  - The Profiles content tree and Packs content list support mouse-wheel scrolling.
+  - Sync-plan diff overlays retain their bottom border above the help bar.
+  - Unset/defaulted params no longer offer a no-op delete action.
+  - Indexed-only pack content no longer offers local file actions before install.
+  - Profiles rows now support pack checkbox clicks plus double-click profile/pack action menus.
+  - Packs rows now double-click pack rows into the action menu.
+  - Packs actions can preview installs and dry-run updates with file-level changes before mutating state.
+  - The Sync tab's `.` menu exposes plan, sync, and sync-config actions.
+- **Truncated styled text in the manage TUI no longer leaks ANSI styles into adjacent rows.**
+- **Claude Code streamable HTTP MCP servers render with `type: "http"`.** `sse` remains unchanged.
+
 ## [0.26.0]
 
 ### Added

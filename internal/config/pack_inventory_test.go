@@ -76,6 +76,16 @@ func TestValidatePackInventory_RequiresManifestReferencedFiles(t *testing.T) {
 			wantErr: `pack "demo" mcp server "srv-a" missing`,
 		},
 		{
+			name: "missing plugin descriptor",
+			manifest: PackManifest{
+				SchemaVersion: 2,
+				Name:          "demo",
+				Root:          ".",
+				Plugins:       []string{"superpowers"},
+			},
+			wantErr: `pack "demo" plugins "superpowers" missing`,
+		},
+		{
 			name: "missing harness settings file",
 			manifest: PackManifest{
 				SchemaVersion: 2,
@@ -234,6 +244,14 @@ func TestValidatePackInventory_RejectsInvalidIDChars(t *testing.T) {
 				Skills: []string{"team/oncall"},
 			},
 			wantErr: "pack \"demo\" skills id \"team/oncall\" must not contain `/`",
+		},
+		{
+			name: "plugin id with `/` is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Plugins: []string{"team/superpowers"},
+			},
+			wantErr: "pack \"demo\" plugins id \"team/superpowers\" must not contain `/`",
 		},
 	}
 

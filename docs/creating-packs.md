@@ -16,6 +16,7 @@ my-pack/
 ├── skills/            # on-demand knowledge (subdirectories)
 ├── workflows/         # step-by-step procedures
 ├── agents/            # tool-using sub-personas
+├── plugins/           # harness plugin references
 ├── mcp/               # MCP server definitions
 └── configs/           # harness settings templates (advanced)
 ```
@@ -57,7 +58,7 @@ If you have a repo with rules, skills, or instructions for AI agents — pack co
 
 1. Create the same minimal `pack.json` in the repo root (or a subdirectory).
 
-2. Organize your existing markdown files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`). Auto-discovery handles the rest.
+2. Organize your existing files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `plugins/`). Auto-discovery handles the rest.
 
 3. Add YAML frontmatter to each file. The `name` and `description` fields help with search indexing and harness rendering:
 
@@ -161,31 +162,47 @@ Report findings with severity, location, and remediation.
 
 File: `agents/security-reviewer.md`
 
+### Plugin references
+
+JSON descriptors in `plugins/`, one file per plugin reference. The filename is the plugin id. The descriptor points at the plugin source and optionally names a marketplace; aipack does not vendor plugin bytes into the pack.
+
+```json
+{
+  "source": "github:linear/linear-codex-plugin"
+}
+```
+
+File: `plugins/linear.json`
+
+With no `marketplace`, supported harnesses use their default marketplace (`openai-curated` for Codex, `claude-plugins-official` for Claude Code). A bare marketplace name is used as-is. A source-prefixed marketplace such as `github:obra/superpowers-marketplace` derives the marketplace name from the path leaf.
+
+Plugin sync is additive-only. Removing a descriptor or profile selector does not disable or uninstall the plugin from the harness.
+
 ### MCP servers
 
 JSON definitions in `mcp/`, one file per server. The filename (minus `.json`) must match the `name` field.
 
 ```json
 {
-  "name": "jira",
+  "name": "issue-tracker",
   "transport": "stdio",
-  "command": ["{env:HOME}/.local/bin/jira-mcp-server"],
+  "command": ["{env:HOME}/.local/bin/issue-tracker-mcp-server"],
   "env": {
-    "JIRA_URL": "{params.jira_url}",
-    "JIRA_TOKEN": "{env:JIRA_API_TOKEN}"
+    "TRACKER_URL": "{params.tracker_url}",
+    "TRACKER_TOKEN": "{env:TRACKER_API_TOKEN}"
   },
-  "available_tools": ["jira_search", "jira_get_issue", "jira_add_comment"]
+  "available_tools": ["search_issues", "get_issue", "add_comment"]
 }
 ```
 
-File: `mcp/jira.json`
+File: `mcp/issue-tracker.json`
 
 Two kinds of placeholders keep server definitions portable:
 
 - **`{params.KEY}`** — expanded from the active profile at sync time. Use for values that differ between teams or environments (URLs, project names).
-- **`{env:VAR}`** — resolved at sync time to the literal value from the process environment. If the variable is not set, the MCP server is skipped and a warning is emitted. Use for secrets and user-specific values that shouldn't be committed.
+- **`{env:VAR}` / `{env:VAR:-default}`** — resolved at sync time from `.env` first, then the process environment. Use the default form for non-secret local defaults such as `{env:API_BASE_URL:-https://api.example.com}`. If the variable is not set and no default is provided, the MCP server is skipped and a warning is emitted. Use non-defaulted env refs for secrets and user-specific values that shouldn't be committed.
 
-The manifest can declare default tool approvals, and profiles can override them per server. See the [Pack Format Specification](./pack-format.md#6-mcp-servers) for the full field reference and the [JSON Schema](../schemas/mcp-server.schema.json) for editor validation.
+The manifest declares which MCP servers exist; profiles decide tool approvals per server. See the [Pack Format Specification](./pack-format.md#6-mcp-servers) for the full field reference and the [JSON Schema](../schemas/mcp-server.schema.json) for editor validation.
 
 ## Validate your pack
 
@@ -224,7 +241,7 @@ For packs with dependencies or multiple profiles, bundle profiles and a registry
 # profiles/default.yaml
 schema_version: 2
 params:
-  jira_url: "https://jira.example.com"
+  tracker_url: "https://tracker.example.com"
 packs:
   - name: my-pack
 ```

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,11 +15,14 @@ import (
 )
 
 type ProfileCmd struct {
-	Create ProfileCreateCmd `cmd:"" help:"Create a new empty profile"`
-	Delete ProfileDeleteCmd `cmd:"" help:"Delete a profile from the config directory"`
-	List   ProfileListCmd   `cmd:"" help:"List available profiles in the config directory"`
-	Set    ProfileSetCmd    `cmd:"" help:"Set the active profile (defaults.profile in sync-config)"`
-	Show   ProfileShowCmd   `cmd:"" help:"Show resolved configuration for a profile"`
+	Create     ProfileCreateCmd     `cmd:"" help:"Create a new empty profile"`
+	Delete     ProfileDeleteCmd     `cmd:"" help:"Delete a profile from the config directory"`
+	List       ProfileListCmd       `cmd:"" help:"List available profiles in the config directory"`
+	Set        ProfileSetCmd        `cmd:"" help:"Set the active profile (defaults.profile in sync-config)"`
+	Show       ProfileShowCmd       `cmd:"" help:"Show resolved configuration for a profile"`
+	Refs       ProfileRefsCmd       `cmd:"" help:"Show params and env refs required by a profile"`
+	SetParam   ProfileSetParamCmd   `cmd:"" help:"Set a profile parameter"`
+	UnsetParam ProfileUnsetParamCmd `cmd:"" help:"Unset a profile parameter"`
 }
 
 func (c *ProfileCmd) Help() string {
@@ -28,6 +32,108 @@ sync to which harnesses.
 Profiles are stored as YAML files under %s.`,
 		configPathDisplay("profiles"),
 	)
+}
+
+// --- profile refs ---
+
+type ProfileRefsCmd struct {
+	Name string `arg:"" optional:"" help:"Profile name (default: sync-config defaults.profile, then 'default')" predictor:"profile"`
+	JSON bool   `help:"Emit machine-readable JSON" name:"json"`
+}
+
+func (c *ProfileRefsCmd) Help() string {
+	return `Shows {params.*} and {env:*} references used by enabled MCP servers and
+contributing harness settings for a profile.
+
+Examples:
+  aipack profile refs
+  aipack profile refs dev --json
+
+See also: profile set-param, doctor`
+}
+
+func (c *ProfileRefsCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+	result, err := app.ProfileRefs(app.ProfileRefsRequest{ConfigDir: cfgDir, ProfileName: c.Name})
+	if err != nil {
+		if errors.Is(err, config.ErrProfileNoPacks) {
+			if c.JSON {
+				return cmdutil.WriteJSON(g.Stdout, app.ProfileRefsResult{Profile: c.Name, Refs: []app.ProfileRef{}})
+			}
+			fmt.Fprintln(g.Stdout, "No packs in profile yet. Run `aipack pack install <source> --add` to add one.")
+			return nil
+		}
+		return err
+	}
+	if c.JSON {
+		if result.Refs == nil {
+			result.Refs = []app.ProfileRef{}
+		}
+		return cmdutil.WriteJSON(g.Stdout, result)
+	}
+	fmt.Fprintf(g.Stdout, "Profile: %s\n", result.Profile)
+	if len(result.Refs) == 0 {
+		fmt.Fprintln(g.Stdout, "No params or env refs found.")
+		return nil
+	}
+	for _, ref := range result.Refs {
+		target := ref.Target
+		if target == "" {
+			target = ref.Pack
+		}
+		if target != "" {
+			fmt.Fprintf(g.Stdout, "  %-22s %-10s %s\n", ref.Display, ref.Status, target)
+		} else {
+			fmt.Fprintf(g.Stdout, "  %-22s %s\n", ref.Display, ref.Status)
+		}
+	}
+	return nil
+}
+
+// --- profile set-param ---
+
+type ProfileSetParamCmd struct {
+	Profile string `arg:"" help:"Profile name" predictor:"profile"`
+	Key     string `arg:"" help:"Parameter key"`
+	Value   string `arg:"" help:"Parameter value"`
+}
+
+func (c *ProfileSetParamCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+	if err := app.ProfileSetParam(app.ProfileParamRequest{
+		ConfigDir: cfgDir, ProfileName: c.Profile, Key: c.Key, Value: c.Value, Stdout: g.Stdout,
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(g.Stdout, "Set %s in profile %s\n", c.Key, c.Profile)
+	return nil
+}
+
+// --- profile unset-param ---
+
+type ProfileUnsetParamCmd struct {
+	Profile string `arg:"" help:"Profile name" predictor:"profile"`
+	Key     string `arg:"" help:"Parameter key"`
+}
+
+func (c *ProfileUnsetParamCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+	if err := app.ProfileUnsetParam(app.ProfileParamRequest{
+		ConfigDir: cfgDir, ProfileName: c.Profile, Key: c.Key, Stdout: g.Stdout,
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(g.Stdout, "Unset %s in profile %s\n", c.Key, c.Profile)
+	return nil
 }
 
 // --- profile list ---
@@ -163,7 +269,7 @@ type ProfileShowCmd struct {
 
 func (c *ProfileShowCmd) Help() string {
 	return `Loads and fully resolves a profile, displaying its sources, packs (with content
-lists for rules, agents, workflows, skills, MCP servers), and harness
+lists for rules, agents, workflows, skills, plugins, MCP servers), and harness
 settings preferences.
 
 Profile name resolution: positional argument > sync-config defaults.profile > "default"
@@ -244,6 +350,13 @@ func (c *ProfileShowCmd) Run(ctx context.Context, g *Globals) error {
 					names[i] = s.Name
 				}
 				fmt.Fprintf(g.Stdout, "    Skills:      %s\n", strings.Join(names, ", "))
+			}
+			if len(p.Plugins) > 0 {
+				names := make([]string, len(p.Plugins))
+				for i, plugin := range p.Plugins {
+					names[i] = plugin.Name
+				}
+				fmt.Fprintf(g.Stdout, "    Plugins:     %s\n", strings.Join(names, ", "))
 			}
 			if mcpNames, ok := mcpByPack[p.Name]; ok && len(mcpNames) > 0 {
 				fmt.Fprintf(g.Stdout, "    MCP Servers: %s\n", strings.Join(mcpNames, ", "))

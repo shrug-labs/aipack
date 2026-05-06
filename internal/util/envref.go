@@ -47,8 +47,7 @@ func WalkParamRefs(s string, fn func(ref ParamRef) error) error {
 			}
 			endRel := strings.Index(rest, "}")
 			if endRel < 0 {
-				// No closing brace — no more refs possible.
-				return nil
+				return fmt.Errorf("unterminated param reference in %q", s)
 			}
 			name := s[pos+len(prefix) : pos+endRel]
 			end := pos + endRel + 1
@@ -86,9 +85,11 @@ func HasParamRef(s string) bool {
 
 // EnvRef represents a parsed {env:VAR} reference with its position in the source string.
 type EnvRef struct {
-	Name  string // variable name
-	Start int    // byte offset of '{'
-	End   int    // byte offset after '}'
+	Name       string // variable name
+	Default    string // fallback used when the variable is unset
+	HasDefault bool   // true when the ref uses {env:VAR:-fallback}
+	Start      int    // byte offset of '{'
+	End        int    // byte offset after '}'
 }
 
 // WalkEnvRefs finds all {env:VAR} references in s and calls fn for each.
@@ -111,11 +112,16 @@ func WalkEnvRefs(s string, fn func(ref EnvRef) error) error {
 			return fmt.Errorf("unterminated env reference at offset %d", start)
 		}
 		end := start + endRel + 1
-		name := strings.TrimSpace(s[start+len(EnvRefPrefix) : start+endRel])
+		raw := strings.TrimSpace(s[start+len(EnvRefPrefix) : start+endRel])
+		name, fallback, hasDefault := strings.Cut(raw, ":-")
+		name = strings.TrimSpace(name)
 		if name == "" {
 			return fmt.Errorf("empty env reference at offset %d", start)
 		}
-		if err := fn(EnvRef{Name: name, Start: start, End: end}); err != nil {
+		if hasDefault && strings.ContainsAny(fallback, "{}") {
+			return fmt.Errorf("nested refs in env defaults are not supported at offset %d", start)
+		}
+		if err := fn(EnvRef{Name: name, Default: fallback, HasDefault: hasDefault, Start: start, End: end}); err != nil {
 			return err
 		}
 		offset = end
@@ -126,6 +132,12 @@ func WalkEnvRefs(s string, fn func(ref EnvRef) error) error {
 // named environment variable. Returns an error if a reference is unterminated,
 // empty, or the variable is not set.
 func ExpandEnvRefs(s string) (string, error) {
+	return ExpandEnvRefsWith(s, os.LookupEnv)
+}
+
+// ExpandEnvRefsWith replaces all {env:VAR} references in s using lookup.
+// lookup must return false when a variable is unavailable.
+func ExpandEnvRefsWith(s string, lookup func(string) (string, bool)) (string, error) {
 	if !strings.Contains(s, EnvRefPrefix) {
 		return s, nil
 	}
@@ -140,7 +152,11 @@ func ExpandEnvRefs(s string) (string, error) {
 	out := s
 	for i := len(refs) - 1; i >= 0; i-- {
 		ref := refs[i]
-		val, ok := os.LookupEnv(ref.Name)
+		val, ok := lookup(ref.Name)
+		if !ok && ref.HasDefault {
+			val = ref.Default
+			ok = true
+		}
 		if !ok {
 			return "", fmt.Errorf("env var %s is not set", ref.Name)
 		}

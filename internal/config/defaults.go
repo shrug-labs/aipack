@@ -18,6 +18,14 @@ var InitSyncConfigBytes = []byte("schema_version: 1\n" +
 var InitProfileBytes = []byte("schema_version: 2\n" +
 	"packs: []\n")
 
+// InitEnvBytes is the empty placeholder written into .env by init.
+var InitEnvBytes = []byte("")
+
+// DotEnvPath returns the config-local env file path.
+func DotEnvPath(configDir string) string {
+	return filepath.Join(configDir, ".env")
+}
+
 // EnsureInit ensures the config directory and default files exist. Missing
 // files are created without overwriting existing ones. Returns true if any
 // file was written, false when everything was already in place.
@@ -31,6 +39,7 @@ func EnsureInit(configDir string) (bool, error) {
 	}{
 		{SyncConfigPath(configDir), InitSyncConfigBytes},
 		{filepath.Join(configDir, "profiles", "default.yaml"), InitProfileBytes},
+		{DotEnvPath(configDir), InitEnvBytes},
 	}
 	wrote := false
 	for _, f := range files {

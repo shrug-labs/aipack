@@ -13,7 +13,7 @@ func TestMergeSettingsKeys_JSON_AddKeys(t *testing.T) {
 	prev := []byte(`{}`)
 	next := []byte(`{"managed_key": "managed_val"}`)
 
-	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestMergeSettingsKeys_JSON_RemoveKeys(t *testing.T) {
 	prev := []byte(`{"managed_key": "old_val"}`)
 	next := []byte(`{}`)
 
-	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestMergeSettingsKeys_JSON_NestedMerge(t *testing.T) {
 	prev := []byte(`{"outer": {"managed_nested": "old"}}`)
 	next := []byte(`{"outer": {"managed_nested": "new"}}`)
 
-	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessOpenCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessOpenCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestMergeSettingsKeys_JSON_ArrayMerge(t *testing.T) {
 	prev := []byte(`{"items": ["old_managed"]}`)
 	next := []byte(`{"items": ["new_managed"]}`)
 
-	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestMergeSettingsKeys_JSON_ArrayPreservesManagedOrder(t *testing.T) {
 	prev := []byte(`{"args": ["--index", "url", "--env-file", "/path/.env", "pkg@latest"]}`)
 	next := []byte(`{"args": ["--index", "url", "--env-file", "/path/.env", "pkg@latest"]}`)
 
-	result, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestMergeSettingsKeys_FirstSync(t *testing.T) {
 	var prev []byte // nil = first sync
 	next := []byte(`{"managed_key": "managed_val"}`)
 
-	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestMergeSettingsKeys_TOML(t *testing.T) {
 	prev := []byte("")
 	next := []byte("managed_key = \"managed_val\"\n")
 
-	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessCodex)
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessCodex, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestMergeSettingsKeys_TOML(t *testing.T) {
 
 func TestMergeSettingsKeys_UnsupportedHarness(t *testing.T) {
 	t.Parallel()
-	_, _, err := mergeSettingsKeys(nil, nil, nil, "unknown")
+	_, _, err := mergeSettingsKeys(nil, nil, nil, "unknown", false)
 	if err == nil {
 		t.Error("expected error for unknown harness")
 	}
@@ -193,7 +193,7 @@ func TestMergeSettingsKeys_NoOpsWhenIdentical(t *testing.T) {
 	prev := []byte(`{"managed_key": "val"}`)
 	next := []byte(`{"managed_key": "val"}`)
 
-	_, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode)
+	_, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestMergeSettingsKeys_JSON_CorruptedOnDisk(t *testing.T) {
 	prev := []byte(`{}`)
 	next := []byte(`{"managed_key": "managed_val"}`)
 
-	result, ops, err := mergeSettingsKeys(garbage, prev, next, domain.HarnessClaudeCode)
+	result, ops, err := mergeSettingsKeys(garbage, prev, next, domain.HarnessClaudeCode, false)
 	if err != nil {
 		t.Fatalf("corrupted on-disk JSON should not fail: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestMergeSettingsKeys_TOML_CorruptedOnDisk(t *testing.T) {
 	prev := []byte(``)
 	next := []byte("[mcp_servers]\n[mcp_servers.test]\ncmd = \"echo\"\n")
 
-	result, ops, err := mergeSettingsKeys(garbage, prev, next, domain.HarnessCodex)
+	result, ops, err := mergeSettingsKeys(garbage, prev, next, domain.HarnessCodex, false)
 	if err != nil {
 		t.Fatalf("corrupted on-disk TOML should not fail: %v", err)
 	}

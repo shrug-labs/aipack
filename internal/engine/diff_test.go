@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -385,6 +386,7 @@ func TestComputeSettingsDiffs_MergeMode_ReformattedFileIsIdentical(t *testing.T)
   },
   "alpha": 42
 }
+
 `)
 	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
 		t.Fatal(err)
@@ -427,6 +429,157 @@ func TestComputeSettingsDiffs_MergeMode_ReformattedFileIsIdentical(t *testing.T)
 	// managed keys are unchanged, so this should be identical.
 	if diffs[0].Kind != domain.DiffIdentical {
 		t.Errorf("Kind = %q, want %q — harness reformatting should not trigger update", diffs[0].Kind, domain.DiffIdentical)
+	}
+}
+
+func TestComputeSettingsDiffs_MergeMode_RemovesStaleMCPServer(t *testing.T) {
+	// Lifecycle gap #1 from aipack-honest-gaps-roadmap.md:
+	// "Stale MCP server definitions survive a clean sync."
+	// Reproduce: on-disk has mcpServers.acme + user-added mcpServers.userTool;
+	// previous overlay had mcpServers.acme; new overlay no longer has it.
+	// Expected: acme deleted, userTool preserved.
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "settings.json")
+
+	onDisk := []byte(`{
+  "mcpServers": {
+    "acme": {
+      "command": "npx",
+      "args": ["acme-mcp"]
+    },
+    "userTool": {
+      "command": "user-binary"
+    }
+  },
+  "userPref": "keep-me"
+}
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prevManaged := []byte(`{
+  "mcpServers": {
+    "acme": {
+      "command": "npx",
+      "args": ["acme-mcp"]
+    }
+  }
+}
+`)
+
+	// New plan no longer ships acme — pack was removed.
+	nextManaged := []byte(`{
+  "mcpServers": {}
+}
+`)
+
+	lg := domain.NewLedger()
+	lg.Record(dst, onDisk, "acme-pack", prevManaged, time.Now())
+
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{
+		{Dst: dst, Desired: nextManaged, Harness: domain.HarnessClaudeCode, Label: "settings.json", MergeMode: true},
+	}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	got := string(diffs[0].Desired)
+	if strings.Contains(got, "acme") {
+		t.Fatalf("stale MCP entry should be removed when prev overlay had it but new overlay does not, got:\n%s", got)
+	}
+	if !strings.Contains(got, "userTool") {
+		t.Fatalf("user-added MCP entry should be preserved, got:\n%s", got)
+	}
+	if !strings.Contains(got, "userPref") {
+		t.Fatalf("unrelated user keys should be preserved, got:\n%s", got)
+	}
+}
+
+func TestComputeSettingsDiffs_MergeMode_EmptyDesiredPreservesNestedUserKeys(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "settings.json")
+
+	onDisk := []byte(`{
+  "permissions": {
+    "allow": ["mcp__server__tool", "user_permission"],
+    "deny": ["mcp__server__delete"]
+  },
+  "theme": "dark"
+}
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevManaged := []byte(`{
+  "permissions": {
+    "allow": ["mcp__server__tool"],
+    "deny": ["mcp__server__delete"]
+  }
+}
+`)
+	lg := domain.NewLedger()
+	lg.Record(dst, onDisk, "pack", prevManaged, time.Now())
+
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{{
+		Dst:       dst,
+		Desired:   []byte("{}\n"),
+		Harness:   domain.HarnessClaudeCode,
+		Label:     "settings.json",
+		MergeMode: true,
+	}}, lg)
+	if err != nil {
+		t.Fatalf("ComputeSettingsDiffs: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	got := string(diffs[0].Desired)
+	if strings.Contains(got, "mcp__server__tool") || strings.Contains(got, "mcp__server__delete") {
+		t.Fatalf("managed permission entries should be removed, got:\n%s", got)
+	}
+	if !strings.Contains(got, "user_permission") || !strings.Contains(got, `"theme": "dark"`) {
+		t.Fatalf("nested user keys should be preserved, got:\n%s", got)
+	}
+}
+
+func TestComputeSettingsDiffs_MergeMode_PreservesRemovedPluginEntries(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "config.toml")
+	onDisk := []byte("[plugins.\"linear@openai-curated\"]\nenabled = true\n\n[plugins.\"superpowers@openai-curated\"]\nenabled = true\n")
+	if err := os.WriteFile(dst, onDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := []byte("[plugins.\"linear@openai-curated\"]\nenabled = true\n\n[plugins.\"superpowers@openai-curated\"]\nenabled = true\n")
+	next := []byte("[plugins.\"superpowers@openai-curated\"]\nenabled = true\n")
+	lg := domain.NewLedger()
+	lg.Record(dst, onDisk, "pack", prev, time.Now())
+
+	eng := New(nil, nil)
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{{
+		Dst:       dst,
+		Desired:   next,
+		Harness:   domain.HarnessCodex,
+		Label:     "config.toml",
+		MergeMode: true,
+	}}, lg)
+	if err != nil {
+		t.Fatalf("ComputeSettingsDiffs: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("diffs = %d, want 1", len(diffs))
+	}
+	got := string(diffs[0].Desired)
+	if !strings.Contains(got, `[plugins."linear@openai-curated"]`) {
+		t.Fatalf("removed plugin entry should be preserved for additive-only plugin sync, got:\n%s", got)
 	}
 }
 

@@ -29,7 +29,7 @@ const (
 type PlanOp struct {
 	Kind       PlanOpKind
 	Dst        string
-	Src        string // copies only
+	Src        string // optional source file fallback when Content is not populated
 	SourcePack string
 	Size       int
 	Content    []byte
@@ -168,15 +168,8 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 					})
 					continue
 				}
-				changed := false
 				for _, fd := range fds {
-					if fd.Kind != domain.DiffIdentical {
-						changed = true
-						break
-					}
-				}
-				if !changed {
-					continue
+					appendPlanOpFromFileDiff(&summary, fd, inferContentKind(fd.Dst))
 				}
 			case domain.CopyKindFile:
 				content, cerr := eng.FS.ReadFile(c.Src)
@@ -196,15 +189,8 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 				if fd.Kind == domain.DiffIdentical {
 					continue
 				}
+				appendPlanOpFromFileDiff(&summary, fd, inferContentKind(c.Dst))
 			}
-			kind := inferContentKind(c.Dst)
-			incrContentCount(&summary, kind)
-			summary.Ops = append(summary.Ops, PlanOp{
-				Kind:       kind,
-				Dst:        c.Dst,
-				Src:        c.Src,
-				SourcePack: c.SourcePack,
-			})
 		}
 
 		// Classify settings and MCP.
@@ -250,6 +236,23 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 	}
 
 	return summary, nil
+}
+
+func appendPlanOpFromFileDiff(summary *PlanSummary, fd engine.FileDiff, kind PlanOpKind) {
+	if fd.Kind == domain.DiffIdentical {
+		return
+	}
+	incrContentCount(summary, kind)
+	summary.Ops = append(summary.Ops, PlanOp{
+		Kind:       kind,
+		Dst:        fd.Dst,
+		SourcePack: fd.SourcePack,
+		Size:       len(fd.Desired),
+		Content:    fd.Desired,
+		DiffKind:   fd.Kind,
+		Diff:       fd.Diff,
+		MergeOps:   fd.MergeOps,
+	})
 }
 
 // inferContentKind determines the content type from a destination path by
@@ -317,7 +320,32 @@ func classifyWriteDiffText(fd engine.FileDiff, diffKind domain.DiffKind) string 
 
 // ContentCounts holds counts of content items by type for display.
 type ContentCounts struct {
-	Rules, Skills, Workflows, Agents, Prompts, MCP int
+	Rules     int `json:"rules"`
+	Skills    int `json:"skills"`
+	Workflows int `json:"workflows"`
+	Agents    int `json:"agents"`
+	Plugins   int `json:"plugins"`
+	Prompts   int `json:"prompts"`
+	MCP       int `json:"mcp"`
+}
+
+func (c *ContentCounts) Add(category domain.PackCategory) {
+	switch category {
+	case domain.CategoryRules:
+		c.Rules++
+	case domain.CategorySkills:
+		c.Skills++
+	case domain.CategoryWorkflows:
+		c.Workflows++
+	case domain.CategoryAgents:
+		c.Agents++
+	case domain.CategoryPlugins:
+		c.Plugins++
+	case domain.CategoryPrompts:
+		c.Prompts++
+	case domain.CategoryMCP:
+		c.MCP++
+	}
 }
 
 // String returns a compact summary like "3 rules, 2 skills, 1 agent".
@@ -344,14 +372,14 @@ func (c ContentCounts) IsZero() bool {
 }
 
 func (c ContentCounts) Total() int {
-	return c.Rules + c.Skills + c.Workflows + c.Agents + c.Prompts + c.MCP
+	return c.Rules + c.Skills + c.Workflows + c.Agents + c.Plugins + c.Prompts + c.MCP
 }
 
-func (c ContentCounts) pairs() [6]struct {
+func (c ContentCounts) pairs() [7]struct {
 	n     int
 	label string
 } {
-	return [6]struct {
+	return [7]struct {
 		n     int
 		label string
 	}{
@@ -359,6 +387,7 @@ func (c ContentCounts) pairs() [6]struct {
 		{c.Skills, "skill"},
 		{c.Workflows, "workflow"},
 		{c.Agents, "agent"},
+		{c.Plugins, "plugin"},
 		{c.Prompts, "prompt"},
 		{c.MCP, "mcp-server"},
 	}
@@ -373,6 +402,7 @@ func CountProfileContent(p domain.Profile) ContentCounts {
 		Workflows: len(p.AllWorkflows()),
 		Agents:    len(p.AllAgents()),
 		Skills:    len(p.AllSkills()),
+		Plugins:   len(p.AllPlugins()),
 		MCP:       len(p.MCPServers),
 	}
 }

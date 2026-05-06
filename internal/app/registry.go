@@ -3,8 +3,10 @@ package app
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,6 +32,27 @@ type RegistrySearchResult struct {
 	Name      string `json:"name"`
 	Installed bool   `json:"installed"`
 	config.RegistryEntry
+}
+
+// RegistryValidateResult describes semantic validation of one registry file.
+type RegistryValidateResult struct {
+	Path   string   `json:"path"`
+	Valid  bool     `json:"valid"`
+	Errors []string `json:"errors"`
+}
+
+// RegistryValidate parses and validates a registry YAML file.
+func RegistryValidate(path string) (RegistryValidateResult, error) {
+	reg, err := config.LoadRegistry(path)
+	if err != nil {
+		return RegistryValidateResult{}, err
+	}
+	errs := config.ValidateRegistry(reg)
+	return RegistryValidateResult{
+		Path:   path,
+		Valid:  len(errs) == 0,
+		Errors: errs,
+	}, nil
 }
 
 // RegistryList returns all packs in the registry, sorted by name.
@@ -69,9 +92,45 @@ func RegistryLookup(req RegistryListRequest, name string) (config.RegistryEntry,
 	}
 	entry, ok := reg.Packs[name]
 	if !ok {
+		if hint := missingRegistryPackHint(req, name); hint != "" {
+			return config.RegistryEntry{}, fmt.Errorf("pack %q not found in registry. %s", name, hint)
+		}
 		return config.RegistryEntry{}, fmt.Errorf("pack %q not found in registry", name)
 	}
 	return entry, nil
+}
+
+// PackInstallRequestFromRegistryEntry maps registry metadata into the canonical
+// install request shape used by CLI, TUI, and lifecycle repair paths.
+func PackInstallRequestFromRegistryEntry(configDir, name string, entry config.RegistryEntry) PackInstallRequest {
+	req := PackInstallRequest{
+		ConfigDir:    configDir,
+		Ref:          entry.Ref,
+		SubPath:      entry.Path,
+		Name:         name,
+		Quiet:        boolPtrIf(entry.Quiet),
+		ContentPaths: maps.Clone(entry.ContentPaths),
+	}
+	if entry.Method == config.MethodArchive {
+		req.URL = entry.URL
+		req.Archive = true
+		req.Ref = ""
+	} else {
+		req.URL = entry.Repo
+	}
+	return req
+}
+
+func missingRegistryPackHint(req RegistryListRequest, name string) string {
+	if req.RegistryPath != "" {
+		return ""
+	}
+	switch name {
+	case "aipack-core", "essentials":
+		return fmt.Sprintf("Run `aipack registry fetch %s` to fetch the default public registry.", config.DefaultRegistryRepo)
+	default:
+		return ""
+	}
 }
 
 func loadRegistryForRequest(req RegistryListRequest) (config.Registry, error) {
@@ -431,8 +490,9 @@ func RegistryDelete(req RegistryDeleteRequest, stdout io.Writer) error {
 	return nil
 }
 
-// indexRegistryEntries upserts registry entries into the search index as
-// uninstalled packs, making them discoverable via `aipack search`.
+// indexRegistryEntries upserts registry entries into the search index, making
+// them discoverable via `aipack search` without letting registry metadata
+// override the installed-pack inventory.
 func indexRegistryEntries(reg config.Registry, configDir string) error {
 	db, err := openIndexDB(configDir, "")
 	if err != nil {
@@ -440,16 +500,22 @@ func indexRegistryEntries(reg config.Registry, configDir string) error {
 	}
 	defer db.Close()
 
+	installed := lockfileInstalledPackRoots(configDir)
 	packs := make([]index.PackInfo, 0, len(reg.Packs))
 	for name, entry := range reg.Packs {
+		repo := entry.Repo
+		if entry.Method == config.MethodArchive {
+			repo = entry.URL
+		}
 		packs = append(packs, index.PackInfo{
 			Name:        name,
 			Description: entry.Description,
-			Repo:        entry.Repo,
+			Repo:        repo,
 			Ref:         entry.Ref,
 			Path:        entry.Path,
 			Owner:       entry.Owner,
 			Contact:     entry.Contact,
+			Installed:   installed[name] != "",
 		})
 	}
 	return db.UpdateRegistryPacks(packs)
@@ -506,14 +572,22 @@ func RegistryDeepIndex(ctx context.Context, req RegistryDeepIndexRequest, stdout
 	}
 
 	indexed := 0
+	installed := lockfileInstalledPackRoots(req.ConfigDir)
 	for name, entry := range reg.Packs {
-		if entry.Repo == "" {
+		if installed[name] != "" {
+			continue
+		}
+		sourceValue := entry.Repo
+		if entry.Method == config.MethodArchive {
+			sourceValue = entry.URL
+		}
+		if sourceValue == "" {
 			continue
 		}
 		if stdout != nil {
-			fmt.Fprintf(stdout, "Deep-indexing %s from %s\n", name, entry.Repo)
+			fmt.Fprintf(stdout, "Deep-indexing %s from %s\n", name, sourceValue)
 		}
-		resources, err := deepIndexOnePack(entry, cloneFn)
+		resources, err := deepIndexOnePack(ctx, req.ConfigDir, name, entry, cloneFn)
 		if err != nil {
 			printDeepIndexWarning(stdout, name, err)
 			continue
@@ -522,7 +596,7 @@ func RegistryDeepIndex(ctx context.Context, req RegistryDeepIndexRequest, stdout
 		packInfo := index.PackInfo{
 			Name:        name,
 			Description: entry.Description,
-			Repo:        entry.Repo,
+			Repo:        sourceValue,
 			Ref:         entry.Ref,
 			Path:        entry.Path,
 			Owner:       entry.Owner,
@@ -553,110 +627,135 @@ func printDeepIndexWarning(w io.Writer, pack string, err error) {
 	fmt.Fprintf(w, "warning: deep-index %s\n", pack)
 }
 
-// deepIndexOnePack clones a registry pack into a temp dir and extracts
-// resource metadata from frontmatter in each content directory.
-func deepIndexOnePack(entry config.RegistryEntry, cloneFn func(string, string, string) error) ([]index.Resource, error) {
-	tmp, err := os.MkdirTemp("", "aipack-deep-*")
+// deepIndexOnePack fetches a registry pack into a temp dir, extracts it through
+// the same staging path used by install/inspect, and indexes discovered content.
+func deepIndexOnePack(ctx context.Context, configDir, packName string, entry config.RegistryEntry, cloneFn func(string, string, string) error) ([]index.Resource, error) {
+	tmp, err := makePackTempDir(configDir, "deep-index-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmp)
 
-	if err := cloneFn(entry.Repo, tmp, entry.Ref); err != nil {
-		return nil, fmt.Errorf("cloning %s: %w", entry.Repo, err)
-	}
-
 	packRoot := tmp
-	if entry.Path != "" {
-		packRoot = filepath.Join(tmp, entry.Path)
-	}
-
-	// Respect pack.json root field if present.
-	manifestPath := filepath.Join(packRoot, "pack.json")
-	if manifest, merr := config.LoadPackManifest(manifestPath); merr == nil {
-		if manifest.Root != "" && manifest.Root != "." {
-			packRoot = filepath.Join(packRoot, manifest.Root)
+	boundary := tmp
+	switch entry.Method {
+	case config.MethodArchive:
+		if entry.URL == "" {
+			return nil, fmt.Errorf("archive registry entry missing url")
 		}
-	}
-
-	var resources []index.Resource
-
-	// Scan content directories: rules, agents, workflows, skills.
-	contentDirs := []struct {
-		dir  string
-		kind string
-	}{
-		{"rules", "rule"},
-		{"agents", "agent"},
-		{"workflows", "workflow"},
-		{"skills", "skill"},
-	}
-
-	for _, cd := range contentDirs {
-		dirPath := filepath.Join(packRoot, cd.dir)
-		entries, err := os.ReadDir(dirPath)
+		if err := source.FetchHTTPArchive(ctx, entry.URL, tmp, source.HTTPArchiveOptions{}); err != nil {
+			return nil, fmt.Errorf("fetching archive %s: %w", entry.URL, err)
+		}
+		var err error
+		if len(entry.ContentPaths) > 0 {
+			packRoot, err = resolveArchiveContentRoot(tmp, entry.Path)
+		} else {
+			packRoot, err = resolveArchivePackRoot(tmp, entry.Path)
+		}
 		if err != nil {
-			continue // directory doesn't exist — skip
+			return nil, err
 		}
-		for _, e := range entries {
-			if cd.kind == "skill" && e.IsDir() {
-				r, err := extractSkillFromDir(filepath.Join(dirPath, e.Name()), e.Name())
-				if err == nil {
-					resources = append(resources, r)
-				}
-			} else if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-				r, err := extractResourceFromFile(filepath.Join(dirPath, e.Name()), cd.kind)
-				if err == nil {
-					resources = append(resources, r)
-				}
-			}
+	default:
+		if entry.Repo == "" {
+			return nil, fmt.Errorf("registry entry missing repo")
+		}
+		if err := cloneFn(entry.Repo, tmp, entry.Ref); err != nil {
+			return nil, fmt.Errorf("cloning %s: %w", entry.Repo, err)
+		}
+		if entry.Path != "" {
+			packRoot = filepath.Join(tmp, entry.Path)
 		}
 	}
 
-	return resources, nil
+	staging, manifest, err := extractPackContent(packStagingDir(configDir), packRoot, entry.ContentPaths, packName, boundary)
+	if err != nil {
+		return nil, fmt.Errorf("extracting pack: %w", err)
+	}
+	defer os.RemoveAll(staging)
+
+	if err := config.DiscoverContent(&manifest, staging); err != nil {
+		return nil, fmt.Errorf("discovering content: %w", err)
+	}
+	return resourcesFromManifestRoot(packName, staging, manifest), nil
 }
 
-// extractResourceFromFile reads a markdown file, splits frontmatter, and
-// builds a Resource from the metadata.
-func extractResourceFromFile(path, kind string) (index.Resource, error) {
+// extractPluginFromFile parses a plugin descriptor JSON and produces a
+// Resource with Kind="plugin", matching what ExtractFromPack does for installed
+// packs.
+func extractPluginFromFile(path string) (index.Resource, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return index.Resource{}, err
 	}
+	var plugin domain.Plugin
+	if err := json.Unmarshal(data, &plugin); err != nil {
+		return index.Resource{}, err
+	}
+	name := strings.TrimSuffix(filepath.Base(path), ".json")
+	body := plugin.Source
+	if plugin.Marketplace != "" {
+		body += "\n" + plugin.Marketplace
+	}
+	return index.Resource{
+		Kind:        "plugin",
+		Name:        name,
+		Description: plugin.Source,
+		Path:        filepath.Join("plugins", filepath.Base(path)),
+		Body:        body,
+	}, nil
+}
 
-	fm, body, err := domain.SplitFrontmatter(data)
+// extractMCPServerFromFile parses an MCP server inventory JSON and produces a
+// searchable Resource with Kind="mcp". The body string concatenates Notes,
+// Auth, transport summary, and the available_tools list so FTS5 can match on
+// any of them.
+func extractMCPServerFromFile(path string) (index.Resource, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return index.Resource{}, err
 	}
-
-	meta := parseFrontmatterMeta(fm)
-	name := strings.TrimSuffix(filepath.Base(path), ".md")
-	desc := index.MetaString(meta, "description")
-	return index.ResourceFromMetadata(kind, name, desc, filepath.Base(path), meta, string(body)), nil
-}
-
-// extractSkillFromDir reads SKILL.md from a skill directory and builds a Resource.
-func extractSkillFromDir(dirPath, name string) (index.Resource, error) {
-	skillFile := filepath.Join(dirPath, "SKILL.md")
-	r, err := extractResourceFromFile(skillFile, "skill")
-	if err != nil {
-		return r, err
+	var server domain.MCPServer
+	if err := json.Unmarshal(data, &server); err != nil {
+		return index.Resource{}, err
 	}
-	r.Name = name
-	r.Path = name
-	return r, nil
-}
+	name := server.Name
+	if name == "" {
+		name = strings.TrimSuffix(filepath.Base(path), ".json")
+	}
 
-// parseFrontmatterMeta parses YAML frontmatter bytes into a metadata map.
-func parseFrontmatterMeta(fm []byte) map[string]any {
-	if len(fm) == 0 {
-		return nil
+	// Build a search-friendly body: transport summary + notes + auth + tools.
+	var bodyParts []string
+	if t := server.Transport; t != "" {
+		bodyParts = append(bodyParts, "transport: "+t)
 	}
-	var meta map[string]any
-	if err := yaml.Unmarshal(fm, &meta); err != nil {
-		return nil
+	if len(server.Command) > 0 {
+		bodyParts = append(bodyParts, "command: "+strings.Join(server.Command, " "))
 	}
-	return meta
+	if server.URL != "" {
+		bodyParts = append(bodyParts, "url: "+server.URL)
+	}
+	if server.Auth != "" {
+		bodyParts = append(bodyParts, "auth: "+server.Auth)
+	}
+	if server.Notes != "" {
+		bodyParts = append(bodyParts, server.Notes)
+	}
+	if len(server.AvailableTools) > 0 {
+		bodyParts = append(bodyParts, "tools: "+strings.Join(server.AvailableTools, ", "))
+	}
+
+	desc := server.Notes
+	if desc == "" {
+		desc = "MCP server"
+	}
+
+	return index.Resource{
+		Kind:        "mcp",
+		Name:        name,
+		Description: desc,
+		Path:        filepath.Join("mcp", filepath.Base(path)),
+		Body:        strings.Join(bodyParts, "\n"),
+	}, nil
 }
 
 func registryEntriesToResults(reg config.Registry) []RegistrySearchResult {

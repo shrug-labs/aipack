@@ -20,7 +20,7 @@ checking sync status, and managing installed packs.
 Requires an interactive terminal (TTY).
 
 Key bindings:
-  tab           Switch between tabs (Profiles, Packs, Save, Sync, Search)
+  tab           Switch between tabs (Profiles, Packs, Sync, Save, Search, Config)
   j/k, up/down  Navigate lists
   enter         Toggle focus / expand tree
   space         Toggle items on/off

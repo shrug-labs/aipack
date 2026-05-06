@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -12,50 +13,160 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/harness"
 	"github.com/shrug-labs/aipack/internal/util"
 
 	"gopkg.in/yaml.v3"
 )
 
+// PackDeleteRequest holds inputs for deleting an installed pack.
+type PackDeleteRequest struct {
+	ConfigDir    string
+	Name         string
+	KeepRendered bool
+	DryRun       bool
+	Registry     *harness.Registry
+}
+
 // PackDeleteResult holds post-deletion metadata for callers to act on.
 type PackDeleteResult struct {
+	Name                   string `json:"name"`
+	DryRun                 bool   `json:"dry_run"`
+	KeepRendered           bool   `json:"keep_rendered"`
+	SourceRemoved          bool   `json:"source_removed"`
+	RenderedRemoved        int    `json:"rendered_removed"`
+	RenderedPreserved      int    `json:"rendered_preserved"`
+	SharedSettingsStripped int    `json:"shared_settings_stripped"`
+	LedgerCleared          int    `json:"ledger_cleared"`
+	ProfilesEdited         int    `json:"profiles_edited"`
+	LockfileCleared        bool   `json:"lockfile_cleared"`
+
 	// BundledProfiles lists profile names that were bundled with this pack
 	// and still exist after removal. Callers should prompt for confirmation
 	// before deleting these.
-	BundledProfiles []string
+	BundledProfiles []string `json:"bundled_profiles,omitempty"`
 }
 
-// PackDelete removes a pack from disk and from all profiles.
+// PackDelete removes a pack from disk, profiles, lockfile, ledger, and rendered
+// harness output. Use PackDeleteWithOptions with KeepRendered to retain rendered
+// files while clearing aipack tracking.
 func PackDelete(configDir string, name string, stdout io.Writer) (PackDeleteResult, error) {
-	var result PackDeleteResult
+	return PackDeleteWithOptions(engine.New(nil, nil), PackDeleteRequest{
+		ConfigDir: configDir,
+		Name:      name,
+	}, stdout)
+}
 
-	if strings.TrimSpace(name) == "" {
+// PackDeleteWithOptions deletes a pack and optionally keeps rendered files.
+func PackDeleteWithOptions(eng *engine.Engine, req PackDeleteRequest, stdout io.Writer) (PackDeleteResult, error) {
+	name := strings.TrimSpace(req.Name)
+	result := PackDeleteResult{Name: name, DryRun: req.DryRun, KeepRendered: req.KeepRendered}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if name == "" {
 		return result, fmt.Errorf("pack name is required")
 	}
-	packsDir := PacksDir(configDir)
-	destDir := filepath.Join(packsDir, name)
+	if req.ConfigDir == "" {
+		return result, fmt.Errorf("config dir is required")
+	}
+	if eng == nil {
+		eng = engine.New(nil, nil)
+	}
+	registry := req.Registry
+	destDir := filepath.Join(PacksDir(req.ConfigDir), name)
+	sourceExists := false
+	if _, err := os.Lstat(destDir); err == nil {
+		sourceExists = true
+	} else if !os.IsNotExist(err) {
+		return result, fmt.Errorf("checking pack source: %w", err)
+	}
 
-	if _, err := os.Lstat(destDir); os.IsNotExist(err) {
+	lf, err := config.EnsureLockfileMigrated(req.ConfigDir)
+	if err != nil {
+		return result, fmt.Errorf("loading lockfile: %w", err)
+	}
+	_, inLockfile := lf.Packs[name]
+	if !sourceExists && !inLockfile {
 		return result, fmt.Errorf("pack %q is not installed", name)
 	}
 
-	// Load manifest before removing so we know which profiles were bundled.
-	if manifest, err := config.LoadPackManifest(filepath.Join(destDir, "pack.json")); err == nil {
-		result.BundledProfiles = packFindBundledProfiles(configDir, manifest.Profiles)
+	if sourceExists {
+		// Load manifest before removing so we know which profiles were bundled.
+		if manifest, err := config.LoadPackManifest(filepath.Join(destDir, "pack.json")); err == nil {
+			result.BundledProfiles = packFindBundledProfiles(req.ConfigDir, manifest.Profiles)
+		}
 	}
 
-	if err := os.RemoveAll(destDir); err != nil {
-		return result, fmt.Errorf("removing pack: %w", err)
+	ledgerResult, err := cleanOrClearPackInAllLedgers(eng, registry, req.ConfigDir, name, req.DryRun, req.KeepRendered, stdout)
+	if err != nil {
+		return result, fmt.Errorf("clearing ledger entries: %w", err)
 	}
-	fmt.Fprintf(stdout, "Removed: %s\n", destDir)
+	result.RenderedRemoved = ledgerResult.RenderedRemoved
+	result.RenderedPreserved = ledgerResult.RenderedPreserved
+	result.SharedSettingsStripped = ledgerResult.SharedSettingsStripped
+	result.LedgerCleared = ledgerResult.LedgerCleared
 
-	// Best-effort origin cleanup.
-	_ = packClearOrigin(configDir, name)
+	profilesEdited, err := countOrRemovePackFromAllProfiles(req.ConfigDir, name, req.DryRun, stdout)
+	if err != nil {
+		return result, fmt.Errorf("updating profiles: %w", err)
+	}
+	result.ProfilesEdited = profilesEdited
 
-	// Best-effort remove from all profiles.
-	packRemoveFromAllProfiles(configDir, name, stdout)
+	if req.DryRun {
+		action := "delete"
+		if req.KeepRendered {
+			action = "delete with rendered files retained"
+		}
+		fmt.Fprintf(stdout, "Would %s pack %q: remove %d rendered paths, preserve %d rendered paths, strip %d shared settings files, clear %d ledger entries, edit %d profiles, remove pack source, clear lockfile entry.\n",
+			action, name, result.RenderedRemoved, result.RenderedPreserved, result.SharedSettingsStripped, result.LedgerCleared, profilesEdited)
+		result.SourceRemoved = sourceExists
+		result.LockfileCleared = inLockfile
+		return result, nil
+	}
 
+	if sourceExists {
+		if err := os.RemoveAll(destDir); err != nil {
+			return result, fmt.Errorf("removing pack source: %w", err)
+		}
+		fmt.Fprintf(stdout, "Removed: %s\n", destDir)
+		result.SourceRemoved = true
+	}
+	if inLockfile {
+		if err := packClearOrigin(req.ConfigDir, name); err != nil {
+			return result, fmt.Errorf("clearing lockfile entry: %w", err)
+		}
+		result.LockfileCleared = true
+	}
+	if err := clearDeletedPackFromIndex(req.ConfigDir, name); err != nil {
+		fmt.Fprintf(stdout, "Warning: failed to clear search index for pack %q: %v\n", name, err)
+	}
+	if req.KeepRendered {
+		fmt.Fprintf(stdout, "Deleted pack %q and kept rendered files unmanaged.\n", name)
+	} else {
+		suffix := "s"
+		if result.RenderedRemoved == 1 {
+			suffix = ""
+		}
+		fmt.Fprintf(stdout, "Deleted pack %q and removed %d rendered path%s.\n", name, result.RenderedRemoved, suffix)
+	}
 	return result, nil
+}
+
+func clearDeletedPackFromIndex(configDir, name string) error {
+	dbPath := filepath.Join(configDir, "index.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	db, err := openIndexDB(configDir, "")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.DeletePack(name)
 }
 
 // packFindBundledProfiles returns profile names (without extension) for bundled
@@ -87,27 +198,6 @@ func RemoveBundledProfiles(configDir string, names []string, stdout io.Writer) {
 	}
 }
 
-// packRemoveFromAllProfiles removes pack entries for a given pack name from
-// every profile YAML in configDir/profiles/.
-func packRemoveFromAllProfiles(configDir, packName string, stdout io.Writer) {
-	profilesDir := filepath.Join(configDir, "profiles")
-	names, err := config.ListProfileNames(profilesDir)
-	if err != nil {
-		return
-	}
-	for _, name := range names {
-		profilePath := filepath.Join(profilesDir, name+".yaml")
-		modified, err := packRemoveFromProfile(profilePath, packName)
-		if err != nil {
-			fmt.Fprintf(stdout, "Warning: failed to update profile %q: %v\n", name, err)
-			continue
-		}
-		if modified {
-			fmt.Fprintf(stdout, "Removed pack %q from profile %q\n", packName, name)
-		}
-	}
-}
-
 // packRemoveFromProfile removes pack entries matching packName from a single profile file.
 // Returns true if the profile was modified.
 func packRemoveFromProfile(profilePath, packName string) (bool, error) {
@@ -134,6 +224,428 @@ func packRemoveFromProfile(profilePath, packName string) (bool, error) {
 	}
 
 	return true, saveProfile(profilePath, &cfg)
+}
+
+type packDeleteLedgerResult struct {
+	RenderedRemoved        int
+	RenderedPreserved      int
+	SharedSettingsStripped int
+	LedgerCleared          int
+}
+
+func (r *packDeleteLedgerResult) add(other packDeleteLedgerResult) {
+	r.RenderedRemoved += other.RenderedRemoved
+	r.RenderedPreserved += other.RenderedPreserved
+	r.SharedSettingsStripped += other.SharedSettingsStripped
+	r.LedgerCleared += other.LedgerCleared
+}
+
+// cleanOrClearPackInAllLedgers walks every ledger under configDir/ledger and
+// clears entries with SourcePack == packName. Unless keepRendered is true, it
+// removes only unmodified rendered files and strips managed overlays from shared
+// settings files.
+func cleanOrClearPackInAllLedgers(eng *engine.Engine, registry *harness.Registry, configDir, packName string, dryRun, keepRendered bool, stdout io.Writer) (packDeleteLedgerResult, error) {
+	var result packDeleteLedgerResult
+	ledgerDir := filepath.Join(configDir, "ledger")
+	if _, err := os.Stat(ledgerDir); os.IsNotExist(err) {
+		return result, nil
+	}
+	walkErr := filepath.WalkDir(ledgerDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+		ledgerResult, lerr := cleanOrClearPackInLedger(packDeleteLedgerCleanRequest{
+			eng:          eng,
+			registry:     registry,
+			path:         path,
+			packName:     packName,
+			dryRun:       dryRun,
+			keepRendered: keepRendered,
+			stdout:       stdout,
+		})
+		if lerr != nil {
+			rel, _ := filepath.Rel(ledgerDir, path)
+			fmt.Fprintf(stdout, "Warning: ledger %s: %s\n", rel, lerr)
+			return nil
+		}
+		result.add(ledgerResult)
+		if ledgerResult.LedgerCleared > 0 && !dryRun {
+			rel, _ := filepath.Rel(ledgerDir, path)
+			fmt.Fprintf(stdout, "Cleared %d ledger entries from %q\n", ledgerResult.LedgerCleared, rel)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return result, walkErr
+	}
+	return result, nil
+}
+
+type packDeleteLedgerCleanRequest struct {
+	eng          *engine.Engine
+	registry     *harness.Registry
+	path         string
+	packName     string
+	dryRun       bool
+	keepRendered bool
+	stdout       io.Writer
+}
+
+// packDeleteCtx bundles the constant context used across the pack-delete
+// family of helpers (eng, hid, editor, packName, dryRun, stdout). Per-call
+// variations (lg, path, entry, server-name sets) remain explicit.
+type packDeleteCtx struct {
+	eng      *engine.Engine
+	hid      domain.Harness
+	editor   harness.MCPManagedOverlayEditor
+	packName string
+	dryRun   bool
+	stdout   io.Writer
+}
+
+func cleanOrClearPackInLedger(req packDeleteLedgerCleanRequest) (packDeleteLedgerResult, error) {
+	var result packDeleteLedgerResult
+	lg, warnings, err := req.eng.LoadLedger(req.path)
+	if err != nil {
+		return result, fmt.Errorf("load: %w", err)
+	}
+	if len(warnings) > 0 {
+		return result, fmt.Errorf("load warning: %s", warnings[0])
+	}
+	hid, _ := harnessFromLedgerPath(req.path)
+	editor, _ := harness.LookupMCPManagedOverlayEditor(req.registry, hid)
+	ctx := packDeleteCtx{
+		eng:      req.eng,
+		hid:      hid,
+		editor:   editor,
+		packName: req.packName,
+		dryRun:   req.dryRun,
+		stdout:   req.stdout,
+	}
+	if !req.keepRendered {
+		mcpServerNames := mcpServerNamesForPackInLedger(lg, req.packName)
+		result.add(stripMCPSharedSettings(ctx, &lg, mcpServerNames))
+	}
+	ledgerDirty := !req.dryRun && result.SharedSettingsStripped > 0
+	siblingMCP := siblingMCPServerNamesOutsidePackInLedger(lg, req.packName)
+	for k, entry := range lg.Managed {
+		if entry.SourcePack != req.packName {
+			continue
+		}
+		deleteEntry := true
+		if !req.keepRendered && !domain.IsMCPLedgerKey(k) {
+			switch {
+			case len(entry.ManagedOverlay) > 0:
+				var stripped, preserved bool
+				var stripErr error
+				if len(siblingMCP) > 0 {
+					var retained bool
+					stripped, preserved, ledgerDirty, retained, stripErr = stripPreservingSiblingMCP(ctx, lg, k, entry, siblingMCP, ledgerDirty)
+					deleteEntry = !retained
+					if !retained && stripErr == nil {
+						stripped, preserved, stripErr = stripSharedSettings(ctx, lg, k, entry)
+					}
+				} else {
+					stripped, preserved, stripErr = stripSharedSettings(ctx, lg, k, entry)
+				}
+				if stripErr != nil {
+					preserved = true
+					fmt.Fprintf(ctx.stdout, "Warning: preserved shared settings path %q unmanaged: %v\n", k, stripErr)
+				}
+				if stripped {
+					result.SharedSettingsStripped++
+				}
+				if preserved {
+					result.RenderedPreserved++
+				}
+			default:
+				removed, preserved, removeErr := removeRenderedPathForPackDelete(ctx.eng, k, entry, ctx.dryRun)
+				if removeErr != nil {
+					preserved = true
+					fmt.Fprintf(ctx.stdout, "Warning: preserved rendered path %q unmanaged: %v\n", k, removeErr)
+				}
+				if removed {
+					result.RenderedRemoved++
+				}
+				if preserved {
+					result.RenderedPreserved++
+				}
+			}
+		} else if req.keepRendered && !domain.IsMCPLedgerKey(k) {
+			if _, statErr := ctx.eng.FS.Stat(k); statErr == nil {
+				result.RenderedPreserved++
+			}
+		}
+		if deleteEntry {
+			result.LedgerCleared++
+		}
+		if !req.dryRun && deleteEntry {
+			delete(lg.Managed, k)
+			ledgerDirty = true
+		}
+	}
+	if !ledgerDirty || req.dryRun {
+		return result, nil
+	}
+	if err := ctx.eng.SaveLedger(req.path, lg, false); err != nil {
+		return result, fmt.Errorf("save: %w", err)
+	}
+	return result, nil
+}
+
+func mcpServerNamesForPackInLedger(lg domain.Ledger, packName string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for k, entry := range lg.Managed {
+		if entry.SourcePack != packName || !domain.IsMCPLedgerKey(k) {
+			continue
+		}
+		_, serverName, ok := splitMCPLedgerKey(k)
+		if !ok {
+			continue
+		}
+		out[serverName] = struct{}{}
+	}
+	return out
+}
+
+func siblingMCPServerNamesOutsidePackInLedger(lg domain.Ledger, packName string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for k, entry := range lg.Managed {
+		if entry.SourcePack == packName || !domain.IsMCPLedgerKey(k) {
+			continue
+		}
+		_, serverName, ok := splitMCPLedgerKey(k)
+		if !ok {
+			continue
+		}
+		out[serverName] = struct{}{}
+	}
+	return out
+}
+
+func splitMCPLedgerKey(key string) (configPath string, serverName string, ok bool) {
+	key = filepath.Clean(key)
+	const marker = "#mcp:"
+	idx := strings.LastIndex(key, marker)
+	if idx < 0 || idx+len(marker) >= len(key) {
+		return "", "", false
+	}
+	return filepath.Clean(key[:idx]), key[idx+len(marker):], true
+}
+
+func stripMCPSharedSettings(ctx packDeleteCtx, lg *domain.Ledger, serverNames map[string]struct{}) packDeleteLedgerResult {
+	var result packDeleteLedgerResult
+	if len(serverNames) == 0 || ctx.editor == nil {
+		return result
+	}
+	for sharedPath, entry := range lg.Managed {
+		if domain.IsMCPLedgerKey(sharedPath) || len(entry.ManagedOverlay) == 0 || entry.SourcePack == ctx.packName {
+			continue
+		}
+		nextOverlay, changed, err := ctx.editor.PruneMCPServersFromManagedOverlay(entry.ManagedOverlay, serverNames)
+		if err != nil {
+			result.RenderedPreserved++
+			fmt.Fprintf(ctx.stdout, "Warning: preserved shared settings path %q unmanaged: %v\n", sharedPath, err)
+			continue
+		}
+		if !changed {
+			continue
+		}
+		stripped, preserved, _, err := applySharedSettingsOverlay(ctx, *lg, sharedPath, nextOverlay, entry.SourcePack)
+		if err != nil {
+			result.RenderedPreserved++
+			fmt.Fprintf(ctx.stdout, "Warning: preserved shared settings path %q unmanaged: %v\n", sharedPath, err)
+			continue
+		}
+		if stripped {
+			result.SharedSettingsStripped++
+		}
+		if preserved {
+			result.RenderedPreserved++
+		}
+	}
+	return result
+}
+
+func stripPreservingSiblingMCP(ctx packDeleteCtx, lg domain.Ledger, path string, entry domain.Entry, serverNames map[string]struct{}, ledgerDirty bool) (stripped, preserved, dirty, retained bool, err error) {
+	if ctx.editor == nil {
+		return false, true, ledgerDirty, false, fmt.Errorf("no managed overlay editor for shared settings")
+	}
+	nextOverlay, err := ctx.editor.RetainMCPServersInManagedOverlay(entry.ManagedOverlay, serverNames)
+	if err != nil {
+		return false, true, ledgerDirty, false, err
+	}
+	if managedOverlayEmpty(ctx.editor, nextOverlay) {
+		return false, false, ledgerDirty, false, nil
+	}
+	stripped, preserved, dirty, err = applySharedSettingsOverlay(ctx, lg, path, nextOverlay, "")
+	return stripped, preserved, ledgerDirty || dirty, true, err
+}
+
+func managedOverlayEmpty(editor harness.MCPManagedOverlayEditor, overlay []byte) bool {
+	return len(bytes.TrimSpace(overlay)) == 0 || bytes.Equal(bytes.TrimSpace(overlay), bytes.TrimSpace(editor.EmptyManagedOverlay()))
+}
+
+func applySharedSettingsOverlay(ctx packDeleteCtx, lg domain.Ledger, path string, nextOverlay []byte, sourcePack string) (stripped, preserved, dirty bool, err error) {
+	if _, err := ctx.eng.FS.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, false, false, nil
+		}
+		return false, true, false, err
+	}
+	diffs, err := ctx.eng.ComputeSettingsDiffs([]domain.SettingsAction{{
+		Dst:        path,
+		Desired:    nextOverlay,
+		Harness:    ctx.hid,
+		Label:      filepath.Base(path),
+		SourcePack: sourcePack,
+		MergeMode:  true,
+	}}, lg)
+	if err != nil {
+		return false, true, false, err
+	}
+	if len(diffs) == 0 {
+		return false, false, false, nil
+	}
+	changedOnDisk := diffs[0].Kind != domain.DiffIdentical
+	if ctx.dryRun {
+		return changedOnDisk, false, false, nil
+	}
+	if changedOnDisk {
+		if err := ctx.eng.FS.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return false, true, false, err
+		}
+		if err := ctx.eng.FS.WriteFile(path, diffs[0].Desired, 0o644); err != nil {
+			return false, true, false, err
+		}
+	}
+	lg.Record(path, diffs[0].Desired, sourcePack, diffs[0].ManagedOverlay, time.Now())
+	return changedOnDisk, false, true, nil
+}
+
+func harnessFromLedgerPath(path string) (domain.Harness, bool) {
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return domain.ParseHarness(name)
+}
+
+func stripSharedSettings(ctx packDeleteCtx, lg domain.Ledger, path string, entry domain.Entry) (stripped, preserved bool, err error) {
+	if ctx.editor == nil {
+		return false, true, fmt.Errorf("no managed overlay editor for shared settings")
+	}
+	stripped, preserved, _, err = applySharedSettingsOverlay(ctx, lg, path, ctx.editor.EmptyManagedOverlay(), entry.SourcePack)
+	return stripped, preserved, err
+}
+
+func removeRenderedPathForPackDelete(eng *engine.Engine, path string, entry domain.Entry, dryRun bool) (removed bool, preserved bool, err error) {
+	st, err := eng.FS.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, true, err
+	}
+	if entry.Digest == "" {
+		return false, true, nil
+	}
+	if !isPackRenderedRemovalPath(path) {
+		return false, true, nil
+	}
+	digest, err := eng.PathDigest(path)
+	if err != nil {
+		return false, true, err
+	}
+	if digest != entry.Digest {
+		return false, true, nil
+	}
+	if dryRun {
+		return true, false, nil
+	}
+	if st.IsDir() {
+		if _, ok := eng.FS.(engine.OSFS); ok {
+			if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+				return false, true, err
+			}
+			return true, false, nil
+		}
+	}
+	if err := eng.FS.Remove(path); err != nil && !os.IsNotExist(err) {
+		return false, true, err
+	}
+	return true, false, nil
+}
+
+func isPackRenderedRemovalPath(path string) bool {
+	p := filepath.ToSlash(filepath.Clean(path))
+	dirMarkers := []string{
+		"/.claude/rules/",
+		"/.claude/agents/",
+		"/.claude/commands/",
+		"/.claude/skills/",
+		"/.opencode/rules/",
+		"/.opencode/agents/",
+		"/.opencode/commands/",
+		"/.opencode/skills/",
+		"/.config/opencode/rules/",
+		"/.config/opencode/agents/",
+		"/.config/opencode/commands/",
+		"/.config/opencode/skills/",
+		"/.agents/skills/",
+		"/.codex/agents/",
+		"/.clinerules/",
+		"/Cline/Rules/",
+		"/Cline/Workflows/",
+	}
+	for _, marker := range dirMarkers {
+		if strings.Contains(p, marker) {
+			return true
+		}
+	}
+	return strings.HasSuffix(p, "/AGENTS.override.md") ||
+		strings.HasSuffix(p, "/.codex/AGENTS.override.md")
+}
+
+// countOrRemovePackFromAllProfiles iterates every profile YAML in configDir/profiles/
+// and either counts profiles containing packName or removes the entry. Returns
+// the count of profiles touched (counted in dry-run, removed otherwise).
+func countOrRemovePackFromAllProfiles(configDir, packName string, dryRun bool, stdout io.Writer) (int, error) {
+	profilesDir := filepath.Join(configDir, "profiles")
+	names, err := config.ListProfileNames(profilesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for _, name := range names {
+		profilePath := filepath.Join(profilesDir, name+".yaml")
+		if dryRun {
+			cfg, err := config.LoadProfile(profilePath)
+			if err != nil {
+				continue
+			}
+			for _, p := range cfg.Packs {
+				if p.Name == packName {
+					count++
+					break
+				}
+			}
+			continue
+		}
+		modified, err := packRemoveFromProfile(profilePath, packName)
+		if err != nil {
+			fmt.Fprintf(stdout, "Warning: failed to update profile %q: %v\n", name, err)
+			continue
+		}
+		if modified {
+			fmt.Fprintf(stdout, "Removed pack %q from profile %q\n", packName, name)
+			count++
+		}
+	}
+	return count, nil
 }
 
 // PackRename renames a pack across all config: directory, manifest, sync-config,
@@ -430,6 +942,7 @@ func PackAdd(configDir string, profileName string, packName string, quietOverrid
 	}
 
 	if modified {
+		warnBundledProfileEdit(reqConfigDirFromProfilePath(profilePath), profileName, stdout)
 		if err := saveProfile(profilePath, &cfg); err != nil {
 			return err
 		}
@@ -463,6 +976,7 @@ func PackRemove(configDir string, profileName string, packName string, stdout io
 		return fmt.Errorf("updating profile: %w", err)
 	}
 	if modified {
+		warnBundledProfileEdit(filepath.Dir(filepath.Dir(profilePath)), profileName, stdout)
 		fmt.Fprintf(stdout, "Removed pack %q from profile %q\n", packName, profileName)
 		return nil
 	}
@@ -510,12 +1024,28 @@ func packSetEnabled(profilePath, profileName, packName string, enabled bool, std
 		return err
 	}
 
+	warnBundledProfileEdit(filepath.Dir(filepath.Dir(profilePath)), profileName, stdout)
 	verb := "Enabled"
 	if !enabled {
 		verb = "Disabled"
 	}
 	fmt.Fprintf(stdout, "%s pack %q in profile %q\n", verb, packName, profileName)
 	return nil
+}
+
+func warnBundledProfileEdit(configDir, profileName string, stdout io.Writer) {
+	if stdout == nil || configDir == "" {
+		return
+	}
+	owners := ProfileBundledOwners(configDir, profileName)
+	if len(owners) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "Warning: %q is a pack-provided profile from %s; duplicate it before editing because pack update can overwrite it.\n", profileName, strings.Join(owners, ", "))
+}
+
+func reqConfigDirFromProfilePath(profilePath string) string {
+	return filepath.Dir(filepath.Dir(profilePath))
 }
 
 // PackInstallMissingRequest holds the inputs for installing packs missing from a profile.
@@ -590,6 +1120,19 @@ func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdo
 		installFn = PackInstall
 	}
 
+	var (
+		reg       config.Registry
+		regErr    error
+		regLoaded bool
+	)
+	loadRegistry := func() (config.Registry, error) {
+		if !regLoaded {
+			reg, regErr = loadRegistryForRequest(regReq)
+			regLoaded = true
+		}
+		return reg, regErr
+	}
+
 	var results []PackInstallMissingResult
 	for _, pe := range cfg.Packs {
 		name := strings.TrimSpace(pe.Name)
@@ -608,24 +1151,26 @@ func PackInstallMissing(ctx context.Context, req PackInstallMissingRequest, stdo
 			continue
 		}
 
-		entry, err := RegistryLookup(regReq, name)
-		if err != nil {
+		reg, regErr := loadRegistry()
+		if regErr != nil {
 			results = append(results, PackInstallMissingResult{
-				Pack: name, Status: MissingStatusNotInRegistry, Detail: err.Error(),
+				Pack: name, Status: MissingStatusNotInRegistry, Detail: regErr.Error(),
+			})
+			continue
+		}
+		entry, ok := reg.Packs[name]
+		if !ok {
+			detail := fmt.Sprintf("pack %q not found in registry", name)
+			if hint := missingRegistryPackHint(regReq, name); hint != "" {
+				detail = fmt.Sprintf("%s. %s", detail, hint)
+			}
+			results = append(results, PackInstallMissingResult{
+				Pack: name, Status: MissingStatusNotInRegistry, Detail: detail,
 			})
 			continue
 		}
 
-		installReq := PackInstallRequest{
-			ConfigDir:    req.ConfigDir,
-			URL:          entry.Repo,
-			Ref:          entry.Ref,
-			SubPath:      entry.Path,
-			Name:         name,
-			Add:          false,
-			Quiet:        boolPtrIf(entry.Quiet),
-			ContentPaths: entry.ContentPaths,
-		}
+		installReq := PackInstallRequestFromRegistryEntry(req.ConfigDir, name, entry)
 		if installErr := installFn(ctx, installReq, stdout); installErr != nil {
 			results = append(results, PackInstallMissingResult{
 				Pack: name, Status: MissingStatusError, Detail: installErr.Error(),

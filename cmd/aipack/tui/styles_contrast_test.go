@@ -2,12 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"math"
-	"strconv"
-	"strings"
 	"testing"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // sRGB-to-linear conversion per WCAG 2.x.
@@ -41,36 +38,19 @@ func xtermGrayRGB(n int) uint8 {
 	return uint8(8 + (n-232)*10)
 }
 
-// termColorRGB extracts RGB from a lipgloss.Color (xterm-256 number or hex).
-func termColorRGB(tc lipgloss.TerminalColor) (uint8, uint8, uint8, error) {
-	c, ok := tc.(lipgloss.Color)
-	if !ok {
-		return 0, 0, 0, fmt.Errorf("unsupported color type %T", tc)
+// termColorRGB extracts 8-bit RGB from a Lip Gloss v2 color.
+func termColorRGB(c color.Color) (uint8, uint8, uint8, error) {
+	if c == nil {
+		return 0, 0, 0, fmt.Errorf("nil color")
 	}
-	s := string(c)
-
-	if strings.HasPrefix(s, "#") && len(s) == 7 {
-		r, _ := strconv.ParseUint(s[1:3], 16, 8)
-		g, _ := strconv.ParseUint(s[3:5], 16, 8)
-		b, _ := strconv.ParseUint(s[5:7], 16, 8)
-		return uint8(r), uint8(g), uint8(b), nil
-	}
-
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("cannot parse color %q", s)
-	}
-	if n >= 232 && n <= 255 {
-		v := xtermGrayRGB(n)
-		return v, v, v, nil
-	}
-	return 0, 0, 0, fmt.Errorf("xterm color %d outside grayscale range 232-255", n)
+	r, g, b, _ := c.RGBA()
+	return uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), nil
 }
 
 type tokenSpec struct {
 	name  string
-	color *lipgloss.TerminalColor // pointer to the package-level var
-	minCR float64                 // minimum WCAG contrast ratio required
+	color *color.Color // pointer to the package-level var
+	minCR float64      // minimum WCAG contrast ratio required
 }
 
 func TestContrastRatios(t *testing.T) {
@@ -155,7 +135,7 @@ func TestColorHierarchy(t *testing.T) {
 
 	order := []struct {
 		name  string
-		color *lipgloss.TerminalColor
+		color *color.Color
 	}{
 		{"clrDim", &clrDim},
 		{"clrHelpBar", &clrHelpBar},

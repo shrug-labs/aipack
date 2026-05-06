@@ -64,6 +64,7 @@ type EcosystemStatus struct {
 	TotalAgents    int          `json:"total_agents"`
 	TotalWorkflows int          `json:"total_workflows"`
 	TotalSkills    int          `json:"total_skills"`
+	TotalPlugins   int          `json:"total_plugins"`
 	TotalMCP       int          `json:"total_mcp_servers"`
 	SettingsPacks  []string     `json:"settings_packs,omitempty"`
 }
@@ -76,6 +77,7 @@ type PackStatus struct {
 	Agents     int    `json:"agents"`
 	Workflows  int    `json:"workflows"`
 	Skills     int    `json:"skills"`
+	Plugins    int    `json:"plugins"`
 	MCPServers int    `json:"mcp_servers"`
 	Settings   bool   `json:"settings"`
 }
@@ -285,12 +287,23 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 		}
 	}
 
+	dotenv, dotenvErr := config.LoadDotEnv(config.DotEnvPath(configDir))
+	if dotenvErr != nil {
+		refsCheck := CheckResult{Name: "mcp_refs_present", Severity: "critical", Status: "fail", OK: false}
+		refsCheck.Message = "load .env failed"
+		refsCheck.Remediation = "Fix the config directory .env file, then rerun doctor"
+		refsCheck.Details = map[string]any{"error": dotenvErr.Error()}
+		add(refsCheck)
+		add(doctorSkippedCheck("mcp_server_paths_exist", ".env not loaded"))
+		return rep
+	}
+
 	// required refs (params + env vars)
 	refsCheck := CheckResult{Name: "mcp_refs_present", Severity: "critical", Status: "fail", OK: false}
-	missing, requiredBy := doctorRequiredMCPRefs(prof.Params, inventories, serverNames)
+	missing, requiredBy := doctorRequiredMCPRefs(prof.Params, dotenv, inventories, serverNames)
 	if len(missing) > 0 {
 		refsCheck.Message = "missing required refs for enabled MCP servers"
-		refsCheck.Remediation = "Set missing env vars (export VAR=...) or add missing params to the profile"
+		refsCheck.Remediation = "Set missing env vars with 'aipack config env set KEY VALUE' or export VAR=..., and add missing params to the profile"
 		refsCheck.Details = map[string]any{"missing": missing, "required_by": requiredBy}
 		add(refsCheck)
 		add(doctorSkippedCheck("mcp_server_paths_exist", "missing required refs"))
@@ -304,7 +317,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 
 	// MCP server path checks
 	pathsCheck := CheckResult{Name: "mcp_server_paths_exist", Severity: "critical", Status: "fail", OK: false}
-	failures := doctorCheckMCPServerPaths(inventories, prof.Params, []string{"bitbucket", "atlassian"}, providers)
+	failures := doctorCheckMCPServerPaths(inventories, prof.Params, dotenv, []string{"bitbucket", "atlassian"}, providers)
 	if len(failures) > 0 {
 		pathsCheck.Message = "MCP server paths missing"
 		pathsCheck.Remediation = "Ensure the MCP server command exists (install missing tool or clone/build the MCP server repo to the expected path)"
@@ -524,7 +537,7 @@ func doctorBuildPackInfoAndProviders(packs []config.ResolvedPack, inventory map[
 
 // doctorRequiredMCPRefs scans enabled MCP servers for {params.*} and {env:VAR}
 // references, checks which are available, and returns missing ones.
-func doctorRequiredMCPRefs(params map[string]string, inv map[string]domain.MCPServer, enabledServers []string) ([]string, map[string][]string) {
+func doctorRequiredMCPRefs(params map[string]string, env map[string]string, inv map[string]domain.MCPServer, enabledServers []string) ([]string, map[string][]string) {
 	requiredBy := map[string]map[string]struct{}{}
 	addReq := func(ref string, server string) {
 		if ref == "" {
@@ -541,12 +554,18 @@ func doctorRequiredMCPRefs(params map[string]string, inv map[string]domain.MCPSe
 	// Scan a string for all unresolved param and env references.
 	scanRefs := func(s string, server string) {
 		_ = util.WalkParamRefs(s, func(ref util.ParamRef) error {
-			if _, ok := params[ref.Name]; !ok {
-				addReq("param:"+ref.Name, server)
+			name, _, hasDefault := strings.Cut(ref.Name, ":-")
+			if name != "" && !hasDefault {
+				if _, ok := params[name]; !ok {
+					addReq("param:"+name, server)
+				}
 			}
 			return nil
 		})
 		_ = util.WalkEnvRefs(s, func(ref util.EnvRef) error {
+			if ref.HasDefault {
+				return nil
+			}
 			addReq("env:"+ref.Name, server)
 			return nil
 		})
@@ -583,7 +602,10 @@ func doctorRequiredMCPRefs(params map[string]string, inv map[string]domain.MCPSe
 			// Already confirmed missing during scan (only added when not in params map).
 			missing = append(missing, k)
 		} else if envName, ok := strings.CutPrefix(k, "env:"); ok {
-			if strings.TrimSpace(os.Getenv(envName)) == "" {
+			if _, ok := env[envName]; ok {
+				continue
+			}
+			if _, ok := os.LookupEnv(envName); !ok {
 				missing = append(missing, k)
 			}
 		}
@@ -591,7 +613,7 @@ func doctorRequiredMCPRefs(params map[string]string, inv map[string]domain.MCPSe
 	return missing, flat
 }
 
-func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[string]string, servers []string, providers map[string]ServerProvider) []map[string]any {
+func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[string]string, env map[string]string, servers []string, providers map[string]ServerProvider) []map[string]any {
 	failures := []map[string]any{}
 	for _, server := range servers {
 		entry, ok := inv[server]
@@ -604,7 +626,7 @@ func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[strin
 			continue
 		}
 
-		cmd0, err := engine.ExpandRefs(params, entry.Command[0])
+		cmd0, err := engine.ExpandRefsWithEnv(params, env, entry.Command[0])
 		if err != nil {
 			failures = append(failures, map[string]any{"server": server, "error": err.Error(), "inventory_path": prov.InventoryPath})
 			continue
@@ -622,7 +644,7 @@ func doctorCheckMCPServerPaths(inv map[string]domain.MCPServer, params map[strin
 		}
 
 		for _, raw := range entry.Command[1:] {
-			part, err := engine.ExpandRefs(params, raw)
+			part, err := engine.ExpandRefsWithEnv(params, env, raw)
 			if err != nil {
 				failures = append(failures, map[string]any{"server": server, "error": err.Error(), "inventory_path": prov.InventoryPath})
 				continue
@@ -967,6 +989,7 @@ func BuildEcosystemStatus(profile domain.Profile, profileName, profilePath, conf
 			Agents:     len(pk.Agents),
 			Workflows:  len(pk.Workflows),
 			Skills:     len(pk.Skills),
+			Plugins:    len(pk.Plugins),
 			MCPServers: mcpPerPack[pk.Name],
 			Settings:   slices.Contains(profile.SettingsPacks, pk.Name),
 		}
@@ -974,6 +997,7 @@ func BuildEcosystemStatus(profile domain.Profile, profileName, profilePath, conf
 		es.TotalAgents += ps.Agents
 		es.TotalWorkflows += ps.Workflows
 		es.TotalSkills += ps.Skills
+		es.TotalPlugins += ps.Plugins
 		es.TotalMCP += ps.MCPServers
 		es.Packs = append(es.Packs, ps)
 	}
@@ -1162,6 +1186,9 @@ func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack, fix bool) C
 		if onDisk, _, err := config.DiscoverSkills(filepath.Join(packRoot, "skills")); err == nil {
 			drifts = appendDrift(drifts, rp.Name, "skills", onDisk, manifest.Skills)
 		}
+		if onDisk, _, err := config.DiscoverIDsByLeaf(filepath.Join(packRoot, "plugins"), "plugins", ".json"); err == nil {
+			drifts = appendDrift(drifts, rp.Name, "plugins", onDisk, manifest.Plugins)
+		}
 	}
 
 	if len(drifts) == 0 {
@@ -1253,6 +1280,7 @@ func fixManifestDrift(packs []config.ResolvedPack, drifts []driftItem) int {
 		slices.Sort(manifest.Agents)
 		slices.Sort(manifest.Workflows)
 		slices.Sort(manifest.Skills)
+		slices.Sort(manifest.Plugins)
 
 		manifestPath := filepath.Join(rp.Root, "pack.json")
 		if err := config.SavePackManifest(manifestPath, manifest); err == nil {
@@ -1265,7 +1293,7 @@ func fixManifestDrift(packs []config.ResolvedPack, drifts []driftItem) int {
 func kindToCategory(kind string) domain.PackCategory {
 	cat := domain.PackCategory(kind)
 	switch cat {
-	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills:
+	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills, domain.CategoryPlugins:
 		return cat
 	default:
 		return ""

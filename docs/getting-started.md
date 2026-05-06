@@ -37,7 +37,7 @@ See the [README](../README.md#install) for version pinning and other install opt
 aipack init
 ```
 
-This creates the config directory (`~/.config/aipack/`, or `%APPDATA%\aipack\` on Windows), a default profile, and fetches the public pack registry so pack names are immediately discoverable.
+This creates the config directory (`~/.config/aipack/`, or `%APPDATA%\aipack\` on Windows), a default profile, an empty `.env` for machine-local `{env:*}` values, and fetches the public pack registry so pack names are immediately discoverable.
 
 ## Install your first pack
 
@@ -54,6 +54,12 @@ aipack pack show aipack-core
 ```
 
 This prints the content inventory: 7 rules, 3 skills, 1 workflow.
+
+Before adding an unfamiliar source, inspect it:
+
+```bash
+aipack pack inspect aipack-core
+```
 
 ## Preview and sync
 
@@ -88,7 +94,7 @@ Explore what's installed:
 ```bash
 aipack status              # profile, packs, content counts
 aipack search deploy       # full-text search across all pack content
-aipack trace rule anti-slop # trace a rule from pack source to harness destination
+aipack trace anti-slop     # trace a resource from pack source to harness destination
 ```
 
 ## Add more packs
@@ -106,10 +112,11 @@ aipack pack install memory --add
 After installing, re-sync to pick up the new content:
 
 ```bash
+aipack setup
 aipack sync
 ```
 
-All installed packs are now active. If two packs define the same content ID, aipack raises a conflict — resolve it with override declarations in your profile. See [Profiles](./profiles.md) for selectors, layering, and conflict resolution.
+`setup` reports any missing profile params or environment variables before sync. All installed packs are now active. If two packs define the same content ID, aipack raises a conflict — resolve it with override declarations in your profile. See [Profiles](./profiles.md) for selectors, layering, and conflict resolution.
 
 You can also install packs from git URLs, local directories, or team registries. See [Installing Packs](./installing-packs.md) for all installation methods.
 

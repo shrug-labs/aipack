@@ -1,0 +1,319 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/shrug-labs/aipack/main/schemas/pack.schema.json",
+  "title": "aipack pack manifest",
+  "description": "Schema for aipack pack.json manifests.",
+  "type": "object",
+  "required": ["schema_version", "name", "root"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "enum": [1, 2]
+    },
+    "name": {
+      "$ref": "#/definitions/packName"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rules": {
+      "$ref": "#/definitions/nullableSlashedIDs"
+    },
+    "agents": {
+      "$ref": "#/definitions/nullableLeafIDs"
+    },
+    "workflows": {
+      "$ref": "#/definitions/nullableLeafIDs"
+    },
+    "skills": {
+      "$ref": "#/definitions/nullableLeafIDs"
+    },
+    "prompts": {
+      "$ref": "#/definitions/nullableSlashedIDs"
+    },
+    "plugins": {
+      "$ref": "#/definitions/nullableLeafIDs"
+    },
+    "mcp": true,
+    "configs": {
+      "$ref": "#/definitions/nullableConfigs"
+    },
+    "profiles": {
+      "$ref": "#/definitions/nullableYAMLRefs"
+    },
+    "registries": {
+      "$ref": "#/definitions/nullableYAMLRefs"
+    },
+    "extras": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/extraPath"
+          }
+        }
+      ]
+    },
+    "include": {
+      "description": "Legacy schema_version: 1 extra file list; use extras in current manifests.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/relativePath"
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "mcp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/definitions/legacyMCP"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 2
+          }
+        },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "mcp": {
+            "$ref": "#/definitions/nullableSlashedIDs"
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "packName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "leafID": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "slashedID": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*$"
+    },
+    "yamlRef": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*(\\.yaml)?$"
+    },
+    "stringList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "leafIDs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/leafID"
+      }
+    },
+    "slashedIDs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/slashedID"
+      }
+    },
+    "yamlRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/yamlRef"
+      }
+    },
+    "nullableLeafIDs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/leafIDs"
+        }
+      ]
+    },
+    "nullableSlashedIDs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/slashedIDs"
+        }
+      ]
+    },
+    "nullableYAMLRefs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/yamlRefs"
+        }
+      ]
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "not": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        {
+          "not": {
+            "type": "string",
+            "pattern": "^[A-Za-z]:"
+          }
+        },
+        {
+          "not": {
+            "type": "string",
+            "pattern": "(^|/)\\.\\.(/|$)"
+          }
+        }
+      ]
+    },
+    "extraPath": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/relativePath"
+        },
+        {
+          "not": {
+            "type": "string",
+            "pattern": "^(rules|agents|workflows|skills|prompts|plugins|mcp|configs|profiles|registries)(/|$)"
+          }
+        }
+      ]
+    },
+    "configFileList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/relativePath"
+      }
+    },
+    "harnessFileMap": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/configFileList"
+      }
+    },
+    "configs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness_settings": {
+          "$ref": "#/definitions/harnessFileMap"
+        },
+        "harness_plugins": {
+          "$ref": "#/definitions/harnessFileMap"
+        }
+      }
+    },
+    "nullableConfigs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/configs"
+        }
+      ]
+    },
+    "legacyMCPServer": {
+      "type": "object",
+      "properties": {
+        "allowed_tools": {
+          "$ref": "#/definitions/stringList"
+        },
+        "always_allowed_tools": {
+          "$ref": "#/definitions/stringList"
+        },
+        "disabled_tools": {
+          "$ref": "#/definitions/stringList"
+        }
+      },
+      "additionalProperties": true
+    },
+    "legacyMCP": {
+      "type": "object",
+      "required": ["servers"],
+      "additionalProperties": false,
+      "properties": {
+        "servers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/legacyMCPServer"
+          }
+        },
+        "default_allowed_tools": {
+          "$ref": "#/definitions/stringList"
+        },
+        "default_always_allowed_tools": {
+          "$ref": "#/definitions/stringList"
+        }
+      }
+    }
+  }
+}

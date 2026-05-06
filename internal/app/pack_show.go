@@ -28,6 +28,7 @@ type PackShowEntry struct {
 	Agents        []string `json:"agents"`
 	Workflows     []string `json:"workflows"`
 	Skills        []string `json:"skills"`
+	Plugins       []string `json:"plugins"`
 	Prompts       []string `json:"prompts"`
 	MCPServers    []string `json:"mcp_servers"`
 	Extras        []string `json:"extras,omitempty"`
@@ -94,6 +95,8 @@ func (e PackShowEntry) ContentIDs(cat domain.PackCategory) []string {
 		return e.Workflows
 	case domain.CategorySkills:
 		return e.Skills
+	case domain.CategoryPlugins:
+		return e.Plugins
 	case domain.CategoryPrompts:
 		return e.Prompts
 	case domain.CategoryMCP:
@@ -107,6 +110,7 @@ func (e PackShowEntry) Counts() ContentCounts {
 	return ContentCounts{
 		Rules:     len(e.Rules),
 		Skills:    len(e.Skills),
+		Plugins:   len(e.Plugins),
 		Workflows: len(e.Workflows),
 		Agents:    len(e.Agents),
 		Prompts:   len(e.Prompts),
@@ -209,6 +213,7 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Agents = m.Agents
 		entry.Workflows = m.Workflows
 		entry.Skills = m.Skills
+		entry.Plugins = m.Plugins
 		entry.Prompts = m.Prompts
 		entry.MCPServers = slices.Clone(m.MCP)
 		entry.Extras = m.Extras
@@ -242,6 +247,9 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 	}
 	if entry.Skills == nil {
 		entry.Skills = []string{}
+	}
+	if entry.Plugins == nil {
+		entry.Plugins = []string{}
 	}
 	if entry.Prompts == nil {
 		entry.Prompts = []string{}

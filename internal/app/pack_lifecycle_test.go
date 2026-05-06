@@ -16,9 +16,15 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/harness"
+	ccharness "github.com/shrug-labs/aipack/internal/harness/claudecode"
 
 	"gopkg.in/yaml.v3"
 )
+
+func claudeCodeTestRegistry() *harness.Registry {
+	return harness.NewRegistry(ccharness.Harness{})
+}
 
 func TestPackDelete(t *testing.T) {
 	t.Parallel()
@@ -159,6 +165,802 @@ func TestPackDelete(t *testing.T) {
 	})
 }
 
+func TestPackDelete_RemovesInstalledSearchIndexRows(t *testing.T) {
+	t.Parallel()
+
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "indexed-delete-pack")
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "delete-smoke.md"), []byte(`---
+name: delete-smoke
+description: smoke rule for pack delete index cleanup
+metadata:
+  owner: test
+  last_updated: 2026-05-06
+---
+
+# Delete Smoke
+
+Smoke body.
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	installed := true
+	before, err := RunIndexSearch(IndexSearchRequest{
+		ConfigDir: configDir,
+		Terms:     "smoke",
+		Installed: &installed,
+	})
+	if err != nil {
+		t.Fatalf("RunIndexSearch before delete: %v", err)
+	}
+	if len(before) != 1 || before[0].Pack != "indexed-delete-pack" {
+		t.Fatalf("expected installed index row before delete, got %+v", before)
+	}
+
+	out.Reset()
+	if _, err := PackDelete(configDir, "indexed-delete-pack", &out); err != nil {
+		t.Fatalf("PackDelete: %v", err)
+	}
+
+	after, err := RunIndexSearch(IndexSearchRequest{
+		ConfigDir: configDir,
+		Terms:     "smoke",
+		Installed: &installed,
+	})
+	if err != nil {
+		t.Fatalf("RunIndexSearch after delete: %v", err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("deleted pack leaked installed search rows: %+v", after)
+	}
+}
+
+func TestPackDelete_RemovesTrackingAndRenderedFilesByDefault(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "deletable")
+	writeEmptyProfile(t, configDir, "default")
+	writeTestSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		Add: true, Profile: "default",
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	// Seed a ledger entry that pretends a sync rendered a file from `deletable`,
+	// plus an entry from a sibling pack that must be preserved.
+	eng := engine.New(nil, nil)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rendered := filepath.Join(t.TempDir(), ".claude", "rules", "rendered.md")
+	if err := os.MkdirAll(filepath.Dir(rendered), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rendered, []byte("rendered body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(t.TempDir(), ".claude", "rules", "sibling.md")
+	if err := os.MkdirAll(filepath.Dir(sibling), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sibling, []byte("sibling body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(rendered, []byte("rendered body"), "deletable", nil, fixedNow)
+	lg.Record(sibling, []byte("sibling body"), "other-pack", nil, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+
+	out.Reset()
+	result, err := PackDeleteWithOptions(eng, PackDeleteRequest{ConfigDir: configDir, Name: "deletable", Registry: claudeCodeTestRegistry()}, &out)
+	if err != nil {
+		t.Fatalf("PackDeleteWithOptions: %v", err)
+	}
+
+	if !result.SourceRemoved {
+		t.Fatalf("expected source removed, result=%+v", result)
+	}
+	if !result.LockfileCleared {
+		t.Fatalf("expected lockfile cleared, result=%+v", result)
+	}
+	if result.LedgerCleared != 1 {
+		t.Fatalf("expected 1 ledger entry cleared, got %d", result.LedgerCleared)
+	}
+	if result.RenderedRemoved != 1 {
+		t.Fatalf("expected 1 rendered file removed, got %d", result.RenderedRemoved)
+	}
+	if result.ProfilesEdited != 1 {
+		t.Fatalf("expected 1 profile edited, got %d", result.ProfilesEdited)
+	}
+
+	// Pack source removed.
+	if _, err := os.Stat(filepath.Join(configDir, "packs", "deletable")); !os.IsNotExist(err) {
+		t.Fatalf("expected pack source gone")
+	}
+	// Lockfile entry gone.
+	lf, _ := config.LoadLockfile(config.LockfilePath(configDir))
+	if _, ok := lf.Packs["deletable"]; ok {
+		t.Fatalf("lockfile still has deletable entry")
+	}
+	// Profile entry gone.
+	cfg, _ := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	for _, p := range cfg.Packs {
+		if p.Name == "deletable" {
+			t.Fatalf("profile still references deletable")
+		}
+	}
+	// Rendered file removed by default.
+	if _, err := os.Stat(rendered); !os.IsNotExist(err) {
+		t.Fatalf("rendered file should be removed by default")
+	}
+	// Sibling rendered file PRESERVED.
+	if _, err := os.Stat(sibling); err != nil {
+		t.Fatalf("sibling rendered file should persist: %v", err)
+	}
+	// Sibling ledger entry PRESERVED.
+	reloaded, warnings, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v (warnings: %v)", err, warnings)
+	}
+	if _, ok := reloaded.Managed[filepath.Clean(sibling)]; !ok {
+		t.Fatalf("sibling ledger entry should be preserved, got %v", reloaded.Managed)
+	}
+	if _, ok := reloaded.Managed[filepath.Clean(rendered)]; ok {
+		t.Fatalf("deleted pack ledger entry should be cleared, got %v", reloaded.Managed)
+	}
+}
+
+func TestPackDelete_PreservesModifiedRenderedFilesAsUnmanaged(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "deletable")
+	writeEmptyProfile(t, configDir, "default")
+	writeTestSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		Add: true, Profile: "default",
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	eng := engine.New(nil, nil)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rendered := filepath.Join(t.TempDir(), ".claude", "rules", "edited.md")
+	if err := os.MkdirAll(filepath.Dir(rendered), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rendered, []byte("original body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(rendered, []byte("original body"), "deletable", nil, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+	if err := os.WriteFile(rendered, []byte("user edited body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	result, err := PackDeleteWithOptions(eng, PackDeleteRequest{ConfigDir: configDir, Name: "deletable", Registry: claudeCodeTestRegistry()}, &out)
+	if err != nil {
+		t.Fatalf("PackDeleteWithOptions: %v", err)
+	}
+	if result.RenderedRemoved != 0 {
+		t.Fatalf("modified rendered file must not be removed, got %d removals", result.RenderedRemoved)
+	}
+	if result.RenderedPreserved != 1 {
+		t.Fatalf("expected 1 preserved rendered file, got %d", result.RenderedPreserved)
+	}
+	got, err := os.ReadFile(rendered)
+	if err != nil {
+		t.Fatalf("modified rendered file should remain: %v", err)
+	}
+	if string(got) != "user edited body" {
+		t.Fatalf("modified rendered content changed: %q", got)
+	}
+	reloaded, warnings, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v (warnings: %v)", err, warnings)
+	}
+	if _, ok := reloaded.Managed[filepath.Clean(rendered)]; ok {
+		t.Fatalf("preserved modified rendered file should be unmanaged, got %v", reloaded.Managed)
+	}
+}
+
+func TestPackDelete_PreservesUnknownLedgerPathsAsUnmanaged(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "deletable")
+	writeEmptyProfile(t, configDir, "default")
+	writeTestSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		Add: true, Profile: "default",
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	eng := engine.New(nil, nil)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	arbitrary := filepath.Join(t.TempDir(), "not-a-harness-rendered-file.md")
+	if err := os.WriteFile(arbitrary, []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(arbitrary, []byte("body"), "deletable", nil, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+
+	out.Reset()
+	result, err := PackDeleteWithOptions(eng, PackDeleteRequest{ConfigDir: configDir, Name: "deletable", Registry: claudeCodeTestRegistry()}, &out)
+	if err != nil {
+		t.Fatalf("PackDeleteWithOptions: %v", err)
+	}
+	if result.RenderedRemoved != 0 {
+		t.Fatalf("unknown ledger path must not be removed, got %d removals", result.RenderedRemoved)
+	}
+	if result.RenderedPreserved != 1 {
+		t.Fatalf("expected 1 preserved rendered path, got %d", result.RenderedPreserved)
+	}
+	if _, err := os.Stat(arbitrary); err != nil {
+		t.Fatalf("unknown ledger path should remain: %v", err)
+	}
+	reloaded, warnings, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v (warnings: %v)", err, warnings)
+	}
+	if _, ok := reloaded.Managed[filepath.Clean(arbitrary)]; ok {
+		t.Fatalf("preserved unknown path should be unmanaged, got %v", reloaded.Managed)
+	}
+}
+
+func TestPackDelete_StripsSharedSettingsWithoutRemovingUserKeys(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "deletable")
+	writeEmptyProfile(t, configDir, "default")
+	writeTestSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		Add: true, Profile: "default",
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	eng := engine.New(nil, nil)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(t.TempDir(), ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	onDisk := []byte(`{
+  "permissions": {
+    "allow": ["mcp__server__tool", "user_permission"],
+    "deny": ["mcp__server__delete"]
+  },
+  "theme": "dark"
+}
+`)
+	prevManaged := []byte(`{
+  "permissions": {
+    "allow": ["mcp__server__tool"],
+    "deny": ["mcp__server__delete"]
+  }
+}
+`)
+	if err := os.WriteFile(settingsPath, onDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(settingsPath, onDisk, "deletable", prevManaged, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+
+	out.Reset()
+	result, err := PackDeleteWithOptions(eng, PackDeleteRequest{ConfigDir: configDir, Name: "deletable", Registry: claudeCodeTestRegistry()}, &out)
+	if err != nil {
+		t.Fatalf("PackDeleteWithOptions: %v", err)
+	}
+	if result.SharedSettingsStripped != 1 {
+		t.Fatalf("expected 1 shared settings file stripped, got %d", result.SharedSettingsStripped)
+	}
+	if result.RenderedRemoved != 0 {
+		t.Fatalf("shared settings file must not be removed wholesale, got %d removals", result.RenderedRemoved)
+	}
+	got, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("settings file should remain: %v", err)
+	}
+	if strings.Contains(string(got), "mcp__server__tool") || strings.Contains(string(got), "mcp__server__delete") {
+		t.Fatalf("managed permission entries should be stripped, got:\n%s", got)
+	}
+	if !strings.Contains(string(got), "user_permission") || !strings.Contains(string(got), `"theme": "dark"`) {
+		t.Fatalf("user settings should be preserved, got:\n%s", got)
+	}
+	reloaded, warnings, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v (warnings: %v)", err, warnings)
+	}
+	if _, ok := reloaded.Managed[filepath.Clean(settingsPath)]; ok {
+		t.Fatalf("stripped shared settings file should be unmanaged, got %v", reloaded.Managed)
+	}
+}
+
+func TestPackDelete_StripsMCPFromSharedSettingsUsingSyntheticLedgerEntries(t *testing.T) {
+	t.Parallel()
+	eng := engine.New(nil, nil)
+	configDir := t.TempDir()
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, t.TempDir(), domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	mcpPath := filepath.Join(root, ".mcp.json")
+	settingsPath := filepath.Join(root, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mcpOnDisk := []byte(`{
+  "mcpServers": {
+    "delete-server": {"command": "delete"},
+    "keep-server": {"command": "keep"}
+  },
+  "userCustom": "keep-me"
+}
+`)
+	mcpOverlay := []byte(`{
+  "mcpServers": {
+    "delete-server": {"command": "delete"},
+    "keep-server": {"command": "keep"}
+  }
+}
+`)
+	settingsOnDisk := []byte(`{
+  "permissions": {
+    "allow": ["mcp__delete-server__tool", "mcp__keep-server__tool", "user_permission"]
+  },
+  "user_pref": "keep-me"
+}
+`)
+	settingsOverlay := []byte(`{
+  "permissions": {
+    "allow": ["mcp__delete-server__tool", "mcp__keep-server__tool"]
+  }
+}
+`)
+	if err := os.WriteFile(mcpPath, mcpOnDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, settingsOnDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(mcpPath, mcpOnDisk, "", mcpOverlay, fixedNow)
+	lg.Record(settingsPath, settingsOnDisk, "", settingsOverlay, fixedNow)
+	lg.Record(domain.MCPLedgerKey(mcpPath, "delete-server"), []byte(`{}`), "deletable", nil, fixedNow)
+	lg.Record(domain.MCPLedgerKey(mcpPath, "keep-server"), []byte(`{}`), "keeper", nil, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+
+	result, err := cleanOrClearPackInLedger(packDeleteLedgerCleanRequest{
+		eng:      eng,
+		registry: claudeCodeTestRegistry(),
+		path:     ledgerPath,
+		packName: "deletable",
+		stdout:   io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("cleanOrClearPackInLedger: %v", err)
+	}
+	if result.SharedSettingsStripped != 2 {
+		t.Fatalf("expected 2 shared settings files stripped, got %d", result.SharedSettingsStripped)
+	}
+	if result.LedgerCleared != 1 {
+		t.Fatalf("expected 1 synthetic MCP ledger entry cleared, got %d", result.LedgerCleared)
+	}
+
+	gotMCP, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(gotMCP), "delete-server") {
+		t.Fatalf("deleted pack MCP server should be stripped, got:\n%s", gotMCP)
+	}
+	if !strings.Contains(string(gotMCP), "keep-server") || !strings.Contains(string(gotMCP), `"userCustom": "keep-me"`) {
+		t.Fatalf("remaining MCP server and user content should be preserved, got:\n%s", gotMCP)
+	}
+
+	gotSettings, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(gotSettings), "mcp__delete-server__tool") {
+		t.Fatalf("deleted pack MCP permission should be stripped, got:\n%s", gotSettings)
+	}
+	if !strings.Contains(string(gotSettings), "mcp__keep-server__tool") ||
+		!strings.Contains(string(gotSettings), "user_permission") ||
+		!strings.Contains(string(gotSettings), `"user_pref": "keep-me"`) {
+		t.Fatalf("remaining MCP permission and user settings should be preserved, got:\n%s", gotSettings)
+	}
+
+	reloaded, warnings, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v (warnings: %v)", err, warnings)
+	}
+	if _, ok := reloaded.Managed[domain.MCPLedgerKey(mcpPath, "delete-server")]; ok {
+		t.Fatalf("deleted pack synthetic MCP ledger entry should be cleared")
+	}
+	if _, ok := reloaded.Managed[domain.MCPLedgerKey(mcpPath, "keep-server")]; !ok {
+		t.Fatalf("sibling pack synthetic MCP ledger entry should remain")
+	}
+	if strings.Contains(string(reloaded.Managed[filepath.Clean(mcpPath)].ManagedOverlay), "delete-server") {
+		t.Fatalf("MCP managed overlay should no longer contain deleted server")
+	}
+	if strings.Contains(string(reloaded.Managed[filepath.Clean(settingsPath)].ManagedOverlay), "mcp__delete-server__tool") {
+		t.Fatalf("settings managed overlay should no longer contain deleted server permission")
+	}
+}
+
+func TestPackDelete_PreservesSiblingMCPWhenDeletingSettingsPack(t *testing.T) {
+	t.Parallel()
+	eng := engine.New(nil, nil)
+	configDir := t.TempDir()
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeProject, t.TempDir(), domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	mcpPath := filepath.Join(root, ".mcp.json")
+	settingsPath := filepath.Join(root, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mcpOnDisk := []byte(`{
+  "mcpServers": {
+    "keep-server": {"command": "keep"}
+  }
+}
+`)
+	settingsOnDisk := []byte(`{
+  "permissions": {
+    "allow": ["Bash(ls:*)", "mcp__keep-server__tool"]
+  },
+  "review_setting": "settings-pack"
+}
+`)
+	if err := os.WriteFile(mcpPath, mcpOnDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, settingsOnDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(mcpPath, mcpOnDisk, "settings-pack", mcpOnDisk, fixedNow)
+	lg.Record(settingsPath, settingsOnDisk, "settings-pack", settingsOnDisk, fixedNow)
+	lg.Record(domain.MCPLedgerKey(mcpPath, "keep-server"), []byte(`{}`), "mcp-pack", nil, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+
+	result, err := cleanOrClearPackInLedger(packDeleteLedgerCleanRequest{
+		eng:      eng,
+		registry: claudeCodeTestRegistry(),
+		path:     ledgerPath,
+		packName: "settings-pack",
+		stdout:   io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("cleanOrClearPackInLedger: %v", err)
+	}
+	if result.SharedSettingsStripped != 1 {
+		t.Fatalf("expected settings file stripped while MCP file stayed intact, got %d stripped files", result.SharedSettingsStripped)
+	}
+
+	gotMCP, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotMCP), "keep-server") {
+		t.Fatalf("sibling MCP server should remain in shared MCP file, got:\n%s", gotMCP)
+	}
+
+	gotSettings, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotSettings), "mcp__keep-server__tool") {
+		t.Fatalf("sibling MCP permission should remain in settings file, got:\n%s", gotSettings)
+	}
+	if strings.Contains(string(gotSettings), "Bash(ls:*)") || strings.Contains(string(gotSettings), "review_setting") {
+		t.Fatalf("deleted settings pack keys should be stripped, got:\n%s", gotSettings)
+	}
+
+	reloaded, warnings, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v (warnings: %v)", err, warnings)
+	}
+	if _, ok := reloaded.Managed[domain.MCPLedgerKey(mcpPath, "keep-server")]; !ok {
+		t.Fatalf("sibling MCP synthetic ledger entry should remain")
+	}
+	if entry, ok := reloaded.Managed[filepath.Clean(mcpPath)]; !ok {
+		t.Fatalf("shared MCP file ledger entry should remain for sibling server")
+	} else if entry.SourcePack != "" || !strings.Contains(string(entry.ManagedOverlay), "keep-server") {
+		t.Fatalf("shared MCP ledger entry not rewritten to sibling-only managed overlay: %+v", entry)
+	}
+	if entry, ok := reloaded.Managed[filepath.Clean(settingsPath)]; !ok {
+		t.Fatalf("shared settings ledger entry should remain for sibling MCP permission")
+	} else if entry.SourcePack != "" || !strings.Contains(string(entry.ManagedOverlay), "mcp__keep-server__tool") {
+		t.Fatalf("shared settings ledger entry not rewritten to sibling-only managed overlay: %+v", entry)
+	}
+}
+
+func TestPackDelete_KeepRenderedClearsTrackingPreservesRenderedFiles(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "kept")
+	writeEmptyProfile(t, configDir, "default")
+	writeTestSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		Add: true, Profile: "default",
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	eng := engine.New(nil, nil)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rendered := filepath.Join(t.TempDir(), "rendered.md")
+	if err := os.WriteFile(rendered, []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(rendered, []byte("body"), "kept", nil, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	result, err := PackDeleteWithOptions(eng, PackDeleteRequest{
+		ConfigDir: configDir, Name: "kept", KeepRendered: true,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackDeleteWithOptions: %v", err)
+	}
+	if result.RenderedRemoved != 0 {
+		t.Fatalf("keep-rendered should not remove rendered files, got %d", result.RenderedRemoved)
+	}
+	if _, err := os.Stat(rendered); err != nil {
+		t.Fatalf("rendered file should persist with keep-rendered: %v", err)
+	}
+	reloaded, warnings, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("LoadLedger: %v (warnings: %v)", err, warnings)
+	}
+	if _, ok := reloaded.Managed[filepath.Clean(rendered)]; ok {
+		t.Fatalf("keep-rendered should clear ledger entry, got %v", reloaded.Managed)
+	}
+}
+
+func TestPackDelete_DryRunMakesNoMutations(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "deletable")
+	writeEmptyProfile(t, configDir, "default")
+	writeTestSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		Add: true, Profile: "default",
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	eng := engine.New(nil, nil)
+	ledgerPath := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rendered := filepath.Join(t.TempDir(), "rendered.md")
+	if err := os.WriteFile(rendered, []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(rendered, []byte("body"), "deletable", nil, fixedNow)
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	result, err := PackDeleteWithOptions(eng, PackDeleteRequest{
+		ConfigDir: configDir, Name: "deletable", DryRun: true,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackDeleteWithOptions dry-run: %v", err)
+	}
+	if !result.DryRun {
+		t.Fatalf("expected DryRun=true, result=%+v", result)
+	}
+	if result.LedgerCleared != 1 || result.ProfilesEdited != 1 {
+		t.Fatalf("dry-run should report 1/1, got %d/%d", result.LedgerCleared, result.ProfilesEdited)
+	}
+
+	// Nothing should have actually changed.
+	if _, err := os.Stat(filepath.Join(configDir, "packs", "deletable")); err != nil {
+		t.Fatalf("pack source should still exist: %v", err)
+	}
+	lf, _ := config.LoadLockfile(config.LockfilePath(configDir))
+	if _, ok := lf.Packs["deletable"]; !ok {
+		t.Fatalf("dry-run should not touch lockfile")
+	}
+	cfg, _ := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	found := false
+	for _, p := range cfg.Packs {
+		if p.Name == "deletable" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("dry-run should not touch profile")
+	}
+	reloaded, _, _ := eng.LoadLedger(ledgerPath)
+	if _, ok := reloaded.Managed[filepath.Clean(rendered)]; !ok {
+		t.Fatalf("dry-run should not modify ledger")
+	}
+}
+
+// TestPackDelete_ClearsProjectScopedLedgerEntries verifies that delete walks
+// project-scoped ledger subdirectories (configDir/ledger/<encoded-project>/)
+// and clears entries matching the pack, not just global ledger files.
+func TestPackDelete_ClearsProjectScopedLedgerEntries(t *testing.T) {
+	t.Parallel()
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "scoped")
+	writeEmptyProfile(t, configDir, "default")
+	writeTestSyncConfig(t, configDir)
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath: packDir, ConfigDir: configDir, Link: true,
+		Add: true, Profile: "default",
+		NowFn: func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	// Seed both global AND project-scoped ledger entries for the pack.
+	eng := engine.New(nil, nil)
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	globalLedger := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode)
+	projectALedger := engine.LedgerPath(configDir, domain.ScopeProject, projectA, domain.HarnessClaudeCode)
+	projectBLedger := engine.LedgerPath(configDir, domain.ScopeProject, projectB, domain.HarnessCodex)
+
+	for _, lp := range []string{globalLedger, projectALedger, projectBLedger} {
+		if err := os.MkdirAll(filepath.Dir(lp), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		rendered := filepath.Join(t.TempDir(), "rendered.md")
+		if err := os.WriteFile(rendered, []byte("body"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		lg := domain.NewLedger()
+		lg.Record(rendered, []byte("body"), "scoped", nil, fixedNow)
+		// Sibling pack entry that must persist.
+		sibling := filepath.Join(t.TempDir(), "sibling.md")
+		if err := os.WriteFile(sibling, []byte("sibling"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		lg.Record(sibling, []byte("sibling"), "other-pack", nil, fixedNow)
+		if err := eng.SaveLedger(lp, lg, false); err != nil {
+			t.Fatalf("SaveLedger %s: %v", lp, err)
+		}
+	}
+
+	out.Reset()
+	result, err := PackDeleteWithOptions(eng, PackDeleteRequest{ConfigDir: configDir, Name: "scoped", KeepRendered: true}, &out)
+	if err != nil {
+		t.Fatalf("PackDeleteWithOptions: %v", err)
+	}
+	// Three ledgers, one matching entry each.
+	if result.LedgerCleared != 3 {
+		t.Fatalf("LedgerCleared = %d, want 3 (global + projectA + projectB); output:\n%s", result.LedgerCleared, out.String())
+	}
+
+	// Each ledger should have its 'scoped' entry removed but the sibling entry preserved.
+	for _, lp := range []string{globalLedger, projectALedger, projectBLedger} {
+		reloaded, warnings, err := eng.LoadLedger(lp)
+		if err != nil {
+			t.Fatalf("LoadLedger %s: %v (warnings %v)", lp, err, warnings)
+		}
+		hasOtherPack := false
+		for _, entry := range reloaded.Managed {
+			if entry.SourcePack == "scoped" {
+				t.Fatalf("ledger %s still has 'scoped' entry: %+v", lp, entry)
+			}
+			if entry.SourcePack == "other-pack" {
+				hasOtherPack = true
+			}
+		}
+		if !hasOtherPack {
+			t.Fatalf("ledger %s should still have other-pack sibling entry", lp)
+		}
+	}
+}
+
+func TestPackDelete_NotInstalledReturnsError(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTestSyncConfig(t, configDir)
+	var out bytes.Buffer
+	_, err := PackDeleteWithOptions(engine.New(nil, nil), PackDeleteRequest{
+		ConfigDir: configDir, Name: "missing-pack",
+	}, &out)
+	if err == nil {
+		t.Fatal("expected error for missing pack")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("expected 'not installed' error, got: %v", err)
+	}
+}
+
 func TestPackAdd_QuietUpdatesExistingEntry(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
@@ -227,6 +1029,33 @@ func TestPackAdd_InheritsInstallQuietFromLockfile(t *testing.T) {
 	}
 	if !found.Quiet {
 		t.Error("new profile entry should inherit Quiet=true from lockfile InstallQuiet")
+	}
+}
+
+func TestPackAdd_WarnsWhenProfileIsBundled(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeEmptyProfile(t, configDir, "default")
+
+	packDir := filepath.Join(configDir, "packs", "source-pack")
+	if err := os.MkdirAll(packDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePackManifest(filepath.Join(packDir, "pack.json"), config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "source-pack",
+		Root:          ".",
+		Profiles:      []string{"default"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := PackAdd(configDir, "default", "my-pack", nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "pack-provided profile") || !strings.Contains(out.String(), "source-pack") {
+		t.Fatalf("expected bundled profile warning, got:\n%s", out.String())
 	}
 }
 
@@ -394,6 +1223,35 @@ func TestPackInstallMissing(t *testing.T) {
 		}
 		if captured.Add {
 			t.Error("Add should be false")
+		}
+	})
+
+	t.Run("installs archive from registry", func(t *testing.T) {
+		t.Parallel()
+		configDir := t.TempDir()
+		writeShowTestProfile(t, configDir, "test", []string{"archive-pack"})
+		writeShowTestRegistry(t, configDir, map[string]config.RegistryEntry{
+			"archive-pack": {Method: config.MethodArchive, URL: "https://example.com/pack.zip", Path: "packs/archive-pack", Ref: "ignored"},
+		})
+
+		var captured PackInstallRequest
+		fake := func(_ context.Context, req PackInstallRequest, _ io.Writer) error {
+			captured = req
+			writePackManifest(t, filepath.Join(req.ConfigDir, "packs", req.Name), req.Name)
+			return nil
+		}
+		var out bytes.Buffer
+		results, _ := PackInstallMissing(context.Background(), PackInstallMissingRequest{
+			ConfigDir: configDir, ProfileName: "test", PackInstallFn: fake,
+		}, &out)
+		if results[0].Status != MissingStatusInstalled {
+			t.Errorf("archive-pack: got %q", results[0].Status)
+		}
+		if !captured.Archive {
+			t.Fatal("PackInstallRequest.Archive = false, want true")
+		}
+		if captured.URL != "https://example.com/pack.zip" || captured.Ref != "" || captured.SubPath != "packs/archive-pack" {
+			t.Errorf("PackInstall called with URL=%q Ref=%q SubPath=%q", captured.URL, captured.Ref, captured.SubPath)
 		}
 	})
 

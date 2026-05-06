@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -16,21 +17,41 @@ func NormalizeServerName(s string) string {
 
 // expandParams replaces {params.*} (and legacy {param.*}, {global.*}) in s.
 func expandParams(params map[string]string, s string) (string, error) {
-	out := s
-	for key, val := range params {
-		for _, prefix := range util.ParamRefPrefixes {
-			out = strings.ReplaceAll(out, prefix+key+"}", val)
-		}
+	if !util.HasParamRef(s) {
+		return s, nil
 	}
-	// Check for unresolved refs using the same shared prefix list.
-	for _, prefix := range util.ParamRefPrefixes {
-		if strings.Contains(out, prefix) {
+	var refs []util.ParamRef
+	if err := util.WalkParamRefs(s, func(ref util.ParamRef) error {
+		refs = append(refs, ref)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	out := s
+	for i := len(refs) - 1; i >= 0; i-- {
+		ref := refs[i]
+		name, fallback, hasFallback := strings.Cut(ref.Name, ":-")
+		if name == "" {
+			return "", fmt.Errorf("empty param reference in %q", s)
+		}
+		if hasFallback && strings.ContainsAny(fallback, "{}") {
+			return "", fmt.Errorf("nested refs in param defaults are not supported in %q", s)
+		}
+		val, ok := params[name]
+		if !ok {
+			if hasFallback {
+				val = fallback
+				ok = true
+			}
+		}
+		if !ok {
 			hint := ""
-			if prefix != "{params." {
-				hint = fmt.Sprintf(" (hint: rename %s*} to {params.*})", prefix)
+			if ref.Prefix != "{params." {
+				hint = fmt.Sprintf(" (hint: rename %s*} to {params.*})", ref.Prefix)
 			}
 			return "", fmt.Errorf("unresolved param reference in %q%s", s, hint)
 		}
+		out = out[:ref.Start] + val + out[ref.End:]
 	}
 	return out, nil
 }
@@ -42,6 +63,12 @@ func expandParams(params map[string]string, s string) (string, error) {
 // Both are strict: unresolved references are always an error. If a value
 // can't be resolved, fail fast — don't write broken config.
 func ExpandRefs(params map[string]string, s string) (string, error) {
+	return ExpandRefsWithEnv(params, nil, s)
+}
+
+// ExpandRefsWithEnv resolves parameter refs from params and environment refs
+// from env first, then the process environment.
+func ExpandRefsWithEnv(params map[string]string, env map[string]string, s string) (string, error) {
 	out, err := expandParams(params, s)
 	if err != nil {
 		return "", err
@@ -49,7 +76,18 @@ func ExpandRefs(params map[string]string, s string) (string, error) {
 	if !strings.Contains(out, util.EnvRefPrefix) {
 		return out, nil
 	}
-	return util.ExpandEnvRefs(out)
+	return util.ExpandEnvRefsWith(out, envLookup(env))
+}
+
+func envLookup(env map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		if env != nil {
+			if val, ok := env[name]; ok {
+				return val, true
+			}
+		}
+		return os.LookupEnv(name)
+	}
 }
 
 // PackRootRef is the literal token resolved to the installed pack's root path.
@@ -59,14 +97,14 @@ func hasTemplateRefs(s string) bool {
 	return util.HasParamRef(s) || strings.Contains(s, util.EnvRefPrefix) || strings.Contains(s, PackRootRef)
 }
 
-func expandTemplateRefs(params map[string]string, packRoot string, s string) (string, error) {
+func expandTemplateRefsWithEnv(params map[string]string, env map[string]string, packRoot string, s string) (string, error) {
 	if strings.Contains(s, PackRootRef) {
 		if packRoot == "" {
 			return "", fmt.Errorf("unresolved %s reference in %q (content not loaded from a pack)", PackRootRef, s)
 		}
 		s = strings.ReplaceAll(s, PackRootRef, filepath.Clean(packRoot))
 	}
-	return ExpandRefs(params, s)
+	return ExpandRefsWithEnv(params, env, s)
 }
 
 // expandedMCP holds expanded fields for an MCP server.
@@ -81,6 +119,10 @@ type expandedMCP struct {
 // expandMCPServer expands param and environment variable references in an MCP server.
 // Unresolvable refs cause the server to be skipped (Skip=true) with an optional warning.
 func expandMCPServer(params map[string]string, server domain.MCPServer, warningFn func(string)) (expandedMCP, error) {
+	return expandMCPServerWithEnv(params, nil, server, warningFn)
+}
+
+func expandMCPServerWithEnv(params map[string]string, env map[string]string, server domain.MCPServer, warningFn func(string)) (expandedMCP, error) {
 	expandStr := func(s string) (string, error) {
 		// Resolve {pack:root} before param/env expansion so the pack path
 		// is available for use in {env:HOME}-style composition.
@@ -90,7 +132,7 @@ func expandMCPServer(params map[string]string, server domain.MCPServer, warningF
 		if strings.Contains(s, "{pack:root}") {
 			return "", fmt.Errorf("unresolved {pack:root} reference in %q (server not loaded from a pack)", s)
 		}
-		exp, err := ExpandRefs(params, s)
+		exp, err := ExpandRefsWithEnv(params, env, s)
 		if err != nil {
 			if warningFn != nil {
 				warningFn(fmt.Sprintf("WARNING: skipping MCP server %q: %v", server.Name, err))
@@ -160,8 +202,12 @@ func expandMCPServer(params map[string]string, server domain.MCPServer, warningF
 // a single server definition. Returns the server with expanded Command, URL,
 // Env, and Headers. Returns an error if any required ref cannot be resolved.
 func ExpandSingleMCPServer(params map[string]string, server domain.MCPServer) (domain.MCPServer, error) {
+	return ExpandSingleMCPServerWithEnv(params, nil, server)
+}
+
+func ExpandSingleMCPServerWithEnv(params map[string]string, env map[string]string, server domain.MCPServer) (domain.MCPServer, error) {
 	var detail string
-	exp, err := expandMCPServer(params, server, func(msg string) { detail = msg })
+	exp, err := expandMCPServerWithEnv(params, env, server, func(msg string) { detail = msg })
 	if err != nil || exp.Skip {
 		if detail != "" {
 			return server, fmt.Errorf("%s", detail)

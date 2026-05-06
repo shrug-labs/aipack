@@ -114,7 +114,7 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 		// This mirrors the sync-time resolver at
 		// internal/config/profile_resolve.go:422 so the tree's [x]/[ ]
 		// state matches what sync would actually deliver.
-		for _, cat := range domain.AuthoredCategories() {
+		for _, cat := range domain.SelectableCategories() {
 			inventory := p.Manifest.ContentIDs(cat)
 			if len(inventory) == 0 {
 				continue
@@ -295,8 +295,8 @@ func ApplyContentTree(tree ContentTree, entries []config.PackEntry) {
 			}
 		}
 
-		// Update vector selectors for authored categories.
-		for _, cat := range domain.AuthoredCategories() {
+		// Update vector selectors for profile-selectable categories.
+		for _, cat := range domain.SelectableCategories() {
 			ids := p.Manifest.ContentIDs(cat)
 			if len(ids) > 0 {
 				*pe.VectorSelectorFor(cat) = config.SelectionsToVector(ids, cats[cat])

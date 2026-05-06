@@ -59,7 +59,7 @@ These invoke the full `run()` function with buffer I/O — full CLI parse-and-ex
 
 ## TUI (`tui/`)
 
-Bubbletea app for `aipack manage`. Tab-based layout: Profiles, Packs, Save, Sync, Search.
+Bubbletea app for `aipack manage`. Tab-based layout: Profiles, Packs, Sync, Save, Search, Config.
 
 Key patterns:
 - `Model` holds all state. `Update(msg) (Model, Cmd)` handles events. `View() string` renders.

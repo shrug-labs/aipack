@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -69,5 +71,41 @@ func TestCycleSyncScope(t *testing.T) {
 		if got.Defaults.Scope != tt.want {
 			t.Errorf("CycleSyncScope(%q) = %q, want %q", tt.input, got.Defaults.Scope, tt.want)
 		}
+	}
+}
+
+func TestProfileListItems_MarksBundledProfiles(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	profilesDir := filepath.Join(configDir, "profiles")
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "team.yaml"), []byte("schema_version: 1\npacks: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	packDir := filepath.Join(configDir, "packs", "team-pack")
+	if err := os.MkdirAll(packDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePackManifest(filepath.Join(packDir, "pack.json"), config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "team-pack",
+		Root:          ".",
+		Profiles:      []string{"team"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := ProfileListItems(configDir, config.SyncConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if len(items[0].BundledFrom) != 1 || items[0].BundledFrom[0] != "team-pack" {
+		t.Fatalf("BundledFrom = %v, want [team-pack]", items[0].BundledFrom)
 	}
 }

@@ -1,6 +1,6 @@
 # CLI Specification
 
-Version: 0.22.0
+Version: 0.27.0
 
 Machine-readable output contracts for the aipack CLI. This document defines the JSON shapes that `--json` commands emit — the public interface for CI pipelines, dashboards, wrapper scripts, and automation. For command behavior, flags, and per-harness rendering details, see the [aipack reference](./aipack.md).
 
@@ -11,6 +11,15 @@ If this document and the code diverge, the code is authoritative. File an issue 
 ```
 aipack
 ├── init
+├── setup
+├── config
+│   └── env
+│       ├── list
+│       ├── get
+│       ├── set
+│       ├── unset
+│       ├── path
+│       └── edit
 ├── sync
 ├── save
 ├── restore
@@ -27,6 +36,7 @@ aipack
 ├── pack
 │   ├── create
 │   ├── install
+│   ├── import
 │   ├── delete
 │   ├── update
 │   ├── rename
@@ -36,18 +46,23 @@ aipack
 │   ├── disable
 │   ├── list
 │   ├── show
+│   ├── inspect
 │   ├── versions
 │   └── validate
 ├── profile
 │   ├── create
 │   ├── set
 │   ├── show
+│   ├── refs
+│   ├── set-param
+│   ├── unset-param
 │   ├── list
 │   └── delete
 ├── registry
 │   ├── fetch
 │   ├── list
 │   ├── sources
+│   ├── validate
 │   └── delete
 ├── mcp
 │   └── inspect-tools
@@ -76,6 +91,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
   "workflows": 8,
   "agents":    3,
   "skills":    6,
+  "plugins":   2,
   "settings":  2,
   "mcp":       5,
   "warnings":  [{"message": "stale ledger migrated", "field": "ledger"}]
@@ -89,6 +105,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 | `workflows` | int | Number of workflows in the resolved profile |
 | `agents` | int | Number of agents in the resolved profile |
 | `skills` | int | Number of skills in the resolved profile |
+| `plugins` | int | Number of plugin references in the resolved profile |
 | `settings` | int | Number of settings file actions in the plan |
 | `mcp` | int | Number of MCP servers in the resolved profile |
 | `warnings` | array | Non-fatal issues encountered during sync. Each entry has `message` (string, always present), `path` (string, optional), and `field` (string, optional). Empty array when no warnings. |
@@ -129,12 +146,13 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
   "config_dir": "/Users/x/.config/aipack",
   "packs": [
     {
-      "name": "my-team-ops",
+      "name": "my-example-pack",
       "version": "2026.03.15",
       "rules": 3,
       "agents": 1,
       "workflows": 11,
       "skills": 5,
+      "plugins": 2,
       "mcp_servers": 5,
       "settings": true
     }
@@ -143,8 +161,9 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
   "total_agents": 1,
   "total_workflows": 11,
   "total_skills": 10,
+  "total_plugins": 2,
   "total_mcp_servers": 5,
-  "settings_packs": ["my-team-ops"]
+  "settings_packs": ["my-example-pack"]
 }
 ```
 
@@ -160,18 +179,20 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 | `packs[].agents` | int | Agent count |
 | `packs[].workflows` | int | Workflow count |
 | `packs[].skills` | int | Skill count |
+| `packs[].plugins` | int | Plugin reference count |
 | `packs[].mcp_servers` | int | MCP server count |
 | `packs[].settings` | bool | Whether this pack provides settings |
 | `total_rules` | int | Sum of rules across all packs |
 | `total_agents` | int | Sum of agents |
 | `total_workflows` | int | Sum of workflows |
 | `total_skills` | int | Sum of skills |
+| `total_plugins` | int | Sum of plugin references |
 | `total_mcp_servers` | int | Sum of MCP servers |
 | `settings_packs` | string[] | Packs contributing settings, in profile order (omitempty) |
 
 ### `aipack trace`
 
-Exit code 1 when the resource is not found.
+Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single-argument form resolves exact active-profile matches across traceable resource types. Exit code 1 when the resource is not found or when the single-argument form is ambiguous.
 
 ```json
 {
@@ -209,7 +230,7 @@ Exit code 1 when the resource is not found.
 | `source` | object or null | Source location (absent when `found` is false) |
 | `source.pack` | string | Pack name containing the resource |
 | `source.source_path` | string | Absolute path to the source file |
-| `source.category` | string | Content category: `rules`, `agents`, `workflows`, `skills`, `mcp` |
+| `source.category` | string | Content category: `rules`, `agents`, `workflows`, `skills`, `plugins`, `mcp` |
 | `destinations` | array | Per-harness destination info (empty when not found) |
 | `destinations[].harness` | string | Harness ID |
 | `destinations[].path` | string | Absolute path where the resource lands |
@@ -297,7 +318,8 @@ Overall `ok` is false only when a critical-severity check fails. Warning-level c
     "owner": "",
     "category": "research",
     "snippet": "...matching text...",
-    "installed": true
+    "installed": true,
+    "status": "installed"
   }
 ]
 ```
@@ -314,6 +336,7 @@ Overall `ok` is false only when a critical-severity check fails. Warning-level c
 | `category` | string | Category (omitempty) |
 | `snippet` | string | Matching text excerpt (omitempty) |
 | `installed` | bool | Whether the containing pack is installed |
+| `status` | string | Discovery status: `installed`, `registered`, or `inspected` |
 
 ### `aipack query`
 
@@ -373,6 +396,7 @@ Content ID arrays are always present (empty `[]`, never null).
   "agents": ["code-reviewer"],
   "workflows": ["session-retro", "brainstorm"],
   "skills": ["deep-research", "writing-plans"],
+  "plugins": ["linear"],
   "prompts": [],
   "mcp_servers": [],
   "extras": ["scripts/run-server.sh"]
@@ -393,9 +417,82 @@ Content ID arrays are always present (empty `[]`, never null).
 | `agents` | string[] | Agent IDs |
 | `workflows` | string[] | Workflow IDs |
 | `skills` | string[] | Skill IDs |
+| `plugins` | string[] | Plugin reference IDs |
 | `prompts` | string[] | Prompt IDs |
 | `mcp_servers` | string[] | MCP server names |
 | `extras` | string[] | Extra bundled file paths (omitempty) |
+
+### `aipack pack inspect`
+
+Inspects a source without installing it. Content ID arrays are always present (empty `[]`, never null). Bundled profiles, registries, and extras are omitted when empty.
+
+```json
+{
+  "name": "team-pack",
+  "version": "1.2.3",
+  "path": "https://github.com/org/packs.git",
+  "source": "https://github.com/org/packs.git",
+  "source_type": "registry",
+  "status": "inspected",
+  "method": "clone",
+  "ref": "main",
+  "path_in_source": "team-pack",
+  "counts": {
+    "rules": 2,
+    "skills": 3,
+    "workflows": 1,
+    "agents": 0,
+    "plugins": 1,
+    "prompts": 0,
+    "mcp": 2
+  },
+  "rules": ["safety"],
+  "agents": [],
+  "workflows": ["deploy"],
+  "skills": ["triage"],
+  "plugins": ["linear"],
+  "prompts": [],
+  "mcp_servers": ["issue-tracker"],
+  "profiles": ["oncall"],
+  "registries": ["team"],
+  "extras": ["scripts/check.sh"],
+  "warnings": [
+    "defines MCP servers (external tool access): issue-tracker"
+  ],
+  "registry": {
+    "name": "team-pack",
+    "description": "Team operating pack",
+    "owner": "platform",
+    "contact": "#platform",
+    "quiet": true
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Resolved pack name |
+| `version` | string | Version from manifest (omitempty) |
+| `path` | string | Source path or URL that was inspected |
+| `source` | string | Same source value used for indexing |
+| `source_type` | string | `path`, `url`, or `registry` |
+| `status` | string | Always `inspected` |
+| `method` | string | Inspect method: `local`, `clone`, or `archive` |
+| `ref` | string | Git ref used for clone inspection (omitempty) |
+| `path_in_source` | string | Subdirectory within the source (omitempty) |
+| `counts` | object | Content counts by vector |
+| `rules`, `agents`, `workflows`, `skills`, `plugins`, `prompts`, `mcp_servers` | string[] | Discovered content IDs |
+| `profiles`, `registries`, `extras` | string[] | Bundled content IDs or paths (omitempty) |
+| `warnings` | string[] | Trust warnings surfaced by inspection, such as MCP external tool access (omitempty) |
+| `registry` | object | Registry metadata when inspected by registry name (omitempty) |
+
+`aipack pack inspect --clear` wipes inspected rows from the search index instead of inspecting a source. Cannot be combined with an input argument or `--url`. Inspected rows older than 30 days are dropped automatically the next time any source is inspected.
+
+```json
+{
+  "removed": 4
+}
+```
 
 ### `aipack pack versions`
 
@@ -452,9 +549,116 @@ Exit code 1 when `ok` is false.
 | `findings[].field` | string | Frontmatter field name (omitempty) |
 | `findings[].message` | string | Human-readable description |
 
+### `aipack pack delete`
+
+Deletes an installed pack, removes safe rendered harness files, strips pack-managed keys from shared settings files, clears ledger entries, removes matching profile entries, and clears the lockfile entry. Rendered files are removed only when their ledger digest still matches the on-disk content and the path is a known harness-rendered location. Modified files and unknown ledger paths are preserved on disk and made unmanaged. Use `--keep-rendered` to clear aipack tracking while leaving rendered files unmanaged.
+
+```json
+{
+  "name": "my-pack",
+  "dry_run": false,
+  "keep_rendered": false,
+  "source_removed": true,
+  "rendered_removed": 7,
+  "rendered_preserved": 2,
+  "shared_settings_stripped": 1,
+  "ledger_cleared": 9,
+  "profiles_edited": 1,
+  "lockfile_cleared": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Pack name that was deleted |
+| `dry_run` | bool | True when the run was a preview |
+| `keep_rendered` | bool | True when rendered harness files were retained |
+| `source_removed` | bool | True if `<configDir>/packs/<name>/` existed and was removed |
+| `rendered_removed` | int | Count of clean, known rendered ledger paths removed (or counted in dry-run) |
+| `rendered_preserved` | int | Count of rendered/shared ledger paths left on disk and made unmanaged because they were modified, unknown, or explicitly kept |
+| `shared_settings_stripped` | int | Count of shared settings files rewritten to remove pack-managed keys while preserving user content |
+| `ledger_cleared` | int | Count of ledger entries with `source_pack == name` cleared (or counted in dry-run) |
+| `profiles_edited` | int | Count of profiles that had a matching pack entry removed (or counted in dry-run) |
+| `lockfile_cleared` | bool | True if a lockfile entry existed and was removed |
+| `bundled_profiles` | string[] | Bundled profile files still present after pack removal (omitempty) |
+
+`--dry-run` reports the counts as they would be without writing. The exit code is 0 on success and non-zero only when the named pack is not installed (no lockfile entry and no source dir).
+
 ### `aipack profile show`
 
 The fully-resolved profile object. Shape follows the `domain.Profile` struct — packs with typed content, MCP servers, and settings bundle. This is the most complex JSON output and its shape is not yet stabilized. Use `status --json` for a stable summary.
+
+### `aipack profile refs`
+
+```json
+{
+  "profile": "oncall",
+  "profile_path": "/Users/x/.config/aipack/profiles/oncall.yaml",
+  "refs": [
+    {
+      "kind": "param",
+      "name": "tracker_url",
+      "display": "{params.tracker_url}",
+      "status": "missing",
+      "pack": "example-pack",
+      "target": "issue-tracker",
+      "location": "mcp.issue-tracker.command[2]"
+    },
+    {
+      "kind": "env",
+      "name": "API_TOKEN",
+      "display": "{env:API_TOKEN}",
+      "status": "dotenv",
+      "pack": "example-pack",
+      "target": "issue-tracker",
+      "location": "mcp.issue-tracker.env.API_TOKEN"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `profile` | string | Resolved profile name |
+| `profile_path` | string | Absolute path to the profile YAML |
+| `refs` | array | Parameter and environment references discovered in enabled MCP servers and contributing harness settings |
+| `refs[].kind` | string | `param` or `env` |
+| `refs[].name` | string | Parameter or environment variable name |
+| `refs[].display` | string | Original placeholder text |
+| `refs[].status` | string | Params: `set`, `defaulted`, or `missing`; env refs: `dotenv`, `env`, `defaulted`, or `missing` |
+| `refs[].has_default` | boolean | True when the placeholder includes an inline default (omitempty) |
+| `refs[].pack` | string | Pack providing the MCP server or settings file (omitempty) |
+| `refs[].target` | string | MCP server name or harness id (omitempty) |
+| `refs[].location` | string | Field or config file where the placeholder was found (omitempty) |
+
+### `aipack config env list`
+
+Lists keys from the config-dir `.env` file. Values are omitted by default and present only when `--show` is also set. Entries are sorted by key.
+
+```json
+{
+  "path": "/Users/x/.config/aipack/.env",
+  "entries": [
+    {
+      "key": "API_TOKEN",
+      "length": 12
+    },
+    {
+      "key": "REGION",
+      "value": "us-ashburn-1",
+      "length": 12
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Absolute path to the config-dir `.env` file |
+| `entries` | array | Keys present in the `.env` file, sorted by key |
+| `entries[].key` | string | Environment variable name |
+| `entries[].value` | string | Environment variable value, present only with `--show` |
+| `entries[].length` | int | Character length of the stored value |
 
 ### `aipack registry list`
 
@@ -483,6 +687,26 @@ The fully-resolved profile object. Shape follows the `domain.Profile` struct —
 | `description` | string | Human-readable description (omitempty) |
 | `owner` | string | Maintainer or team (omitempty) |
 | `contact` | string | Contact info (omitempty) |
+
+### `aipack registry validate`
+
+Exit code 1 when `valid` is false.
+
+```json
+{
+  "path": "/Users/x/registry.yaml",
+  "valid": false,
+  "errors": [
+    "pack \"tools\": missing required field repo"
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Registry file path that was validated |
+| `valid` | bool | True when semantic validation found no errors |
+| `errors` | string[] | Validation messages; empty on success |
 
 ### `aipack registry sources`
 
@@ -608,11 +832,13 @@ Several flags follow a common resolution chain across commands:
 
 **Scopes:** `project`, `global`
 
-**Resource types (for trace):** `rule`, `agent`, `workflow`, `skill`, `mcp`
+**Resource types (for trace):** `rule`, `agent`, `workflow`, `skill`, `plugin`, `mcp`
 
 **Diff kinds:** `create` (file doesn't exist on disk), `identical` (desired matches on-disk), `managed` (on-disk matches ledger — safe to update), `conflict` (user-modified since last sync), `untracked` (exists on disk but not in ledger), `error` (classification failed)
 
-**Install methods:** `clone` (shallow git clone — default for all remote installs), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place). Legacy methods `http-tarball` and `archive` may appear in lockfile entries from pre-v0.21 installs; they are transparently migrated to `clone` on the next `pack update`.
+**Install methods:** `clone` (shallow git clone — default for remote git installs), `archive` (static zip/tar URL, re-fetched on update), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place). Legacy `http-tarball` entries may appear in old lockfiles; they are transparently migrated to `clone` on the next `pack update`.
+
+**Search statuses:** `installed` (pack is installed locally), `registered` (uninstalled registry/deep-index content), `inspected` (one-off preview from `pack inspect`). Search reconciles installed status from `aipack.lock` and installed pack directories before applying status filters.
 
 **Finding categories:** `frontmatter`, `policy`, `consistency`, `inventory`
 

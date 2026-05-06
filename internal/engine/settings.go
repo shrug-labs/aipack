@@ -14,7 +14,11 @@ import (
 // first-pack-wins semantics. Drop-in plugins (HarnessPlugins) are NOT merged —
 // same-filename collisions across packs produce an error.
 func (e *Engine) loadHarnessSettings(packs []config.ResolvedPack, settingsPacks []string, harnesses []domain.Harness, params map[string]string) (domain.SettingsBundle, []domain.Warning, error) {
-	return e.loadHarnessFileBundle(packs, settingsPacks, harnesses, params, func(m config.PackManifest, h string) []string {
+	return e.loadHarnessSettingsWithEnv(packs, settingsPacks, harnesses, params, nil)
+}
+
+func (e *Engine) loadHarnessSettingsWithEnv(packs []config.ResolvedPack, settingsPacks []string, harnesses []domain.Harness, params map[string]string, env map[string]string) (domain.SettingsBundle, []domain.Warning, error) {
+	return e.loadHarnessFileBundleWithEnv(packs, settingsPacks, harnesses, params, env, func(m config.PackManifest, h string) []string {
 		return m.Configs.HarnessSettings[h]
 	}, func(m config.PackManifest, h string) []string {
 		return m.Configs.HarnessPlugins[h]
@@ -62,11 +66,12 @@ type settingsFileGroup struct {
 	configs []domain.ConfigFile
 }
 
-func (e *Engine) loadHarnessFileBundle(
+func (e *Engine) loadHarnessFileBundleWithEnv(
 	packs []config.ResolvedPack,
 	settingsPacks []string,
 	harnesses []domain.Harness,
 	params map[string]string,
+	env map[string]string,
 	settingsFor func(config.PackManifest, string) []string,
 	pluginsFor func(config.PackManifest, string) []string,
 	label string,
@@ -95,7 +100,7 @@ func (e *Engine) loadHarnessFileBundle(
 				if err != nil {
 					return nil, warnings, fmt.Errorf("loading harness %s %s/%s: %w", label, h, f, err)
 				}
-				b, err = expandConfigFileRefs(params, p.Root, domain.ConfigFile{Filename: f, Content: b, SourcePack: p.Name})
+				b, err = expandConfigFileRefsWithEnv(params, env, p.Root, domain.ConfigFile{Filename: f, Content: b, SourcePack: p.Name})
 				if err != nil {
 					return nil, warnings, fmt.Errorf("expanding harness %s %s/%s from pack %q: %w", label, h, f, p.Name, err)
 				}

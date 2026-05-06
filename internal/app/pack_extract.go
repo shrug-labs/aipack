@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -19,7 +20,7 @@ var errPackRootEscape = fmt.Errorf("pack.json root escapes source boundary")
 // Only these are extracted from a source into the installed pack.
 var packContentDirs = []string{
 	"rules", "agents", "workflows", "skills",
-	"mcp", "configs", "prompts", "profiles", "registries",
+	"mcp", "plugins", "configs", "prompts", "profiles", "registries",
 }
 
 // extractPackContent extracts pack content from srcRoot into a clean staging
@@ -220,7 +221,10 @@ func extractWithContentPaths(staging, srcRoot, symlinkBoundary string, contentPa
 		if !cat.IsContentPathTarget() {
 			return cleanup(fmt.Errorf("invalid content_paths key %q: valid keys are rules, agents, workflows, skills, prompts", cat))
 		}
-		src := filepath.Join(srcRoot, rel)
+		src, err := resolveContentPathSource(srcRoot, rel)
+		if err != nil {
+			return cleanup(fmt.Errorf("content_paths %s: %w", cat, err))
+		}
 		if _, serr := os.Stat(src); serr != nil {
 			return cleanup(fmt.Errorf("content_paths %s: source %q not found: %w", cat, rel, serr))
 		}
@@ -245,4 +249,22 @@ func extractWithContentPaths(staging, srcRoot, symlinkBoundary string, contentPa
 	}
 
 	return staging, manifest, nil
+}
+
+func resolveContentPathSource(srcRoot, rel string) (string, error) {
+	if strings.TrimSpace(rel) == "" {
+		return "", fmt.Errorf("source path is required")
+	}
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("source path %q must be relative", rel)
+	}
+	cleanRel := filepath.Clean(rel)
+	if cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("source path %q escapes source boundary", rel)
+	}
+	src := filepath.Clean(filepath.Join(srcRoot, cleanRel))
+	if !util.IsWithinDir(src, srcRoot) {
+		return "", fmt.Errorf("source path %q escapes source boundary", rel)
+	}
+	return src, nil
 }

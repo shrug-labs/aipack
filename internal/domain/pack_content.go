@@ -38,8 +38,8 @@ func (c PackCategory) IDFromHarnessFilename(name string) string {
 
 // MatchPrimaryContentFile maps a pack-relative path to (category, id, true).
 // Rules preserve the slashed path as id (nested authoring is part of the id).
-// Agents, workflows, and skills accept any depth; the id is the leaf (the
-// subdirectory is authoring organization, not part of the id).
+// Agents, workflows, skills, and plugins accept any depth; the id is the leaf
+// (the subdirectory is authoring organization, not part of the id).
 func MatchPrimaryContentFile(rel string) (PackCategory, string, bool) {
 	slashed := filepath.ToSlash(rel)
 	idx := strings.IndexByte(slashed, '/')
@@ -59,6 +59,11 @@ func MatchPrimaryContentFile(rel string) (PackCategory, string, bool) {
 			return "", "", false
 		}
 		return cat, path.Base(strings.TrimSuffix(rest, ".md")), true
+	case CategoryPlugins:
+		if !strings.HasSuffix(rest, ".json") {
+			return "", "", false
+		}
+		return cat, path.Base(strings.TrimSuffix(rest, ".json")), true
 	case CategorySkills:
 		if !strings.HasSuffix(rest, "/"+SkillEntryFile) {
 			return "", "", false

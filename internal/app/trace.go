@@ -15,7 +15,7 @@ import (
 // TraceRequest holds the parameters for tracing a resource through the sync pipeline.
 type TraceRequest struct {
 	TargetSpec
-	ResourceType string // rule, agent, workflow, skill, mcp
+	ResourceType string // rule, agent, workflow, skill, plugin, mcp
 	ResourceName string // name of the resource to trace
 }
 
@@ -23,7 +23,16 @@ type TraceRequest struct {
 type TraceSource struct {
 	Pack       string `json:"pack"`
 	SourcePath string `json:"source_path"`
-	Category   string `json:"category"` // rules, agents, workflows, skills, mcp
+	Category   string `json:"category"` // rules, agents, workflows, skills, plugins, mcp
+}
+
+// TraceCandidate describes an exact active-profile resource match that can be traced.
+type TraceCandidate struct {
+	ResourceType string `json:"resource_type"`
+	ResourceName string `json:"resource_name"`
+	Pack         string `json:"pack"`
+	SourcePath   string `json:"source_path,omitempty"`
+	Category     string `json:"category"`
 }
 
 // TraceDestination describes where a resource lands in a harness location.
@@ -112,59 +121,79 @@ func findResource(profile domain.Profile, resType, name string) *TraceSource {
 	if !ok {
 		return nil
 	}
-	switch cat {
-	case domain.CategoryRules:
-		for _, r := range profile.AllRules() {
-			if r.Name == name {
-				return &TraceSource{
-					Pack:       r.SourcePack,
-					SourcePath: r.SourcePath,
-					Category:   string(cat),
-				}
-			}
+	var found *TraceSource
+	walkTraceResources(profile, func(resourceCat domain.PackCategory, resourceName string, source TraceSource) bool {
+		if resourceCat == cat && resourceName == name {
+			found = &source
+			return false
 		}
-	case domain.CategoryAgents:
-		for _, a := range profile.AllAgents() {
-			if a.Name == name {
-				return &TraceSource{
-					Pack:       a.SourcePack,
-					SourcePath: a.SourcePath,
-					Category:   string(cat),
-				}
-			}
+		return true
+	})
+	return found
+}
+
+// FindTraceCandidates finds exact active-profile resources by name across all
+// traceable categories.
+func FindTraceCandidates(profile domain.Profile, name string) []TraceCandidate {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	var out []TraceCandidate
+	walkTraceResources(profile, func(cat domain.PackCategory, resourceName string, source TraceSource) bool {
+		if resourceName != name {
+			return true
 		}
-	case domain.CategoryWorkflows:
-		for _, w := range profile.AllWorkflows() {
-			if w.Name == name {
-				return &TraceSource{
-					Pack:       w.SourcePack,
-					SourcePath: w.SourcePath,
-					Category:   string(cat),
-				}
-			}
-		}
-	case domain.CategorySkills:
-		for _, s := range profile.AllSkills() {
-			if s.Name == name {
-				return &TraceSource{
-					Pack:       s.SourcePack,
-					SourcePath: s.DirPath,
-					Category:   string(cat),
-				}
-			}
-		}
-	case domain.CategoryMCP:
-		for _, m := range profile.MCPServers {
-			if m.Name == name {
-				return &TraceSource{
-					Pack:       m.SourcePack,
-					SourcePath: "", // MCP servers come from inventory, not a single file
-					Category:   string(cat),
-				}
-			}
+		out = append(out, TraceCandidate{
+			ResourceType: traceResourceType(cat),
+			ResourceName: resourceName,
+			Pack:         source.Pack,
+			SourcePath:   source.SourcePath,
+			Category:     source.Category,
+		})
+		return true
+	})
+	return out
+}
+
+func walkTraceResources(profile domain.Profile, visit func(domain.PackCategory, string, TraceSource) bool) {
+	for _, r := range profile.AllRules() {
+		if !visit(domain.CategoryRules, r.Name, TraceSource{Pack: r.SourcePack, SourcePath: r.SourcePath, Category: string(domain.CategoryRules)}) {
+			return
 		}
 	}
-	return nil
+	for _, a := range profile.AllAgents() {
+		if !visit(domain.CategoryAgents, a.Name, TraceSource{Pack: a.SourcePack, SourcePath: a.SourcePath, Category: string(domain.CategoryAgents)}) {
+			return
+		}
+	}
+	for _, w := range profile.AllWorkflows() {
+		if !visit(domain.CategoryWorkflows, w.Name, TraceSource{Pack: w.SourcePack, SourcePath: w.SourcePath, Category: string(domain.CategoryWorkflows)}) {
+			return
+		}
+	}
+	for _, s := range profile.AllSkills() {
+		if !visit(domain.CategorySkills, s.Name, TraceSource{Pack: s.SourcePack, SourcePath: s.DirPath, Category: string(domain.CategorySkills)}) {
+			return
+		}
+	}
+	for _, p := range profile.AllPlugins() {
+		if !visit(domain.CategoryPlugins, p.Name, TraceSource{Pack: p.SourcePack, SourcePath: p.SourcePath, Category: string(domain.CategoryPlugins)}) {
+			return
+		}
+	}
+	for _, m := range profile.MCPServers {
+		if !visit(domain.CategoryMCP, m.Name, TraceSource{Pack: m.SourcePack, Category: string(domain.CategoryMCP)}) {
+			return
+		}
+	}
+}
+
+func traceResourceType(cat domain.PackCategory) string {
+	if cat == domain.CategoryMCP {
+		return "mcp"
+	}
+	return strings.ToLower(cat.SingularLabel())
 }
 
 // matchDestinations finds plan actions that correspond to the traced resource
@@ -197,6 +226,18 @@ func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource
 				dests = append(dests, dest)
 			}
 		}
+	case domain.CategoryPlugins:
+		for _, action := range append(plan.Settings, plan.MCP...) {
+			if strings.Contains(string(action.Desired), resName+"@") {
+				dest := TraceDestination{
+					Harness:  string(action.Harness),
+					Path:     action.Dst,
+					Embedded: true,
+				}
+				dest.State, dest.DiffKind = classifySettingsState(eng, action, lg)
+				dests = append(dests, dest)
+			}
+		}
 	default:
 		// Rules, agents, workflows use WriteActions.
 		for _, wr := range plan.Writes {
@@ -214,6 +255,14 @@ func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource
 	}
 
 	return dests
+}
+
+func classifySettingsState(eng *engine.Engine, action domain.SettingsAction, lg domain.Ledger) (string, domain.DiffKind) {
+	fd, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{action}, lg)
+	if err != nil || len(fd) == 0 {
+		return string(domain.DiffError), domain.DiffError
+	}
+	return string(fd[0].Kind), fd[0].Kind
 }
 
 // matchesWrite checks if a WriteAction corresponds to the traced resource.

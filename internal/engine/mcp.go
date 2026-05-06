@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -13,7 +14,7 @@ import (
 // buildMCPServers assembles typed MCPServer structs from inventory data and
 // per-pack permissions. Params ({params.*}) and env refs ({env:VAR}) in command,
 // URL, env, and headers are expanded. Servers with unresolvable refs are skipped.
-func buildMCPServers(params map[string]string, packs []config.ResolvedPack, inventory map[string]domain.MCPServer) ([]domain.MCPServer, []domain.Warning) {
+func buildMCPServers(params map[string]string, env map[string]string, packs []config.ResolvedPack, inventory map[string]domain.MCPServer) ([]domain.MCPServer, []domain.Warning) {
 	servers := enabledServers(packs)
 	out := make([]domain.MCPServer, 0, len(servers))
 	var warnings []domain.Warning
@@ -30,7 +31,7 @@ func buildMCPServers(params map[string]string, packs []config.ResolvedPack, inve
 
 		var expandDetail string
 		warnFn := func(msg string) { expandDetail = msg }
-		expanded, err := expandMCPServer(params, inv, warnFn)
+		expanded, err := expandMCPServerWithEnv(params, env, inv, warnFn)
 		if err != nil {
 			warnings = append(warnings, domain.Warning{
 				Field:   "mcp." + name,
@@ -128,13 +129,14 @@ func extractRequiredRefs(inv domain.MCPServer) []domain.RequiredRef {
 
 	walkString := func(s string) {
 		_ = util.WalkParamRefs(s, func(ref util.ParamRef) error {
-			if ref.Name != "" {
-				addParam(ref.Name)
+			name, _, hasDefault := strings.Cut(ref.Name, ":-")
+			if name != "" && !hasDefault {
+				addParam(name)
 			}
 			return nil
 		})
 		_ = util.WalkEnvRefs(s, func(ref util.EnvRef) error {
-			if ref.Name != "" {
+			if ref.Name != "" && !ref.HasDefault {
 				addEnv(ref.Name)
 			}
 			return nil

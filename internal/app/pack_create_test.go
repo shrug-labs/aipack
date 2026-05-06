@@ -51,7 +51,7 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 	}
 
 	// Verify all vector dirs exist.
-	for _, sub := range []string{"rules", "agents", "workflows", "skills", "mcp", "configs", "profiles"} {
+	for _, sub := range []string{"rules", "agents", "workflows", "skills", "plugins", "mcp", "configs", "profiles"} {
 		d := filepath.Join(packDir, sub)
 		st, err := os.Stat(d)
 		if err != nil {

@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/index"
 )
 
 const testRegistryYAML = `
@@ -131,6 +135,30 @@ func TestRegistryLookup_NotFound(t *testing.T) {
 	_, err := RegistryLookup(req, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for missing pack")
+	}
+}
+
+func TestRegistryLookup_FoundationalPackHint(t *testing.T) {
+	t.Parallel()
+	req := RegistryListRequest{ConfigDir: t.TempDir()}
+	_, err := RegistryLookup(req, "aipack-core")
+	if err == nil {
+		t.Fatal("expected error for missing pack")
+	}
+	if !strings.Contains(err.Error(), "aipack registry fetch "+config.DefaultRegistryRepo) {
+		t.Fatalf("expected default registry fetch hint, got: %v", err)
+	}
+}
+
+func TestRegistryLookup_ExplicitRegistrySuppressesFoundationalHint(t *testing.T) {
+	t.Parallel()
+	req := setupTestRegistry(t)
+	_, err := RegistryLookup(req, "aipack-core")
+	if err == nil {
+		t.Fatal("expected error for missing pack")
+	}
+	if strings.Contains(err.Error(), "registry fetch") {
+		t.Fatalf("explicit registry lookup should not suggest default fetch, got: %v", err)
 	}
 }
 
@@ -881,6 +909,83 @@ packs:
 // Deep index tests
 // ---------------------------------------------------------------------------
 
+func TestIndexRegistryEntriesMarksInstalledFromLockfile(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	packRoot := filepath.Join(PacksDir(configDir), "installed-pack")
+	if err := writeTestFile(filepath.Join(packRoot, "pack.json"), `{"schema_version":2,"name":"installed-pack","root":"."}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveLockfile(config.LockfilePath(configDir), config.Lockfile{
+		Packs: map[string]config.InstalledPackMeta{
+			"installed-pack": {Method: config.MethodLink, Origin: packRoot},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := config.Registry{
+		SchemaVersion: config.RegistrySchemaVersion,
+		Packs: map[string]config.RegistryEntry{
+			"installed-pack": {Repo: "https://example.com/installed.git"},
+		},
+	}
+	if err := indexRegistryEntries(reg, configDir); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := index.Open(filepath.Join(configDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var installed int
+	if err := db.QueryRow("SELECT installed FROM packs WHERE name='installed-pack'").Scan(&installed); err != nil {
+		t.Fatal(err)
+	}
+	if installed != 1 {
+		t.Fatalf("installed = %d, want 1", installed)
+	}
+}
+
+func TestRegistryDeepIndexSkipsInstalledFromLockfile(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	packRoot := filepath.Join(PacksDir(configDir), "installed-pack")
+	if err := writeTestFile(filepath.Join(packRoot, "pack.json"), `{"schema_version":2,"name":"installed-pack","root":"."}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveLockfile(config.LockfilePath(configDir), config.Lockfile{
+		Packs: map[string]config.InstalledPackMeta{
+			"installed-pack": {Method: config.MethodLink, Origin: packRoot},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registryPath := filepath.Join(configDir, "registry.yaml")
+	if err := os.WriteFile(registryPath, []byte(`schema_version: 1
+packs:
+  installed-pack:
+    repo: https://example.com/installed.git
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RegistryDeepIndex(context.Background(), RegistryDeepIndexRequest{
+		ConfigDir:    configDir,
+		RegistryPath: registryPath,
+		GitCloneFn: func(repoURL, dir, ref string) error {
+			t.Fatalf("deep-index should not clone installed pack %s", repoURL)
+			return nil
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeepIndexOnePack_RespectsPackJsonRoot(t *testing.T) {
 	t.Parallel()
 
@@ -905,7 +1010,7 @@ func TestDeepIndexOnePack_RespectsPackJsonRoot(t *testing.T) {
 		Path: "",
 	}
 
-	resources, err := deepIndexOnePack(entry, cloneFn)
+	resources, err := deepIndexOnePack(context.Background(), t.TempDir(), "test-pack", entry, cloneFn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,5 +1027,169 @@ func TestDeepIndexOnePack_RespectsPackJsonRoot(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected to find rule 'safety' in resources, got: %v", resources)
+	}
+}
+
+func TestDeepIndexOnePack_IndexesPromptsPluginsAndMCPServers(t *testing.T) {
+	t.Parallel()
+
+	cloneFn := func(repo, dir, ref string) error {
+		writePackJSON := func(p, body string) {
+			if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+				t.Fatalf("write %s: %v", p, err)
+			}
+		}
+		mkdir := func(p string) {
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", p, err)
+			}
+		}
+
+		mkdir(dir)
+		writePackJSON(filepath.Join(dir, "pack.json"),
+			`{"schema_version": 2, "name": "deep-pack", "version": "1.0", "root": "."}`)
+
+		mkdir(filepath.Join(dir, "prompts"))
+		writePackJSON(filepath.Join(dir, "prompts", "smoke.md"),
+			"---\ndescription: Quick smoke check\n---\nSmoke prompt body.\n")
+
+		mkdir(filepath.Join(dir, "plugins"))
+		writePackJSON(filepath.Join(dir, "plugins", "linear.json"),
+			`{"source": "github:linear/linear-codex-plugin", "marketplace": "openai-curated"}`)
+
+		mkdir(filepath.Join(dir, "mcp"))
+		writePackJSON(filepath.Join(dir, "mcp", "example-server.json"),
+			`{"name": "example-server", "transport": "stdio", "command": ["npx", "example-server-mcp"], "available_tools": ["search_issues", "get_issue"], "auth": "PAT", "notes": "Example MCP server"}`)
+
+		return nil
+	}
+
+	entry := config.RegistryEntry{
+		Repo: "https://example.com/deep.git",
+		Ref:  "main",
+	}
+
+	resources, err := deepIndexOnePack(context.Background(), t.TempDir(), "deep-pack", entry, cloneFn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byKindName := map[string]index.Resource{}
+	for _, r := range resources {
+		byKindName[r.Kind+"/"+r.Name] = r
+	}
+	if r, ok := byKindName["prompt/smoke"]; !ok || !strings.Contains(r.Description, "Quick smoke check") {
+		t.Fatalf("expected prompt 'smoke' with description, got %+v", byKindName)
+	}
+	if r, ok := byKindName["plugin/linear"]; !ok || !strings.Contains(r.Body, "openai-curated") {
+		t.Fatalf("expected plugin 'linear' with marketplace in body, got %+v", byKindName)
+	}
+	if r, ok := byKindName["mcp/example-server"]; !ok {
+		t.Fatalf("expected mcp 'example-server', got %+v", byKindName)
+	} else {
+		if !strings.Contains(r.Body, "search_issues") {
+			t.Fatalf("mcp body should include tools: %s", r.Body)
+		}
+		if !strings.Contains(r.Body, "transport: stdio") {
+			t.Fatalf("mcp body should include transport: %s", r.Body)
+		}
+	}
+}
+
+func TestDeepIndexOnePack_IndexesNestedResources(t *testing.T) {
+	t.Parallel()
+
+	cloneFn := func(repo, dir, ref string) error {
+		writeFile(t, filepath.Join(dir, "pack.json"),
+			`{"schema_version": 2, "name": "nested-pack", "version": "1.0", "root": "."}`)
+		writeFile(t, filepath.Join(dir, "rules", "team", "safety.md"),
+			"---\ndescription: Nested safety rule\n---\nNested rule body.\n")
+		return nil
+	}
+
+	resources, err := deepIndexOnePack(context.Background(), t.TempDir(), "nested-pack", config.RegistryEntry{
+		Repo: "https://example.com/nested.git",
+		Ref:  "main",
+	}, cloneFn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range resources {
+		if r.Kind == "rule" && r.Name == "team/safety" {
+			return
+		}
+	}
+	t.Fatalf("expected nested rule team/safety, got %+v", resources)
+}
+
+func TestRegistryDeepIndex_IndexesArchiveEntries(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":      `{"schema_version":2,"name":"archive-index","version":"1.0.0","root":"."}`,
+		"repo-main/prompts/run.md": "Archive prompt body.\n",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archive)
+	}))
+	defer srv.Close()
+	writeShowTestRegistry(t, configDir, map[string]config.RegistryEntry{
+		"archive-index": {
+			Method: config.MethodArchive,
+			URL:    srv.URL + "/pack.zip",
+		},
+	})
+
+	if err := RegistryDeepIndex(context.Background(), RegistryDeepIndexRequest{ConfigDir: configDir}, nil); err != nil {
+		t.Fatalf("RegistryDeepIndex: %v", err)
+	}
+	db, err := index.Open(filepath.Join(configDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	results, err := db.Search("Archive", index.SearchFilters{Status: "registered", Kind: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Pack != "archive-index" || results[0].Kind != "prompt" {
+		t.Fatalf("archive deep-index result = %+v", results)
+	}
+}
+
+func TestRegistryDeepIndex_ArchiveContentPathsWithoutPackJSON(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/material/prompts/run.md": "Archive content_paths prompt body.\n",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archive)
+	}))
+	defer srv.Close()
+	writeShowTestRegistry(t, configDir, map[string]config.RegistryEntry{
+		"archive-catalog": {
+			Method: config.MethodArchive,
+			URL:    srv.URL + "/pack.zip",
+			ContentPaths: map[domain.PackCategory]string{
+				domain.CategoryPrompts: "material/prompts",
+			},
+		},
+	})
+
+	if err := RegistryDeepIndex(context.Background(), RegistryDeepIndexRequest{ConfigDir: configDir}, nil); err != nil {
+		t.Fatalf("RegistryDeepIndex: %v", err)
+	}
+	db, err := index.Open(filepath.Join(configDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	results, err := db.Search("content_paths", index.SearchFilters{Status: "registered", Kind: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Pack != "archive-catalog" || results[0].Kind != "prompt" {
+		t.Fatalf("archive content_paths deep-index result = %+v", results)
 	}
 }

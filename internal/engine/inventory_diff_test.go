@@ -42,6 +42,27 @@ func TestDiffStrings(t *testing.T) {
 	}
 }
 
+func TestExtractRequiredRefsSkipsDefaultedRefs(t *testing.T) {
+	t.Parallel()
+	refs := extractRequiredRefs(domain.MCPServer{
+		Command: []string{
+			"server",
+			"--mode={params.mode:-prod}",
+			"--base-url={params.base_url}",
+			"--api-url={env:API_BASE_URL:-https://api.example.com}",
+			"--token={env:API_TOKEN}",
+		},
+	})
+
+	want := []domain.RequiredRef{
+		{Kind: domain.RefKindParam, Name: "base_url"},
+		{Kind: domain.RefKindEnv, Name: "API_TOKEN"},
+	}
+	if !slices.Equal(refs, want) {
+		t.Fatalf("RequiredRefs = %+v, want %+v", refs, want)
+	}
+}
+
 func TestDiffInventory_EmptyOnIdentical(t *testing.T) {
 	t.Parallel()
 	inv := domain.PackInventory{

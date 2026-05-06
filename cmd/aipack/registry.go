@@ -11,10 +11,11 @@ import (
 )
 
 type RegistryCmd struct {
-	List    RegistryListCmd    `cmd:"" help:"List all packs available in the registry"`
-	Fetch   RegistryFetchCmd   `cmd:"" help:"Fetch remote registry sources and cache them locally"`
-	Sources RegistrySourcesCmd `cmd:"" help:"List configured registry sources"`
-	Delete  RegistryDeleteCmd  `cmd:"" help:"Delete a registry source"`
+	List     RegistryListCmd     `cmd:"" help:"List all packs available in the registry"`
+	Fetch    RegistryFetchCmd    `cmd:"" help:"Fetch remote registry sources and cache them locally"`
+	Sources  RegistrySourcesCmd  `cmd:"" help:"List configured registry sources"`
+	Delete   RegistryDeleteCmd   `cmd:"" help:"Delete a registry source"`
+	Validate RegistryValidateCmd `cmd:"" help:"Validate a registry YAML file"`
 }
 
 func (c *RegistryCmd) Help() string {
@@ -26,10 +27,56 @@ in source order (first-seen wins for name conflicts).
 
 Common workflow:
   aipack registry fetch <url>     # add and fetch a source
+  aipack registry validate ./registry.yaml
   aipack registry list            # see available packs
   aipack pack install <name>      # install a pack by name`,
 		configPathDisplay("registries"),
 	)
+}
+
+// --- registry validate ---
+
+type RegistryValidateCmd struct {
+	Path string `arg:"" help:"Registry YAML file to validate" type:"path"`
+	JSON bool   `help:"Emit machine-readable JSON" name:"json"`
+}
+
+func (c *RegistryValidateCmd) Help() string {
+	return `Validates a registry YAML file's schema and pack source entries.
+
+Examples:
+  aipack registry validate ./registry.yaml
+  aipack registry validate ./registry.yaml --json
+
+See also: registry fetch, registry list`
+}
+
+func (c *RegistryValidateCmd) Run(ctx context.Context, g *Globals) error {
+	result, err := app.RegistryValidate(c.Path)
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		if result.Errors == nil {
+			result.Errors = []string{}
+		}
+		if err := cmdutil.WriteJSON(g.Stdout, result); err != nil {
+			return err
+		}
+		if !result.Valid {
+			return ExitError{Code: cmdutil.ExitFail}
+		}
+		return nil
+	}
+	if result.Valid {
+		fmt.Fprintf(g.Stdout, "Registry OK: %s\n", result.Path)
+		return nil
+	}
+	fmt.Fprintf(g.Stdout, "Registry invalid: %s\n", result.Path)
+	for _, msg := range result.Errors {
+		fmt.Fprintf(g.Stdout, "  - %s\n", msg)
+	}
+	return ExitError{Code: cmdutil.ExitFail}
 }
 
 // --- registry list ---
@@ -269,7 +316,14 @@ func printRegistryResults(g *Globals, results []app.RegistrySearchResult) {
 		if r.Owner != "" {
 			fmt.Fprintf(g.Stdout, "Owner:       %s\n", r.Owner)
 		}
-		fmt.Fprintf(g.Stdout, "Repo:        %s\n", r.Repo)
+		if r.Method != "" {
+			fmt.Fprintf(g.Stdout, "Method:      %s\n", r.Method)
+		}
+		if r.Method == config.MethodArchive {
+			fmt.Fprintf(g.Stdout, "URL:         %s\n", r.URL)
+		} else {
+			fmt.Fprintf(g.Stdout, "Repo:        %s\n", r.Repo)
+		}
 		if r.Path != "" {
 			fmt.Fprintf(g.Stdout, "Path:        %s\n", r.Path)
 		}

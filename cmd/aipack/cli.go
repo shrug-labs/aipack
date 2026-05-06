@@ -27,6 +27,8 @@ type cliCore struct {
 
 	Init   InitCmd   `cmd:"" group:"Setup:" help:"Create default sync-config and profile files"`
 	Doctor DoctorCmd `cmd:"" group:"Setup:" help:"Run preflight checks on config, packs, and MCP servers"`
+	Setup  SetupCmd  `cmd:"" group:"Setup:" help:"Show missing profile params and env values"`
+	Config ConfigCmd `cmd:"" group:"Setup:" help:"Manage machine-local aipack configuration"`
 
 	Sync    SyncCmd    `cmd:"" group:"Sync/Save:" help:"Apply pack content to harness locations"`
 	Render  RenderCmd  `cmd:"" group:"Sync/Save:" help:"Render pack content to a standalone output directory"`

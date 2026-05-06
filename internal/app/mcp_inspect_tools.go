@@ -151,6 +151,11 @@ func RunMCPInspectTools(ctx context.Context, req MCPInspectToolsRequest) MCPInsp
 		}
 	}
 
+	dotenv, err := config.LoadDotEnv(config.DotEnvPath(configDir))
+	if err != nil {
+		return errResult("load .env: %v", err)
+	}
+
 	timeout := req.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -174,7 +179,7 @@ func RunMCPInspectTools(ctx context.Context, req MCPInspectToolsRequest) MCPInsp
 	results := make([]MCPInspectToolsServerResult, len(targets))
 	concurrency := max(1, min(len(targets), 4))
 	parallelBounded(ctx, len(targets), concurrency, func(i int) {
-		results[i] = probeOneInspectTarget(ctx, targets[i], req, timeout, loadParams)
+		results[i] = probeOneInspectTarget(ctx, targets[i], req, timeout, loadParams, dotenv)
 		if req.OnResult != nil {
 			req.OnResult(results[i])
 		}
@@ -228,6 +233,7 @@ func probeOneInspectTarget(
 	req MCPInspectToolsRequest,
 	timeout time.Duration,
 	loadParams func() (map[string]string, error),
+	env map[string]string,
 ) MCPInspectToolsServerResult {
 	sr := MCPInspectToolsServerResult{
 		ServerName:    ref.serverName,
@@ -247,7 +253,7 @@ func probeOneInspectTarget(
 		serverParams = p
 	}
 
-	expanded, expErr := engine.ExpandSingleMCPServer(serverParams, ref.server)
+	expanded, expErr := engine.ExpandSingleMCPServerWithEnv(serverParams, env, ref.server)
 	if expErr != nil {
 		sr.Status = InspectStatusSkipped
 		// The engine's error carries its own sanitized message (templates

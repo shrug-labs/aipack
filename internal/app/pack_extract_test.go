@@ -104,6 +104,46 @@ func TestExtractPackContent_ContentPaths_MissingSourceErrors(t *testing.T) {
 	}
 }
 
+func TestExtractPackContent_ContentPaths_PathTraversalRejected(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	srcDir := filepath.Join(parent, "repo")
+	outsideDir := filepath.Join(parent, "outside")
+	writeFile(t, filepath.Join(srcDir, "allowed", "ok.md"), "---\nname: ok\n---\nok\n")
+	writeFile(t, filepath.Join(outsideDir, "secret.md"), "---\nname: secret\n---\nsecret\n")
+
+	paths := map[domain.PackCategory]string{
+		domain.CategoryRules: "../outside",
+	}
+
+	_, _, err := extractPackContent(t.TempDir(), srcDir, paths, "bad", parent)
+	if err == nil {
+		t.Fatal("expected error for content_paths traversal")
+	}
+	if !strings.Contains(err.Error(), "escapes source boundary") {
+		t.Fatalf("expected boundary escape error, got: %v", err)
+	}
+}
+
+func TestExtractPackContent_ContentPaths_AbsolutePathRejected(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	outsideDir := t.TempDir()
+	writeFile(t, filepath.Join(outsideDir, "secret.md"), "---\nname: secret\n---\nsecret\n")
+
+	paths := map[domain.PackCategory]string{
+		domain.CategoryRules: outsideDir,
+	}
+
+	_, _, err := extractPackContent(t.TempDir(), srcDir, paths, "bad", srcDir)
+	if err == nil {
+		t.Fatal("expected error for absolute content_paths source")
+	}
+	if !strings.Contains(err.Error(), "must be relative") {
+		t.Fatalf("expected relative-path error, got: %v", err)
+	}
+}
+
 func TestExtractPackContent_StandardPack(t *testing.T) {
 	t.Parallel()
 	srcDir := t.TempDir()

@@ -74,10 +74,10 @@ func TestProbePhaseLabel(t *testing.T) {
 func TestToolPickerView_LoadingShowsPhase(t *testing.T) {
 	t.Parallel()
 	p := newToolPicker(dialogMCPToolPicker, "Tools for pack/server:", nil)
-	p.loading = true
-	p.phase = mcp.ProbePhaseListingTools
+	p.Loading = true
+	p.Phase = mcp.ProbePhaseListingTools
 
-	view := p.View()
+	view := p.Render()
 	if !strings.Contains(view, "Listing tools...") {
 		t.Errorf("loading view should contain phase label %q, got:\n%s", "Listing tools...", view)
 	}
@@ -88,9 +88,9 @@ func TestToolPickerView_LoadingShowsPhase(t *testing.T) {
 func TestToolPickerView_LoadingPreEventFallback(t *testing.T) {
 	t.Parallel()
 	p := newToolPicker(dialogMCPToolPicker, "Tools for pack/server:", nil)
-	p.loading = true
+	p.Loading = true
 
-	view := p.View()
+	view := p.Render()
 	if !strings.Contains(view, "Probing server...") {
 		t.Errorf("pre-event loading view should fall back to %q, got:\n%s", "Probing server...", view)
 	}

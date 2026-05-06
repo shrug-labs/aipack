@@ -4,6 +4,19 @@ Agent knowledge is already written. Skills live in team repos, rules accumulate 
 
 aipack can install from these repositories directly. You point it at the directories that contain content, it extracts them into a standard pack layout, and discards the rest. The source repo doesn't need a `pack.json` or any restructuring — the consumer does the packaging.
 
+## Fast path
+
+For the common path, inspect, install into the active profile, check setup, then sync:
+
+```bash
+aipack pack inspect <source>
+aipack pack install <source> --add
+aipack setup
+aipack sync
+```
+
+`pack inspect` is the trust step. `pack install --add` installs the source and adds it to the active profile. `setup` reports missing `{params.*}` and `{env:*}` values before sync.
+
 ## Installing a standard pack
 
 A standard pack has a `pack.json` manifest and content in conventional directories. Three ways to install:
@@ -32,6 +45,34 @@ aipack pack install       # reconcile the active profile — installs anything m
 (Equivalent to `aipack pack install -m`, which stays as an explicit alias for scripts.)
 
 For creating your own pack from scratch, see [Creating Packs](./creating-packs.md).
+
+## Inspecting before install
+
+Use `pack inspect` when you want to see what a pack contains before it touches installed state. It works with the same source shapes as install — local paths, registry names, git URLs, subpaths, archive URLs, and content-path mappings — but it does not write `packs/`, the lockfile, or profiles.
+
+```bash
+aipack pack inspect their-pack
+aipack pack inspect --url https://github.com/org/repo.git --path packs/team
+aipack pack inspect https://downloads.example.com/team-pack.zip --archive
+aipack search --status inspected
+```
+
+The inspected pack is added to the search index as a preview. That makes `aipack search --status inspected` useful for browsing rules, skills, workflows, agents, and prompts before deciding whether to run `pack install`. Use `pack inspect --json` when automation needs the full structured inventory.
+
+When the pack defines MCP servers, `aipack pack inspect` surfaces a warning listing the server names. MCP servers run external tools with whatever credentials the harness gives them, so the warning is a chance to check the source before sync wires them in. Inspected rows accumulate over time; they age out automatically after 30 days, and `aipack pack inspect --clear` wipes them on demand without touching installed or registered packs.
+
+## Importing one markdown file
+
+Use `pack import` when the source is a single gist/raw markdown file rather than a pack or repository directory. Use `--name` to create a small local pack, or `--pack` to add the file to an installed pack:
+
+```bash
+aipack pack import ./review.md --type skill --name review-pack --add
+aipack pack import ./triage.md --type skill --pack example-pack
+aipack pack import https://example.com/rule.md --type rule --name rules --id incident-rule
+aipack pack import ./prompt.md --type prompt --name prompts
+```
+
+The command writes the file as the requested type and adds minimal YAML frontmatter if the file has none. `--add` adds the imported pack to the active profile, matching `pack install --add`. Imports into existing packs append explicit manifest lists and leave omitted lists omitted so auto-discovery keeps working.
 
 ## Installing from any repository
 
@@ -94,7 +135,7 @@ packs:
     path: "essentials"
     description: "Foundation pack"
 
-  team-ops:
+  example-pack:
     repo: "https://github.com/org/platform.git"
     quiet: true
     content_paths:
@@ -108,17 +149,31 @@ packs:
       rules: .clinerules
       skills: .cline/skills
     description: "Cline-native rules and skills"
+
+  team-archive:
+    method: archive
+    url: "https://downloads.example.com/aipack/team-archive.zip"
+    description: "Static archive distribution"
 ```
 
 Now anyone installs by name:
 
 ```bash
-aipack pack install team-ops --add
+aipack pack install example-pack --add
 ```
 
 The content flags, quiet hint, and description are baked into the registry entry. `pack update` re-clones and re-extracts, picking up upstream changes.
 
-Registry entries also support `ref` (git branch/tag/commit) and `path` (subdirectory within the repo for standard packs that include a `pack.json`). For the full registry schema, see the [Pack Format Specification](./pack-format.md#92-registry).
+Registry entries also support `ref` (git branch/tag/commit) and `path` (subdirectory within the repo for standard packs that include a `pack.json`). For the full registry schema, see the [Pack Format Specification](./pack-format.md#102-registry).
+
+If a foundational public pack like `aipack-core` or `essentials` is missing from your merged registries on first run, the lookup error suggests fetching the default public registry directly:
+
+```bash
+aipack registry fetch https://raw.githubusercontent.com/shrug-labs/packs/main/registry.yaml
+aipack pack install essentials --add
+```
+
+Explicit `--registry` and registry-file lookups stay strict — the hint only shows up when you haven't pointed aipack at any registry yet.
 
 ## Common layouts
 
@@ -201,7 +256,7 @@ Content path mappings, install metadata, and version pins are stored in `aipack.
 
 ```yaml
 packs:
-  team-ops:
+  example-pack:
     origin: https://github.com/org/platform.git
     method: clone
     installed_at: "2026-04-02T10:30:00Z"
@@ -305,7 +360,7 @@ Each name is a separate pack from the lockfile's perspective; profiles reference
 
 ## Updating
 
-`pack update` re-clones from origin and re-extracts content. The `commit_hash` recorded at install time enables change detection — if the remote HEAD hasn't changed, the update is skipped. When refreshing multiple packs, updates run in parallel (up to three concurrent clones), so total wall-clock time is bounded by the slowest pack rather than the sum. Clones for the same origin share a local bare-clone cache, so multiple packs installed from one monorepo only fetch from the remote once.
+`pack update` re-clones git installs from origin and re-extracts content. The `commit_hash` recorded at install time enables change detection — if the remote HEAD hasn't changed, the update is skipped. Archive installs (`method: archive` or `--archive`) are re-fetched and full-replaced because they do not have git refs or commit hashes. Updates materialize new content in staging first, apply bundled-content filters there, and only then atomically replace the installed pack. When refreshing multiple packs, updates run in parallel (up to three concurrent fetches), so total wall-clock time is bounded by the slowest pack rather than the sum. Clones for the same origin share a local bare-clone cache, so multiple packs installed from one monorepo only fetch from the remote once.
 
 ```bash
 aipack pack update              # update all installed packs (default)
@@ -321,6 +376,12 @@ aipack pack update my-pack --ref main     # switch to tracking a branch
 ```
 
 For standard packs (no `content_paths`), the same re-clone-and-extract process applies. Installed packs always contain only content — no `.git/` directories, no non-pack files.
+
+## Removing a pack
+
+`aipack pack delete <name>` removes the pack source, lockfile entry, profile entries, and pack ledger entries. It removes only clean rendered harness files whose ledger digest still matches on-disk content and whose path is a known harness-rendered location. Modified files and unknown ledger paths are preserved on disk and made unmanaged. Shared settings files are not deleted; aipack strips only the pack-managed keys and preserves user settings.
+
+Use `--keep-rendered` when you want to stop tracking a pack but intentionally leave rendered harness files in place as unmanaged content. `--dry-run` previews either path, and `--json` emits machine output.
 
 ## What to read next
 

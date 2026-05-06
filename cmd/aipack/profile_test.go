@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 func TestProfileList_HelpReturnsOK(t *testing.T) {
@@ -76,5 +77,50 @@ func TestProfileShow_MissingProfile(t *testing.T) {
 	_, _, code := runApp(t, "profile", "show", "nonexistent", "--config-dir", configDir)
 	if code != cmdutil.ExitFail {
 		t.Fatalf("profile show nonexistent exit=%d, want %d", code, cmdutil.ExitFail)
+	}
+}
+
+func TestProfileSetAndUnsetParam_CLI(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	profilesDir := filepath.Join(configDir, "profiles")
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profilesDir, "default.yaml")
+	if err := os.WriteFile(profilePath, []byte("schema_version: 2\npacks: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, code := runApp(t, "profile", "set-param", "default", "region", "us-ashburn-1", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("profile set-param exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	cfg, err := config.LoadProfile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Params["region"] != "us-ashburn-1" {
+		t.Fatalf("region = %q", cfg.Params["region"])
+	}
+
+	_, stderr, code = runApp(t, "profile", "unset-param", "default", "region", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("profile unset-param exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	cfg, err = config.LoadProfile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Params["region"]; ok {
+		t.Fatalf("region should be unset: %+v", cfg.Params)
+	}
+}
+
+func TestProfileRefs_HelpReturnsOK(t *testing.T) {
+	t.Parallel()
+	stdout, stderr, code := runApp(t, "profile", "refs", "--help")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("profile refs --help exit=%d, want %d; stderr=%s stdout=%s", code, cmdutil.ExitOK, stderr, stdout)
 	}
 }

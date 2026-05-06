@@ -38,6 +38,28 @@ type Harness interface {
 	Capture(ctx context.Context, cctx CaptureContext) (CaptureResult, error)
 }
 
+// MCPManagedOverlayEditor is implemented by harness adapters that can rewrite
+// their own managed settings overlay during targeted pack deletion.
+type MCPManagedOverlayEditor interface {
+	EmptyManagedOverlay() []byte
+	PruneMCPServersFromManagedOverlay(overlay []byte, serverNames map[string]struct{}) ([]byte, bool, error)
+	RetainMCPServersInManagedOverlay(overlay []byte, serverNames map[string]struct{}) ([]byte, error)
+}
+
+// LookupMCPManagedOverlayEditor returns the optional managed-overlay editor for
+// a harness in the registry.
+func LookupMCPManagedOverlayEditor(registry *Registry, id domain.Harness) (MCPManagedOverlayEditor, bool) {
+	if registry == nil {
+		return nil, false
+	}
+	h, err := registry.Lookup(id)
+	if err != nil {
+		return nil, false
+	}
+	editor, ok := h.(MCPManagedOverlayEditor)
+	return editor, ok
+}
+
 // FileFormat identifies the serialization format of an OwnedFile.
 type FileFormat int
 

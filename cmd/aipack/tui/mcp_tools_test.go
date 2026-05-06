@@ -2,10 +2,14 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	profilescreen "github.com/shrug-labs/aipack/cmd/aipack/tui/screens/profiles"
+	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 )
 
@@ -22,9 +26,31 @@ func TestTriStateItemsForServer_SilentGrantsAllAsAsk(t *testing.T) {
 		t.Fatalf("items=%d want 3", len(items))
 	}
 	for _, it := range items {
-		if it.state != triAsk {
-			t.Errorf("%s state=%v want triAsk (silent profile grants all)", it.label, it.state)
+		if it.State != triAsk {
+			t.Errorf("%s state=%v want triAsk (silent profile grants all)", it.Label, it.State)
 		}
+	}
+}
+
+func TestLoadExpandedMCPServerForProbeUsesDotEnv(t *testing.T) {
+	t.Parallel()
+	packRoot := t.TempDir()
+	mcpDir := filepath.Join(packRoot, "mcp")
+	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mcpDir, "srv.json"), []byte(`{"command":["{env:AIPACK_TEST_TUI_DOTENV_CMD}"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := loadExpandedMCPServerForProbe(packRoot, "srv", nil, map[string]string{
+		"AIPACK_TEST_TUI_DOTENV_CMD": "from-dotenv",
+	})
+	if err != nil {
+		t.Fatalf("loadExpandedMCPServerForProbe: %v", err)
+	}
+	if len(server.Command) != 1 || server.Command[0] != "from-dotenv" {
+		t.Fatalf("Command = %v, want [from-dotenv]", server.Command)
 	}
 }
 
@@ -38,7 +64,7 @@ func TestTriStateItemsForServer_ExplicitAllowedShowsAskForListedOnly(t *testing.
 	items := toolPickerItemsForServer(available, packs, "pk", "srv")
 	got := map[string]triState{}
 	for _, it := range items {
-		got[it.label] = it.state
+		got[it.Label] = it.State
 	}
 	if got["a"] != triAsk {
 		t.Errorf("a=%v want triAsk", got["a"])
@@ -63,8 +89,8 @@ func TestTriStateItemsForServer_AutoTakesPrecedenceOverAllowed(t *testing.T) {
 	}}
 	items := toolPickerItemsForServer(available, packs, "pk", "srv")
 	for _, it := range items {
-		if it.label == "a" && it.state != triAuto {
-			t.Errorf("a state=%v want triAuto", it.state)
+		if it.Label == "a" && it.State != triAuto {
+			t.Errorf("a state=%v want triAuto", it.State)
 		}
 	}
 }
@@ -81,8 +107,8 @@ func TestTriStateItemsForServer_DisabledStaysOff(t *testing.T) {
 	}}
 	items := toolPickerItemsForServer(available, packs, "pk", "srv")
 	for _, it := range items {
-		if it.label == "a" && it.state != triOff {
-			t.Errorf("a state=%v want triOff (disabled beats allowed)", it.state)
+		if it.Label == "a" && it.State != triOff {
+			t.Errorf("a state=%v want triOff (disabled beats allowed)", it.State)
 		}
 	}
 }
@@ -99,7 +125,7 @@ func TestTriStateItemsForServer_DisabledOnlyTreatsOthersAsAsk(t *testing.T) {
 	items := toolPickerItemsForServer(available, packs, "pk", "srv")
 	got := map[string]triState{}
 	for _, it := range items {
-		got[it.label] = it.state
+		got[it.Label] = it.State
 	}
 	if got["a"] != triOff {
 		t.Errorf("a=%v want triOff (explicitly disabled)", got["a"])
@@ -204,7 +230,7 @@ func TestPickerOutputForSave_DisabledOnlyRoundTripPreservesDisabledTools(t *test
 func TestApplyMCPBulkAction_EnableAllClearsLists(t *testing.T) {
 	t.Parallel()
 	srv := config.MCPServerConfig{
-		Enabled:            boolPtr(false),
+		Enabled:            config.BoolPtr(false),
 		AllowedTools:       []string{"kept"},
 		AlwaysAllowedTools: []string{"kept"},
 		DisabledTools:      []string{"kept"},
@@ -264,7 +290,7 @@ func TestApplyMCPBulkAction_AlwaysAllowAllUsesProbedToolsSorted(t *testing.T) {
 func TestApplyMCPBulkAction_DisableServerClearsLists(t *testing.T) {
 	t.Parallel()
 	srv := config.MCPServerConfig{
-		Enabled:            boolPtr(true),
+		Enabled:            config.BoolPtr(true),
 		AllowedTools:       []string{"x"},
 		AlwaysAllowedTools: []string{"y"},
 		DisabledTools:      []string{"z"},
@@ -284,7 +310,7 @@ func TestApplyMCPBulkAction_DisableServerClearsLists(t *testing.T) {
 func TestApplyMCPBulkAction_EnableServerPreservesLists(t *testing.T) {
 	t.Parallel()
 	srv := config.MCPServerConfig{
-		Enabled:       boolPtr(false),
+		Enabled:       config.BoolPtr(false),
 		AllowedTools:  []string{"kept"},
 		DisabledTools: []string{"kept-disabled"},
 	}
@@ -303,7 +329,7 @@ func TestApplyMCPBulkAction_EnableServerPreservesLists(t *testing.T) {
 func TestApplyMCPBulkAction_ResetClearsListsPreservesEnabled(t *testing.T) {
 	t.Parallel()
 	srv := config.MCPServerConfig{
-		Enabled:            boolPtr(true),
+		Enabled:            config.BoolPtr(true),
 		AllowedTools:       []string{"a"},
 		AlwaysAllowedTools: []string{"b"},
 		DisabledTools:      []string{"c"},
@@ -362,22 +388,24 @@ func TestMCPProbeCache_PersistsAcrossProfilesModelInstances(t *testing.T) {
 	configDir := t.TempDir()
 
 	// Session 1: store a probe result to memory, persist to disk.
-	m1 := newProfilesModel(context.Background(), nil, configDir)
 	key := mcpProbeKey{packRoot: "/packs/test", server: "srv-1"}
-	m1.storeMCPProbeTools(key, []string{"tool-alpha", "tool-beta"})
-	persistMCPProbeCache(configDir, m1.mcpProbeCache)
+	m1 := profilescreen.New(context.Background(), nil, configDir)
+	m1 = m1.StoreMCPProbeTools(key.packRoot, key.server, []string{"tool-alpha", "tool-beta"})
+	if err := app.SaveMCPProbeCache(configDir, m1.ProbeCacheForPersist()); err != nil {
+		t.Fatalf("save probe cache: %v", err)
+	}
 
 	// Session 2: new profiles model loads cache from disk — must see the
 	// result without re-probing.
-	m2 := newProfilesModel(context.Background(), nil, configDir)
-	tools, ok := m2.cachedMCPProbeTools(key)
+	m2 := profilescreen.New(context.Background(), nil, configDir)
+	tools, ok := m2.CachedMCPProbeTools(key.packRoot, key.server)
 	if !ok {
 		t.Fatalf("session 2 did not see cached probe — seed path broken")
 	}
 	if !slices.Equal(tools, []string{"tool-alpha", "tool-beta"}) {
 		t.Errorf("tools = %v, want [tool-alpha tool-beta]", tools)
 	}
-	if _, ok := m2.cachedMCPProbedAt(key); !ok {
+	if _, ok := m2.CachedMCPProbedAt(key.packRoot, key.server); !ok {
 		t.Error("probedAt timestamp did not survive persist/load")
 	}
 }

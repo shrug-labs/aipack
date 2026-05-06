@@ -197,7 +197,7 @@ func TestServerNeedsProfileParams(t *testing.T) {
 			name: "stdio with {params.*} in command needs profile params",
 			server: domain.MCPServer{
 				Transport: "stdio",
-				Command:   []string{"my-mcp", "--region", "{params.region}"},
+				Command:   []string{"my-mcp", "--workspace", "{params.workspace}"},
 			},
 			want: true,
 		},
@@ -247,6 +247,41 @@ func TestServerNeedsProfileParams(t *testing.T) {
 	}
 }
 
+func TestRunMCPInspectToolsUsesConfigDotEnvForEnvRefs(t *testing.T) {
+	configDir := t.TempDir()
+	writeTestSyncConfig(t, configDir)
+
+	envKey := "AIPACK_TEST_INSPECT_DOTENV_CMD"
+	unsetEnvForTest(t, envKey)
+	if err := os.WriteFile(filepath.Join(configDir, ".env"), []byte(envKey+"=definitely-not-a-real-aipack-mcp-command\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(configDir, "packs", "demo", "mcp")
+	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mcpDir, "srv.json"), []byte(`{"transport":"stdio","command":["{env:AIPACK_TEST_INSPECT_DOTENV_CMD}"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := RunMCPInspectTools(t.Context(), MCPInspectToolsRequest{
+		ConfigDir: configDir,
+		ServerRef: "srv",
+		Timeout:   time.Second,
+	})
+	if len(result.Results) != 1 {
+		t.Fatalf("Results = %d, want 1: %+v", len(result.Results), result.Results)
+	}
+	got := result.Results[0]
+	if got.Status == InspectStatusSkipped {
+		t.Fatalf("Status = skipped, want probe to reach command execution via .env; error=%q", got.Error)
+	}
+	if strings.Contains(got.Error, "env var "+envKey+" is not set") {
+		t.Fatalf("Error = %q, want .env value to satisfy env ref", got.Error)
+	}
+}
+
 func TestDiscoverMCPServers_SurfacesMalformedInventoryAsWarning(t *testing.T) {
 	t.Parallel()
 
@@ -279,6 +314,21 @@ func TestDiscoverMCPServers_SurfacesMalformedInventoryAsWarning(t *testing.T) {
 	if !strings.Contains(warnings[0], "bad.json") || !strings.Contains(warnings[0], "parse") {
 		t.Errorf("warning should mention parse failure for bad.json, got: %s", warnings[0])
 	}
+}
+
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	old, ok := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, old)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
 }
 
 func TestRunMCPInspectTools_ListMode_AllowsMissingPacksDir(t *testing.T) {

@@ -998,6 +998,166 @@ func TestMCPServer_RenderedPerHarness(t *testing.T) {
 	}
 }
 
+func TestMCPServer_RemovedFromHarnessOnNextSync(t *testing.T) {
+	// Lifecycle gap #1 from aipack-honest-gaps-roadmap.md:
+	// "Stale MCP server definitions survive a clean sync."
+	// Pattern: sync with an MCP server, then sync again without it (simulates
+	// pack removal). Assert the harness MCP config no longer references the
+	// removed server while user-irrelevant content elsewhere is unchanged.
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	reg := testRegistry()
+
+	// Cline renders MCP at global scope so we exercise project scope on the
+	// remaining harnesses; Cline gets covered explicitly below.
+	for _, hid := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessOpenCode} {
+		t.Run(string(hid), func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			home := t.TempDir()
+
+			// First sync: ships acme + sibling MCP servers.
+			profileFirst := profileWith(packRoot, withRules("placeholder"))
+			profileFirst.MCPServers = []domain.MCPServer{
+				{
+					Name:       "acme",
+					Transport:  domain.TransportStdio,
+					Command:    []string{"npx", "acme-mcp"},
+					SourcePack: "acme-pack",
+				},
+				{
+					Name:       "sibling",
+					Transport:  domain.TransportStdio,
+					Command:    []string{"npx", "sibling-mcp"},
+					SourcePack: "sibling-pack",
+				},
+			}
+			syncAndApply(t, profileFirst, domain.ScopeProject, projectDir, home, hid, reg)
+
+			files := collectFiles(t, projectDir)
+			foundAcme := false
+			for _, content := range files {
+				if strings.Contains(content, "acme") {
+					foundAcme = true
+				}
+			}
+			if !foundAcme {
+				t.Fatalf("first sync did not render 'acme'; files=%v", files)
+			}
+
+			// Second sync: acme-pack is gone (pack removed), sibling stays.
+			profileSecond := profileWith(packRoot, withRules("placeholder"))
+			profileSecond.MCPServers = []domain.MCPServer{
+				{
+					Name:       "sibling",
+					Transport:  domain.TransportStdio,
+					Command:    []string{"npx", "sibling-mcp"},
+					SourcePack: "sibling-pack",
+				},
+			}
+			syncAndApply(t, profileSecond, domain.ScopeProject, projectDir, home, hid, reg)
+
+			files = collectFiles(t, projectDir)
+			for path, content := range files {
+				if strings.Contains(content, `"acme"`) || strings.Contains(content, `acme-mcp`) {
+					t.Fatalf("%s: stale MCP server 'acme' still present in %s after pack removal:\n%s", hid, path, content)
+				}
+			}
+			foundSibling := false
+			for _, content := range files {
+				if strings.Contains(content, "sibling-mcp") {
+					foundSibling = true
+				}
+			}
+			if !foundSibling {
+				t.Fatalf("%s: sibling MCP server should still be present after acme removal", hid)
+			}
+		})
+	}
+}
+
+func TestMCPServer_RemovedFromClineOnNextSync(t *testing.T) {
+	// Cline renders MCP at global scope only. Verify the same stale-removal
+	// behavior holds for the home-rooted Cline MCP destination.
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	reg := testRegistry()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	profileFirst := profileWith(packRoot, withRules("placeholder"))
+	profileFirst.MCPServers = []domain.MCPServer{
+		{Name: "acme", Transport: domain.TransportStdio, Command: []string{"npx", "acme-mcp"}, SourcePack: "acme-pack"},
+		{Name: "sibling", Transport: domain.TransportStdio, Command: []string{"npx", "sibling-mcp"}, SourcePack: "sibling-pack"},
+	}
+	syncAndApply(t, profileFirst, domain.ScopeGlobal, projectDir, home, domain.HarnessCline, reg)
+
+	files := collectFiles(t, home)
+	foundAcme := false
+	for _, content := range files {
+		if strings.Contains(content, "acme-mcp") {
+			foundAcme = true
+		}
+	}
+	if !foundAcme {
+		t.Fatalf("first sync should render acme into Cline global config; files=%v", files)
+	}
+
+	profileSecond := profileWith(packRoot, withRules("placeholder"))
+	profileSecond.MCPServers = []domain.MCPServer{
+		{Name: "sibling", Transport: domain.TransportStdio, Command: []string{"npx", "sibling-mcp"}, SourcePack: "sibling-pack"},
+	}
+	syncAndApply(t, profileSecond, domain.ScopeGlobal, projectDir, home, domain.HarnessCline, reg)
+
+	// Filter out aipack-internal presync snapshots and ledger files — those
+	// intentionally retain pre-sync content for `aipack restore`.
+	files = collectFiles(t, home)
+	for path, content := range files {
+		if isAipackInternal(path) {
+			continue
+		}
+		if strings.Contains(content, `"acme"`) || strings.Contains(content, "acme-mcp") {
+			t.Fatalf("Cline: stale MCP server 'acme' still present in %s after pack removal:\n%s", path, content)
+		}
+	}
+	foundSibling := false
+	for path, content := range files {
+		if isAipackInternal(path) {
+			continue
+		}
+		if strings.Contains(content, "sibling-mcp") {
+			foundSibling = true
+		}
+	}
+	if !foundSibling {
+		t.Fatalf("Cline: sibling MCP server should still be present after acme removal")
+	}
+}
+
+func isAipackInternal(path string) bool {
+	path = strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	return strings.Contains(path, ".config/aipack/") ||
+		strings.Contains(path, "appdata/roaming/aipack/") ||
+		strings.Contains(path, "/ledger/") ||
+		strings.Contains(path, "-presync/")
+}
+
+func TestIsAipackInternalHandlesWindowsSeparators(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		`C:\Users\dev\AppData\Roaming\aipack\sync-config.yaml`,
+		`AppData\Roaming\aipack\ledger\encoded-project\cline.json`,
+		`AppData\Roaming\aipack\some-presync\snapshot.json`,
+	} {
+		if !isAipackInternal(path) {
+			t.Fatalf("isAipackInternal(%q) = false, want true", path)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test 13: Codex agent rendered as native TOML
 //
@@ -1350,6 +1510,78 @@ func TestMCPOnly_SyncsWithoutContentFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Plugins: end-to-end sync renders enabledPlugins / [plugins] tables
+//
+// Story: "A pack declares plugin descriptors, and after sync the harness
+// reads its native plugin config." Default-marketplace plugins go in via the
+// harness default; source-marketplace plugins also register the marketplace
+// (Claude Code's known_marketplaces.json).
+// ---------------------------------------------------------------------------
+
+func TestPlugins_RenderedPerHarness(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	reg := testRegistry()
+
+	profile := profileWith(packRoot)
+	profile.Packs[0].Plugins = []domain.Plugin{
+		{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "test-pack"},
+		{Name: "superpowers", Source: "github:obra/superpowers", Marketplace: "github:obra/superpowers-marketplace", SourcePack: "test-pack"},
+	}
+
+	// Claude Code and Codex render plugin references natively. Cline and
+	// OpenCode do not have a plugin surface today; skip them.
+	for _, hid := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessCodex} {
+		t.Run(string(hid), func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			home := t.TempDir()
+
+			syncAndApply(t, profile, domain.ScopeProject, projectDir, home, hid, reg)
+			projectFiles := collectFiles(t, projectDir)
+			homeFiles := collectFiles(t, home)
+
+			joined := func(files map[string]string) string {
+				var b strings.Builder
+				for _, content := range files {
+					b.WriteString(content)
+				}
+				return b.String()
+			}
+
+			projectBlob := joined(projectFiles)
+			homeBlob := joined(homeFiles)
+
+			// Both bindings must appear in the rendered settings (settings.json
+			// for Claude Code, config.toml for Codex). The marketplace name is
+			// derived from Plugin.Marketplace ("source:owner/repo" → "repo").
+			for _, want := range []string{"linear@", "superpowers@superpowers-marketplace"} {
+				if !strings.Contains(projectBlob, want) {
+					t.Errorf("%s: missing plugin binding %q in project files; got files=%v", hid, want, keys(projectFiles))
+				}
+			}
+
+			// Source-marketplace plugins must register their marketplace.
+			// Claude Code writes to home (~/.claude/plugins/known_marketplaces.json);
+			// Codex inlines marketplace metadata in config.toml.
+			combined := projectBlob + homeBlob
+			if !strings.Contains(combined, "superpowers-marketplace") {
+				t.Errorf("%s: missing source-marketplace registration for superpowers-marketplace", hid)
+			}
+		})
+	}
+}
+
+func keys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

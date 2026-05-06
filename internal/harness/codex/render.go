@@ -11,6 +11,7 @@ import (
 
 // codexApprovalModeApprove is the Codex per-tool auto-approve value.
 const codexApprovalModeApprove = "approve"
+const defaultCodexPluginMarketplace = "openai-curated"
 
 type codexMCPServer struct {
 	Enabled           bool                       `toml:"enabled"`
@@ -83,9 +84,26 @@ func buildMCPEntries(servers []domain.MCPServer) (map[string]codexMCPServer, []d
 	return mcp, warnings
 }
 
+func buildPluginEntries(plugins []domain.Plugin) map[string]map[string]any {
+	if len(plugins) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(plugins))
+	for _, p := range plugins {
+		out[p.Binding(defaultCodexPluginMarketplace)] = map[string]any{"enabled": true}
+	}
+	return out
+}
+
 // RenderBytes produces the full config.toml content including MCP servers and
 // agent registrations.
 func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any) ([]byte, []domain.Warning, error) {
+	return RenderBytesWithPlugins(base, servers, agentRegs, nil)
+}
+
+// RenderBytesWithPlugins produces the full config.toml content including MCP
+// servers, agent registrations, and plugin enable stanzas.
+func RenderBytesWithPlugins(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
 		if err := toml.Unmarshal(base, &root); err != nil {
@@ -109,6 +127,17 @@ func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]m
 		root["agents"] = agents
 	}
 
+	if pluginEntries := buildPluginEntries(plugins); len(pluginEntries) > 0 {
+		pluginRoot := map[string]any{}
+		if existing, ok := root["plugins"].(map[string]any); ok {
+			maps.Copy(pluginRoot, existing)
+		}
+		for name, reg := range pluginEntries {
+			pluginRoot[name] = reg
+		}
+		root["plugins"] = pluginRoot
+	}
+
 	out, err := toml.Marshal(root)
 	if err != nil {
 		return nil, warnings, err
@@ -120,4 +149,8 @@ func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]m
 // sync-managed keys (mcp_servers + agent registrations), without base template.
 func RenderManagedKeysOnly(servers []domain.MCPServer, agentRegs map[string]map[string]any) ([]byte, []domain.Warning, error) {
 	return RenderBytes(nil, servers, agentRegs)
+}
+
+func RenderManagedKeysOnlyWithPlugins(servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin) ([]byte, []domain.Warning, error) {
+	return RenderBytesWithPlugins(nil, servers, agentRegs, plugins)
 }

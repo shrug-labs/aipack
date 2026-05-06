@@ -39,6 +39,16 @@ func TestEnsureInit_CreatesAllFiles(t *testing.T) {
 	if _, err := os.Stat(profPath); err != nil {
 		t.Fatalf("default profile not created: %v", err)
 	}
+
+	// .env must exist as the local placeholder for machine-specific env refs.
+	envPath := filepath.Join(configDir, ".env")
+	gotEnv, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf(".env not created: %v", err)
+	}
+	if len(gotEnv) != 0 {
+		t.Fatalf(".env = %q, want empty placeholder", string(gotEnv))
+	}
 }
 
 func TestEnsureInit_DirExistsButFileMissing(t *testing.T) {
@@ -114,6 +124,22 @@ func TestEnsureInit_PreservesExistingFiles(t *testing.T) {
 	}
 	if string(got) != string(customContent) {
 		t.Errorf("sync-config was overwritten:\n  got:  %q\n  want: %q", string(got), string(customContent))
+	}
+
+	envPath := filepath.Join(configDir, ".env")
+	customEnv := []byte("API_TOKEN=keep\n")
+	if err := os.WriteFile(envPath, customEnv, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureInit(configDir); err != nil {
+		t.Fatalf("second ensure init: %v", err)
+	}
+	gotEnv, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotEnv) != string(customEnv) {
+		t.Errorf(".env was overwritten:\n  got:  %q\n  want: %q", string(gotEnv), string(customEnv))
 	}
 
 	// But the missing default profile should be created.

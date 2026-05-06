@@ -25,6 +25,19 @@ func ExtractFromPack(pack domain.Pack) (PackInfo, []Resource) {
 	for _, s := range pack.Skills {
 		resources = append(resources, ResourceFromMetadata("skill", s.Name, s.Frontmatter.Description, s.DirPath, s.Frontmatter.Metadata, string(s.Body)))
 	}
+	for _, p := range pack.Plugins {
+		body := p.Source
+		if p.Marketplace != "" {
+			body += "\n" + p.Marketplace
+		}
+		resources = append(resources, Resource{
+			Kind:        "plugin",
+			Name:        p.Name,
+			Description: p.Source,
+			Path:        p.SourcePath,
+			Body:        body,
+		})
+	}
 	return info, resources
 }
 

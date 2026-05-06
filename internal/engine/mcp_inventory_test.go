@@ -254,7 +254,7 @@ func TestBuildMCPServers_WarnsOnMissingInventory(t *testing.T) {
 	}
 	inventory := map[string]domain.MCPServer{} // empty inventory
 
-	servers, warnings := buildMCPServers(nil, packs, inventory)
+	servers, warnings := buildMCPServers(nil, nil, packs, inventory)
 	if len(servers) != 0 {
 		t.Errorf("expected 0 servers, got %d", len(servers))
 	}
@@ -291,7 +291,7 @@ func TestBuildMCPServers_ExpandsParams(t *testing.T) {
 		},
 	}
 
-	servers, warnings := buildMCPServers(params, packs, inventory)
+	servers, warnings := buildMCPServers(params, nil, packs, inventory)
 	if len(warnings) != 0 {
 		t.Errorf("unexpected warnings: %v", warnings)
 	}

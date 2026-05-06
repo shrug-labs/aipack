@@ -1,10 +1,14 @@
 package app
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,6 +55,25 @@ func writeEmptyProfile(t *testing.T, configDir string, profileName string) {
 	if err := os.WriteFile(filepath.Join(profileDir, profileName+".yaml"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func buildPackZip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(files[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func TestPackInstall_EmitsEvents(t *testing.T) {
@@ -1070,6 +1093,132 @@ func TestPackInstall_URL_RecordsOriginInSyncConfig(t *testing.T) {
 	}
 	if meta.InstalledAt != fixedNow.UTC().Format(time.RFC3339) {
 		t.Fatalf("installed_at = %q, want %q", meta.InstalledAt, fixedNow.UTC().Format(time.RFC3339))
+	}
+}
+
+func TestPackInstall_ArchiveURLInstallsAndRecordsArchiveMethod(t *testing.T) {
+	t.Parallel()
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"archive-pack","version":"1.0.0","root":"."}`,
+		"repo-main/rules/foo.md": "# Foo\n",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	configDir := t.TempDir()
+	writeTestSyncConfig(t, configDir)
+	archiveURL := srv.URL + "/pack.zip"
+
+	var out bytes.Buffer
+	err := PackInstall(context.Background(), PackInstallRequest{
+		URL:       archiveURL,
+		Archive:   true,
+		ConfigDir: configDir,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstall archive URL: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(configDir, "packs", "archive-pack", "rules", "foo.md"))
+	if err != nil {
+		t.Fatalf("read installed archive rule: %v", err)
+	}
+	if string(got) != "# Foo\n" {
+		t.Fatalf("installed rule = %q", got)
+	}
+
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatalf("LoadLockfile: %v", err)
+	}
+	meta := lf.Packs["archive-pack"]
+	if meta.Method != config.MethodArchive {
+		t.Fatalf("method = %q, want %q", meta.Method, config.MethodArchive)
+	}
+	if meta.Origin != archiveURL {
+		t.Fatalf("origin = %q, want %q", meta.Origin, archiveURL)
+	}
+	if meta.CommitHash != "" {
+		t.Fatalf("commit_hash = %q, want empty for archive install", meta.CommitHash)
+	}
+	if meta.InstalledAt != fixedNow.UTC().Format(time.RFC3339) {
+		t.Fatalf("installed_at = %q, want %q", meta.InstalledAt, fixedNow.UTC().Format(time.RFC3339))
+	}
+}
+
+func TestPackFetchArchiveMaterializesStagingWithoutFinalInstall(t *testing.T) {
+	t.Parallel()
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"archive-staged","version":"1.0.0","root":"."}`,
+		"repo-main/rules/foo.md": "# Foo\n",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	configDir := t.TempDir()
+	packsDir := PacksDir(configDir)
+	result, err := packFetchArchive(context.Background(), PackInstallRequest{
+		URL:       srv.URL + "/pack.zip",
+		Archive:   true,
+		ConfigDir: configDir,
+	}, nil)
+	if err != nil {
+		t.Fatalf("packFetchArchive: %v", err)
+	}
+	defer os.RemoveAll(result.destDir)
+
+	finalDir := filepath.Join(packsDir, "archive-staged")
+	if filepath.Clean(result.destDir) == filepath.Clean(finalDir) {
+		t.Fatalf("packFetchArchive returned final install dir %s, want staging dir", result.destDir)
+	}
+	if _, err := os.Stat(finalDir); !os.IsNotExist(err) {
+		t.Fatalf("packFetchArchive should not install final pack dir, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.destDir, "pack.json")); err != nil {
+		t.Fatalf("staged pack.json missing: %v", err)
+	}
+}
+
+func TestPackInstall_ArchiveURLContentPathsWithoutPackJSON(t *testing.T) {
+	t.Parallel()
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/material/rules/foo.md": "# Foo\n",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	configDir := t.TempDir()
+	writeTestSyncConfig(t, configDir)
+	archiveURL := srv.URL + "/content.zip"
+
+	var out bytes.Buffer
+	err := PackInstall(context.Background(), PackInstallRequest{
+		URL:       archiveURL,
+		Archive:   true,
+		Name:      "archive-content",
+		ConfigDir: configDir,
+		ContentPaths: map[domain.PackCategory]string{
+			domain.CategoryRules: "material/rules",
+		},
+		NowFn: func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstall archive content_paths: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(configDir, "packs", "archive-content", "rules", "foo.md"))
+	if err != nil {
+		t.Fatalf("read installed archive content-path rule: %v", err)
+	}
+	if string(got) != "# Foo\n" {
+		t.Fatalf("installed rule = %q", got)
 	}
 }
 

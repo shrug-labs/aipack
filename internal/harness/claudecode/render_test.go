@@ -517,4 +517,7 @@ func TestRenderMCPBytesFromTyped_MixedTransports(t *testing.T) {
 	if got.MCPServers["remote"].URL != "https://example.com/mcp" {
 		t.Errorf("streamable-http server url: got %q", got.MCPServers["remote"].URL)
 	}
+	if got.MCPServers["remote"].Type != "http" {
+		t.Errorf("streamable-http server type: got %q want http", got.MCPServers["remote"].Type)
+	}
 }

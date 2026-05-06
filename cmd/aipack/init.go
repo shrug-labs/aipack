@@ -14,8 +14,9 @@ type InitCmd struct {
 }
 
 func (c *InitCmd) Help() string {
-	return fmt.Sprintf(`Creates %s and %s
-with starter content. Skips files that already exist unless --force is set.
+	return fmt.Sprintf(`Creates %s, %s, and %s
+with starter content. Skips files that already exist unless --force is set;
+existing .env files are always preserved.
 
 Examples:
   # Create default config files
@@ -30,6 +31,7 @@ Examples:
 See also: doctor, sync`,
 		configPathDisplay("sync-config.yaml"),
 		configPathDisplay("profiles", "default.yaml"),
+		configPathDisplay(".env"),
 	)
 }
 

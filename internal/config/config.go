@@ -35,6 +35,7 @@ type PackEntry struct {
 	Agents    VectorSelector             `yaml:"agents"`
 	Workflows VectorSelector             `yaml:"workflows"`
 	Skills    VectorSelector             `yaml:"skills"`
+	Plugins   VectorSelector             `yaml:"plugins"`
 	MCP       map[string]MCPServerConfig `yaml:"mcp"`
 
 	Overrides Overrides `yaml:"overrides"`
@@ -91,6 +92,7 @@ type Overrides struct {
 	Agents    []string `yaml:"agents"`
 	Workflows []string `yaml:"workflows"`
 	Skills    []string `yaml:"skills"`
+	Plugins   []string `yaml:"plugins"`
 	MCP       []string `yaml:"mcp"`
 }
 
@@ -107,6 +109,8 @@ func (pe *PackEntry) OverridesForCategory(cat domain.PackCategory) *[]string {
 		return &pe.Overrides.Workflows
 	case domain.CategorySkills:
 		return &pe.Overrides.Skills
+	case domain.CategoryPlugins:
+		return &pe.Overrides.Plugins
 	case domain.CategoryMCP:
 		return &pe.Overrides.MCP
 	}

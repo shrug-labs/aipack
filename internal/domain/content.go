@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"path"
+	"strings"
+)
+
 // RuleFrontmatter is the harness-neutral rule frontmatter schema.
 type RuleFrontmatter struct {
 	Name        string         `yaml:"name,omitempty"`
@@ -128,6 +133,44 @@ type Prompt struct {
 	Raw         []byte            // full original bytes
 	SourcePath  string            // absolute path to source file
 	SourcePack  string            // pack name this came from
+}
+
+// Plugin is a parsed plugin reference descriptor. The plugin bytes stay in
+// the harness marketplace; aipack only carries the endorsement pointer.
+type Plugin struct {
+	Name        string // filename leaf sans .json
+	Source      string `json:"source"`
+	Marketplace string `json:"marketplace,omitempty"`
+	SourcePath  string
+	SourcePack  string
+}
+
+// MarketplaceName returns the harness marketplace name for this plugin. An
+// empty marketplace uses the harness default; a source-prefixed marketplace
+// derives its name from the source path leaf.
+func (p Plugin) MarketplaceName(defaultMarketplace string) string {
+	m := strings.TrimSpace(p.Marketplace)
+	if m == "" {
+		return defaultMarketplace
+	}
+	if strings.Contains(m, ":") {
+		_, rest, _ := strings.Cut(m, ":")
+		if leaf := path.Base(strings.TrimRight(rest, "/")); leaf != "." && leaf != "/" {
+			return leaf
+		}
+	}
+	return m
+}
+
+// Binding returns the harness plugin binding string: <plugin>@<marketplace>.
+func (p Plugin) Binding(defaultMarketplace string) string {
+	return p.Name + "@" + p.MarketplaceName(defaultMarketplace)
+}
+
+// HasSourceMarketplace reports whether Marketplace is a source identifier
+// such as github:owner/repo rather than a bare marketplace name.
+func (p Plugin) HasSourceMarketplace() bool {
+	return strings.Contains(strings.TrimSpace(p.Marketplace), ":")
 }
 
 // MCP transport type constants.

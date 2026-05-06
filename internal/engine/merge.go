@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -44,18 +45,18 @@ type MergeOp struct {
 //
 // Format dispatch is intentionally a switch on harness type rather than a
 // SettingsFormat() interface method — acceptable complexity for 4 harnesses.
-func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.Harness) ([]byte, []MergeOp, error) {
+func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.Harness, additiveOnly bool) ([]byte, []MergeOp, error) {
 	switch harness {
 	case domain.HarnessOpenCode, domain.HarnessCline, domain.HarnessClaudeCode:
-		return threeWayMergeJSON(existing, prevManaged, newManaged)
+		return threeWayMergeJSON(existing, prevManaged, newManaged, additiveOnly)
 	case domain.HarnessCodex:
-		return threeWayMergeTOML(existing, prevManaged, newManaged)
+		return threeWayMergeTOML(existing, prevManaged, newManaged, additiveOnly)
 	default:
 		return nil, nil, fmt.Errorf("unsupported harness for merge: %s", harness)
 	}
 }
 
-func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeOp, error) {
+func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte, additiveOnly bool) ([]byte, []MergeOp, error) {
 	var ops []MergeOp
 	disk, err := parseJSONMap(onDisk)
 	if err != nil {
@@ -72,7 +73,7 @@ func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 		return nil, nil, fmt.Errorf("parse new-managed JSON: %w", err)
 	}
 
-	threeWayMergeMap(disk, prev, next, "", &ops)
+	threeWayMergeMap(disk, prev, next, "", additiveOnly, &ops)
 
 	out, err := marshalJSON(disk)
 	if err != nil {
@@ -81,7 +82,7 @@ func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 	return out, ops, nil
 }
 
-func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeOp, error) {
+func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte, additiveOnly bool) ([]byte, []MergeOp, error) {
 	var ops []MergeOp
 	disk, err := parseTOMLMap(onDisk)
 	if err != nil {
@@ -98,7 +99,7 @@ func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 		return nil, nil, fmt.Errorf("parse new-managed TOML: %w", err)
 	}
 
-	threeWayMergeMap(disk, prev, next, "", &ops)
+	threeWayMergeMap(disk, prev, next, "", additiveOnly, &ops)
 
 	out, err := marshalTOML(disk)
 	if err != nil {
@@ -110,14 +111,11 @@ func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte) ([]byte, []MergeO
 // threeWayMergeMap recursively merges next (new managed) into disk, using prev
 // (old managed) to distinguish user-added keys from stale managed keys.
 // Merge operations are appended to ops with dot-separated key paths.
-func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ops *[]MergeOp) {
+func threeWayMergeMap(disk, prev, next map[string]any, prefix string, additiveOnly bool, ops *[]MergeOp) {
 	// Keys removed from managed: delete from disk.
 	for k := range prev {
 		if _, inNext := next[k]; !inNext {
-			if _, inDisk := disk[k]; inDisk {
-				*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeRemove})
-			}
-			delete(disk, k)
+			removeManagedValue(disk, k, prev[k], prefix+k, additiveOnly, ops)
 		}
 	}
 
@@ -139,7 +137,7 @@ func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ops *[]Mer
 				prevMap = map[string]any{}
 			}
 			if diskMap, ok := diskVal.(map[string]any); ok {
-				threeWayMergeMap(diskMap, prevMap, nextMap, prefix+k+".", ops)
+				threeWayMergeMap(diskMap, prevMap, nextMap, prefix+k+".", additiveOnly, ops)
 				continue
 			}
 		}
@@ -169,6 +167,80 @@ func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ops *[]Mer
 	}
 
 	// Keys only on disk (not in prev or next): user-added, preserved automatically.
+}
+
+func removeManagedValue(disk map[string]any, key string, prevVal any, path string, additiveOnly bool, ops *[]MergeOp) {
+	if additiveOnly || isPluginAdditivePath(path) {
+		return
+	}
+	diskVal, inDisk := disk[key]
+	if !inDisk {
+		return
+	}
+
+	if prevMap, ok := prevVal.(map[string]any); ok {
+		if diskMap, ok := diskVal.(map[string]any); ok {
+			for child, childPrev := range prevMap {
+				removeManagedValue(diskMap, child, childPrev, path+"."+child, additiveOnly, ops)
+			}
+			if len(diskMap) == 0 {
+				delete(disk, key)
+				*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+			}
+			return
+		}
+	}
+
+	if prevArr, ok := prevVal.([]any); ok {
+		if diskArr, ok := diskVal.([]any); ok {
+			filtered, changed := removeManagedArrayValues(diskArr, prevArr)
+			if !changed {
+				if reflect.DeepEqual(diskVal, prevVal) {
+					delete(disk, key)
+					*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+				}
+				return
+			}
+			if len(filtered) == 0 {
+				delete(disk, key)
+				*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+			} else {
+				disk[key] = filtered
+				*ops = append(*ops, MergeOp{Key: path, Action: MergeUpdate})
+			}
+			return
+		}
+	}
+
+	if reflect.DeepEqual(diskVal, prevVal) {
+		delete(disk, key)
+		*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+	}
+}
+
+func removeManagedArrayValues(disk, prev []any) ([]any, bool) {
+	prevSet := toStringSet(prev)
+	if len(prevSet) == 0 {
+		return disk, false
+	}
+	out := make([]any, 0, len(disk))
+	changed := false
+	for _, v := range disk {
+		s, ok := v.(string)
+		if ok && prevSet[s] {
+			changed = true
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, changed
+}
+
+func isPluginAdditivePath(path string) bool {
+	path = strings.TrimSuffix(path, ".")
+	return path == "plugins" || strings.HasPrefix(path, "plugins.") ||
+		path == "enabledPlugins" || strings.HasPrefix(path, "enabledPlugins.") ||
+		path == "extraKnownMarketplaces" || strings.HasPrefix(path, "extraKnownMarketplaces.")
 }
 
 // sameStringSet checks whether two arrays contain the same set of string items.

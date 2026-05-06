@@ -177,3 +177,25 @@ func saveAndDiffIntegrity(packDir string, oldIntegrity IntegrityManifest, stdout
 	}
 	return newIntegrity, diff.HasChanges(), false
 }
+
+func dryRunIntegrityDiffText(installedDir, stagedDir string, oldIntegrity IntegrityManifest) string {
+	baseline := oldIntegrity
+	if len(baseline.Files) == 0 {
+		var err error
+		baseline, err = computeIntegrity(installedDir)
+		if err != nil {
+			return fmt.Sprintf("Warning: failed to compute current pack changes: %v\n", err)
+		}
+	}
+
+	newIntegrity, err := computeIntegrity(stagedDir)
+	if err != nil {
+		return fmt.Sprintf("Warning: failed to compute preview changes: %v\n", err)
+	}
+
+	diff := diffIntegrity(baseline, newIntegrity)
+	if !diff.HasChanges() {
+		return "Changes: none\n"
+	}
+	return fmt.Sprintf("Changes:\n%s", formatIntegrityDiff(diff))
+}

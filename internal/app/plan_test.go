@@ -214,3 +214,105 @@ func TestPlanWithDiffs_SkipsCleanPromotedContentUsingSourceDigest(t *testing.T) 
 		t.Fatalf("TotalChanges = %d, want 0; ops=%+v", summary.TotalChanges(), summary.Ops)
 	}
 }
+
+func TestPlanWithDiffs_ExpandsDirectoryCopyToFileOps(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	srcDir := filepath.Join(home, "packs", "core", "skills", "deploy")
+	dstDir := filepath.Join(projectDir, ".agents", "skills", "deploy")
+	for rel, body := range map[string]string{
+		"SKILL.md": "# Deploy\n",
+		"notes.md": "notes\n",
+	} {
+		path := filepath.Join(srcDir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reg := harness.NewRegistry(planHarnessStub{
+		id: "codex",
+		fragment: domain.Fragment{
+			Copies: []domain.CopyAction{{
+				Src:        srcDir,
+				Dst:        dstDir,
+				Kind:       domain.CopyKindDir,
+				SourcePack: "core",
+			}},
+			Desired: []string{dstDir},
+		},
+		roots: []string{filepath.Dir(dstDir)},
+	})
+
+	summary, err := PlanWithDiffs(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			Harnesses:  []domain.Harness{"codex"},
+			ProjectDir: projectDir,
+			Home:       home,
+		},
+	}, reg)
+	if err != nil {
+		t.Fatalf("PlanWithDiffs: %v", err)
+	}
+
+	if summary.NumSkills != 2 {
+		t.Fatalf("NumSkills = %d, want 2", summary.NumSkills)
+	}
+	if len(summary.Ops) != 2 {
+		t.Fatalf("ops = %d, want 2: %+v", len(summary.Ops), summary.Ops)
+	}
+
+	got := map[string]appPlanOpForTest{}
+	for _, op := range summary.Ops {
+		got[filepath.Base(op.Dst)] = appPlanOpForTest{
+			Kind:       op.Kind,
+			Dst:        op.Dst,
+			Src:        op.Src,
+			SourcePack: op.SourcePack,
+			Content:    string(op.Content),
+			Size:       op.Size,
+		}
+	}
+	for name, wantContent := range map[string]string{
+		"SKILL.md": "# Deploy\n",
+		"notes.md": "notes\n",
+	} {
+		op, ok := got[name]
+		if !ok {
+			t.Fatalf("missing op for %s; ops=%+v", name, summary.Ops)
+		}
+		if op.Kind != PlanOpSkill {
+			t.Fatalf("%s kind = %q, want %q", name, op.Kind, PlanOpSkill)
+		}
+		if op.Dst != filepath.Join(dstDir, name) {
+			t.Fatalf("%s dst = %q, want file destination", name, op.Dst)
+		}
+		if op.Src == srcDir {
+			t.Fatalf("%s src still points at directory %q", name, op.Src)
+		}
+		if op.SourcePack != "core" {
+			t.Fatalf("%s SourcePack = %q, want core", name, op.SourcePack)
+		}
+		if op.Content != wantContent {
+			t.Fatalf("%s content = %q, want %q", name, op.Content, wantContent)
+		}
+		if op.Size != len(wantContent) {
+			t.Fatalf("%s size = %d, want %d", name, op.Size, len(wantContent))
+		}
+	}
+}
+
+type appPlanOpForTest struct {
+	Kind       PlanOpKind
+	Dst        string
+	Src        string
+	SourcePack string
+	Content    string
+	Size       int
+}

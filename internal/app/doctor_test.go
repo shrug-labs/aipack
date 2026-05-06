@@ -15,19 +15,20 @@ import (
 )
 
 func TestDoctorRequiredMCPRefs_EnvAndParams(t *testing.T) {
-	t.Parallel()
+	envKey := "AIPACK_TEST_DOCTOR_REQUIRED_REF"
+	unsetEnvForTest(t, envKey)
 	params := map[string]string{"base": "/usr/local"}
 	inv := map[string]domain.MCPServer{
 		"myserver": {
-			Command: []string{"{params.base}/bin/server", "--token={env:TOKEN}"},
+			Command: []string{"{params.base}/bin/server", "--token={env:" + envKey + "}"},
 			Env:     map[string]string{"HOME": "{env:HOME}"},
 		},
 	}
-	missing, requiredBy := doctorRequiredMCPRefs(params, inv, []string{"myserver"})
+	missing, requiredBy := doctorRequiredMCPRefs(params, nil, inv, []string{"myserver"})
 
 	// TOKEN and HOME should be listed as required env refs.
-	if _, ok := requiredBy["env:TOKEN"]; !ok {
-		t.Error("expected env:TOKEN in requiredBy")
+	if _, ok := requiredBy["env:"+envKey]; !ok {
+		t.Errorf("expected env:%s in requiredBy", envKey)
 	}
 	if _, ok := requiredBy["env:HOME"]; !ok {
 		t.Error("expected env:HOME in requiredBy")
@@ -40,7 +41,7 @@ func TestDoctorRequiredMCPRefs_EnvAndParams(t *testing.T) {
 	// Both env vars are likely unset in test, so should be missing.
 	hasMissing := false
 	for _, m := range missing {
-		if m == "env:TOKEN" || m == "env:HOME" {
+		if m == "env:"+envKey || m == "env:HOME" {
 			hasMissing = true
 		}
 	}
@@ -57,7 +58,7 @@ func TestDoctorRequiredMCPRefs_MissingParam(t *testing.T) {
 			Command: []string{"{params.missing_key}/bin/server"},
 		},
 	}
-	missing, requiredBy := doctorRequiredMCPRefs(params, inv, []string{"myserver"})
+	missing, requiredBy := doctorRequiredMCPRefs(params, nil, inv, []string{"myserver"})
 
 	if _, ok := requiredBy["param:missing_key"]; !ok {
 		t.Error("expected param:missing_key in requiredBy")
@@ -70,6 +71,69 @@ func TestDoctorRequiredMCPRefs_MissingParam(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected param:missing_key in missing, got %v", missing)
+	}
+}
+
+func TestDoctorRequiredMCPRefs_DefaultedParamIsNotMissing(t *testing.T) {
+	t.Parallel()
+	inv := map[string]domain.MCPServer{
+		"myserver": {
+			Command: []string{"server", "--mode={params.mode:-prod}", "--api-url={env:API_BASE_URL:-https://api.example.com}"},
+		},
+	}
+	missing, requiredBy := doctorRequiredMCPRefs(nil, nil, inv, []string{"myserver"})
+
+	if _, ok := requiredBy["param:mode"]; ok {
+		t.Fatalf("requiredBy = %v, want defaulted param omitted", requiredBy)
+	}
+	if _, ok := requiredBy["param:mode:-prod"]; ok {
+		t.Fatalf("requiredBy = %v, want raw defaulted param omitted", requiredBy)
+	}
+	if _, ok := requiredBy["env:API_BASE_URL"]; ok {
+		t.Fatalf("requiredBy = %v, want defaulted env omitted", requiredBy)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing = %v, want defaulted refs satisfied", missing)
+	}
+}
+
+func TestDoctorRequiredMCPRefs_DotEnvSatisfiesEnvRef(t *testing.T) {
+	envKey := "AIPACK_TEST_DOCTOR_DOTENV_REF"
+	unsetEnvForTest(t, envKey)
+	inv := map[string]domain.MCPServer{
+		"myserver": {
+			Command: []string{"server", "--token={env:" + envKey + "}"},
+		},
+	}
+	missing, requiredBy := doctorRequiredMCPRefs(nil, map[string]string{envKey: "from-dotenv"}, inv, []string{"myserver"})
+
+	if _, ok := requiredBy["env:"+envKey]; !ok {
+		t.Errorf("expected env:%s in requiredBy", envKey)
+	}
+	for _, m := range missing {
+		if m == "env:"+envKey {
+			t.Fatalf("missing = %v, want .env value to satisfy %s", missing, envKey)
+		}
+	}
+}
+
+func TestDoctorCheckMCPServerPathsUsesDotEnvForCommandPath(t *testing.T) {
+	envKey := "AIPACK_TEST_DOCTOR_DOTENV_CMD"
+	unsetEnvForTest(t, envKey)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := map[string]domain.MCPServer{
+		"bitbucket": {
+			Command: []string{"{env:" + envKey + "}"},
+		},
+	}
+	failures := doctorCheckMCPServerPaths(inv, nil, map[string]string{envKey: exe}, []string{"bitbucket"}, map[string]ServerProvider{
+		"bitbucket": {Name: "bitbucket"},
+	})
+	if len(failures) != 0 {
+		t.Fatalf("failures = %v, want .env-expanded executable to pass path check", failures)
 	}
 }
 
@@ -892,6 +956,37 @@ func TestDoctorCheckManifestDrift_Undeclared(t *testing.T) {
 	}
 	if cr.Status != "warn" {
 		t.Errorf("Status = %q, want warn", cr.Status)
+	}
+}
+
+func TestDoctorCheckManifestDrift_UndeclaredPlugin(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	packRoot := filepath.Join(dir, "packs", "mypack")
+	if err := os.MkdirAll(filepath.Join(packRoot, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packRoot, "plugins", "linear.json"), []byte(`{"source":"github:linear/linear-codex-plugin"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	packs := []config.ResolvedPack{{
+		Name: "mypack",
+		Root: packRoot,
+		Manifest: config.PackManifest{
+			Plugins: []string{}, // linear is on disk but not declared
+		},
+	}}
+	cr := doctorCheckManifestDrift(dir, packs, false)
+	if cr.OK {
+		t.Fatal("OK = true, want false for undeclared plugin descriptor")
+	}
+	drift, ok := cr.Details["drift"].([]driftItem)
+	if !ok {
+		t.Fatalf("drift details missing or wrong type: %+v", cr.Details)
+	}
+	if len(drift) != 1 || drift[0].Kind != "plugins" || drift[0].ID != "linear" || drift[0].DriftType != "undeclared" {
+		t.Fatalf("drift = %+v, want undeclared plugins/linear", drift)
 	}
 }
 

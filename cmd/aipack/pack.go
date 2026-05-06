@@ -19,8 +19,9 @@ import (
 
 type PackCmd struct {
 	Create   PackCreateCmd   `cmd:"" help:"Scaffold a new pack directory with pack.json manifest"`
+	Import   PackImportCmd   `cmd:"" help:"Import one markdown file into a new or existing pack"`
 	Install  PackInstallCmd  `cmd:"" help:"Install a pack from a local directory path or remote URL"`
-	Delete   PackDeleteCmd   `cmd:"" help:"Delete an installed pack from the packs directory"`
+	Delete   PackDeleteCmd   `cmd:"" help:"Delete an installed pack and rendered output"`
 	Update   PackUpdateCmd   `cmd:"" help:"Update installed pack(s) to latest version from their origin"`
 	Rename   PackRenameCmd   `cmd:"" help:"Rename an installed pack across all config"`
 	Add      PackAddCmd      `cmd:"" help:"Add an installed pack to a profile"`
@@ -29,18 +30,96 @@ type PackCmd struct {
 	Disable  PackDisableCmd  `cmd:"" help:"Disable a pack in a profile without removing it"`
 	List     PackListCmd     `cmd:"" help:"List all installed packs with their install method and origin"`
 	Show     PackShowCmd     `cmd:"" help:"Show detailed metadata and content inventory for an installed pack"`
+	Inspect  PackInspectCmd  `cmd:"" help:"Inspect a pack source without installing it"`
 	Versions PackVersionsCmd `cmd:"" help:"List available semver versions for a pack from its remote origin"`
 	Validate ValidateCmd     `cmd:"" help:"Validate a pack source tree"`
 }
 
 func (c *PackCmd) Help() string {
 	return fmt.Sprintf(`Manage installed packs. Packs are portable, versioned bundles of AI agent
-configuration containing rules, agents, workflows, skills, MCP server
+configuration containing rules, agents, workflows, skills, plugin references, MCP server
 definitions, and harness base configs.
 
 Packs are installed under %s.`,
 		configPathDisplay("packs", "<name>"),
 	)
+}
+
+// --- pack import ---
+
+type PackImportCmd struct {
+	Source  string `arg:"" help:"Local markdown file path or HTTP(S) raw-file URL"`
+	Type    string `help:"Content type to import: skill, rule, or prompt" name:"type" required:""`
+	Name    string `help:"Name of the new pack to create" name:"name"`
+	Pack    string `help:"Existing installed pack to import into" name:"pack" predictor:"pack"`
+	ID      string `help:"Content ID; defaults to source filename without .md" name:"id"`
+	Add     bool   `help:"Add the imported pack to the active profile after importing" name:"add"`
+	Profile string `help:"Profile to add pack to (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+}
+
+func (c *PackImportCmd) Help() string {
+	return fmt.Sprintf(`Imports one markdown file as pack content. Use --name
+to create a new local pack under %s, or --pack to add the content to an
+existing installed pack.
+
+The imported file is written as the requested content type. If it does not
+already start with YAML frontmatter, aipack adds minimal frontmatter.
+
+Examples:
+  aipack pack import ./review.md --type skill --name review-pack
+  aipack pack import ./triage.md --type skill --pack team-ops
+  aipack pack import https://example.com/rule.md --type rule --name rules --id incident-rule
+  aipack pack import ./prompt.md --type prompt --name prompts --add
+
+See also: pack create, pack install, prompt list`,
+		configPathDisplay("packs", "<name>"),
+	)
+}
+
+func (c *PackImportCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+	cat, err := parseImportType(c.Type)
+	if err != nil {
+		return err
+	}
+	profile := ""
+	if c.Add {
+		profile = effectiveProfile(c.Profile, cfgDir)
+	}
+	if err := app.PackImport(ctx, app.PackImportRequest{
+		Source:     c.Source,
+		Category:   cat,
+		Name:       c.Name,
+		TargetPack: c.Pack,
+		ID:         c.ID,
+		ConfigDir:  cfgDir,
+		Add:        c.Add,
+		Profile:    profile,
+	}, g.Stdout); err != nil {
+		return err
+	}
+	if cat == domain.CategoryPrompts {
+		fmt.Fprintln(g.Stdout, "Next: run 'aipack prompt list' to see imported prompts.")
+	} else {
+		fmt.Fprintln(g.Stdout, "Next: run 'aipack sync' to sync pack content to your harness.")
+	}
+	return nil
+}
+
+func parseImportType(raw string) (domain.PackCategory, error) {
+	cat, ok := domain.ParseSingularLabel(strings.ToLower(strings.TrimSpace(raw)))
+	if !ok {
+		return "", fmt.Errorf("invalid --type %q (valid: skill, rule, prompt)", raw)
+	}
+	switch cat {
+	case domain.CategorySkills, domain.CategoryRules, domain.CategoryPrompts:
+		return cat, nil
+	default:
+		return "", fmt.Errorf("invalid --type %q (valid: skill, rule, prompt)", raw)
+	}
 }
 
 // withAliases maps single-letter shorthands to bundled categories.
@@ -178,6 +257,7 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 type PackInstallCmd struct {
 	Path      string   `arg:"" optional:"" help:"Local directory path, registry pack name, or name@ref"`
 	URL       string   `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
+	Archive   bool     `help:"Treat --url as a static zip/tar archive instead of a git repository" name:"archive"`
 	Ref       string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
 	SubPath   string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
 	Name      string   `help:"Override the pack name from pack.json" name:"name"`
@@ -203,8 +283,9 @@ profile that aren't already installed are fetched via the registry. Pass a
 path, URL, or registry name to target a specific pack instead.
 
 Local directory packs are symlinked by default; use --copy to make a full
-copy instead. Remote packs are fetched via shallow git clone. Both HTTPS and
-SSH URLs are supported.
+copy instead. Remote packs are fetched via shallow git clone unless --archive
+is set for a static zip/tar archive. Both HTTPS and SSH URLs are supported for
+git installs.
 
 If the positional argument is not a local directory path and not a URL, it
 is treated as a registry pack name. The registry is consulted to resolve the
@@ -237,6 +318,9 @@ Examples:
 
   # Install from an HTTPS URL
   aipack pack install --url https://github.com/org/pack-repo
+
+  # Install from a static archive URL
+  aipack pack install --url https://example.com/pack.zip --archive
 
   # Install from an SSH URL
   aipack pack install --url ssh://git@bitbucket.example.com:7999/proj/repo.git --ref main
@@ -284,6 +368,12 @@ func (c *PackInstallCmd) Validate() error {
 	}
 	if hasURL && c.Copy {
 		return fmt.Errorf("--copy is not valid with --url (URL packs are fetched remotely)")
+	}
+	if c.Archive && !hasURL {
+		return fmt.Errorf("--archive requires --url")
+	}
+	if c.Archive && c.Ref != "" {
+		return fmt.Errorf("--archive cannot be combined with --ref/--version")
 	}
 	if c.Missing && (hasPath || hasURL) {
 		return fmt.Errorf("-m/--missing cannot be combined with a path or --url")
@@ -375,10 +465,12 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		With:      with,
 		Quiet:     quietOverride,
 		Ref:       ref,
+		Archive:   c.Archive,
 	}
 	// CLI content flags take precedence over registry entry content_paths.
-	if cp := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cp != nil {
-		req.ContentPaths = cp
+	cliContentPaths := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts)
+	if cliContentPaths != nil {
+		req.ContentPaths = cliContentPaths
 	}
 
 	if c.URL != "" {
@@ -404,24 +496,25 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		if err != nil {
 			return fmt.Errorf("registry lookup for %q: %w\n\nHint: use --url for a direct URL install, or check 'aipack registry list'", path, err)
 		}
-		req.URL = entry.Repo
-		req.SubPath = entry.Path
+		req = app.PackInstallRequestFromRegistryEntry(cfgDir, path, entry)
+		req.Add = c.Add
+		req.Profile = profile
+		req.With = with
 		// User's explicit ref wins; fall back to the registry entry's
 		// default ref only when the user didn't specify one.
-		if req.Ref == "" {
-			req.Ref = entry.Ref
+		if ref != "" {
+			req.Ref = ref
 		}
-		if req.Name == "" {
-			req.Name = path // use the registry key as the pack name
+		if c.Name != "" {
+			req.Name = c.Name
 		}
 		// A registry hint of `quiet: true` only applies when the user
 		// didn't pass either flag; explicit -q / --no-quiet always wins.
-		if entry.Quiet && req.Quiet == nil {
-			t := true
-			req.Quiet = &t
+		if quietOverride != nil {
+			req.Quiet = quietOverride
 		}
-		if len(entry.ContentPaths) > 0 {
-			req.ContentPaths = entry.ContentPaths
+		if cliContentPaths != nil {
+			req.ContentPaths = cliContentPaths
 		}
 	} else {
 		req.PackPath = path
@@ -556,17 +649,27 @@ func packContentSummary(e app.PackShowEntry) string {
 // --- pack delete ---
 
 type PackDeleteCmd struct {
-	Name string `arg:"" help:"Name of the installed pack to delete" predictor:"pack"`
-	Yes  bool   `help:"Skip confirmation prompt for bundled profile removal"`
+	Name         string `arg:"" help:"Name of the installed pack to delete" predictor:"pack"`
+	KeepRendered bool   `help:"Keep rendered harness files and only stop tracking them" name:"keep-rendered"`
+	DryRun       bool   `help:"Preview deletion without writing" name:"dry-run"`
+	JSON         bool   `help:"Emit machine-readable JSON" name:"json"`
+	Yes          bool   `help:"Skip confirmation prompt for bundled profile removal"`
 }
 
 func (c *PackDeleteCmd) Help() string {
-	return fmt.Sprintf(`Deletes an installed pack directory from %s and
-removes it from all profiles.
+	return fmt.Sprintf(`Deletes an installed pack from %s, removes it from all
+profiles, clears its lockfile and ledger entries, and removes rendered harness
+files that aipack can attribute to the pack.
+
+Use --keep-rendered to stop managing the pack while leaving rendered harness
+files in place as unmanaged content.
 
 Examples:
-  # Delete an installed pack
+  # Delete an installed pack and its rendered output
   aipack pack delete my-pack
+
+  # Stop tracking a pack but keep rendered harness files
+  aipack pack delete my-pack --keep-rendered
 
 See also: pack install, pack list`,
 		configPathDisplay("packs", "<name>"),
@@ -578,9 +681,25 @@ func (c *PackDeleteCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	result, err := app.PackDelete(cfgDir, c.Name, g.Stdout)
+	progressOut := g.Stdout
+	if c.JSON {
+		progressOut = io.Discard
+	}
+	result, err := app.PackDeleteWithOptions(engine.New(nil, nil), app.PackDeleteRequest{
+		ConfigDir:    cfgDir,
+		Name:         c.Name,
+		KeepRendered: c.KeepRendered,
+		DryRun:       c.DryRun,
+		Registry:     g.Registry,
+	}, progressOut)
 	if err != nil {
 		return err
+	}
+	if c.JSON {
+		return cmdutil.WriteJSON(g.Stdout, result)
+	}
+	if c.DryRun {
+		return nil
 	}
 	if len(result.BundledProfiles) == 0 {
 		return nil
@@ -801,10 +920,11 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack update ---
 
 type PackUpdateCmd struct {
-	Name string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
-	All  bool     `help:"Update all installed packs" name:"all"`
-	Ref  string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
-	With []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
+	Name   string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
+	All    bool     `help:"Update all installed packs" name:"all"`
+	Ref    string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
+	With   []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
+	DryRun bool     `help:"Preview changes without writing to disk, lockfile, or bundled content" name:"dry-run"`
 }
 
 func (c *PackUpdateCmd) Help() string {
@@ -877,6 +997,7 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 		All:       all,
 		Ref:       c.Ref,
 		With:      with,
+		DryRun:    c.DryRun,
 		Quiet:     all,
 	}, g.Stdout, nil)
 	if err != nil {
@@ -914,7 +1035,7 @@ type PackShowCmd struct {
 func (c *PackShowCmd) Help() string {
 	return `Displays detailed metadata for an installed pack: name, version, path, install
 method, origin URL, git ref, install timestamp, and content inventory (rules,
-agents, workflows, skills, MCP servers).
+agents, workflows, skills, plugins, MCP servers).
 
 Examples:
   # Show pack details
@@ -960,32 +1081,131 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 	if entry.InstalledAt != "" {
 		fmt.Fprintf(g.Stdout, "Installed:   %s\n", entry.InstalledAt)
 	}
-	if len(entry.Rules) > 0 {
-		fmt.Fprintf(g.Stdout, "Rules:       %s\n", joinComma(entry.Rules))
-	}
-	if len(entry.Agents) > 0 {
-		fmt.Fprintf(g.Stdout, "Agents:      %s\n", joinComma(entry.Agents))
-	}
-	if len(entry.Workflows) > 0 {
-		fmt.Fprintf(g.Stdout, "Workflows:   %s\n", joinComma(entry.Workflows))
-	}
-	if len(entry.Skills) > 0 {
-		fmt.Fprintf(g.Stdout, "Skills:      %s\n", joinComma(entry.Skills))
-	}
-	if len(entry.Prompts) > 0 {
-		fmt.Fprintf(g.Stdout, "Prompts:     %s\n", joinComma(entry.Prompts))
-	}
-	if len(entry.MCPServers) > 0 {
-		fmt.Fprintf(g.Stdout, "MCP:         %s\n", joinComma(entry.MCPServers))
-	}
-	if len(entry.Extras) > 0 {
-		fmt.Fprintf(g.Stdout, "Extras:      %s\n", joinComma(entry.Extras))
-	}
+	printContentList(g.Stdout, "Rules", entry.Rules)
+	printContentList(g.Stdout, "Agents", entry.Agents)
+	printContentList(g.Stdout, "Workflows", entry.Workflows)
+	printContentList(g.Stdout, "Skills", entry.Skills)
+	printContentList(g.Stdout, "Plugins", entry.Plugins)
+	printContentList(g.Stdout, "Prompts", entry.Prompts)
+	printContentList(g.Stdout, "MCP", entry.MCPServers)
+	printContentList(g.Stdout, "Extras", entry.Extras)
 	return nil
 }
 
-func joinComma(items []string) string {
-	return strings.Join(items, ", ")
+func printContentList(w io.Writer, label string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "%-12s %s\n", label+":", strings.Join(items, ", "))
+}
+
+// --- pack inspect ---
+
+type PackInspectCmd struct {
+	Input     string `arg:"" optional:"" help:"Pack name, local path, or URL to inspect" predictor:"pack"`
+	URL       string `help:"Inspect a git-accessible repository URL (HTTPS or SSH)" name:"url"`
+	Archive   bool   `help:"Treat --url or input URL as a static zip/tar archive" name:"archive"`
+	Ref       string `help:"Git ref to inspect" name:"ref" aliases:"version"`
+	SubPath   string `help:"Subdirectory within the repo/archive where pack.json lives" name:"path"`
+	Name      string `help:"Override pack name for content_paths sources" name:"name"`
+	Registry  string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
+	Rules     string `help:"Use this directory as rules content when source has no pack.json" name:"rules" type:"path"`
+	Skills    string `help:"Use this directory as skills content when source has no pack.json" name:"skills" type:"path"`
+	Agents    string `help:"Use this directory as agents content when source has no pack.json" name:"agents" type:"path"`
+	Workflows string `help:"Use this directory as workflows content when source has no pack.json" name:"workflows" type:"path"`
+	Prompts   string `help:"Use this directory as prompts content when source has no pack.json" name:"prompts" type:"path"`
+	Clear     bool   `help:"Remove all inspected packs from the search index and exit" name:"clear"`
+	JSON      bool   `help:"Emit machine-readable JSON" name:"json"`
+}
+
+func (c *PackInspectCmd) Help() string {
+	return `Inspects a local path, registry pack name, git URL, or archive URL without
+installing it. Inspected resources are added to the search index with status
+"inspected" so they can be searched before trust/install decisions. Inspected
+rows older than 30 days are dropped automatically on the next inspect; use
+--clear to wipe them on demand.
+
+Examples:
+  aipack pack inspect ./my-pack
+  aipack pack inspect team-pack
+  aipack pack inspect https://example.com/pack.zip --archive
+  aipack pack inspect --clear
+  aipack search --status inspected
+
+See also: pack install, registry list, search`
+}
+
+func (c *PackInspectCmd) Run(ctx context.Context, g *Globals) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+	if c.Clear {
+		if c.URL != "" || strings.TrimSpace(c.Input) != "" {
+			return fmt.Errorf("--clear is mutually exclusive with input and --url")
+		}
+		result, err := app.PackInspectClear(app.PackInspectClearRequest{ConfigDir: cfgDir})
+		if err != nil {
+			return err
+		}
+		if c.JSON {
+			return cmdutil.WriteJSON(g.Stdout, result)
+		}
+		fmt.Fprintf(g.Stdout, "Cleared %d inspected pack(s) from the search index.\n", result.Removed)
+		return nil
+	}
+	if c.URL != "" && c.Input != "" {
+		return fmt.Errorf("--url and input argument are mutually exclusive")
+	}
+	if c.URL == "" && strings.TrimSpace(c.Input) == "" {
+		return fmt.Errorf("pack name, path, or URL is required")
+	}
+	req := app.PackInspectRequest{
+		ConfigDir:    cfgDir,
+		Input:        c.Input,
+		URL:          c.URL,
+		Archive:      c.Archive,
+		RegistryPath: c.Registry,
+		Name:         c.Name,
+		Ref:          c.Ref,
+		SubPath:      c.SubPath,
+	}
+	if cp := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cp != nil {
+		req.ContentPaths = cp
+	}
+	result, err := app.PackInspect(ctx, req)
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		return cmdutil.WriteJSON(g.Stdout, result)
+	}
+	fmt.Fprintf(g.Stdout, "Name:        %s\n", result.Name)
+	if result.Version != "" {
+		fmt.Fprintf(g.Stdout, "Version:     %s\n", result.Version)
+	}
+	fmt.Fprintf(g.Stdout, "Source:      %s\n", result.Source)
+	fmt.Fprintf(g.Stdout, "Status:      inspected\n")
+	if result.Method != "" {
+		fmt.Fprintf(g.Stdout, "Method:      %s\n", result.Method)
+	}
+	if result.Ref != "" {
+		fmt.Fprintf(g.Stdout, "Ref:         %s\n", result.Ref)
+	}
+	fmt.Fprintf(g.Stdout, "Content:     %s\n", result.Counts.String())
+	printContentList(g.Stdout, "Rules", result.Rules)
+	printContentList(g.Stdout, "Agents", result.Agents)
+	printContentList(g.Stdout, "Workflows", result.Workflows)
+	printContentList(g.Stdout, "Skills", result.Skills)
+	printContentList(g.Stdout, "Plugins", result.Plugins)
+	printContentList(g.Stdout, "Prompts", result.Prompts)
+	printContentList(g.Stdout, "MCP", result.MCPServers)
+	printContentList(g.Stdout, "Profiles", result.Profiles)
+	printContentList(g.Stdout, "Registries", result.Registries)
+	printContentList(g.Stdout, "Extras", result.Extras)
+	printContentList(g.Stdout, "Warnings", result.Warnings)
+	fmt.Fprintln(g.Stdout, "\nNext: run 'aipack search --status inspected' or 'aipack pack install' when ready.")
+	return nil
 }
 
 // --- pack versions ---

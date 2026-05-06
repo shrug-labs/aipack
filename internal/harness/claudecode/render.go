@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -25,6 +26,7 @@ type mcpRoot struct {
 }
 
 const mcpPermPrefix = "mcp__"
+const defaultClaudePluginMarketplace = "claude-plugins-official"
 
 // filterOutMCPPerms removes mcp__* entries from a JSON-unmarshalled
 // permissions slice, preserving non-MCP entries. Accepts any; returns
@@ -61,7 +63,11 @@ func RenderMCPBytesFromTyped(servers []domain.MCPServer) ([]byte, []domain.Warni
 				entry.Env = s.Env
 			}
 		} else {
-			entry.Type = s.Transport
+			if s.Transport == "streamable-http" {
+				entry.Type = "http"
+			} else {
+				entry.Type = s.Transport
+			}
 			entry.URL = s.URL
 			if len(s.Headers) > 0 {
 				entry.Headers = s.Headers
@@ -119,6 +125,21 @@ type settingsPermissions struct {
 	Deny  []string `json:"deny,omitempty"`
 }
 
+type pluginSettingsRoot struct {
+	EnabledPlugins map[string]bool `json:"enabledPlugins"`
+}
+
+type knownMarketplace struct {
+	Source          marketplaceSource `json:"source"`
+	InstallLocation string            `json:"installLocation,omitempty"`
+}
+
+type marketplaceSource struct {
+	Source string `json:"source"`
+	Repo   string `json:"repo,omitempty"`
+	Path   string `json:"path,omitempty"`
+}
+
 // RenderSettingsBytes renders managed settings.local.json content.
 // If base is non-empty, it is parsed as a JSON template and MCP permissions
 // are merged into it (base non-MCP permissions are preserved, MCP entries
@@ -168,4 +189,52 @@ func RenderSettingsBytes(base []byte, servers []domain.MCPServer) ([]byte, error
 		return nil, err
 	}
 	return append(out, '\n'), nil
+}
+
+// RenderPluginSettingsBytes renders Claude Code enabledPlugins entries.
+func RenderPluginSettingsBytes(plugins []domain.Plugin) ([]byte, error) {
+	enabled := make(map[string]bool, len(plugins))
+	for _, p := range plugins {
+		enabled[p.Binding(defaultClaudePluginMarketplace)] = true
+	}
+	out, err := json.MarshalIndent(pluginSettingsRoot{EnabledPlugins: enabled}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+// RenderKnownMarketplacesBytes renders source-prefixed marketplace registrations.
+func RenderKnownMarketplacesBytes(home string, plugins []domain.Plugin) ([]byte, error) {
+	marketplaces := map[string]knownMarketplace{}
+	for _, p := range plugins {
+		if !p.HasSourceMarketplace() {
+			continue
+		}
+		name := p.MarketplaceName(defaultClaudePluginMarketplace)
+		src := parseMarketplaceSource(p.Marketplace)
+		marketplaces[name] = knownMarketplace{
+			Source:          src,
+			InstallLocation: filepath.Join(home, ".claude", "plugins", "marketplaces", name),
+		}
+	}
+	out, err := json.MarshalIndent(marketplaces, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+func parseMarketplaceSource(raw string) marketplaceSource {
+	source, rest, ok := strings.Cut(strings.TrimSpace(raw), ":")
+	if !ok {
+		return marketplaceSource{Source: strings.TrimSpace(raw)}
+	}
+	rest = strings.Trim(rest, "/")
+	switch source {
+	case "github":
+		return marketplaceSource{Source: source, Repo: rest}
+	default:
+		return marketplaceSource{Source: source, Path: rest}
+	}
 }

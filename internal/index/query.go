@@ -17,6 +17,7 @@ type SearchResult struct {
 	Category    string `json:"category,omitempty"`
 	Snippet     string `json:"snippet,omitempty"`
 	Installed   bool   `json:"installed"`
+	Status      string `json:"status"`
 }
 
 // SearchFilters holds optional structured filters for Search.
@@ -27,6 +28,7 @@ type SearchFilters struct {
 	Pack      string
 	Category  string
 	Installed *bool // nil = both, true = installed only, false = available only
+	Status    string
 }
 
 // Search performs an FTS5 search with optional structured filters.
@@ -46,6 +48,9 @@ func (db *DB) Search(terms string, filters SearchFilters) ([]SearchResult, error
 		includePacks = false
 	}
 	if filters.Installed != nil && *filters.Installed {
+		includePacks = false
+	}
+	if filters.Status == "installed" {
 		includePacks = false
 	}
 	// Tag/role/category filters don't apply to pack-level entries (no resources).
@@ -114,8 +119,16 @@ func (db *DB) searchResources(terms string, filters SearchFilters) ([]SearchResu
 		where = append(where, "p.installed = ?")
 		args = append(args, boolToInt(*filters.Installed))
 	}
+	if filters.Status != "" {
+		condition, ok := resourceStatusCondition(filters.Status)
+		if !ok {
+			return nil, fmt.Errorf("unknown search status %q", filters.Status)
+		}
+		where = append(where, condition)
+	}
 
-	query := fmt.Sprintf("SELECT p.name, r.kind, r.name, r.description, r.owner, r.last_updated, r.path, r.category, %s, p.installed FROM %s", snippetExpr, from)
+	resourceSource := "CASE WHEN r.source != '' THEN r.source ELSE p.source END"
+	query := fmt.Sprintf("SELECT p.name, r.kind, r.name, r.description, r.owner, r.last_updated, r.path, r.category, %s, p.installed, %s FROM %s", snippetExpr, resourceSource, from)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -131,10 +144,12 @@ func (db *DB) searchResources(terms string, filters SearchFilters) ([]SearchResu
 	for rows.Next() {
 		var sr SearchResult
 		var installed int
-		if err := rows.Scan(&sr.Pack, &sr.Kind, &sr.Name, &sr.Description, &sr.Owner, &sr.LastUpdated, &sr.Path, &sr.Category, &sr.Snippet, &installed); err != nil {
+		var source string
+		if err := rows.Scan(&sr.Pack, &sr.Kind, &sr.Name, &sr.Description, &sr.Owner, &sr.LastUpdated, &sr.Path, &sr.Category, &sr.Snippet, &installed, &source); err != nil {
 			return nil, fmt.Errorf("scanning search result: %w", err)
 		}
 		sr.Installed = installed != 0
+		sr.Status = ResultStatus(sr.Installed, source)
 		results = append(results, sr)
 	}
 	return results, rows.Err()
@@ -158,8 +173,15 @@ func (db *DB) searchPacks(terms string, filters SearchFilters) ([]SearchResult, 
 		where = append(where, "p.name = ?")
 		args = append(args, filters.Pack)
 	}
+	if filters.Status != "" {
+		condition, ok := packStatusCondition(filters.Status)
+		if !ok {
+			return nil, fmt.Errorf("unknown search status %q", filters.Status)
+		}
+		where = append(where, condition)
+	}
 
-	query := "SELECT p.name, 'pack', p.name, p.description, p.owner, '', '' FROM " + from
+	query := "SELECT p.name, 'pack', p.name, p.description, p.owner, '', '', p.installed, p.source FROM " + from
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -174,12 +196,57 @@ func (db *DB) searchPacks(terms string, filters SearchFilters) ([]SearchResult, 
 	var results []SearchResult
 	for rows.Next() {
 		var sr SearchResult
-		if err := rows.Scan(&sr.Pack, &sr.Kind, &sr.Name, &sr.Description, &sr.Owner, &sr.LastUpdated, &sr.Path); err != nil {
+		var installed int
+		var source string
+		if err := rows.Scan(&sr.Pack, &sr.Kind, &sr.Name, &sr.Description, &sr.Owner, &sr.LastUpdated, &sr.Path, &installed, &source); err != nil {
 			return nil, fmt.Errorf("scanning pack result: %w", err)
 		}
+		sr.Installed = installed != 0
+		sr.Status = ResultStatus(sr.Installed, source)
 		results = append(results, sr)
 	}
 	return results, rows.Err()
+}
+
+func resourceStatusCondition(status string) (string, bool) {
+	source := "CASE WHEN r.source != '' THEN r.source ELSE p.source END"
+	switch status {
+	case "installed":
+		return "p.installed = 1", true
+	case "registered":
+		return "p.installed = 0 AND " + source + " IN ('registry', 'deep-index')", true
+	case "inspected":
+		return "p.installed = 0 AND " + source + " = 'inspected'", true
+	case "available":
+		return "p.installed = 0", true
+	default:
+		return "", false
+	}
+}
+
+func packStatusCondition(status string) (string, bool) {
+	switch status {
+	case "installed":
+		return "p.installed = 1", true
+	case "registered":
+		return "p.installed = 0 AND p.source IN ('registry', 'deep-index')", true
+	case "inspected":
+		return "p.installed = 0 AND p.source = 'inspected'", true
+	case "available":
+		return "p.installed = 0", true
+	default:
+		return "", false
+	}
+}
+
+func ResultStatus(installed bool, source string) string {
+	if installed {
+		return "installed"
+	}
+	if source == "inspected" {
+		return "inspected"
+	}
+	return "registered"
 }
 
 // RawQuery executes arbitrary read-only SQL and returns rows as maps.

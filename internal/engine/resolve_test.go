@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
+
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // createTestPack creates a minimal pack directory for testing Resolve.
@@ -176,6 +180,92 @@ func TestResolve_TypedContent(t *testing.T) {
 	}
 }
 
+func TestResolve_Plugins(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	configDir := t.TempDir()
+	packDir := filepath.Join(configDir, "packs", "plugin-pack")
+	if err := os.MkdirAll(filepath.Join(packDir, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "plugin-pack",
+		Version:       "0.1.0",
+		Root:          ".",
+		Plugins:       []string{"superpowers"},
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), manifestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "plugins", "superpowers.json"), []byte(`{
+  "marketplace": "github:obra/superpowers-marketplace",
+  "source": "github:obra/superpowers"
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	profile, warnings, err := eng.Resolve(config.ProfileConfig{
+		SchemaVersion: config.ProfileSchemaVersion,
+		Packs:         []config.PackEntry{{Name: "plugin-pack"}},
+	}, filepath.Join(configDir, "profiles", "default.yaml"), configDir, config.CollisionError, nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(warnings) > 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	plugins := profile.AllPlugins()
+	if len(plugins) != 1 {
+		t.Fatalf("AllPlugins = %d, want 1", len(plugins))
+	}
+	if plugins[0].Name != "superpowers" || plugins[0].Source != "github:obra/superpowers" || plugins[0].Marketplace != "github:obra/superpowers-marketplace" {
+		t.Fatalf("plugin = %+v", plugins[0])
+	}
+}
+
+func TestResolve_PluginDescriptorRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	configDir := t.TempDir()
+	packDir := filepath.Join(configDir, "packs", "plugin-pack")
+	if err := os.MkdirAll(filepath.Join(packDir, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "plugin-pack",
+		Version:       "0.1.0",
+		Root:          ".",
+		Plugins:       []string{"superpowers"},
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), manifestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "plugins", "superpowers.json"), []byte(`{
+  "source": "github:obra/superpowers",
+  "version": "5.0.7"
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = eng.Resolve(config.ProfileConfig{
+		SchemaVersion: config.ProfileSchemaVersion,
+		Packs:         []config.PackEntry{{Name: "plugin-pack"}},
+	}, filepath.Join(configDir, "profiles", "default.yaml"), configDir, config.CollisionError, nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown field "version"`) {
+		t.Fatalf("expected unknown version field error, got %v", err)
+	}
+}
+
 func TestResolve_MultiPack(t *testing.T) {
 	t.Parallel()
 	eng := New(nil, nil)
@@ -312,6 +402,72 @@ func TestResolve_WithMCPServers(t *testing.T) {
 	}
 	if srv.SourcePack != "pack-mcp" {
 		t.Errorf("MCPServer.SourcePack = %q", srv.SourcePack)
+	}
+}
+
+func TestResolve_DotEnvPrecedesOSForMCPAndSettings(t *testing.T) {
+	eng := New(nil, nil)
+	configDir := t.TempDir()
+	t.Setenv("AIPACK_RESOLVE_DOTENV", "from-os")
+	if err := os.WriteFile(filepath.Join(configDir, ".env"), []byte("AIPACK_RESOLVE_DOTENV=from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	packDir := filepath.Join(configDir, "packs", "dotenv-pack")
+	for _, sub := range []string{"mcp", filepath.Join("configs", string(domain.HarnessCodex))} {
+		if err := os.MkdirAll(filepath.Join(packDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "mcp", "srv-a.json"), []byte(`{
+		"name": "srv-a",
+		"command": ["echo", "{env:AIPACK_RESOLVE_DOTENV}"],
+		"env": {"VALUE": "{env:AIPACK_RESOLVE_DOTENV}"}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "configs", string(domain.HarnessCodex), "config.toml"),
+		[]byte("workdir = \"{env:AIPACK_RESOLVE_DOTENV}/work\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, packDir, config.PackManifest{
+		SchemaVersion: 2, Name: "dotenv-pack", Version: "1.0.0", Root: ".",
+		MCP: []string{"srv-a"},
+		Configs: config.PackConfigs{
+			HarnessSettings: map[string][]string{string(domain.HarnessCodex): {"config.toml"}},
+		},
+	})
+
+	profile, warnings, err := eng.Resolve(config.ProfileConfig{
+		SchemaVersion: config.ProfileSchemaVersion,
+		Packs: []config.PackEntry{{
+			Name: "dotenv-pack",
+			MCP:  map[string]config.MCPServerConfig{"srv-a": {Enabled: config.BoolPtr(true)}},
+		}},
+	}, filepath.Join(configDir, "profile.yaml"), configDir, config.CollisionError, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(profile.MCPServers) != 1 {
+		t.Fatalf("MCPServers = %d, want 1", len(profile.MCPServers))
+	}
+	srv := profile.MCPServers[0]
+	if srv.Command[1] != "from-file" {
+		t.Fatalf("Command[1] = %q, want from-file", srv.Command[1])
+	}
+	if srv.Env["VALUE"] != "from-file" {
+		t.Fatalf("Env[VALUE] = %q, want from-file", srv.Env["VALUE"])
+	}
+
+	var settings map[string]any
+	if err := toml.Unmarshal(profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml"), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings["workdir"] != "from-file/work" {
+		t.Fatalf("settings workdir = %v, want from-file/work", settings["workdir"])
 	}
 }
 

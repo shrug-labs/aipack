@@ -2,12 +2,25 @@
 
 Complete CLI reference for `aipack`. For first-time setup, see [Getting Started](./getting-started.md). For pack authoring, see [Creating Packs](./creating-packs.md). For installing content from any repository, see [Installing Packs](./installing-packs.md). For profiles and composition, see [Profiles](./profiles.md). For sync workflow and save round-trips, see [Sync and Save](./sync.md). For the pack format specification, see [Pack Format](./pack-format.md). For per-harness rendering, see the [Harness Reference](./harness-reference.md). For config layout, see [Configuration and State](./configuration.md). For JSON output contracts, see the [CLI Specification](./cli-spec.md).
 
+## Fast path
+
+These commands cover the common first mile without adding shortcut-only aliases.
+
+```bash
+aipack pack inspect <source>     # inspect a pack source before installing it
+aipack pack install <source> --add
+aipack setup                     # show missing params/env values before sync
+aipack sync                      # render active profile content to your harness
+```
+
+Use `pack import` for one markdown rule, prompt, or skill file; it can create a small local pack or add the content to an installed pack.
+
 ## Command map
 
-- Setup: `init`, `doctor`, `mcp inspect-tools`
-- Pack lifecycle: `pack create`, `pack install`, `pack delete`, `pack update`, `pack rename`, `pack add`, `pack remove`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
-- Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`
-- Registry: `registry fetch`, `registry list`, `registry sources`, `registry delete`
+- Setup: `init`, `doctor`, `setup`, `config env`, `mcp inspect-tools`
+- Pack lifecycle: `pack create`, `pack import`, `pack install`, `pack inspect`, `pack delete`, `pack update`, `pack rename`, `pack add`, `pack remove`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
+- Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`, `profile refs`, `profile set-param`, `profile unset-param`
+- Registry: `registry fetch`, `registry list`, `registry sources`, `registry delete`, `registry validate`
 - Sync/Save: `sync`, `save`, `restore`, `clean`, `render`
 - Discovery: `search`, `query`, `status`, `trace`
 - Interactive: `manage`
@@ -18,12 +31,21 @@ Complete CLI reference for `aipack`. For first-time setup, see [Getting Started]
 
 ### init
 
-Creates `~/.config/aipack/sync-config.yaml` and `~/.config/aipack/profiles/default.yaml` with starter content. Skips files that already exist unless `--force` is set. (On Windows, `%APPDATA%\aipack` replaces `~/.config/aipack`.)
+Creates `~/.config/aipack/sync-config.yaml`, `~/.config/aipack/profiles/default.yaml`, and an empty `~/.config/aipack/.env` placeholder with starter content. Skips files that already exist unless `--force` is set; existing `.env` files are always preserved. (On Windows, `%APPDATA%\aipack` replaces `~/.config/aipack`.)
 
 ```bash
 aipack init
 aipack init --force
 aipack init --config-dir /path/to/config
+```
+
+### setup
+
+Shows the missing params and env vars needed before sync. Params are shown with `profile set-param` commands, and env vars are shown with `config env set` commands that write to the active config directory's `.env` file.
+
+```bash
+aipack setup
+aipack setup production
 ```
 
 ### doctor
@@ -96,7 +118,7 @@ Packs are portable, versioned bundles of AI agent configuration installed under 
 
 ### pack create
 
-Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync.
+Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `plugins/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync.
 
 By default the pack is created in the current directory and symlinked into the packs directory. Use `--local` to create it directly inside the packs directory instead.
 
@@ -113,6 +135,19 @@ aipack pack create my-pack --local --agents ./agents --workflows ./workflows
 ```
 
 Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`. Each takes a local directory path. The source directory must exist.
+
+### pack import
+
+Imports one markdown file as a rule, skill, or prompt. Use `--name` to create a new installed pack, or `--pack` to add the content to an existing installed pack.
+
+```bash
+aipack pack import ./review.md --type skill --name review-pack
+aipack pack import ./triage.md --type skill --pack example-pack
+aipack pack import https://example.com/rule.md --type rule --name rules --id incident-rule
+aipack pack import ./prompt.md --type prompt --name prompts --add
+```
+
+Flags: `--type skill|rule|prompt`, exactly one of `--name <new-pack>` or `--pack <installed-pack>`, optional `--id <id>`, optional `--add`, optional `--profile <name>`. If `--id` is omitted, aipack derives it from the source filename. If the file does not start with YAML frontmatter, aipack adds minimal frontmatter for the selected type. Imports into existing packs preserve auto-discovered manifest categories; explicit category lists are appended.
 
 ### pack install
 
@@ -164,6 +199,7 @@ aipack pack install ./my-pack --copy --name custom-name
 # Remote installs (HTTPS and SSH)
 aipack pack install --url https://github.com/org/pack-repo.git
 aipack pack install --url git@github.com:org/pack-repo.git --ref main
+aipack pack install --url https://example.com/team-pack.zip --archive
 
 # Subdirectory within a mono-repo
 aipack pack install --url https://github.com/org/shared-repo.git --path team-pack
@@ -193,7 +229,7 @@ For the full guide on installing from non-pack repositories, see [Installing Pac
 
 ### pack list
 
-Lists all installed packs with name, install method (link/copy/clone/local), version, origin, content summary, and broken-link status. Pinned packs show their version pin label inline (e.g. `v1.2.3 (pinned)`).
+Lists all installed packs with name, install method (link/copy/clone/archive/local), version, origin, content summary, and broken-link status. Pinned packs show their version pin label inline (e.g. `v1.2.3 (pinned)`).
 
 ```bash
 aipack pack list
@@ -209,9 +245,27 @@ aipack pack show my-pack
 aipack pack show my-pack --json
 ```
 
+### pack inspect
+
+Inspects a local path, registry pack name, git URL, or archive URL without installing the pack, changing the lockfile, or adding it to a profile. The output shows source metadata, discovered content counts, content IDs, bundled profiles/registries/extras, plugins, MCP servers, and trust warnings such as external-tool MCP access. Inspected resources are written to the search index with status `inspected`, so you can search a previewed pack before deciding to trust or install it.
+
+```bash
+aipack pack inspect ./my-pack
+aipack pack inspect team-pack
+aipack pack inspect --url https://github.com/org/repo.git --path packs/team
+aipack pack inspect https://example.com/team-pack.zip --archive
+aipack pack inspect team-pack --json
+aipack pack inspect --clear              # wipe inspected rows from the index
+aipack search --status inspected
+```
+
+Inspected rows are not durable cache — they live alongside installed and registered content in the search index so you can search a preview before installing. Each new inspect drops inspected rows older than 30 days automatically; `aipack pack inspect --clear` removes them on demand and never touches installed or registered packs.
+
 ### pack update
 
 Updates installed pack(s) to latest version from their origin. By default, updates every installed pack; pass a name to target one. For cloned packs, re-clones from origin and re-extracts content (content path mappings from the original install are preserved). For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target.
+
+`--dry-run` previews per-pack outcomes and file-level content changes without touching installed packs, bundled content, the lockfile, or the local git cache. Use it before a real update to check the commit-hash transition, changed files, and any new bundled categories that would land.
 
 When an update brings new bundled content categories that weren't previously approved, they're surfaced for review — printed in the CLI, shown as a checklist dialog in the TUI. Use `-w` to approve specific categories or `-w all` to accept everything.
 
@@ -231,7 +285,7 @@ aipack pack update my-pack --ref latest    # clear pin, track default branch HEA
 aipack pack update my-pack --ref main      # switch to tracking a branch
 ```
 
-Legacy packs installed via the (now-removed) `http-tarball` method are transparently migrated to the `clone` method on next update.
+Legacy packs installed via the (now-removed) `http-tarball` method are transparently migrated to the `clone` method on next update. In dry-run mode the migration is only previewed; no pack files, lockfile metadata, bundled content, or git cache entries are written.
 
 **Concurrent updates.** When refreshing multiple packs (bare `pack update` or `--all`), up to three packs update in parallel — bounded to stay within typical git-host connection limits. Per-pack stdout is buffered and flushed in input order after the parallel phase, and bundled profile and registry installs still run sequentially, so the transcript stays coherent and last-writer-wins semantics for shared profile IDs are deterministic. Concurrent clones for the same origin URL (for example, several packs installed from the same monorepo) serialize on the local bare-clone cache at `~/.config/aipack/.cache/git/` so only one remote fetch runs per origin. Ctrl-C mid-update stops dispatching new packs while letting in-flight workers finish on their own cancellation-aware operations.
 
@@ -246,10 +300,13 @@ aipack pack versions my-team-pack --json
 
 ### pack delete
 
-Deletes an installed pack from disk and removes it from all profiles.
+Deletes an installed pack from disk, removes it from all profiles, clears its lockfile and ledger entries, removes clean rendered harness files that aipack can safely attribute to the pack, and strips pack-managed keys from shared settings files. Files with user modifications, unknown ledger paths, and shared settings user keys are preserved and left unmanaged. Use `--keep-rendered` to stop managing the pack while leaving all rendered harness files in place as unmanaged content.
 
 ```bash
 aipack pack delete my-pack
+aipack pack delete my-pack --keep-rendered
+aipack pack delete my-pack --dry-run
+aipack pack delete my-pack --json
 ```
 
 ### pack rename
@@ -343,6 +400,25 @@ aipack profile show --json
 aipack profile show --profile-path /path/to/profile.yaml
 ```
 
+### profile refs
+
+Reports the detailed `{params.*}` and `{env:*}` reference data behind `aipack setup`. Use `setup` for first-time remediation and `profile refs --json` when scripts or diagnostics need the full reference inventory. Param refs are marked `set`, `defaulted`, or `missing`; env refs are marked `dotenv`, `env`, `defaulted`, or `missing` depending on whether the value comes from the config directory's `.env` file, the process environment, an inline default, or neither.
+
+```bash
+aipack profile refs
+aipack profile refs production
+aipack profile refs production --json
+```
+
+### profile set-param / profile unset-param
+
+Edits the `params` map in a profile without hand-editing YAML. Use `aipack setup` first to find missing strict parameters, then set the values that belong in the profile. Machine-local secrets should still use `{env:*}` plus `.env` or the process environment.
+
+```bash
+aipack profile set-param production tracker_url https://tracker.example.com
+aipack profile unset-param production tracker_url
+```
+
 ## Registry
 
 The registry maps pack names to source repositories. The unified view merges all cached sources in `~/.config/aipack/registries/` in `registry_sources` order from sync-config (first-seen wins for pack name conflicts). Sources include remote registries fetched via `registry fetch` and embedded entries bundled inside installed packs.
@@ -379,6 +455,8 @@ aipack registry fetch
 aipack registry fetch --deep
 ```
 
+`--deep` shallow-clones each registered pack and indexes resource-level frontmatter for search. Indexed kinds: rules, agents, workflows, skills, prompts, plugin descriptors, and MCP server inventories. Already-installed packs are skipped because the installed pack source remains authoritative. Deep-indexed resources show up under `aipack search --status registered` so users can search a registered pack's content before deciding to install.
+
 ### registry list
 
 Browse the merged registry.
@@ -406,6 +484,15 @@ Deletes a registry source from sync-config and removes its cache file.
 aipack registry delete my-tools
 ```
 
+### registry validate
+
+Validates a registry YAML file without fetching, installing, or merging it. The command reports all semantic validation errors and supports JSON output for CI.
+
+```bash
+aipack registry validate ./registry.yaml
+aipack registry validate ./registry.yaml --json
+```
+
 ## Sync, Save, Restore, Clean, Render
 
 For the sync workflow, save round-trips, restore, clean, and render, see [Sync and Save](./sync.md).
@@ -427,19 +514,22 @@ aipack status --json
 
 Traces a single resource through the sync pipeline, showing where it comes from (pack source) and where it would land in each harness location. Useful for debugging why a rule isn't showing up or which harness file contains a given resource.
 
-Valid resource types: `rule`, `agent`, `workflow`, `skill`, `mcp`.
+If the resource name is unique in the active profile, the type can be omitted. If multiple active resources share the same name, `trace` prints the explicit commands to disambiguate.
+
+Valid resource types: `rule`, `agent`, `workflow`, `skill`, `plugin`, `mcp`.
 
 The output shows the source pack, source file path, and each destination with its harness, file path, and on-disk state (`create`, `identical`, `managed`, `conflict`, `untracked`, or `error`). Use `--harness` to filter output to a single harness. Destinations where the resource is composited into a multi-resource file (e.g. Codex flattening rules into `AGENTS.override.md`) are flagged as embedded separately from the state.
 
 ```bash
 # Trace a rule named "anti-slop"
+aipack trace anti-slop
 aipack trace rule anti-slop
 
 # Trace a skill named "oncall"
 aipack trace skill oncall --scope global
 
-# Trace an MCP server named "atlassian"
-aipack trace mcp atlassian
+# Trace an MCP server named "issue-tracker"
+aipack trace mcp issue-tracker
 
 # Filter to a single harness
 aipack trace rule anti-slop --harness claudecode
@@ -450,9 +540,9 @@ aipack trace rule anti-slop --json
 
 ### search
 
-Full-text search (FTS5 with BM25 ranking) across resource names, descriptions, and body text. The SQLite index is built automatically during `registry fetch --deep` and pack install.
+Full-text search (FTS5 with BM25 ranking) across resource names, descriptions, and body text. The SQLite index is built automatically during `registry fetch --deep`, pack install/update, and `pack inspect`. Search reconciles installed status against `aipack.lock` and installed pack directories before applying installed/status filters, so stale registry rows do not make installed packs appear available.
 
-Filters: `--tags` (comma-separated), `--role`, `--kind` (rule/skill/workflow/agent/pack), `--category` (ops/dev/infra/governance/meta), `--pack`, `--installed`, `--available`.
+Filters: `--tags` (comma-separated), `--role`, `--kind` (rule/skill/workflow/agent/prompt/plugin/mcp/pack), `--category` (ops/dev/infra/governance/meta), `--pack`, `--status installed|registered|inspected`, `--installed`, `--available`. `--available` is retained as a compatibility alias for uninstalled results; use `--status registered` for registry/deep-index content and `--status inspected` for pack previews created by `pack inspect`.
 
 ```bash
 aipack search 5xx triage
@@ -460,6 +550,8 @@ aipack search --category ops
 aipack search --tags observability --role oncall-operator
 aipack search deploy --kind workflow --category infra
 aipack search 5xx --installed
+aipack search --status registered
+aipack search --status inspected
 aipack search --available
 aipack search 5xx --json
 ```
@@ -478,9 +570,11 @@ aipack query "SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY coun
 
 `aipack manage` opens a terminal UI for managing profiles and packs. Requires a TTY.
 
-Tabs: Profiles, Packs, Save, Sync, Search.
+Tabs: Profiles, Packs, Sync, Save, Search, Config.
 
-Key bindings: `tab` switch tabs, `j/k` navigate, `enter` expand, `space` toggle, `l` list profiles, `n` new profile, `d` delete, `D` duplicate, `a` activate, `p` add pack, `r` remove pack, `s` sync, `t` MCP tool picker (on an MCP entry in the profiles tree), `.` context actions (Edit file, Tool list; inside the tool picker, bulk actions), `esc` quit (auto-saves).
+Mouse clicks work for tab content, overlay actions, and modal selections when the terminal reports mouse events; action menu highlights follow mouse hover, mouse-wheel scrolling works in the Profiles content tree and Packs content list, and large sync-plan diff overlays retain their bottom border above the help bar. Every interaction remains reachable from the keyboard.
+
+Key bindings: `tab` switch tabs, `j/k` navigate, `enter` expand, `space` toggle, `l` list profiles, `n` new profile, `d` delete, `D` duplicate, `a` activate, `p` add pack, `r` remove pack, `s` sync, `t` MCP tool picker (on an MCP entry in the profiles tree), `.` context actions, `esc` quit or back out of the active overlay/subscreen. Double-clicking a pack row in the Packs tab opens the same action menu, where uninstalled packs can be inspected before install and installed packs can dry-run update with file-level changes before mutating local state. Config settings live on the Config tab; profile content actions stay on the Profiles tab.
 
 ```bash
 aipack manage

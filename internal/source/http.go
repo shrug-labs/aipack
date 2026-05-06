@@ -2,6 +2,7 @@ package source
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,6 +49,13 @@ func GitHubTarballURL(repoURL, ref string) (string, error) {
 type httpPendingSymlink struct {
 	dest               string // absolute path where the resolved file goes
 	targetFullStripped string // target path in stripped namespace (repo root)
+}
+
+// HTTPArchiveOptions controls generic HTTP archive downloads.
+type HTTPArchiveOptions struct {
+	ArchiveOpts
+	NetrcPath string
+	Client    *http.Client
 }
 
 // FetchHTTPTarball downloads a gzipped tarball from tarballURL and extracts its
@@ -316,6 +325,232 @@ func FetchHTTPTarball(ctx context.Context, tarballURL, destDir, subPath string, 
 	}
 
 	return nil
+}
+
+// FetchHTTPArchive downloads a zip, tar, tar.gz, or tgz archive from archiveURL
+// and extracts it into destDir without stripping path components.
+func FetchHTTPArchive(ctx context.Context, archiveURL, destDir string, opts HTTPArchiveOptions) error {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL, nil)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	if err := applyNetrcAuth(req, opts.NetrcPath); err != nil {
+		return err
+	}
+
+	client := opts.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching archive: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: HTTP %d", ErrHTTPTarballFailed, resp.StatusCode)
+	}
+
+	lower := strings.ToLower(req.URL.Path)
+	switch {
+	case strings.HasSuffix(lower, ".zip"):
+		return extractZipArchive(resp.Body, destDir, opts.ArchiveOpts)
+	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".tgz"):
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return fmt.Errorf("decompressing archive: %w", err)
+		}
+		defer gz.Close()
+		return extractGenericTarArchive(gz, destDir, opts.ArchiveOpts)
+	case strings.HasSuffix(lower, ".tar"):
+		return extractGenericTarArchive(resp.Body, destDir, opts.ArchiveOpts)
+	default:
+		return fmt.Errorf("unsupported archive format for %s (expected .zip, .tar, .tar.gz, or .tgz)", archiveURL)
+	}
+}
+
+func extractGenericTarArchive(r io.Reader, destDir string, opts ArchiveOpts) error {
+	opts.EnforceTopLevelSymlinkBoundary = true
+	result, err := ExtractArchive(r, destDir, opts)
+	if err != nil {
+		return err
+	}
+	if len(result.PendingSymlinks) > 0 {
+		var missing []string
+		for _, ps := range result.PendingSymlinks {
+			missing = append(missing, ps.TargetTarPath)
+		}
+		slices.Sort(missing)
+		return fmt.Errorf("symlink targets not found in archive: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func extractZipArchive(r io.Reader, destDir string, opts ArchiveOpts) error {
+	maxFile := opts.MaxFileSize
+	if maxFile <= 0 {
+		maxFile = defaultMaxFileSize
+	}
+	maxTotal := opts.MaxTotalSize
+	if maxTotal <= 0 {
+		maxTotal = defaultMaxTotalSize
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r, maxTotal+1))
+	if err != nil {
+		return fmt.Errorf("reading zip archive: %w", err)
+	}
+	if int64(len(data)) > maxTotal {
+		return fmt.Errorf("zip archive exceeds size limit (%d bytes)", maxTotal)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return fmt.Errorf("opening zip archive: %w", err)
+	}
+
+	var totalSize int64
+	for _, file := range zr.File {
+		clean, err := safeArchivePath(file.Name)
+		if err != nil {
+			return err
+		}
+		dest := filepath.Join(destDir, clean)
+		if !util.IsWithinDir(dest, destDir) {
+			return fmt.Errorf("zip entry escapes destination: %s", file.Name)
+		}
+
+		mode := file.FileInfo().Mode()
+		if mode&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink not allowed in pack archive: %s", file.Name)
+		}
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(dest, 0o700); err != nil {
+				return fmt.Errorf("creating directory %s: %w", clean, err)
+			}
+			continue
+		}
+		if !mode.IsRegular() {
+			continue
+		}
+		if file.UncompressedSize64 > uint64(maxFile) {
+			return fmt.Errorf("file %s exceeds size limit (%d > %d bytes)", clean, file.UncompressedSize64, maxFile)
+		}
+		rc, err := file.Open()
+		if err != nil {
+			return fmt.Errorf("opening zip entry %s: %w", clean, err)
+		}
+		content, readErr := io.ReadAll(io.LimitReader(rc, maxFile+1))
+		closeErr := rc.Close()
+		if readErr != nil {
+			return fmt.Errorf("reading zip entry %s: %w", clean, readErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("closing zip entry %s: %w", clean, closeErr)
+		}
+		if int64(len(content)) > maxFile {
+			return fmt.Errorf("file %s exceeds size limit (%d > %d bytes)", clean, len(content), maxFile)
+		}
+		totalSize += int64(len(content))
+		if totalSize > maxTotal {
+			return fmt.Errorf("total extraction size exceeds limit (%d > %d bytes)", totalSize, maxTotal)
+		}
+		if err := util.WriteFileAtomicWithPerms(dest, content, 0o700, 0o600); err != nil {
+			return fmt.Errorf("writing %s: %w", clean, err)
+		}
+	}
+	return nil
+}
+
+func safeArchivePath(name string) (string, error) {
+	clean := filepath.Clean(name)
+	if clean == "." || strings.HasPrefix(clean, string(filepath.Separator)) ||
+		clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) ||
+		strings.Contains(clean, string(filepath.Separator)+".."+string(filepath.Separator)) ||
+		strings.HasSuffix(clean, string(filepath.Separator)+"..") {
+		return "", fmt.Errorf("path traversal in archive entry: %s", name)
+	}
+	return clean, nil
+}
+
+func applyNetrcAuth(req *http.Request, netrcPath string) error {
+	if req.URL.User != nil {
+		return nil
+	}
+	if netrcPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		netrcPath = filepath.Join(home, ".netrc")
+	}
+	entries, err := parseNetrc(netrcPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading netrc: %w", err)
+	}
+	host := req.URL.Host
+	hostName := req.URL.Hostname()
+	for _, entry := range entries {
+		if entry.machine == host || entry.machine == hostName {
+			if entry.login != "" || entry.password != "" {
+				req.SetBasicAuth(entry.login, entry.password)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+type netrcEntry struct {
+	machine  string
+	login    string
+	password string
+}
+
+func parseNetrc(path string) ([]netrcEntry, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	tokens := strings.Fields(string(b))
+	var entries []netrcEntry
+	for i := 0; i < len(tokens); {
+		if tokens[i] != "machine" {
+			i++
+			continue
+		}
+		if i+1 >= len(tokens) {
+			break
+		}
+		entry := netrcEntry{machine: tokens[i+1]}
+		i += 2
+		for i < len(tokens) && tokens[i] != "machine" {
+			key := tokens[i]
+			if i+1 >= len(tokens) {
+				break
+			}
+			value := tokens[i+1]
+			switch key {
+			case "login":
+				entry.login = value
+				i += 2
+			case "password":
+				entry.password = value
+				i += 2
+			default:
+				i++
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 // FetchFileHTTPTarball downloads a gzipped tarball and returns the content of a

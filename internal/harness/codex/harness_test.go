@@ -142,6 +142,86 @@ func TestPlan_Project_AgentsOverride_NoExistingAgents(t *testing.T) {
 	}
 }
 
+func TestPlan_Project_PluginsConfig(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Plugins: []domain.Plugin{
+					{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "pack-a"},
+					{Name: "superpowers", Source: "github:obra/superpowers", Marketplace: "github:obra/superpowers-marketplace", SourcePack: "pack-a"},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(f.Settings) != 1 {
+		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(f.Settings[0].Desired, &root); err != nil {
+		t.Fatalf("unmarshal config.toml: %v\n%s", err, f.Settings[0].Desired)
+	}
+	plugins, ok := root["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("plugins table missing in:\n%s", f.Settings[0].Desired)
+	}
+	for _, key := range []string{"linear@openai-curated", "superpowers@superpowers-marketplace"} {
+		entry, ok := plugins[key].(map[string]any)
+		if !ok {
+			t.Fatalf("plugins.%q missing in %v", key, plugins)
+		}
+		if entry["enabled"] != true {
+			t.Fatalf("plugins.%q.enabled = %v, want true", key, entry["enabled"])
+		}
+	}
+}
+
+func TestPlan_Project_PluginsIgnoreSkipSettings(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:        domain.ScopeProject,
+		TargetDir:    projectDir,
+		SkipSettings: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Plugins: []domain.Plugin{{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "pack-a"}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(f.Settings) != 0 {
+		t.Fatalf("settings actions = %d, want 0 with skip settings", len(f.Settings))
+	}
+	if len(f.MCP) != 1 {
+		t.Fatalf("MCP/plugin actions = %d, want 1", len(f.MCP))
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(f.MCP[0].Desired, &root); err != nil {
+		t.Fatalf("unmarshal managed config: %v\n%s", err, f.MCP[0].Desired)
+	}
+	plugins, ok := root["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("plugins table missing from skip-settings action:\n%s", f.MCP[0].Desired)
+	}
+	entry, ok := plugins["linear@openai-curated"].(map[string]any)
+	if !ok || entry["enabled"] != true {
+		t.Fatalf("plugins.linear@openai-curated = %v, want enabled=true", plugins["linear@openai-curated"])
+	}
+}
+
 func TestPlan_Project_AgentsOverride_SourcePackSingle(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()

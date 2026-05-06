@@ -77,6 +77,11 @@ func PackListVersions(ctx context.Context, req PackListVersionsRequest) (PackLis
 		if err != nil {
 			return PackListVersionsResult{}, fmt.Errorf("pack %q is not installed and not found in registry: %w", name, err)
 		}
+		if entry.Method == config.MethodArchive {
+			return PackListVersionsResult{}, fmt.Errorf(
+				"pack %q is registered via %q; version discovery requires a remote git registry entry",
+				name, entry.Method)
+		}
 		origin = entry.Repo
 	}
 

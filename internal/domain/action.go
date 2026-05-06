@@ -48,6 +48,7 @@ type SettingsAction struct {
 	Label          string  // human label, e.g. "opencode.json"
 	SourcePack     string  // harness settings source pack name
 	MergeMode      bool    // when true, merge managed keys into existing file
+	AdditiveOnly   bool    // when true, merge adds/updates managed keys but never removes absent keys
 }
 
 // MCPAction represents a single MCP server as a first-class sync unit.

@@ -171,6 +171,7 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 				"workflows": counts.Workflows,
 				"agents":    counts.Agents,
 				"skills":    counts.Skills,
+				"plugins":   counts.Plugins,
 				"settings":  len(p.Settings),
 				"mcp":       counts.MCP,
 				"warnings":  jsonWarnings,

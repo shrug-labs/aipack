@@ -388,6 +388,63 @@ func TestUpdateRegistryPacks_DoesNotDowngradeInstalled(t *testing.T) {
 	}
 }
 
+func TestUpdateRegistryPacks_CanMarkInventoryInstalled(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	if err := db.UpdateRegistryPacks([]index.PackInfo{{
+		Name:        "my-pack",
+		Description: "From registry",
+		Repo:        "https://example.com/pack.git",
+		Installed:   true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var installed int
+	if err := db.QueryRow("SELECT installed FROM packs WHERE name = 'my-pack'").Scan(&installed); err != nil {
+		t.Fatal(err)
+	}
+	if installed != 1 {
+		t.Fatalf("installed = %d, want 1", installed)
+	}
+}
+
+func TestUpdateRegistryPacks_UpgradesExistingDeepIndexWhenInventoryInstalled(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	if err := db.UpdateDeepIndex(index.PackInfo{
+		Name:   "my-pack",
+		Source: "deep-index",
+	}, []index.Resource{
+		{Kind: "mcp", Name: "demo-server", Path: "mcp/demo-server.json"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateRegistryPacks([]index.PackInfo{{
+		Name:      "my-pack",
+		Installed: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var installed int
+	if err := db.QueryRow("SELECT installed FROM packs WHERE name = 'my-pack'").Scan(&installed); err != nil {
+		t.Fatal(err)
+	}
+	if installed != 1 {
+		t.Fatalf("installed = %d, want 1", installed)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM resources r JOIN packs p ON r.pack_id=p.id WHERE p.name='my-pack'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected existing deep-index resource to remain available, got %d", count)
+	}
+}
+
 func TestSearch_IncludesUninstalledPacks(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
