@@ -1357,6 +1357,72 @@ func TestCodex_MCPServerInConfigTOML(t *testing.T) {
 	}
 }
 
+func TestCodex_ProfileSwitchRemovesMCPServerWithRuntimeToolApproval(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	first := profileWith(packRoot, withRules("placeholder"))
+	first.MCPServers = []domain.MCPServer{
+		{
+			Name:       "current",
+			Transport:  domain.TransportStdio,
+			Command:    []string{"current-command"},
+			SourcePack: "test-pack",
+		},
+		{
+			Name:       "previous",
+			Transport:  domain.TransportStdio,
+			Command:    []string{"previous-command"},
+			SourcePack: "test-pack",
+		},
+	}
+	second := profileWith(packRoot, withRules("placeholder"))
+	second.MCPServers = []domain.MCPServer{
+		{
+			Name:       "current",
+			Transport:  domain.TransportStdio,
+			Command:    []string{"current-command"},
+			SourcePack: "test-pack",
+		},
+	}
+	reg := testRegistry()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	syncAndApply(t, first, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	configPath := filepath.Join(projectDir, ".codex", "config.toml")
+	existing, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml after first sync: %v", err)
+	}
+	runtimeApprovals := `
+
+[mcp_servers.current.tools.runtime_allowed]
+approval_mode = "approve"
+
+[mcp_servers.previous.tools.runtime_allowed]
+approval_mode = "approve"
+`
+	if err := os.WriteFile(configPath, append(existing, []byte(runtimeApprovals)...), 0o644); err != nil {
+		t.Fatalf("write config.toml with runtime approvals: %v", err)
+	}
+
+	syncAndApply(t, second, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg)
+
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml after profile switch: %v", err)
+	}
+	content := string(got)
+	if strings.Contains(content, "previous") {
+		t.Fatalf("removed MCP server should not leave runtime approval tables:\n%s", content)
+	}
+	if !strings.Contains(content, "runtime_allowed") {
+		t.Fatalf("runtime approval for retained MCP server should be preserved:\n%s", content)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test 18: Codex agent with harness model override
 //

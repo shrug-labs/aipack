@@ -99,6 +99,7 @@ func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte, additiveOnly bool
 		return nil, nil, fmt.Errorf("parse new-managed TOML: %w", err)
 	}
 
+	pruneRemovedCodexMCPServerTables(disk, prev, next, &ops)
 	threeWayMergeMap(disk, prev, next, "", additiveOnly, &ops)
 
 	out, err := marshalTOML(disk)
@@ -106,6 +107,38 @@ func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte, additiveOnly bool
 		return nil, nil, err
 	}
 	return out, ops, nil
+}
+
+func pruneRemovedCodexMCPServerTables(disk, prev, next map[string]any, ops *[]MergeOp) {
+	diskServers, ok := disk["mcp_servers"].(map[string]any)
+	if !ok {
+		return
+	}
+	prevServers, ok := prev["mcp_servers"].(map[string]any)
+	if !ok {
+		return
+	}
+	nextServers, _ := next["mcp_servers"].(map[string]any)
+	changed := false
+	for name := range prevServers {
+		if _, stillManaged := nextServers[name]; stillManaged {
+			continue
+		}
+		if _, onDisk := diskServers[name]; !onDisk {
+			continue
+		}
+		delete(diskServers, name)
+		changed = true
+		*ops = append(*ops, MergeOp{Key: "mcp_servers." + name, Action: MergeRemove})
+	}
+	if !changed {
+		return
+	}
+	if len(diskServers) == 0 {
+		delete(disk, "mcp_servers")
+		return
+	}
+	disk["mcp_servers"] = diskServers
 }
 
 // threeWayMergeMap recursively merges next (new managed) into disk, using prev

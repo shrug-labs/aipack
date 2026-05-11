@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -177,6 +178,49 @@ func TestMergeSettingsKeys_TOML(t *testing.T) {
 		t.Error("result should be non-empty")
 	}
 	assertOp(t, ops, "managed_key", MergeAdd)
+}
+
+func TestMergeSettingsKeys_TOML_RemovesCodexMCPServerWithRuntimeToolApproval(t *testing.T) {
+	t.Parallel()
+	existing := []byte(`
+[mcp_servers.current]
+command = "keep"
+
+[mcp_servers.current.tools.runtime_allowed]
+approval_mode = "approve"
+
+[mcp_servers.previous]
+command = "previous"
+args = ["arg"]
+
+[mcp_servers.previous.tools.runtime_allowed]
+approval_mode = "approve"
+`)
+	prev := []byte(`
+[mcp_servers.current]
+command = "keep"
+
+[mcp_servers.previous]
+command = "previous"
+args = ["arg"]
+`)
+	next := []byte(`
+[mcp_servers.current]
+command = "keep"
+`)
+
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessCodex, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(result)
+	if strings.Contains(content, "previous") {
+		t.Fatalf("removed MCP server should not leave orphaned tool approval tables:\n%s", content)
+	}
+	if !strings.Contains(content, "runtime_allowed") {
+		t.Fatalf("runtime tool approval for retained server should be preserved:\n%s", content)
+	}
+	assertOp(t, ops, "mcp_servers.previous", MergeRemove)
 }
 
 func TestMergeSettingsKeys_UnsupportedHarness(t *testing.T) {

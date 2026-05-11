@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.27.2]
+
+### Fixed
+
+- **Codex MCP cleanup now removes runtime tool approvals for servers removed by profile switches.** In-place `aipack sync` transitions no longer leave orphaned `[mcp_servers.<name>.tools.*]` tables that make Codex reject `config.toml` with an invalid transport error.
+
 ## [0.27.1]
 
 ### Fixed
