@@ -174,6 +174,11 @@ type packCreatedMsg = packsscreen.CreatedMsg
 // statusClearMsg is sent by a timer to auto-clear transient status text.
 type statusClearMsg struct{ id int }
 
+type autoSyncDueMsg struct {
+	id          int
+	profileName string
+}
+
 // packRowClearMsg is sent by a per-row timer to revert a pack row's
 // update decoration after the auto-clear TTL. The handler checks `when`
 // against the row's recorded clearAt to ignore stale ticks (e.g. when

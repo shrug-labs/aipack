@@ -13,6 +13,9 @@ aipack
 ├── init
 ├── setup
 ├── config
+│   ├── defaults
+│   │   ├── get
+│   │   └── set
 │   └── env
 │       ├── list
 │       ├── get

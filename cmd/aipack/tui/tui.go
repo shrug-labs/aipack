@@ -159,6 +159,8 @@ type rootModel struct {
 	pendingConfigEnvKey    string // .env key selected before value edit/delete dialog
 	pendingConfigParamHint string // param key to keep selected after config refresh
 	pendingConfigEnvHint   string // env key to keep selected after config refresh
+	pendingAutoSync        *pendingAutoSyncState
+	autoSyncSeq            int
 
 	// Save plan state: stashed context for executing save after user confirms.
 	savePlanCtx *savePlanContext
@@ -192,6 +194,11 @@ type updateFlowState struct {
 	PackName string                 // empty means update-all is in progress
 	All      bool                   // true when update-all is in progress
 	Results  []app.PackUpdateResult // stashed for bundled candidate dialog
+}
+
+type pendingAutoSyncState struct {
+	id          int
+	profileName string
 }
 
 func newRootModel(ctx context.Context, cfg RunConfig) rootModel {
@@ -426,6 +433,20 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if msg, ok := msg.(autoSyncDueMsg); ok {
+		if m.pendingAutoSync == nil ||
+			m.pendingAutoSync.id != msg.id ||
+			m.pendingAutoSync.profileName != msg.profileName {
+			return m, nil
+		}
+		m.pendingAutoSync = nil
+		item, ok := m.profilesScreen().ActiveProfile()
+		if !ok || item.Name != msg.profileName {
+			return m, nil
+		}
+		return m.doSyncItem(item, "", "")
+	}
+
 	// Result messages must be handled before the overlay intercepts,
 	// otherwise the overlay swallows its own result.
 	if msg, ok := msg.(dialogResultMsg); ok {
@@ -700,10 +721,11 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case profilescreen.ActivatedMsg:
 		if msg.Err == nil {
 			m.setActiveProfile(msg.ProfileName)
+			return m.syncCheckAndMaybeAutoSync(msg.ProfileName, true, true)
 		} else {
 			m.statusText = common.ErrorStyle.Render(fmt.Sprintf("activate error: %v", msg.Err))
 		}
-		return m, m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)
+		return m.syncCheckAndMaybeAutoSync(msg.ProfileName, false, false)
 
 	case profilescreen.SavedMsg:
 		if msg.Err != nil {
@@ -739,8 +761,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// Re-run sync check now that on-disk profile has changed.
-		return m, m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)
+		return m.syncCheckAndMaybeAutoSync(msg.ProfileName, msg.Err == nil, false)
 
 	}
 
@@ -2163,6 +2184,7 @@ func (m rootModel) startSave() (tea.Model, tea.Cmd) {
 
 // startSync initiates the sync flow: auto-save if dirty, then prompt sync.
 func (m rootModel) startSync() (tea.Model, tea.Cmd) {
+	m.pendingAutoSync = nil
 	if m.dirty {
 		profiles := m.profilesScreen()
 		cmd := profiles.SaveAll()
@@ -2187,7 +2209,10 @@ func (m rootModel) doSync(scope, harness string) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	return m.doSyncItem(item, scope, harness)
+}
 
+func (m rootModel) doSyncItem(item profilescreen.ProfileSnapshot, scope, harness string) (tea.Model, tea.Cmd) {
 	// Use defaults from target info if not overridden.
 	if scope == "" {
 		scope = string(item.SyncTarget.Scope)
@@ -2202,6 +2227,7 @@ func (m rootModel) doSync(scope, harness string) (tea.Model, tea.Cmd) {
 	m = m.setProfilesScreen(m.profilesScreen().MarkSyncStarted(item.Name))
 	m.statusText = common.DimStyle.Render("syncing...")
 	m.pendingExit = false
+	m.pendingAutoSync = nil
 
 	return m, runSync(m.ctx, m.eng, m.cfg.ConfigDir, item.Name, item.Path, scope, harness, m.cfg.SyncCfg, m.cfg.Registry)
 }
@@ -3269,12 +3295,49 @@ func (m rootModel) helpText() string {
 }
 
 const statusClearDuration = 3 * time.Second
+const autoSyncDelay = 7 * time.Second
 
 // scheduleStatusClear returns a tea.Cmd that clears the status text
 // after statusClearDuration, if the status ID still matches.
 func scheduleStatusClear(id int) tea.Cmd {
 	return tea.Tick(statusClearDuration, func(time.Time) tea.Msg {
 		return statusClearMsg{id: id}
+	})
+}
+
+func (m rootModel) syncCheckAndMaybeAutoSync(profileName string, allowAutoSync bool, skipCheckWhenAutoScheduled bool) (rootModel, tea.Cmd) {
+	cmds := []tea.Cmd{m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)}
+	if !allowAutoSync {
+		return m, tea.Batch(cmds...)
+	}
+	var autoCmd tea.Cmd
+	m, autoCmd = m.scheduleAutoSyncForActiveProfile(profileName)
+	if autoCmd != nil {
+		if skipCheckWhenAutoScheduled {
+			return m, autoCmd
+		}
+		cmds = append(cmds, autoCmd)
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m rootModel) scheduleAutoSyncForActiveProfile(profileName string) (rootModel, tea.Cmd) {
+	if !m.cfg.SyncCfg.Defaults.AutoSync {
+		return m, nil
+	}
+	active, ok := m.profilesScreen().ActiveProfile()
+	if !ok || active.Name != profileName {
+		return m, nil
+	}
+	m.autoSyncSeq++
+	pending := pendingAutoSyncState{id: m.autoSyncSeq, profileName: profileName}
+	m.pendingAutoSync = &pending
+	return m, scheduleAutoSync(pending)
+}
+
+func scheduleAutoSync(pending pendingAutoSyncState) tea.Cmd {
+	return tea.Tick(autoSyncDelay, func(time.Time) tea.Msg {
+		return autoSyncDueMsg(pending)
 	})
 }
 

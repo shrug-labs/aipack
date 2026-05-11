@@ -17,7 +17,7 @@ Use `pack import` for one markdown rule, prompt, or skill file; it can create a 
 
 ## Command map
 
-- Setup: `init`, `doctor`, `setup`, `config env`, `mcp inspect-tools`
+- Setup: `init`, `doctor`, `setup`, `config defaults`, `config env`, `mcp inspect-tools`
 - Pack lifecycle: `pack create`, `pack import`, `pack install`, `pack inspect`, `pack delete`, `pack update`, `pack rename`, `pack add`, `pack remove`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
 - Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`, `profile refs`, `profile set-param`, `profile unset-param`
 - Registry: `registry fetch`, `registry list`, `registry sources`, `registry delete`, `registry validate`
@@ -46,6 +46,19 @@ Shows the missing params and env vars needed before sync. Params are shown with 
 ```bash
 aipack setup
 aipack setup production
+```
+
+### config defaults
+
+Reads and sets scalar defaults in `sync-config.yaml` from the CLI. Supported keys are `profile`, `harnesses`, `scope`, `collision_strategy`, and `auto_sync`; hyphenated names and `defaults.<name>` are accepted as aliases.
+
+```bash
+aipack config defaults get harnesses
+aipack config defaults set profile default
+aipack config defaults set harnesses codex,opencode
+aipack config defaults set scope global
+aipack config defaults set collision_strategy last-wins
+aipack config defaults set auto_sync true
 ```
 
 ### doctor
@@ -186,6 +199,8 @@ Use `aipack pack versions <name>` to discover available semver tags. Pack author
 
 By default, the pack is installed to disk but not added to any profile. Use `--add` to also add it to the active profile, or `--add --profile <name>` to target a specific one. Use `aipack pack add <name>` to add an installed pack to a profile later.
 
+When `defaults.auto_sync: true` is set in `sync-config.yaml`, installs that add content to the active profile automatically run `aipack sync` after the install succeeds. Installs that target another profile do not auto-sync.
+
 Core content (rules, skills, workflows, agents, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name.
 
 ```bash
@@ -273,6 +288,8 @@ Updates installed pack(s) to latest version from their origin. By default, updat
 `--dry-run` previews per-pack outcomes and file-level content changes without touching installed packs, bundled content, the lockfile, or the local git cache. Use it before a real update to check the commit-hash transition, changed files, and any new bundled categories that would land.
 
 When an update brings new bundled content categories that weren't previously approved, they're surfaced for review — printed in the CLI, shown as a checklist dialog in the TUI. Use `-w` to approve specific categories or `-w all` to accept everything.
+
+With `defaults.auto_sync: true`, successful updates automatically sync only when at least one updated pack is enabled in the active profile. `--dry-run`, failed updates, and updates for inactive-profile-only packs do not auto-sync.
 
 ```bash
 aipack pack update                         # update all installed packs
@@ -432,7 +449,7 @@ The registry maps pack names to source repositories. The unified view merges all
 
 Fetches remote registries and caches them locally. Each source is cached as a separate file and saved to `registry_sources` in sync-config for future fetches.
 
-With an explicit URL, fetches that single source. Without a URL, fetches all configured sources (or the compiled-in default from `shrug-labs/packs`).
+With an explicit URL, fetches that single source. Without a URL, fetches all configured sources plus any compiled-in default sources. Public builds include the `shrug-labs/packs` registry; distributor builds may prepend one additional default registry.
 
 Git detection: URL ending in `.git` → git mode (defaults: `ref=main`, `path=registry.yaml`). `git@host:path` or `ssh://` → git mode. `--ref` provided → git mode. Otherwise → HTTP GET.
 

@@ -27,6 +27,55 @@ const (
 	DefaultRegistryPath = "registry.yaml"
 )
 
+// AdditionalDefaultRegistryName and AdditionalDefaultRegistryURL can be set by
+// distributors via ldflags. When present, the extra registry is fetched before
+// the public default so source-order conflict resolution can prefer distributor
+// pack metadata.
+var (
+	AdditionalDefaultRegistryName string
+	AdditionalDefaultRegistryURL  string
+)
+
+// DefaultRegistrySources returns the compiled-in registry sources in fetch and
+// merge priority order.
+func DefaultRegistrySources() []RegistrySourceEntry {
+	sources := make([]RegistrySourceEntry, 0, 2)
+	if url := strings.TrimSpace(AdditionalDefaultRegistryURL); url != "" {
+		path := ""
+		if IsGitURL(url, "") {
+			path = DefaultRegistryPath
+		}
+		name := strings.TrimSpace(AdditionalDefaultRegistryName)
+		if name == "" {
+			name = DeriveSourceName(url, path)
+		}
+		sources = appendMissingRegistrySource(sources, RegistrySourceEntry{
+			Name: name,
+			URL:  url,
+			Path: path,
+		})
+	}
+	sources = appendMissingRegistrySource(sources, RegistrySourceEntry{
+		Name: DeriveSourceName(DefaultRegistryRepo, DefaultRegistryPath),
+		URL:  DefaultRegistryRepo,
+		Path: DefaultRegistryPath,
+	})
+	return sources
+}
+
+func appendMissingRegistrySource(sources []RegistrySourceEntry, src RegistrySourceEntry) []RegistrySourceEntry {
+	for _, existing := range sources {
+		if sameRegistryCoordinates(existing, src) {
+			return sources
+		}
+	}
+	return append(sources, src)
+}
+
+func sameRegistryCoordinates(a, b RegistrySourceEntry) bool {
+	return a.URL == b.URL && a.Ref == b.Ref && a.Path == b.Path
+}
+
 // Registry is a catalog of packs available for installation.
 type Registry struct {
 	SchemaVersion int                      `yaml:"schema_version"`

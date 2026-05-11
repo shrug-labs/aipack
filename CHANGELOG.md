@@ -4,7 +4,13 @@ All notable user-facing changes to `aipack` will be documented in this file.
 
 The format is based on Keep a Changelog, and releases use semantic versioning tags.
 
-## [Unreleased]
+## [0.27.3]
+
+### Added
+
+- **Distributors can compile in an additional default registry source.** Bare `aipack registry fetch` and `aipack init` still include the public `shrug-labs/packs` registry, and distribution builds can prepend one extra registry by setting `internal/config.AdditionalDefaultRegistryName` and `internal/config.AdditionalDefaultRegistryURL` via Go ldflags.
+- **`aipack config defaults get/set` manages sync-config defaults from the CLI.** The command covers `profile`, `harnesses`, `scope`, `collision_strategy`, and `auto_sync`; profile changes reuse active-profile validation, while registry sources remain under `registry fetch/sources/delete`.
+- **`defaults.auto_sync` can sync active-profile changes automatically.** When enabled in `sync-config.yaml` or with `aipack config defaults set auto_sync true`, successful pack/profile mutations that affect the active profile run a normal sync using the current sync defaults. The manage TUI saves active-profile edits immediately and debounces the automatic sync for seven seconds.
 
 ## [0.27.2]
 

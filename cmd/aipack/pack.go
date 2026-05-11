@@ -101,6 +101,11 @@ func (c *PackImportCmd) Run(ctx context.Context, g *Globals) error {
 	}, g.Stdout); err != nil {
 		return err
 	}
+	if c.Add && cat != domain.CategoryPrompts {
+		if err := maybeAutoSyncProfile(ctx, g, cfgDir, profile); err != nil {
+			return err
+		}
+	}
 	if cat == domain.CategoryPrompts {
 		fmt.Fprintln(g.Stdout, "Next: run 'aipack prompt list' to see imported prompts.")
 	} else {
@@ -446,7 +451,10 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 			return err
 		}
 		printInstallMissingResults(results, profileName, g.Stdout)
-		return installMissingExitCode(results)
+		if err := installMissingExitCode(results); err != nil {
+			return err
+		}
+		return maybeAutoSyncAfterInstallMissing(ctx, g, cfgDir, profileName, results)
 	}
 
 	// Parse name@<ref> from the positional arg. Only applies to non-local,
@@ -553,6 +561,11 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 
 	if err := app.PackInstall(ctx, req, g.Stdout); err != nil {
 		return err
+	}
+	if c.Add {
+		if err := maybeAutoSyncProfile(ctx, g, cfgDir, profile); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintln(g.Stdout, "\nNext: run 'aipack sync' to sync pack content to your harness.")
 	return nil
@@ -834,7 +847,11 @@ func (c *PackAddCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
-	return app.PackAdd(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, quietOverride, g.Stdout)
+	profileName := effectiveProfile(c.Profile, cfgDir)
+	if err := app.PackAdd(cfgDir, profileName, c.Name, quietOverride, g.Stdout); err != nil {
+		return err
+	}
+	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
 }
 
 // resolveQuietFlags converts the CLI pair (-q / --no-quiet) to the tri-state
@@ -883,7 +900,11 @@ func (c *PackRemoveCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	return app.PackRemove(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout)
+	profileName := effectiveProfile(c.Profile, cfgDir)
+	if err := app.PackRemove(cfgDir, profileName, c.Name, g.Stdout); err != nil {
+		return err
+	}
+	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
 }
 
 // --- pack enable (profile) ---
@@ -913,7 +934,11 @@ func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	return app.PackEnable(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout)
+	profileName := effectiveProfile(c.Profile, cfgDir)
+	if err := app.PackEnable(cfgDir, profileName, c.Name, g.Stdout); err != nil {
+		return err
+	}
+	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
 }
 
 // --- pack disable (profile) ---
@@ -944,7 +969,11 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 
-	return app.PackDisable(cfgDir, effectiveProfile(c.Profile, cfgDir), c.Name, g.Stdout)
+	profileName := effectiveProfile(c.Profile, cfgDir)
+	if err := app.PackDisable(cfgDir, profileName, c.Name, g.Stdout); err != nil {
+		return err
+	}
+	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
 }
 
 // --- pack update ---
@@ -1052,7 +1081,7 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 	if hasError {
 		return ExitError{Code: cmdutil.ExitFail}
 	}
-	return nil
+	return maybeAutoSyncAfterPackUpdate(ctx, g, cfgDir, results)
 }
 
 // --- pack show ---

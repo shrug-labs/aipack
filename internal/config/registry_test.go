@@ -98,6 +98,47 @@ schema_version: 1
 	}
 }
 
+func TestDefaultRegistrySources_PublicOnly(t *testing.T) {
+	t.Parallel()
+
+	sources := DefaultRegistrySources()
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 default source, got %d", len(sources))
+	}
+	got := sources[0]
+	if got.URL != DefaultRegistryRepo {
+		t.Fatalf("default URL = %q, want %q", got.URL, DefaultRegistryRepo)
+	}
+	if got.Path != DefaultRegistryPath {
+		t.Fatalf("default path = %q, want %q", got.Path, DefaultRegistryPath)
+	}
+}
+
+func TestDefaultRegistrySources_AdditionalBeforePublic(t *testing.T) {
+	oldName := AdditionalDefaultRegistryName
+	oldURL := AdditionalDefaultRegistryURL
+	AdditionalDefaultRegistryName = "team-packs"
+	AdditionalDefaultRegistryURL = "https://example.com/team/registry.yaml"
+	t.Cleanup(func() {
+		AdditionalDefaultRegistryName = oldName
+		AdditionalDefaultRegistryURL = oldURL
+	})
+
+	sources := DefaultRegistrySources()
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 default sources, got %d", len(sources))
+	}
+	if sources[0].Name != "team-packs" {
+		t.Fatalf("first source name = %q, want team-packs", sources[0].Name)
+	}
+	if sources[0].URL != "https://example.com/team/registry.yaml" {
+		t.Fatalf("first source URL = %q", sources[0].URL)
+	}
+	if sources[1].URL != DefaultRegistryRepo {
+		t.Fatalf("second source URL = %q, want %q", sources[1].URL, DefaultRegistryRepo)
+	}
+}
+
 // --- DeriveSourceName tests ---
 
 func TestDeriveSourceName(t *testing.T) {

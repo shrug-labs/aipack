@@ -88,6 +88,7 @@ defaults:
   harnesses:              # target harnesses for sync (list)
     - codex
   scope: global           # "project" or "global" (default: global)
+  auto_sync: false        # automatically sync after active-profile changes
 
 registry_sources:         # managed by registry fetch
   - name: default
@@ -98,16 +99,28 @@ registry_sources:         # managed by registry fetch
     path: ops-tools/registry.yaml
 ```
 
+Set scalar defaults from the CLI when you do not want to edit YAML directly:
+
+```bash
+aipack config defaults get harnesses
+aipack config defaults set auto_sync true
+aipack config defaults set collision_strategy error
+aipack config defaults set harnesses codex,opencode
+aipack config defaults set profile default
+aipack config defaults set scope global
+```
+
 Installed pack metadata used to live here under an `installed_packs` section. It now lives in `aipack.lock` (see below). Existing installs are merged into the lockfile transparently on the first pack command (or `aipack doctor`) run after upgrade — no user action required.
 
 ### defaults
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `profile` | string | `default` | Active profile. Changed by `profile set`. |
-| `harnesses` | string[] | `[codex]` | Target harnesses for sync. Multiple harnesses sync in one pass. |
-| `scope` | string | `global` | Default scope when `--scope` is not specified. |
-| `collision_strategy` | string | `last-wins` | How content ID collisions between packs are resolved: `last-wins` (later pack in profile order wins), `first-wins` (earlier pack wins), `error` (fail with remediation YAML). Explicit profile `overrides` always take precedence. |
+| `profile` | string | `default` | Active profile. Changed by `profile set` or `config defaults set profile <name>`. |
+| `harnesses` | string[] | `[codex]` | Target harnesses for sync. Multiple harnesses sync in one pass. Set with a comma-separated value such as `config defaults set harnesses codex,opencode`. |
+| `scope` | string | `global` | Default scope when `--scope` is not specified. Set with `config defaults set scope global` or `project`. |
+| `collision_strategy` | string | `last-wins` | How content ID collisions between packs are resolved: `last-wins`, `first-wins`, or `error`. Explicit profile `overrides` always take precedence. |
+| `auto_sync` | bool | `false` | When true, successful pack/profile changes that affect the active profile automatically run a normal sync using the current defaults. Set with `config defaults set auto_sync true`. |
 
 CLI flags override these defaults. The full resolution chain is documented in the [CLI Specification](./cli-spec.md#shared-flag-resolution).
 
@@ -122,7 +135,7 @@ Each entry is a remote registry that `registry fetch` retrieves and caches.
 | `ref` | string | Git ref (branch or tag). Empty = git's default branch. |
 | `path` | string | File path within the repo (default: `registry.yaml`) |
 
-Sources are added automatically by `registry fetch <url>` and deleted by `registry delete`. `registry fetch` (bare) refreshes all configured sources.
+Sources are added automatically by `registry fetch <url>` and deleted by `registry delete`. `registry fetch` (bare) refreshes all configured sources plus compiled-in defaults. Public builds include the `shrug-labs/packs` registry by default. Distributors can prepend one additional default source by setting `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryName` and `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryURL` with Go ldflags.
 
 When `ref` is empty (the default for `registry add` and `registry fetch` without `--ref`), the registry repo is cloned at its default branch. Repositories using `master`, `trunk`, or any other default branch work without configuration.
 

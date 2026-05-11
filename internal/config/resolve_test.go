@@ -2207,6 +2207,7 @@ func TestResolveProfile_ContentPathsPackYAMLRoundTrip(t *testing.T) {
 			Registry          string            `yaml:"registry,omitempty"`
 			RegistryURL       string            `yaml:"registry_url,omitempty"`
 			CollisionStrategy CollisionStrategy `yaml:"collision_strategy,omitempty"`
+			AutoSync          bool              `yaml:"auto_sync"`
 		}{Profile: "default", Harnesses: []string{"claudecode"}, Scope: "global"},
 		InstalledPacks: map[string]InstalledPackMeta{
 			"ext-skills": {

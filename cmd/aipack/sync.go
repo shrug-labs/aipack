@@ -31,6 +31,19 @@ type SyncCmd struct {
 	JSON         bool    `help:"Emit machine-readable JSON output" name:"json"`
 }
 
+type loadedSyncOptions struct {
+	Scope        string
+	ProjectDir   *string
+	Harness      string
+	Force        bool
+	SkipSettings bool
+	Yes          bool
+	DryRun       bool
+	Verbose      bool
+	JSON         bool
+	AutoSync     bool
+}
+
 func (c *SyncCmd) Help() string {
 	return `Resolves the named profile, plans file writes, directory copies, and settings
 merges for the target harness(es), then applies them. A ledger tracks which
@@ -93,98 +106,18 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 			return watchDirsForFlags(), ExitError{Code: exitCode}
 		}
 		watchDirs := app.PackSourceDirs(loaded.profile)
-
-		scope, err := cmdutil.ResolveScopeDefault(c.Scope, loaded.syncCfg.Defaults.Scope)
-		if err != nil {
-			return watchDirs, err
-		}
-		if err := validateProjectDirForScope(scope, c.ProjectDir); err != nil {
-			fmt.Fprintln(g.Stderr, "ERROR:", err)
-			return watchDirs, ExitError{Code: cmdutil.ExitUsage}
-		}
-
-		callerDir, err := os.Getwd()
-		if err != nil {
-			return watchDirs, err
-		}
-
-		projectDirValue := callerDir
-		if scope == domain.ScopeProject {
-			if c.ProjectDir != nil {
-				projectDirValue = *c.ProjectDir
-			}
-			projectDirValue, err = filepath.Abs(projectDirValue)
-			if err != nil {
-				return watchDirs, err
-			}
-		}
-
-		hs, err := cmdutil.ResolveHarnessesDefault(c.Harness, loaded.syncCfg.Defaults.Harnesses)
-		if err != nil {
-			return watchDirs, err
-		}
-
-		cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
-
-		syncStdout := g.Stdout
-		if c.JSON {
-			syncStdout = io.Discard
-		}
-
-		eng := engine.NewWithStderr(g.Stderr)
-		res, syncWarnings, err := app.RunSync(ctx, eng, loaded.profile, app.SyncRequest{
-			TargetSpec: app.TargetSpec{
-				ConfigDir:  loaded.configDir,
-				Scope:      scope,
-				ProjectDir: projectDirValue,
-				Harnesses:  hs,
-				Home:       config.HomeDir(),
-			},
+		err := runLoadedSync(ctx, g, loaded, loadedSyncOptions{
+			Scope:        c.Scope,
+			ProjectDir:   c.ProjectDir,
+			Harness:      c.Harness,
 			Force:        c.Force,
 			SkipSettings: c.SkipSettings,
 			Yes:          c.Yes,
 			DryRun:       c.DryRun,
 			Verbose:      c.Verbose,
-		}, g.Registry, syncStdout, g.Stderr)
-		cmdutil.PrintWarnings(g.Stderr, syncWarnings)
-		allWarnings := append(loaded.warnings, syncWarnings...)
-		if err != nil {
-			return watchDirs, err
-		}
-		p := res.Plan
-		counts := app.CountProfileContent(loaded.profile)
-		if c.JSON {
-			jsonWarnings := make([]map[string]string, 0, len(allWarnings))
-			for _, w := range allWarnings {
-				entry := map[string]string{"message": w.Message}
-				if w.Path != "" {
-					entry["path"] = w.Path
-				}
-				if w.Field != "" {
-					entry["field"] = w.Field
-				}
-				jsonWarnings = append(jsonWarnings, entry)
-			}
-			return watchDirs, cmdutil.WriteJSON(g.Stdout, map[string]any{
-				"dry_run":   c.DryRun,
-				"rules":     counts.Rules,
-				"workflows": counts.Workflows,
-				"agents":    counts.Agents,
-				"skills":    counts.Skills,
-				"plugins":   counts.Plugins,
-				"settings":  len(p.Settings),
-				"mcp":       counts.MCP,
-				"warnings":  jsonWarnings,
-			})
-		}
-		if c.DryRun {
-			// Non-verbose dry-run: plan line already printed by printDryRun
-			// with source counts. Verbose dry-run: already returned above.
-			return watchDirs, nil
-		}
-		fmt.Fprintf(g.Stdout, "sync OK: %s\n", counts.String())
-
-		return watchDirs, nil
+			JSON:         c.JSON,
+		})
+		return watchDirs, err
 	}
 
 	if c.Watch {
@@ -233,6 +166,102 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 		}
 	case <-time.After(2 * time.Second):
 	}
+	return nil
+}
+
+func runLoadedSync(ctx context.Context, g *Globals, loaded loadedProfile, opts loadedSyncOptions) error {
+	scope, err := cmdutil.ResolveScopeDefault(opts.Scope, loaded.syncCfg.Defaults.Scope)
+	if err != nil {
+		return err
+	}
+	if err := validateProjectDirForScope(scope, opts.ProjectDir); err != nil {
+		fmt.Fprintln(g.Stderr, "ERROR:", err)
+		return ExitError{Code: cmdutil.ExitUsage}
+	}
+
+	callerDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	projectDirValue := callerDir
+	if scope == domain.ScopeProject {
+		if opts.ProjectDir != nil {
+			projectDirValue = *opts.ProjectDir
+		}
+		projectDirValue, err = filepath.Abs(projectDirValue)
+		if err != nil {
+			return err
+		}
+	}
+
+	hs, err := cmdutil.ResolveHarnessesDefault(opts.Harness, loaded.syncCfg.Defaults.Harnesses)
+	if err != nil {
+		return err
+	}
+
+	cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
+	if opts.AutoSync {
+		fmt.Fprintf(g.Stdout, "\nauto-sync: syncing active profile %q...\n", loaded.profileName)
+	}
+
+	syncStdout := g.Stdout
+	if opts.JSON {
+		syncStdout = io.Discard
+	}
+
+	eng := engine.NewWithStderr(g.Stderr)
+	res, syncWarnings, err := app.RunSync(ctx, eng, loaded.profile, app.SyncRequest{
+		TargetSpec: app.TargetSpec{
+			ConfigDir:  loaded.configDir,
+			Scope:      scope,
+			ProjectDir: projectDirValue,
+			Harnesses:  hs,
+			Home:       config.HomeDir(),
+		},
+		Force:        opts.Force,
+		SkipSettings: opts.SkipSettings,
+		Yes:          opts.Yes,
+		DryRun:       opts.DryRun,
+		Verbose:      opts.Verbose,
+	}, g.Registry, syncStdout, g.Stderr)
+	cmdutil.PrintWarnings(g.Stderr, syncWarnings)
+	allWarnings := append(loaded.warnings, syncWarnings...)
+	if err != nil {
+		return err
+	}
+	p := res.Plan
+	counts := app.CountProfileContent(loaded.profile)
+	if opts.JSON {
+		jsonWarnings := make([]map[string]string, 0, len(allWarnings))
+		for _, w := range allWarnings {
+			entry := map[string]string{"message": w.Message}
+			if w.Path != "" {
+				entry["path"] = w.Path
+			}
+			if w.Field != "" {
+				entry["field"] = w.Field
+			}
+			jsonWarnings = append(jsonWarnings, entry)
+		}
+		return cmdutil.WriteJSON(g.Stdout, map[string]any{
+			"dry_run":   opts.DryRun,
+			"rules":     counts.Rules,
+			"workflows": counts.Workflows,
+			"agents":    counts.Agents,
+			"skills":    counts.Skills,
+			"plugins":   counts.Plugins,
+			"settings":  len(p.Settings),
+			"mcp":       counts.MCP,
+			"warnings":  jsonWarnings,
+		})
+	}
+	if opts.DryRun {
+		// Non-verbose dry-run: plan line already printed by printDryRun
+		// with source counts. Verbose dry-run: already returned above.
+		return nil
+	}
+	fmt.Fprintf(g.Stdout, "sync OK: %s\n", counts.String())
 	return nil
 }
 

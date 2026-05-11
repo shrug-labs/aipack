@@ -40,6 +40,12 @@ aipack sync --force
 aipack sync --watch
 ```
 
+### Auto sync
+
+Set `defaults.auto_sync: true` in `sync-config.yaml`, or run `aipack config defaults set auto_sync true`, to run a normal sync after successful pack or profile commands that affect the active profile. The automatic sync uses the same active profile, scope, and harness defaults as `aipack sync`.
+
+Auto sync is intentionally active-profile only. Commands that mutate an inactive profile, dry runs, failed operations, and pack updates for packs that are not enabled in the active profile do not trigger it. In the manage TUI, active-profile edits are still saved immediately; syncing waits for a seven-second idle debounce, and manual sync cancels the pending automatic sync and runs immediately.
+
 ### Flags
 
 | Flag | Effect |

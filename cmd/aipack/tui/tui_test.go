@@ -1117,6 +1117,134 @@ func TestRootModel_ProfileSavedClearsDirty(t *testing.T) {
 	}
 }
 
+func TestRootModel_ProfileSavedSchedulesAutoSyncForActiveProfile(t *testing.T) {
+	t.Parallel()
+	cfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	cfg.Defaults.AutoSync = true
+	m := newRootModel(context.Background(), RunConfig{SyncCfg: cfg})
+	m = seedProfiles(m, profilescreen.Seed{
+		Name:     "default",
+		Path:     "/tmp/default.yaml",
+		IsActive: true,
+		Dirty:    true,
+		SyncTarget: common.SyncTarget{
+			Scope:     domain.ScopeProject,
+			Harnesses: []string{string(domain.HarnessClaudeCode)},
+		},
+	})
+
+	result, cmd := m.Update(profilescreen.SavedMsg{ProfileName: "default"})
+	rm := result.(rootModel)
+	if rm.pendingAutoSync == nil {
+		t.Fatal("expected pending auto-sync after active profile save")
+	}
+	if rm.pendingAutoSync.profileName != "default" {
+		t.Fatalf("pending profile = %q, want default", rm.pendingAutoSync.profileName)
+	}
+	if cmd == nil {
+		t.Fatal("expected debounce command to be scheduled")
+	}
+}
+
+func TestRootModel_ProfileActivatedSchedulesAutoSyncForActiveProfile(t *testing.T) {
+	t.Parallel()
+	cfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	cfg.Defaults.AutoSync = true
+	m := newRootModel(context.Background(), RunConfig{SyncCfg: cfg})
+	m = seedProfiles(m,
+		profilescreen.Seed{Name: "default", IsActive: true},
+		profilescreen.Seed{
+			Name: "team",
+			Path: "/tmp/team.yaml",
+			SyncTarget: common.SyncTarget{
+				Scope:     domain.ScopeProject,
+				Harnesses: []string{string(domain.HarnessClaudeCode)},
+			},
+		},
+	)
+
+	result, cmd := m.Update(profilescreen.ActivatedMsg{ProfileName: "team"})
+	rm := result.(rootModel)
+	if rm.pendingAutoSync == nil {
+		t.Fatal("expected pending auto-sync after activating profile")
+	}
+	if rm.pendingAutoSync.profileName != "team" {
+		t.Fatalf("pending profile = %q, want team", rm.pendingAutoSync.profileName)
+	}
+	if cmd == nil {
+		t.Fatal("expected debounce command to be scheduled")
+	}
+}
+
+func TestRootModel_ProfileSavedDoesNotScheduleAutoSyncForInactiveProfile(t *testing.T) {
+	t.Parallel()
+	cfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	cfg.Defaults.AutoSync = true
+	m := newRootModel(context.Background(), RunConfig{SyncCfg: cfg})
+	m = seedProfiles(m,
+		profilescreen.Seed{Name: "default", IsActive: true},
+		profilescreen.Seed{Name: "scratch", Dirty: true},
+	)
+
+	result, _ := m.Update(profilescreen.SavedMsg{ProfileName: "scratch"})
+	rm := result.(rootModel)
+	if rm.pendingAutoSync != nil {
+		t.Fatalf("inactive profile save scheduled auto-sync: %+v", rm.pendingAutoSync)
+	}
+}
+
+func TestRootModel_ProfileSavedResetsPendingAutoSync(t *testing.T) {
+	t.Parallel()
+	cfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	cfg.Defaults.AutoSync = true
+	m := newRootModel(context.Background(), RunConfig{SyncCfg: cfg})
+	m = seedProfiles(m, profilescreen.Seed{Name: "default", IsActive: true, Dirty: true})
+
+	result, _ := m.Update(profilescreen.SavedMsg{ProfileName: "default"})
+	rm := result.(rootModel)
+	firstID := rm.pendingAutoSync.id
+
+	result, _ = rm.Update(profilescreen.SavedMsg{ProfileName: "default"})
+	rm = result.(rootModel)
+	if rm.pendingAutoSync == nil {
+		t.Fatal("expected pending auto-sync after second save")
+	}
+	if rm.pendingAutoSync.id == firstID {
+		t.Fatal("expected second save to reset debounce id")
+	}
+
+	result, cmd := rm.Update(autoSyncDueMsg{id: firstID, profileName: "default"})
+	rm = result.(rootModel)
+	if rm.pendingAutoSync == nil {
+		t.Fatal("stale auto-sync tick should not clear newer pending sync")
+	}
+	if cmd != nil {
+		t.Fatal("stale auto-sync tick should not run sync")
+	}
+}
+
+func TestRootModel_ManualSyncCancelsPendingAutoSync(t *testing.T) {
+	t.Parallel()
+	cfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	cfg.Defaults.AutoSync = true
+	m := newRootModel(context.Background(), RunConfig{SyncCfg: cfg})
+	m = seedProfiles(m, profilescreen.Seed{
+		Name:     "default",
+		IsActive: true,
+		SyncTarget: common.SyncTarget{
+			Scope:     domain.ScopeProject,
+			Harnesses: []string{string(domain.HarnessClaudeCode)},
+		},
+	})
+	m.pendingAutoSync = &pendingAutoSyncState{id: 1, profileName: "default"}
+
+	result, _ := m.doSync("", "")
+	rm := result.(rootModel)
+	if rm.pendingAutoSync != nil {
+		t.Fatalf("manual sync did not cancel pending auto-sync: %+v", rm.pendingAutoSync)
+	}
+}
+
 func TestRootModel_ProfileSavedClearsDirty_MultipleProfiles(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})

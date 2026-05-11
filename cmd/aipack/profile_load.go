@@ -40,6 +40,10 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 		}
 	}
 
+	return loadProfileWithSyncConfig(profileFlag, profilePathFlag, configDir, syncCfg, stderr)
+}
+
+func loadProfileWithSyncConfig(profileFlag, profilePathFlag, configDir string, syncCfg config.SyncConfig, stderr io.Writer) (loadedProfile, int) {
 	profile := cmdutil.ResolveProfileName(profileFlag, syncCfg)
 
 	path, err := config.ResolveProfilePath(profilePathFlag, configDir, profile, config.HomeDir())

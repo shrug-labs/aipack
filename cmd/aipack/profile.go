@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -243,20 +244,31 @@ func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
 			return err
 		}
 		printInstallMissingResults(results, c.Name, g.Stdout)
-		return installMissingExitCode(results)
+		if err := installMissingExitCode(results); err != nil {
+			return err
+		}
+		return maybeAutoSyncProfile(ctx, g, cfgDir, c.Name)
 	} else {
-		missing, err := app.ProfileMissingPacks(cfgDir, c.Name)
-		if err != nil {
-			// Non-fatal — profile is already set.
-			fmt.Fprintf(g.Stderr, "Warning: could not check missing packs: %v\n", err)
+		if !profileHasInstalledPacks(cfgDir, c.Name, g.Stdout, g.Stderr) {
 			return nil
 		}
-		if len(missing) > 0 {
-			fmt.Fprintf(g.Stdout, "%d pack(s) not installed: %s\n", len(missing), strings.Join(missing, ", "))
-			fmt.Fprintln(g.Stdout, "Run 'aipack pack install -m' to install them.")
-		}
 	}
-	return nil
+	return maybeAutoSyncProfile(ctx, g, cfgDir, c.Name)
+}
+
+func profileHasInstalledPacks(cfgDir, profileName string, stdout, stderr io.Writer) bool {
+	missing, err := app.ProfileMissingPacks(cfgDir, profileName)
+	if err != nil {
+		// Non-fatal — profile is already set.
+		fmt.Fprintf(stderr, "Warning: could not check missing packs: %v\n", err)
+		return false
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(stdout, "%d pack(s) not installed: %s\n", len(missing), strings.Join(missing, ", "))
+		fmt.Fprintln(stdout, "Run 'aipack pack install -m' to install them.")
+		return false
+	}
+	return true
 }
 
 // --- profile show ---

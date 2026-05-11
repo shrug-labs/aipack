@@ -585,6 +585,175 @@ func TestRegistryFetch_UsesDefaultGit(t *testing.T) {
 	}
 }
 
+func TestRegistryFetch_UsesAdditionalDefaultBeforePublic(t *testing.T) {
+	oldName := config.AdditionalDefaultRegistryName
+	oldURL := config.AdditionalDefaultRegistryURL
+	config.AdditionalDefaultRegistryName = "team-packs"
+	config.AdditionalDefaultRegistryURL = "https://example.com/team/registry.yaml"
+	t.Cleanup(func() {
+		config.AdditionalDefaultRegistryName = oldName
+		config.AdditionalDefaultRegistryURL = oldURL
+	})
+
+	dir := t.TempDir()
+	var fetchOrder []string
+	var buf bytes.Buffer
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir: dir,
+		FetchFn: func(url string) ([]byte, error) {
+			fetchOrder = append(fetchOrder, url)
+			if url != "https://example.com/team/registry.yaml" {
+				t.Fatalf("unexpected HTTP fetch URL: %q", url)
+			}
+			return []byte(testRemoteRegistryYAML), nil
+		},
+		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
+			fetchOrder = append(fetchOrder, repo)
+			if repo != config.DefaultRegistryRepo {
+				t.Fatalf("unexpected git fetch repo: %q", repo)
+			}
+			return []byte(testRemoteRegistryYAML), nil
+		},
+	}, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantOrder := []string{"https://example.com/team/registry.yaml", config.DefaultRegistryRepo}
+	if len(fetchOrder) != len(wantOrder) {
+		t.Fatalf("fetch order = %v, want %v", fetchOrder, wantOrder)
+	}
+	for i := range wantOrder {
+		if fetchOrder[i] != wantOrder[i] {
+			t.Fatalf("fetch order = %v, want %v", fetchOrder, wantOrder)
+		}
+	}
+
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("loading sync-config: %v", err)
+	}
+	if len(sc.RegistrySources) != 2 {
+		t.Fatalf("expected 2 registry sources, got %d", len(sc.RegistrySources))
+	}
+	if sc.RegistrySources[0].Name != "team-packs" {
+		t.Fatalf("first source name = %q, want team-packs", sc.RegistrySources[0].Name)
+	}
+	if sc.RegistrySources[1].URL != config.DefaultRegistryRepo {
+		t.Fatalf("second source URL = %q, want %q", sc.RegistrySources[1].URL, config.DefaultRegistryRepo)
+	}
+}
+
+func TestRegistryFetch_AdditionalDefaultGitIsIdempotent(t *testing.T) {
+	oldName := config.AdditionalDefaultRegistryName
+	oldURL := config.AdditionalDefaultRegistryURL
+	config.AdditionalDefaultRegistryName = "team-packs"
+	config.AdditionalDefaultRegistryURL = "https://example.com/team/packs.git"
+	t.Cleanup(func() {
+		config.AdditionalDefaultRegistryName = oldName
+		config.AdditionalDefaultRegistryURL = oldURL
+	})
+
+	dir := t.TempDir()
+	fetch := func(orders *[][]string) func(repo, ref, path string) ([]byte, error) {
+		return func(repo, ref, path string) ([]byte, error) {
+			*orders = append(*orders, []string{repo, ref, path})
+			if path != config.DefaultRegistryPath {
+				t.Fatalf("git fetch path = %q, want %q", path, config.DefaultRegistryPath)
+			}
+			return []byte(testRemoteRegistryYAML), nil
+		}
+	}
+
+	var firstOrder [][]string
+	var buf bytes.Buffer
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir:  dir,
+		GitFetchFn: fetch(&firstOrder),
+	}, &buf)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if len(firstOrder) != 2 {
+		t.Fatalf("first fetch order = %v, want 2 default sources", firstOrder)
+	}
+
+	var secondOrder [][]string
+	buf.Reset()
+	err = RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir:  dir,
+		GitFetchFn: fetch(&secondOrder),
+	}, &buf)
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if len(secondOrder) != 2 {
+		t.Fatalf("second fetch order = %v, want same 2 default sources", secondOrder)
+	}
+
+	got, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("loading sync-config: %v", err)
+	}
+	if len(got.RegistrySources) != 2 {
+		t.Fatalf("registry sources = %+v, want 2 sources", got.RegistrySources)
+	}
+	if got.RegistrySources[0].Name != "team-packs" {
+		t.Fatalf("additional default name = %q, want team-packs", got.RegistrySources[0].Name)
+	}
+	if got.RegistrySources[0].Path != config.DefaultRegistryPath {
+		t.Fatalf("additional default path = %q, want %q", got.RegistrySources[0].Path, config.DefaultRegistryPath)
+	}
+}
+
+func TestRegistryFetch_InsertsAdditionalDefaultBeforeExistingPublic(t *testing.T) {
+	oldName := config.AdditionalDefaultRegistryName
+	oldURL := config.AdditionalDefaultRegistryURL
+	config.AdditionalDefaultRegistryName = "team-packs"
+	config.AdditionalDefaultRegistryURL = "https://example.com/team/registry.yaml"
+	t.Cleanup(func() {
+		config.AdditionalDefaultRegistryName = oldName
+		config.AdditionalDefaultRegistryURL = oldURL
+	})
+
+	dir := t.TempDir()
+	sc := config.SyncConfig{SchemaVersion: 1}
+	sc.RegistrySources = []config.RegistrySourceEntry{{
+		Name: config.DeriveSourceName(config.DefaultRegistryRepo, config.DefaultRegistryPath),
+		URL:  config.DefaultRegistryRepo,
+		Path: config.DefaultRegistryPath,
+	}}
+	if err := config.SaveSyncConfig(config.SyncConfigPath(dir), sc); err != nil {
+		t.Fatalf("saving sync-config: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir: dir,
+		FetchFn:   fakeFetchFn(testRemoteRegistryYAML),
+		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
+			return []byte(testRemoteRegistryYAML), nil
+		},
+	}, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("loading sync-config: %v", err)
+	}
+	if len(got.RegistrySources) != 2 {
+		t.Fatalf("expected 2 registry sources, got %d", len(got.RegistrySources))
+	}
+	if got.RegistrySources[0].Name != "team-packs" {
+		t.Fatalf("first source name = %q, want team-packs", got.RegistrySources[0].Name)
+	}
+	if got.RegistrySources[1].URL != config.DefaultRegistryRepo {
+		t.Fatalf("second source URL = %q, want %q", got.RegistrySources[1].URL, config.DefaultRegistryRepo)
+	}
+}
+
 func TestRegistryFetch_URLFromSyncConfig(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

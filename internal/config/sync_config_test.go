@@ -22,7 +22,7 @@ func TestLoadSyncConfig_Missing_IsEmpty(t *testing.T) {
 func TestLoadSyncConfig_ParsesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sync-config.yaml")
-	if err := os.WriteFile(path, []byte("schema_version: 1\ndefaults:\n  profile: ops\n  harnesses: [cline, opencode]\n  scope: project\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("schema_version: 1\ndefaults:\n  profile: ops\n  harnesses: [cline, opencode]\n  scope: project\n  auto_sync: true\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	cfg, err := LoadSyncConfig(path)
@@ -38,6 +38,20 @@ func TestLoadSyncConfig_ParsesDefaults(t *testing.T) {
 	if cfg.Defaults.Scope != "project" {
 		t.Fatalf("expected scope=project, got %q", cfg.Defaults.Scope)
 	}
+	if !cfg.Defaults.AutoSync {
+		t.Fatal("expected auto_sync=true")
+	}
+}
+
+func TestLoadSyncConfig_DefaultsAutoSyncFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sync-config.yaml")
+	cfg, err := LoadSyncConfig(path)
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	if cfg.Defaults.AutoSync {
+		t.Fatal("missing auto_sync should default to false")
+	}
 }
 
 func TestSaveSyncConfig_RoundTrip(t *testing.T) {
@@ -46,6 +60,7 @@ func TestSaveSyncConfig_RoundTrip(t *testing.T) {
 
 	cfg := SyncConfig{SchemaVersion: SyncConfigSchemaVersion}
 	cfg.Defaults.Profile = "test"
+	cfg.Defaults.AutoSync = true
 	cfg.InstalledPacks = map[string]InstalledPackMeta{
 		"my-pack": {
 			Origin:      "https://github.com/example/my-pack",
@@ -65,6 +80,9 @@ func TestSaveSyncConfig_RoundTrip(t *testing.T) {
 	}
 	if loaded.Defaults.Profile != "test" {
 		t.Fatalf("profile = %q, want %q", loaded.Defaults.Profile, "test")
+	}
+	if !loaded.Defaults.AutoSync {
+		t.Fatal("auto_sync did not round-trip")
 	}
 	meta, ok := loaded.InstalledPacks["my-pack"]
 	if !ok {

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,13 @@ func TestEnsureInit_CreatesAllFiles(t *testing.T) {
 	}
 	if len(sc.Defaults.Harnesses) != 1 || sc.Defaults.Harnesses[0] != "codex" {
 		t.Errorf("defaults.harnesses = %v, want [codex]", sc.Defaults.Harnesses)
+	}
+	gotSyncConfig, err := os.ReadFile(SyncConfigPath(configDir))
+	if err != nil {
+		t.Fatalf("reading sync-config: %v", err)
+	}
+	if !strings.Contains(string(gotSyncConfig), "auto_sync: false") {
+		t.Errorf("sync-config template missing visible auto_sync default:\n%s", string(gotSyncConfig))
 	}
 
 	// default profile must exist.

@@ -18,6 +18,45 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
+func writeAutoSyncPackAddFixture(t *testing.T, autoSync bool) (home, configDir, projectDir string) {
+	t.Helper()
+
+	home = t.TempDir()
+	projectDir = filepath.Join(home, "project")
+	configDir = filepath.Join(home, ".config", "aipack")
+	packDir := filepath.Join(configDir, "packs", "demo")
+	for _, dir := range []string{
+		projectDir,
+		filepath.Join(configDir, "profiles"),
+		filepath.Join(packDir, "rules"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	autoSyncLine := ""
+	if autoSync {
+		autoSyncLine = "  auto_sync: true\n"
+	}
+	syncCfg := "schema_version: 1\ndefaults:\n  profile: default\n  scope: project\n  harnesses:\n    - claudecode\n" + autoSyncLine
+	if err := os.WriteFile(filepath.Join(configDir, "sync-config.yaml"), []byte(syncCfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "profiles", "default.yaml"), []byte("schema_version: 2\npacks: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "profiles", "inactive.yaml"), []byte("schema_version: 2\npacks: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifestCmd(t, packDir, "demo")
+	rule := "---\nname: demo-rule\ndescription: demo rule\nmetadata:\n  owner: test\n  last_updated: 2026-05-11\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "demo-rule.md"), []byte(rule), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home, configDir, projectDir
+}
+
 func TestPackList_HelpReturnsOK(t *testing.T) {
 	t.Parallel()
 	_, _, code := runApp(t, "pack", "list", "--help")
@@ -79,6 +118,60 @@ func TestPackUpdate_HelpReturnsOK(t *testing.T) {
 	_, _, code := runApp(t, "pack", "update", "--help")
 	if code != cmdutil.ExitOK {
 		t.Fatalf("pack update --help exit=%d, want %d", code, cmdutil.ExitOK)
+	}
+}
+
+func TestPackAdd_AutoSyncsActiveProfileWhenEnabled(t *testing.T) {
+	home, configDir, projectDir := writeAutoSyncPackAddFixture(t, true)
+	t.Setenv("HOME", home)
+	t.Setenv("AIPACK_NO_UPDATE_CHECK", "1")
+	t.Chdir(projectDir)
+
+	stdout, stderr, code := runApp(t, "pack", "add", "demo", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack add exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, `auto-sync: syncing active profile "default"`) {
+		t.Fatalf("stdout missing auto-sync line:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "sync OK:") {
+		t.Fatalf("stdout missing sync success:\n%s", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".claude", "rules", "demo-rule.md")); err != nil {
+		t.Fatalf("expected project rule from auto-sync: %v", err)
+	}
+}
+
+func TestPackAdd_DoesNotAutoSyncInactiveProfile(t *testing.T) {
+	home, configDir, projectDir := writeAutoSyncPackAddFixture(t, true)
+	t.Setenv("HOME", home)
+	t.Setenv("AIPACK_NO_UPDATE_CHECK", "1")
+	t.Chdir(projectDir)
+
+	stdout, stderr, code := runApp(t, "pack", "add", "demo", "--profile", "inactive", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack add exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK:") {
+		t.Fatalf("inactive profile should not auto-sync, got:\n%s", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".claude", "rules", "demo-rule.md")); !os.IsNotExist(err) {
+		t.Fatalf("inactive profile auto-sync wrote project rule; stat err=%v", err)
+	}
+}
+
+func TestPackAdd_DoesNotAutoSyncWhenDisabled(t *testing.T) {
+	home, configDir, projectDir := writeAutoSyncPackAddFixture(t, false)
+	t.Setenv("HOME", home)
+	t.Setenv("AIPACK_NO_UPDATE_CHECK", "1")
+	t.Chdir(projectDir)
+
+	stdout, stderr, code := runApp(t, "pack", "add", "demo", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack add exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK:") {
+		t.Fatalf("auto_sync disabled should not sync, got:\n%s", stdout)
 	}
 }
 

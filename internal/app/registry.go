@@ -262,23 +262,9 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		}}
 	}
 
-	// Ensure the compiled-in default registry is always present so that
-	// aipack-core and essentials remain resolvable even when the user has
-	// added custom registry sources.
-	defaultPresent := false
-	for _, s := range sources {
-		if s.URL == config.DefaultRegistryRepo {
-			defaultPresent = true
-			break
-		}
-	}
-	if !defaultPresent {
-		sources = append(sources, config.RegistrySourceEntry{
-			Name: config.DeriveSourceName(config.DefaultRegistryRepo, config.DefaultRegistryPath),
-			URL:  config.DefaultRegistryRepo,
-			Path: config.DefaultRegistryPath,
-		})
-	}
+	// Ensure compiled-in default registries are always present so foundational
+	// packs stay resolvable when users add custom registry sources.
+	sources = appendMissingDefaultRegistrySources(sources, config.DefaultRegistrySources())
 
 	var totalPacks, succeeded int
 	for _, src := range sources {
@@ -304,6 +290,8 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		return fmt.Errorf("all %d registry source(s) failed to fetch", len(sources))
 	}
 
+	sc.RegistrySources = orderRegistrySources(sc.RegistrySources, sources)
+
 	// Save sync-config once after all sources are processed.
 	if err := config.SaveSyncConfig(config.SyncConfigPath(req.ConfigDir), sc); err != nil {
 		return fmt.Errorf("saving sync-config: %w", err)
@@ -313,6 +301,62 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		fmt.Fprintf(stdout, "%d source(s), %d total pack(s)\n", len(sources), totalPacks)
 	}
 	return nil
+}
+
+func appendMissingDefaultRegistrySources(sources, defaults []config.RegistrySourceEntry) []config.RegistrySourceEntry {
+	result := slices.Clone(sources)
+	for i, def := range defaults {
+		if registrySourceIndex(result, def) >= 0 {
+			continue
+		}
+
+		sourceToAdd := def
+		sourceToAdd.Name = config.UniqueSourceName(sourceToAdd.Name, sourceToAdd.URL, sourceToAdd.Path, result)
+
+		insertAt := len(result)
+		for _, laterDefault := range defaults[i+1:] {
+			if idx := registrySourceIndex(result, laterDefault); idx >= 0 && idx < insertAt {
+				insertAt = idx
+			}
+		}
+		result = slices.Insert(result, insertAt, sourceToAdd)
+	}
+	return result
+}
+
+func registrySourceIndex(sources []config.RegistrySourceEntry, needle config.RegistrySourceEntry) int {
+	return slices.IndexFunc(sources, func(src config.RegistrySourceEntry) bool {
+		return sameRegistryCoordinates(src, needle)
+	})
+}
+
+func orderRegistrySources(current, planned []config.RegistrySourceEntry) []config.RegistrySourceEntry {
+	result := make([]config.RegistrySourceEntry, 0, len(current))
+	used := make([]bool, len(current))
+	for _, want := range planned {
+		for i, src := range current {
+			if used[i] || !sameRegistryIdentity(src, want) {
+				continue
+			}
+			result = append(result, src)
+			used[i] = true
+			break
+		}
+	}
+	for i, src := range current {
+		if !used[i] {
+			result = append(result, src)
+		}
+	}
+	return result
+}
+
+func sameRegistryCoordinates(a, b config.RegistrySourceEntry) bool {
+	return a.URL == b.URL && a.Path == b.Path
+}
+
+func sameRegistryIdentity(a, b config.RegistrySourceEntry) bool {
+	return a.Name == b.Name || sameRegistryCoordinates(a, b)
 }
 
 // registryFetchOne fetches a single registry source, caches it, and upserts it
