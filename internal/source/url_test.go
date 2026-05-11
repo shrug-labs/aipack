@@ -46,6 +46,28 @@ func TestIsRemoteInstallInputRequiresKnownHostBoundary(t *testing.T) {
 	}
 }
 
+func TestIsHTTPArchiveURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"https://example.com/packs/team.zip", true},
+		{"https://example.com/packs/team.tar.gz?download=1", true},
+		{"http://example.com/packs/team.tgz", true},
+		{"ssh://host/org/repo.zip", false},
+		{"git@host:org/repo.zip", false},
+		{"github.com/org/repo.zip", false},
+		{"./team.zip", false},
+	}
+	for _, tt := range tests {
+		if got := IsHTTPArchiveURL(tt.input); got != tt.want {
+			t.Errorf("IsHTTPArchiveURL(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestProbePackURL_GitHubRepoWithGitSuffix(t *testing.T) {
 	t.Parallel()
 	info, err := ProbePackURL("https://github.com/acme/my-pack.git")

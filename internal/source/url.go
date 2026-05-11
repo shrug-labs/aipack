@@ -32,11 +32,34 @@ func IsHTTPURL(raw string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
+// IsHTTPArchiveURL reports whether raw is an HTTP(S) URL whose path points at
+// an archive format FetchArchive supports.
+func IsHTTPArchiveURL(raw string) bool {
+	return IsHTTPURL(raw) && LooksLikeArchive(raw)
+}
+
 // LooksLikeURL reports whether s carries an explicit URL marker — a scheme
 // (`scheme://`) or an SSH-style `git@` prefix. Lenient enough to dispatch
 // inspect into the URL branch without parsing.
 func LooksLikeURL(s string) bool {
 	return strings.Contains(s, "://") || strings.HasPrefix(s, "git@")
+}
+
+// LooksLikeArchive reports whether s points at an archive format FetchArchive
+// supports. URL query strings are ignored by parsing the URL path first.
+func LooksLikeArchive(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if u, err := url.Parse(s); err == nil && u.Path != "" && u.Scheme != "" {
+		s = u.Path
+	}
+	s = strings.ToLower(s)
+	return strings.HasSuffix(s, ".zip") ||
+		strings.HasSuffix(s, ".tar") ||
+		strings.HasSuffix(s, ".tar.gz") ||
+		strings.HasSuffix(s, ".tgz")
 }
 
 // IsRemoteInstallInput reports whether s is unambiguously a remote pack

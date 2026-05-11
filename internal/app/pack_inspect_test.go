@@ -55,6 +55,27 @@ func TestPackInspectLocalPathIndexesAsInspectedWithoutInstall(t *testing.T) {
 	}
 }
 
+func TestPackInspectLocalDirectoryWithArchiveSuffixInspectsAsPath(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packDir := filepath.Join(t.TempDir(), "preview.zip")
+	writePackManifest(t, packDir, "suffix-preview")
+
+	result, err := PackInspect(context.Background(), PackInspectRequest{
+		ConfigDir: configDir,
+		Input:     packDir,
+	})
+	if err != nil {
+		t.Fatalf("PackInspect directory with archive suffix: %v", err)
+	}
+	if result.SourceType != "path" {
+		t.Fatalf("SourceType = %q, want path", result.SourceType)
+	}
+	if result.Method != config.MethodLocal {
+		t.Fatalf("Method = %q, want %q", result.Method, config.MethodLocal)
+	}
+}
+
 func TestPackInspectRegistryNameUsesRegistrySource(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()

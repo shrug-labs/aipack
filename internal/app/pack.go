@@ -213,6 +213,19 @@ func packInstallDispatch(ctx context.Context, req PackInstallRequest, stdout io.
 	if req.ConfigDir == "" {
 		return fmt.Errorf("config dir is required")
 	}
+	if req.Archive && req.URL == "" && req.PackPath != "" {
+		req.URL = req.PackPath
+		req.PackPath = ""
+	}
+	if !req.Archive {
+		if req.URL != "" && source.IsHTTPArchiveURL(req.URL) {
+			req.Archive = true
+		} else if req.PackPath != "" && localPathLooksLikeArchiveFile(req.PackPath) {
+			req.Archive = true
+			req.URL = req.PackPath
+			req.PackPath = ""
+		}
+	}
 	if req.URL != "" && req.PackPath != "" {
 		return fmt.Errorf("--url and path argument are mutually exclusive")
 	}
@@ -736,9 +749,10 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 		fmt.Fprintf(stdout, "Fetched archive: %s -> %s\n", req.URL, destDir)
 	}
 
+	origin := archiveOrigin(req.URL)
 	approvedList, declinedList := buildPrefsLists(effectiveWith)
 	meta := config.InstalledPackMeta{
-		Origin: req.URL, Method: config.MethodArchive, InstalledAt: now.UTC().Format(time.RFC3339),
+		Origin: origin, Method: config.MethodArchive, InstalledAt: now.UTC().Format(time.RFC3339),
 		SubPath: req.SubPath, ContentPaths: req.ContentPaths,
 		Approved: approvedList, Declined: declinedList,
 		InstallQuiet: resolveInstallQuiet(req.ConfigDir, result.name, req.Quiet),
@@ -787,7 +801,7 @@ func packFetchArchive(ctx context.Context, req PackInstallRequest, stdout io.Wri
 		}
 	}
 	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseExtracting})
-	if err := source.FetchHTTPArchive(ctx, req.URL, archiveDir, source.HTTPArchiveOptions{}); err != nil {
+	if err := source.FetchArchive(ctx, req.URL, archiveDir, source.HTTPArchiveOptions{}); err != nil {
 		err = fmt.Errorf("fetching archive %s: %w", req.URL, err)
 		if stdout != nil {
 			if req.Name == "" {
@@ -843,6 +857,25 @@ func packFetchArchive(ctx context.Context, req PackInstallRequest, stdout io.Wri
 		return packInstallResult{}, err
 	}
 	return packInstallResult{name: name, destDir: staging, method: config.MethodArchive, manifest: manifest}, nil
+}
+
+func archiveOrigin(archiveSource string) string {
+	if source.IsHTTPURL(archiveSource) {
+		return archiveSource
+	}
+	abs, err := filepath.Abs(archiveSource)
+	if err != nil {
+		return archiveSource
+	}
+	return abs
+}
+
+func localPathLooksLikeArchiveFile(path string) bool {
+	if !source.LooksLikeArchive(path) {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func resolveArchivePackRoot(root, subPath string) (string, error) {
@@ -1113,8 +1146,7 @@ func isPinned(meta config.InstalledPackMeta) bool {
 // to a helpful error before attempting `git clone <tarball-url>`.
 func isLikelyTarballURL(url string) bool {
 	s := strings.ToLower(url)
-	if strings.HasSuffix(s, ".tar.gz") || strings.HasSuffix(s, ".tgz") ||
-		strings.HasSuffix(s, ".tar.bz2") || strings.HasSuffix(s, ".zip") {
+	if source.LooksLikeArchive(s) || strings.HasSuffix(s, ".tar.bz2") {
 		return true
 	}
 	// GitHub /archive/ paths produce tarball downloads, never git clone.

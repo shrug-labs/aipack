@@ -237,6 +237,170 @@ func TestPackInspect_CLIURLArchiveDoesNotRequireInput(t *testing.T) {
 	}
 }
 
+func TestShouldTreatPackSourceAsArchiveSkipsGitURLShapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"https://example.com/pack.zip", true},
+		{"ssh://host/org/repo.zip", false},
+		{"git@host:org/repo.zip", false},
+		{"github.com/org/repo.zip", false},
+	}
+	for _, tt := range tests {
+		if got := shouldTreatPackSourceAsArchive(tt.input); got != tt.want {
+			t.Errorf("shouldTreatPackSourceAsArchive(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestPackInspect_InfersRemoteArchiveFromPositionalURL(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/pack.json":      `{"schema_version":2,"name":"url-inferred-preview","version":"1.0.0","root":"."}`,
+		"repo/prompts/run.md": "Preview prompt.\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := t.TempDir()
+	stdout, stderr, code := runApp(t, "pack", "inspect", server.URL+"/pack.zip", "--config-dir", configDir, "--json")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack inspect positional archive URL exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if got["name"] != "url-inferred-preview" || got["method"] != config.MethodArchive {
+		t.Fatalf("unexpected inspect JSON: %v", got)
+	}
+}
+
+func TestPackInspect_InfersLocalArchiveFromPath(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/pack.json":      `{"schema_version":2,"name":"local-inferred-preview","version":"1.0.0","root":"."}`,
+		"repo/prompts/run.md": "Preview prompt.\n",
+	})
+	archivePath := filepath.Join(t.TempDir(), "pack.zip")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := t.TempDir()
+	stdout, stderr, code := runApp(t, "pack", "inspect", archivePath, "--config-dir", configDir, "--json")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack inspect local archive exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if got["name"] != "local-inferred-preview" || got["method"] != config.MethodArchive {
+		t.Fatalf("unexpected inspect JSON: %v", got)
+	}
+}
+
+func TestPackInstall_InfersRemoteArchiveFromPositionalURL(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/pack.json":      `{"schema_version":2,"name":"url-inferred-install","version":"1.0.0","root":"."}`,
+		"repo/prompts/run.md": "Installed prompt.\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "install", server.URL+"/pack.zip", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack install positional archive URL exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := lf.Packs["url-inferred-install"]
+	if meta.Method != config.MethodArchive || meta.Origin != server.URL+"/pack.zip" {
+		t.Fatalf("lockfile meta = %+v", meta)
+	}
+}
+
+func TestPackInstall_InfersRemoteArchiveFromURLFlag(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/pack.json":      `{"schema_version":2,"name":"url-flag-inferred-install","version":"1.0.0","root":"."}`,
+		"repo/prompts/run.md": "Installed prompt.\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "install", "--url", server.URL+"/pack.zip", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack install --url archive exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := lf.Packs["url-flag-inferred-install"]
+	if meta.Method != config.MethodArchive || meta.Origin != server.URL+"/pack.zip" {
+		t.Fatalf("lockfile meta = %+v", meta)
+	}
+}
+
+func TestPackInstall_InfersLocalArchiveFromPath(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/pack.json":      `{"schema_version":2,"name":"local-inferred-install","version":"1.0.0","root":"."}`,
+		"repo/prompts/run.md": "Installed prompt.\n",
+	})
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDir, err := os.MkdirTemp(wd, ".tmp-pack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(archiveDir) })
+	archivePath := filepath.Join(archiveDir, "pack.zip")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archiveArg, err := filepath.Rel(wd, archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedOrigin, err := filepath.Abs(archiveArg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t, "pack", "install", archiveArg, "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack install local archive exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := lf.Packs["local-inferred-install"]
+	if meta.Method != config.MethodArchive || meta.Origin != expectedOrigin {
+		t.Fatalf("lockfile meta = %+v", meta)
+	}
+}
+
 func buildCLIPackZip(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer

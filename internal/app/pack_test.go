@@ -1149,6 +1149,83 @@ func TestPackInstall_ArchiveURLInstallsAndRecordsArchiveMethod(t *testing.T) {
 	}
 }
 
+func TestPackInstall_LocalArchiveOriginUsesAbsolutePath(t *testing.T) {
+	t.Parallel()
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"local-archive-pack","version":"1.0.0","root":"."}`,
+		"repo-main/rules/foo.md": "# Foo\n",
+	})
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDir, err := os.MkdirTemp(wd, ".tmp-pack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(archiveDir) })
+	archivePath := filepath.Join(archiveDir, "pack.zip")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archiveArg, err := filepath.Rel(wd, archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedOrigin, err := filepath.Abs(archiveArg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := t.TempDir()
+	writeTestSyncConfig(t, configDir)
+	var out bytes.Buffer
+	err = PackInstall(context.Background(), PackInstallRequest{
+		PackPath:  archiveArg,
+		ConfigDir: configDir,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstall local archive path: %v", err)
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatalf("LoadLockfile: %v", err)
+	}
+	meta := lf.Packs["local-archive-pack"]
+	if meta.Method != config.MethodArchive {
+		t.Fatalf("method = %q, want %q", meta.Method, config.MethodArchive)
+	}
+	if meta.Origin != expectedOrigin {
+		t.Fatalf("origin = %q, want %q", meta.Origin, expectedOrigin)
+	}
+}
+
+func TestPackInstall_LocalDirectoryWithArchiveSuffixInstallsAsPath(t *testing.T) {
+	t.Parallel()
+	packDir := filepath.Join(t.TempDir(), "team.zip")
+	configDir := t.TempDir()
+	writePackManifest(t, packDir, "suffix-pack")
+
+	var out bytes.Buffer
+	err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+	}, &out)
+	if err != nil {
+		t.Fatalf("PackInstall directory with archive suffix: %v", err)
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatalf("LoadLockfile: %v", err)
+	}
+	meta := lf.Packs["suffix-pack"]
+	if meta.Method != config.MethodLink {
+		t.Fatalf("method = %q, want %q", meta.Method, config.MethodLink)
+	}
+}
+
 func TestPackFetchArchiveMaterializesStagingWithoutFinalInstall(t *testing.T) {
 	t.Parallel()
 	archive := buildPackZip(t, map[string]string{

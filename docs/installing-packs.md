@@ -19,7 +19,7 @@ aipack sync
 
 ## Installing a standard pack
 
-A standard pack has a `pack.json` manifest and content in conventional directories. Three ways to install:
+A standard pack has a `pack.json` manifest and content in conventional directories. Four ways to install:
 
 ```bash
 # From a git URL (HTTPS or SSH)
@@ -27,6 +27,10 @@ aipack pack install --url https://github.com/org/their-pack.git --add
 
 # From a local path (symlinked by default, --copy for full copy)
 aipack pack install ./path/to/pack --add
+
+# From a static archive URL or file
+aipack pack install https://downloads.example.com/team-pack.zip --add
+aipack pack install ./team-pack.zip --add
 
 # By registry name (looked up in configured registries)
 aipack pack install their-pack --add
@@ -48,12 +52,13 @@ For creating your own pack from scratch, see [Creating Packs](./creating-packs.m
 
 ## Inspecting before install
 
-Use `pack inspect` when you want to see what a pack contains before it touches installed state. It works with the same source shapes as install — local paths, registry names, git URLs, subpaths, archive URLs, and content-path mappings — but it does not write `packs/`, the lockfile, or profiles.
+Use `pack inspect` when you want to see what a pack contains before it touches installed state. It works with the same source shapes as install — local paths, registry names, git URLs, subpaths, archive URLs/files, and content-path mappings — but it does not write `packs/`, the lockfile, or profiles.
 
 ```bash
 aipack pack inspect their-pack
 aipack pack inspect --url https://github.com/org/repo.git --path packs/team
-aipack pack inspect https://downloads.example.com/team-pack.zip --archive
+aipack pack inspect https://downloads.example.com/team-pack.zip
+aipack pack inspect ./team-pack.zip
 aipack search --status inspected
 ```
 

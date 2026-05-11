@@ -71,6 +71,9 @@ func PackInspect(ctx context.Context, req PackInspectRequest) (PackInspectResult
 		return PackInspectResult{}, fmt.Errorf("config dir is required")
 	}
 	if req.URL != "" {
+		if !req.Archive && source.IsHTTPArchiveURL(req.URL) {
+			req.Archive = true
+		}
 		return inspectURL(ctx, req, "url", nil)
 	}
 	input := strings.TrimSpace(req.Input)
@@ -78,10 +81,18 @@ func PackInspect(ctx context.Context, req PackInspectRequest) (PackInspectResult
 		return PackInspectResult{}, fmt.Errorf("pack name, path, or URL is required")
 	}
 	if pathLooksLocal(input) {
+		if req.Archive || localPathLooksLikeArchiveFile(input) {
+			req.URL = input
+			req.Archive = true
+			return inspectArchive(ctx, req, "path", nil)
+		}
 		return inspectPath(req, input, "path", nil)
 	}
 	if source.LooksLikeURL(input) {
 		req.URL = input
+		if !req.Archive && source.IsHTTPArchiveURL(input) {
+			req.Archive = true
+		}
 		return inspectURL(ctx, req, "url", nil)
 	}
 
@@ -160,7 +171,7 @@ func inspectArchive(ctx context.Context, req PackInspectRequest, sourceType stri
 		return PackInspectResult{}, fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(archiveDir)
-	if err := source.FetchHTTPArchive(ctx, req.URL, archiveDir, source.HTTPArchiveOptions{}); err != nil {
+	if err := source.FetchArchive(ctx, req.URL, archiveDir, source.HTTPArchiveOptions{}); err != nil {
 		return PackInspectResult{}, fmt.Errorf("fetching archive %s: %w", req.URL, err)
 	}
 	var packRoot string

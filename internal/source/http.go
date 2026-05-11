@@ -356,20 +356,47 @@ func FetchHTTPArchive(ctx context.Context, archiveURL, destDir string, opts HTTP
 	}
 
 	lower := strings.ToLower(req.URL.Path)
+	return extractArchiveByPath(lower, resp.Body, destDir, opts.ArchiveOpts, archiveURL)
+}
+
+// FetchArchive extracts a local or HTTP zip, tar, tar.gz, or tgz archive into
+// destDir without stripping path components.
+func FetchArchive(ctx context.Context, archiveSource, destDir string, opts HTTPArchiveOptions) error {
+	if IsHTTPURL(archiveSource) {
+		return FetchHTTPArchive(ctx, archiveSource, destDir, opts)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return FetchLocalArchive(archiveSource, destDir, opts.ArchiveOpts)
+}
+
+// FetchLocalArchive extracts a local zip, tar, tar.gz, or tgz archive into
+// destDir without stripping path components.
+func FetchLocalArchive(archivePath, destDir string, opts ArchiveOpts) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("opening archive: %w", err)
+	}
+	defer f.Close()
+	return extractArchiveByPath(strings.ToLower(archivePath), f, destDir, opts, archivePath)
+}
+
+func extractArchiveByPath(lower string, r io.Reader, destDir string, opts ArchiveOpts, label string) error {
 	switch {
 	case strings.HasSuffix(lower, ".zip"):
-		return extractZipArchive(resp.Body, destDir, opts.ArchiveOpts)
+		return extractZipArchive(r, destDir, opts)
 	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".tgz"):
-		gz, err := gzip.NewReader(resp.Body)
+		gz, err := gzip.NewReader(r)
 		if err != nil {
 			return fmt.Errorf("decompressing archive: %w", err)
 		}
 		defer gz.Close()
-		return extractGenericTarArchive(gz, destDir, opts.ArchiveOpts)
+		return extractGenericTarArchive(gz, destDir, opts)
 	case strings.HasSuffix(lower, ".tar"):
-		return extractGenericTarArchive(resp.Body, destDir, opts.ArchiveOpts)
+		return extractGenericTarArchive(r, destDir, opts)
 	default:
-		return fmt.Errorf("unsupported archive format for %s (expected .zip, .tar, .tar.gz, or .tgz)", archiveURL)
+		return fmt.Errorf("unsupported archive format for %s (expected .zip, .tar, .tar.gz, or .tgz)", label)
 	}
 }
 

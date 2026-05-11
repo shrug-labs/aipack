@@ -174,10 +174,10 @@ Packs live under `~/.config/aipack/packs/<name>/`. Four install methods produce 
 | `link` | Symlink to source directory | Yes — edits at either location hit the same files | Re-validates symlink target |
 | `copy` | Full copy from local path | No — edits are local only | Re-copies from recorded origin |
 | `clone` | Content-extracted from git clone | No — installed content is a static snapshot | Re-clones from origin, re-extracts content |
-| `archive` | Content-extracted from zip/tar URL | No — installed content is a static snapshot | Re-fetches origin, full-replaces content |
+| `archive` | Content-extracted from zip/tar URL or file | No — installed content is a static snapshot | Re-fetches origin, full-replaces content |
 | `local` | Pack already in packs directory | Yes — it's the source | Registered in-place, no fetch |
 
-`link` is the default for local installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for remote git installs (SSH and HTTPS); `archive` is selected by registry entries with `method: archive` or direct installs with `--archive`.
+`link` is the default for local directory installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for remote git installs (SSH and HTTPS); `archive` is selected by registry entries with `method: archive`, direct installs with `--archive`, or direct `.zip`, `.tar`, `.tar.gz`, and `.tgz` sources.
 
 Earlier versions of aipack also offered an `http-tarball` install method for GitHub HTTPS URLs. This method has been removed — clone is faster (with the local clone cache and `--reference`), gives every install a commit hash for fast-path updates, and produces consistent version handling. Existing tarball-installed packs are transparently migrated to clone on the next `pack update`. Archive installs remain supported for static distribution URLs, but they are intentionally unversioned and are re-fetched on every update.
 

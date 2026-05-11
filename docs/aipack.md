@@ -153,15 +153,16 @@ Flags: `--type skill|rule|prompt`, exactly one of `--name <new-pack>` or `--pack
 
 Bare `aipack pack install` (no arguments) reconciles the active profile — any packs referenced by the profile that aren't already on disk are fetched via the registry. This is the easiest way to catch up after setting a profile or after a shared profile gains new pack references. Pass a path, URL, or registry name to target a specific pack instead.
 
-Supports three explicit sources:
+Supports four explicit sources:
 
 - **Local path** (symlinked by default, `--copy` for full copy)
-- **URL** (`--url` — fetched via shallow git clone)
+- **Git URL** (`--url` or positional URL — fetched via shallow git clone)
+- **Archive URL or file** (`.zip`, `.tar`, `.tar.gz`, `.tgz` — extracted as a static snapshot)
 - **Registry name** (bare name like `my-pack` — looked up in registry, then fetched)
 
 `aipack install` is a top-level alias for `aipack pack install`. `-m`/`--missing` is an explicit alias for the bare form — useful in scripts where the intent is worth stating even when the default matches.
 
-All remote installs use a shallow git clone (`git clone --depth 1`). Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts. The local clone cache (`~/.config/aipack/.cache/git/`) speeds up subsequent clones via `git --reference`.
+Git URL installs use a shallow clone (`git clone --depth 1`). Both HTTPS and SSH URLs are supported. SSH URLs (`git@host:path` or `ssh://`) avoid credential prompts. The local clone cache (`~/.config/aipack/.cache/git/`) speeds up subsequent clones via `git --reference`. Static archive URLs and files are extracted as snapshots instead of cloned.
 
 **Pinning.** Append `@<ref>` to a pack name (or use `--ref`, or the Kong alias `--version`) to install a specific git ref. The pack is then "pinned" — `pack update` won't change the install until you explicitly move the pin. Any git ref shape works: exact semver, partial semver (`v1`, `v1.2`), commit hash, namespaced tag (`<pack>/vX.Y.Z`), branch name, or the `latest` sentinel.
 
@@ -199,7 +200,10 @@ aipack pack install ./my-pack --copy --name custom-name
 # Remote installs (HTTPS and SSH)
 aipack pack install --url https://github.com/org/pack-repo.git
 aipack pack install --url git@github.com:org/pack-repo.git --ref main
-aipack pack install --url https://example.com/team-pack.zip --archive
+
+# Static archives
+aipack pack install https://example.com/team-pack.zip
+aipack pack install ./team-pack.zip
 
 # Subdirectory within a mono-repo
 aipack pack install --url https://github.com/org/shared-repo.git --path team-pack
@@ -247,13 +251,14 @@ aipack pack show my-pack --json
 
 ### pack inspect
 
-Inspects a local path, registry pack name, git URL, or archive URL without installing the pack, changing the lockfile, or adding it to a profile. The output shows source metadata, discovered content counts, content IDs, bundled profiles/registries/extras, plugins, MCP servers, and trust warnings such as external-tool MCP access. Inspected resources are written to the search index with status `inspected`, so you can search a previewed pack before deciding to trust or install it.
+Inspects a local path, registry pack name, git URL, or archive URL/file without installing the pack, changing the lockfile, or adding it to a profile. The output shows source metadata, discovered content counts, content IDs, bundled profiles/registries/extras, plugins, MCP servers, and trust warnings such as external-tool MCP access. Inspected resources are written to the search index with status `inspected`, so you can search a previewed pack before deciding to trust or install it.
 
 ```bash
 aipack pack inspect ./my-pack
 aipack pack inspect team-pack
 aipack pack inspect --url https://github.com/org/repo.git --path packs/team
-aipack pack inspect https://example.com/team-pack.zip --archive
+aipack pack inspect https://example.com/team-pack.zip
+aipack pack inspect ./team-pack.zip
 aipack pack inspect team-pack --json
 aipack pack inspect --clear              # wipe inspected rows from the index
 aipack search --status inspected

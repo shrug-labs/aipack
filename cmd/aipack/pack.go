@@ -20,7 +20,7 @@ import (
 type PackCmd struct {
 	Create   PackCreateCmd   `cmd:"" help:"Scaffold a new pack directory with pack.json manifest"`
 	Import   PackImportCmd   `cmd:"" help:"Import one markdown file into a new or existing pack"`
-	Install  PackInstallCmd  `cmd:"" help:"Install a pack from a local directory path or remote URL"`
+	Install  PackInstallCmd  `cmd:"" help:"Install a pack from a path, URL, registry, or active profile"`
 	Delete   PackDeleteCmd   `cmd:"" help:"Delete an installed pack and rendered output"`
 	Update   PackUpdateCmd   `cmd:"" help:"Update installed pack(s) to latest version from their origin"`
 	Rename   PackRenameCmd   `cmd:"" help:"Rename an installed pack across all config"`
@@ -256,8 +256,8 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 
 type PackInstallCmd struct {
 	Path      string   `arg:"" optional:"" help:"Local directory path, registry pack name, or name@ref"`
-	URL       string   `help:"Install pack from a git-accessible repository URL (HTTPS or SSH)" name:"url"`
-	Archive   bool     `help:"Treat --url as a static zip/tar archive instead of a git repository" name:"archive"`
+	URL       string   `help:"Install pack from a git repository URL or static archive URL/path" name:"url"`
+	Archive   bool     `help:"Treat source as a static zip/tar archive instead of a git repository; inferred for archive URLs/files" name:"archive"`
 	Ref       string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
 	SubPath   string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
 	Name      string   `help:"Override the pack name from pack.json" name:"name"`
@@ -283,9 +283,9 @@ profile that aren't already installed are fetched via the registry. Pass a
 path, URL, or registry name to target a specific pack instead.
 
 Local directory packs are symlinked by default; use --copy to make a full
-copy instead. Remote packs are fetched via shallow git clone unless --archive
-is set for a static zip/tar archive. Both HTTPS and SSH URLs are supported for
-git installs.
+copy instead. Remote packs are fetched via shallow git clone unless the source
+is a static zip/tar archive or --archive is set. Both HTTPS and SSH URLs are
+supported for git installs.
 
 If the positional argument is not a local directory path and not a URL, it
 is treated as a registry pack name. The registry is consulted to resolve the
@@ -320,7 +320,10 @@ Examples:
   aipack pack install --url https://github.com/org/pack-repo
 
   # Install from a static archive URL
-  aipack pack install --url https://example.com/pack.zip --archive
+  aipack pack install https://example.com/pack.zip
+
+  # Install from a local static archive
+  aipack pack install ./pack.zip
 
   # Install from an SSH URL
   aipack pack install --url ssh://git@bitbucket.example.com:7999/proj/repo.git --ref main
@@ -355,6 +358,9 @@ func (c *PackInstallCmd) Validate() error {
 	hasPath := c.Path != ""
 	hasURL := c.URL != ""
 	hasContentFlags := c.Rules != "" || c.Skills != "" || c.Agents != "" || c.Workflows != "" || c.Prompts != ""
+	if shouldTreatPackSourceAsArchive(c.URL) || shouldTreatPackSourceAsArchive(c.Path) {
+		c.Archive = true
+	}
 
 	// Bare `pack install` with no target implies profile reconciliation —
 	// the same as passing -m/--missing. Setting Missing here lets the rest
@@ -369,11 +375,14 @@ func (c *PackInstallCmd) Validate() error {
 	if hasURL && c.Copy {
 		return fmt.Errorf("--copy is not valid with --url (URL packs are fetched remotely)")
 	}
-	if c.Archive && !hasURL {
-		return fmt.Errorf("--archive requires --url")
+	if c.Archive && !hasURL && !hasPath {
+		return fmt.Errorf("--archive requires a path or --url")
 	}
 	if c.Archive && c.Ref != "" {
 		return fmt.Errorf("--archive cannot be combined with --ref/--version")
+	}
+	if c.Archive && c.Copy {
+		return fmt.Errorf("--copy is not valid with archive installs")
 	}
 	if c.Missing && (hasPath || hasURL) {
 		return fmt.Errorf("-m/--missing cannot be combined with a path or --url")
@@ -394,6 +403,20 @@ func (c *PackInstallCmd) Validate() error {
 }
 
 var isRegistryName = cmdutil.IsRegistryName
+
+func shouldTreatPackSourceAsArchive(input string) bool {
+	if !source.LooksLikeArchive(input) {
+		return false
+	}
+	if source.IsHTTPArchiveURL(input) {
+		return true
+	}
+	if source.IsRemoteInstallInput(input) {
+		return false
+	}
+	info, err := os.Stat(input)
+	return err == nil && !info.IsDir()
+}
 
 // effectiveProfile returns the profile name to use, loading sync-config defaults
 // if the explicit value is empty.
@@ -475,6 +498,13 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 
 	if c.URL != "" {
 		req.URL = c.URL
+		req.SubPath = c.SubPath
+	} else if path != "" && shouldTreatPackSourceAsArchive(path) {
+		req.URL = path
+		req.SubPath = c.SubPath
+		req.Archive = true
+	} else if path != "" && source.IsRemoteInstallInput(path) {
+		req.URL = path
 		req.SubPath = c.SubPath
 	} else if path != "" && isRegistryName(path) {
 		// Not a local path — try registry lookup.
@@ -1103,8 +1133,8 @@ func printContentList(w io.Writer, label string, items []string) {
 
 type PackInspectCmd struct {
 	Input     string `arg:"" optional:"" help:"Pack name, local path, or URL to inspect" predictor:"pack"`
-	URL       string `help:"Inspect a git-accessible repository URL (HTTPS or SSH)" name:"url"`
-	Archive   bool   `help:"Treat --url or input URL as a static zip/tar archive" name:"archive"`
+	URL       string `help:"Inspect a git repository URL or static archive URL/path" name:"url"`
+	Archive   bool   `help:"Treat --url/input as a static zip/tar archive; inferred for archive URLs/files" name:"archive"`
 	Ref       string `help:"Git ref to inspect" name:"ref" aliases:"version"`
 	SubPath   string `help:"Subdirectory within the repo/archive where pack.json lives" name:"path"`
 	Name      string `help:"Override pack name for content_paths sources" name:"name"`
@@ -1119,7 +1149,7 @@ type PackInspectCmd struct {
 }
 
 func (c *PackInspectCmd) Help() string {
-	return `Inspects a local path, registry pack name, git URL, or archive URL without
+	return `Inspects a local path, registry pack name, git URL, or archive URL/path without
 installing it. Inspected resources are added to the search index with status
 "inspected" so they can be searched before trust/install decisions. Inspected
 rows older than 30 days are dropped automatically on the next inspect; use
@@ -1128,7 +1158,8 @@ rows older than 30 days are dropped automatically on the next inspect; use
 Examples:
   aipack pack inspect ./my-pack
   aipack pack inspect team-pack
-  aipack pack inspect https://example.com/pack.zip --archive
+  aipack pack inspect https://example.com/pack.zip
+  aipack pack inspect ./pack.zip
   aipack pack inspect --clear
   aipack search --status inspected
 

@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.27.1]
+
+### Fixed
+
+- **Archive-shaped `pack install` and `pack inspect` inputs now infer archive mode.** `.zip`, `.tar`, `.tar.gz`, and `.tgz` URLs and local files no longer need `--archive`; positional archive URLs avoid the git-clone path, and local archive files are extracted through the archive installer instead of being rejected as non-`pack.json` files.
+
 ## [0.27.0]
 
 ### Added
