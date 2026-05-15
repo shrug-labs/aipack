@@ -1,6 +1,8 @@
 package planview
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -8,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/shrug-labs/aipack/internal/app"
+	"github.com/shrug-labs/aipack/internal/engine"
 )
 
 func TestViewHitLayersDoNotAlterRenderedPlanView(t *testing.T) {
@@ -74,6 +77,75 @@ func TestShortDstHandlesWindowsSeparators(t *testing.T) {
 	got := m.ShortDst(`C:\work\project\rules\review.md`)
 	if got != "./rules/review.md" {
 		t.Fatalf("ShortDst windows path = %q, want %q", got, "./rules/review.md")
+	}
+}
+
+func TestLoadDiffForMergedMCPShowsAfterMergeAndPreservesRuntimeApproval(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "config.toml")
+	onDisk := []byte(`[mcp_servers.github]
+enabled = true
+command = "node"
+enabled_tools = ["get_pr"]
+startup_timeout_sec = 10
+
+[mcp_servers.github.tools.get_pr]
+approval_mode = "approve"
+`)
+	desired := []byte(`[mcp_servers.github]
+enabled = true
+command = "node"
+enabled_tools = ["get_pr", "list_repos"]
+startup_timeout_sec = 10
+
+[mcp_servers.github.tools.get_pr]
+approval_mode = "approve"
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	op := app.PlanOp{
+		Kind:    app.PlanOpMCP,
+		Dst:     dst,
+		Content: desired,
+		Diff:    "--- config.toml (current)\n+++ config.toml (after merge)\n@@ -1,3 +1,3 @@\n [mcp_servers.github]\n-enabled_tools = ['get_pr']\n+enabled_tools = ['get_pr', 'list_repos']\n",
+		MergeOps: []engine.MergeOp{{
+			Key:    "mcp_servers.github.enabled_tools",
+			Action: engine.MergeUpdate,
+		}},
+	}
+	m := New(100, 24, "default", dir, []app.PlanOp{op}, false, nil)
+
+	msg := m.LoadDiff(op)()
+	loaded, ok := msg.(DiffLoadedMsg)
+	if !ok {
+		t.Fatalf("LoadDiff returned %T, want DiffLoadedMsg", msg)
+	}
+	if loaded.Err != nil {
+		t.Fatal(loaded.Err)
+	}
+	if !strings.Contains(loaded.DiffText, "+++ config.toml (after merge)") {
+		t.Fatalf("diff should label merged destination, got:\n%s", loaded.DiffText)
+	}
+	if !strings.Contains(loaded.Note, "user-owned keys outside the shown hunks are preserved") {
+		t.Fatalf("diff should explain preserved merge context, got note %q", loaded.Note)
+	}
+	if strings.Contains(loaded.DiffText, "\n-approval_mode") {
+		t.Fatalf("runtime approval should not be shown as removed:\n%s", loaded.DiffText)
+	}
+
+	dv := NewDiffViewModel(100, 24, "config.toml", "./config.toml")
+	m.DiffView = &dv
+	m, _ = m.UpdateModel(loaded)
+	if m.DiffView == nil {
+		t.Fatal("diff view closed unexpectedly")
+	}
+	rendered := stripSGR(m.DiffView.View())
+	if !strings.Contains(rendered, "Merged settings diff") {
+		t.Fatalf("diff note should be visible, got:\n%s", rendered)
 	}
 }
 

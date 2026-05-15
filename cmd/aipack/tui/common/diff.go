@@ -19,6 +19,10 @@ var (
 // "(no changes)" placeholder are emitted in this order. Caller controls the
 // rule character — save uses '-' for the legacy ASCII look, planview uses '─'.
 func RenderUnifiedDiff(sb *strings.Builder, title, dst, diffText string, isNew bool, newBody string, maxRuleWidth int, ruleChar string) {
+	RenderUnifiedDiffWithNote(sb, title, dst, diffText, isNew, newBody, "", maxRuleWidth, ruleChar)
+}
+
+func RenderUnifiedDiffWithNote(sb *strings.Builder, title, dst, diffText string, isNew bool, newBody, note string, maxRuleWidth int, ruleChar string) {
 	if isNew {
 		sb.WriteString(SelectedStyle.Render("New file: " + title))
 	} else {
@@ -29,6 +33,11 @@ func RenderUnifiedDiff(sb *strings.Builder, title, dst, diffText string, isNew b
 	sb.WriteString("\n")
 	sb.WriteString(strings.Repeat(ruleChar, min(maxRuleWidth, 80)))
 	sb.WriteString("\n\n")
+
+	if note != "" {
+		sb.WriteString(DimStyle.Render(note))
+		sb.WriteString("\n\n")
+	}
 
 	switch {
 	case isNew:

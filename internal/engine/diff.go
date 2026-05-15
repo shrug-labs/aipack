@@ -168,6 +168,10 @@ func (e *Engine) ComputeSettingsDiffs(settings []domain.SettingsAction, lg domai
 				}
 			} else {
 				fd = classifyFilePreRead(s.Dst, desired, s.Label, s.SourcePack, lg, existing)
+				if fd.Diff != "" {
+					diffExisting, diffDesired := settingsDiffInputs(existing, desired, s.Harness)
+					fd.Diff = UnifiedDiff(diffExisting, diffDesired, s.Label+" (current)", s.Label+" (after merge)")
+				}
 				// MergeMode: the three-way merge already resolved conflicts
 				// by preserving user content. Reclassify as managed (safe to
 				// update) so apply doesn't require --force.
@@ -187,6 +191,34 @@ func (e *Engine) ComputeSettingsDiffs(settings []domain.SettingsAction, lg domai
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+func settingsDiffInputs(existing, desired []byte, harness domain.Harness) ([]byte, []byte) {
+	normalizedExisting, errExisting := normalizeSettingsBytes(existing, harness)
+	normalizedDesired, errDesired := normalizeSettingsBytes(desired, harness)
+	if errExisting != nil || errDesired != nil {
+		return existing, desired
+	}
+	return normalizedExisting, normalizedDesired
+}
+
+func normalizeSettingsBytes(in []byte, harness domain.Harness) ([]byte, error) {
+	switch harness {
+	case domain.HarnessOpenCode, domain.HarnessCline, domain.HarnessClaudeCode:
+		m, err := parseJSONMap(in)
+		if err != nil {
+			return nil, err
+		}
+		return marshalJSON(m)
+	case domain.HarnessCodex:
+		m, err := parseTOMLMap(in)
+		if err != nil {
+			return nil, err
+		}
+		return marshalTOML(m)
+	default:
+		return nil, fmt.Errorf("unsupported harness for settings diff: %s", harness)
+	}
 }
 
 // pathDigest computes a composite digest for a path (file or directory).

@@ -38,6 +38,7 @@ type DiffLoadedMsg struct {
 	Dst      string
 	Title    string
 	DiffText string
+	Note     string
 	IsNew    bool
 	NewBody  string
 	Err      error
@@ -213,6 +214,7 @@ func (m Model) UpdateModel(msg tea.Msg) (Model, tea.Cmd) {
 			if msg.Err != nil {
 				errText = msg.Err.Error()
 			}
+			m.DiffView.Note = msg.Note
 			m.DiffView.SetContent(msg.DiffText, msg.IsNew, msg.NewBody, errText)
 		}
 		return m, nil
@@ -487,6 +489,11 @@ func (m Model) LoadDiff(Op app.PlanOp) tea.Cmd {
 			}
 		}
 
+		if Op.Diff != "" {
+			_, _, note := planDiffLabelsAndNote(Op, m.IsSavePlan)
+			return DiffLoadedMsg{Dst: Op.Dst, Title: title, DiffText: Op.Diff, Note: note}
+		}
+
 		// Read current on-disk file.
 		onDisk, err := os.ReadFile(Op.Dst)
 		if err != nil {
@@ -501,16 +508,31 @@ func (m Model) LoadDiff(Op app.PlanOp) tea.Cmd {
 			return DiffLoadedMsg{Dst: Op.Dst, Title: title, Err: err}
 		}
 
-		labelA := filepath.Base(Op.Dst) + " (current)"
-		labelB := filepath.Base(Op.Dst) + " (desired)"
-		if m.IsSavePlan {
-			labelA = filepath.Base(Op.Dst) + " (in pack)"
-			labelB = filepath.Base(Op.Dst) + " (in harness)"
-		}
+		labelA, labelB, note := planDiffLabelsAndNote(Op, m.IsSavePlan)
 		diffText := engine.UnifiedDiff(onDisk, desired, labelA, labelB)
 
-		return DiffLoadedMsg{Dst: Op.Dst, Title: title, DiffText: diffText}
+		return DiffLoadedMsg{Dst: Op.Dst, Title: title, DiffText: diffText, Note: note}
 	}
+}
+
+func planDiffLabelsAndNote(Op app.PlanOp, isSavePlan bool) (string, string, string) {
+	base := filepath.Base(Op.Dst)
+	labelA := base + " (current)"
+	labelB := base + " (desired)"
+	if isSavePlan {
+		labelA = base + " (in pack)"
+		labelB = base + " (in harness)"
+		return labelA, labelB, ""
+	}
+	note := ""
+	switch Op.Kind {
+	case app.PlanOpSettings, app.PlanOpMCP:
+		if len(Op.MergeOps) > 0 {
+			labelB = base + " (after merge)"
+			note = "Merged settings diff: user-owned keys outside the shown hunks are preserved."
+		}
+	}
+	return labelA, labelB, note
 }
 
 // ─────────────────────────────────────────────────────
@@ -520,6 +542,7 @@ func (m Model) LoadDiff(Op app.PlanOp) tea.Cmd {
 type DiffViewModel struct {
 	Title string
 	Dst   string
+	Note  string
 	IsNew bool
 
 	viewport viewport.Model
@@ -549,7 +572,7 @@ func (m *DiffViewModel) SetContent(diffText string, isNew bool, newBody string, 
 
 	maxW := diffViewportWidth(m.Width)
 	var sb strings.Builder
-	common.RenderUnifiedDiff(&sb, m.Title, m.Dst, diffText, isNew, newBody, maxW, "─")
+	common.RenderUnifiedDiffWithNote(&sb, m.Title, m.Dst, diffText, isNew, newBody, m.Note, maxW, "─")
 
 	vpH := diffViewportHeight(m.Height)
 	vp := viewport.New(viewport.WithWidth(maxW), viewport.WithHeight(vpH))

@@ -500,6 +500,51 @@ func TestComputeSettingsDiffs_MergeMode_RemovesStaleMCPServer(t *testing.T) {
 	}
 }
 
+func TestComputeSettingsDiffs_MergeModeLabelsMergedDesired(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "config.toml")
+
+	onDisk := []byte(`
+[mcp_servers.github]
+enabled_tools = ["get_pr"]
+
+[mcp_servers.github.tools.get_pr]
+approval_mode = "approve"
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prevManaged := []byte(`
+[mcp_servers.github]
+enabled_tools = ["get_pr"]
+`)
+	nextManaged := []byte(`
+[mcp_servers.github]
+enabled_tools = ["get_pr", "list_repos"]
+`)
+	lg := domain.NewLedger()
+	lg.Record(dst, onDisk, "pack", prevManaged, time.Now())
+
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{{
+		Dst: dst, Desired: nextManaged, Harness: domain.HarnessCodex, Label: "config.toml", MergeMode: true,
+	}}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	if !strings.Contains(diffs[0].Diff, "+++ config.toml (after merge)") {
+		t.Fatalf("diff should label merged destination, got:\n%s", diffs[0].Diff)
+	}
+	if strings.Contains(diffs[0].Diff, "-approval_mode") {
+		t.Fatalf("diff should not show semantically preserved approval_mode as removed, got:\n%s", diffs[0].Diff)
+	}
+}
+
 func TestComputeSettingsDiffs_MergeMode_EmptyDesiredPreservesNestedUserKeys(t *testing.T) {
 	t.Parallel()
 	eng := New(nil, nil)

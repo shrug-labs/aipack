@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.27.5]
+
+### Fixed
+
+- **Codex settings diff previews now describe MCP permission merges accurately.** `sync --dry-run --verbose` and the manage TUI diff view label merged settings as "after merge", preserve runtime tool approvals outside the displayed hunks, and avoid showing TOML formatting-only changes as approval removals.
+
 ## [0.27.4]
 
 ### Fixed
