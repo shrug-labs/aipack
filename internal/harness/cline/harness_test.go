@@ -438,6 +438,65 @@ func TestRenderBytes_PopulatesTimeout(t *testing.T) {
 	}
 }
 
+func TestRenderBytes_DoesNotHTMLEscapeCommands(t *testing.T) {
+	t.Parallel()
+	servers := []domain.MCPServer{{
+		Name:    "shell",
+		Command: []string{"sh", "-lc", "echo '<ok>' && run 2> >(tee log >&2)"},
+	}}
+
+	out, _, err := RenderBytes(nil, servers)
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+	content := string(out)
+	for _, escaped := range []string{`\u003c`, `\u003e`, `\u0026`} {
+		if strings.Contains(content, escaped) {
+			t.Fatalf("Cline settings should not HTML-escape %s:\n%s", escaped, content)
+		}
+	}
+	if !strings.Contains(content, `echo '<ok>' && run 2> >(tee log >&2)`) {
+		t.Fatalf("command changed unexpectedly:\n%s", content)
+	}
+}
+
+func TestRenderBytes_StreamableHTTPUsesClineTransportType(t *testing.T) {
+	t.Parallel()
+	servers := []domain.MCPServer{{
+		Name:      "remote",
+		Transport: domain.TransportStreamableHTTP,
+		URL:       "https://example.invalid/mcp",
+	}}
+
+	out, _, err := RenderBytes(nil, servers)
+	if err != nil {
+		t.Fatalf("RenderBytes: %v", err)
+	}
+	content := string(out)
+	if !strings.Contains(content, `"type": "streamableHttp"`) {
+		t.Fatalf("streamable-http should render as Cline streamableHttp:\n%s", content)
+	}
+	if strings.Contains(content, `"type": "streamable-http"`) {
+		t.Fatalf("Cline settings should not use canonical transport spelling directly:\n%s", content)
+	}
+}
+
+func TestParseClineSettings_StreamableHTTPUsesCanonicalTransport(t *testing.T) {
+	t.Parallel()
+	settings := []byte(`{"mcpServers":{"remote":{"type":"streamableHttp","url":"https://example.invalid/mcp"}}}`)
+
+	servers := map[string]domain.MCPServer{}
+	parseClineSettings(servers, map[string][]string{}, settings)
+
+	got, ok := servers["remote"]
+	if !ok {
+		t.Fatal("expected remote server to be parsed")
+	}
+	if got.Transport != domain.TransportStreamableHTTP {
+		t.Fatalf("transport: got %q want %q", got.Transport, domain.TransportStreamableHTTP)
+	}
+}
+
 // --- Strip via Layout tests ---
 
 func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {

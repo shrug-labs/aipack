@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // StripManaged finds the OwnedFile matching path and strips managed keys
@@ -32,11 +34,11 @@ func ApplyEdit(content []byte, format FileFormat, edit func(map[string]any)) ([]
 			return nil, err
 		}
 		edit(root)
-		out, err := json.MarshalIndent(root, "", "  ")
+		out, err := util.MarshalPrettyJSON(root)
 		if err != nil {
 			return nil, err
 		}
-		return append(out, '\n'), nil
+		return out, nil
 	case FormatTOML:
 		if err := toml.Unmarshal(content, &root); err != nil {
 			return nil, err

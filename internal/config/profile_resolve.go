@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -255,16 +256,10 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		// Quiet semantics for MCP mirror content vectors: include nothing
 		// unless the profile entry explicitly opts in. Non-quiet packs keep
 		// the manifest-derived default so new servers an upstream pack adds
-		// become available automatically.
-		mcpSelection := packCfg.MCP
-		if len(mcpSelection) == 0 {
-			mcpSelection = map[string]MCPServerConfig{}
-			if !quiet {
-				for _, name := range manifest.MCP {
-					mcpSelection[name] = MCPServerConfig{Enabled: BoolPtr(true)}
-				}
-			}
-		}
+		// become available automatically. A non-quiet disable-only map keeps
+		// that default and applies the listed entries as exclusions; maps with
+		// any enabled entry or tool policy keep the existing inclusive semantics.
+		mcpSelection := resolveMCPSelection(manifest.MCP, packCfg.MCP, quiet)
 		manifestMCPSet := ToStringSet(manifest.MCP)
 		for name, serverCfg := range mcpSelection {
 			if !manifestMCPSet[name] {
@@ -378,6 +373,41 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		CollisionWarnings: collisionWarnings,
 		BrokenRefs:        brokenRefs,
 	}, nil
+}
+
+func resolveMCPSelection(manifestMCP []string, profileMCP map[string]MCPServerConfig, quiet bool) map[string]MCPServerConfig {
+	if len(profileMCP) == 0 {
+		if quiet {
+			return nil
+		}
+		return defaultMCPSelection(manifestMCP)
+	}
+	if !quiet && mcpSelectionIsDisableOnly(profileMCP) {
+		out := defaultMCPSelection(manifestMCP)
+		maps.Copy(out, profileMCP)
+		return out
+	}
+	return profileMCP
+}
+
+func defaultMCPSelection(manifestMCP []string) map[string]MCPServerConfig {
+	out := make(map[string]MCPServerConfig, len(manifestMCP))
+	for _, name := range manifestMCP {
+		out[name] = MCPServerConfig{}
+	}
+	return out
+}
+
+func mcpSelectionIsDisableOnly(profileMCP map[string]MCPServerConfig) bool {
+	if len(profileMCP) == 0 {
+		return false
+	}
+	for _, cfg := range profileMCP {
+		if !cfg.IsDisableOnly() {
+			return false
+		}
+	}
+	return true
 }
 
 func stripFromPack(packs []ResolvedPack, packName, id string, field func(*ResolvedPack) *[]string) {

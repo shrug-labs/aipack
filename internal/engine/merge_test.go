@@ -140,6 +140,27 @@ func TestMergeSettingsKeys_JSON_ArrayPreservesManagedOrder(t *testing.T) {
 	}
 }
 
+func TestMergeSettingsKeys_JSON_DoesNotHTMLEscapeUserValues(t *testing.T) {
+	t.Parallel()
+	existing := []byte(`{"mcpServers":{"user":{"command":"sh","args":["-lc","echo '<ok>' && run 2> >(tee log >&2)"]}}}`)
+	prev := []byte(`{}`)
+	next := []byte(`{"mcpServers":{"managed":{"command":"echo","args":["hi"]}}}`)
+
+	result, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessCline, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(result)
+	for _, escaped := range []string{`\u003c`, `\u003e`, `\u0026`} {
+		if strings.Contains(content, escaped) {
+			t.Fatalf("merged JSON should not HTML-escape %s:\n%s", escaped, content)
+		}
+	}
+	if !strings.Contains(content, `echo '<ok>' && run 2> >(tee log >&2)`) {
+		t.Fatalf("user command changed unexpectedly:\n%s", content)
+	}
+}
+
 func TestMergeSettingsKeys_FirstSync(t *testing.T) {
 	t.Parallel()
 	existing := []byte(`{"user_key": "user_val"}`)

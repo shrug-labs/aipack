@@ -6,6 +6,8 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	harnesspkg "github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 type clineMCPServer struct {
@@ -19,6 +21,10 @@ type clineMCPServer struct {
 	Env         map[string]string `json:"env,omitempty"`
 	AlwaysAllow []string          `json:"alwaysAllow,omitempty"`
 }
+
+const clineTransportStreamableHTTP = "streamableHttp"
+
+var clineMCPTransport = harnesspkg.MCPTransportCodec{StreamableHTTP: clineTransportStreamableHTTP}
 
 // RenderBytes produces the cline_mcp_settings.json content from typed MCPServers.
 func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
@@ -40,10 +46,7 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 		entry := clineMCPServer{
 			Disabled: false,
 			Timeout:  timeout,
-			Type:     s.Transport,
-		}
-		if entry.Type == "" {
-			entry.Type = domain.TransportStdio
+			Type:     clineMCPTransport.ToNative(s.Transport),
 		}
 		if s.IsStdio() {
 			if len(s.Command) == 0 {
@@ -73,9 +76,9 @@ func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warn
 	}
 	root["mcpServers"] = merged
 
-	out, err := json.MarshalIndent(root, "", "  ")
+	out, err := util.MarshalPrettyJSON(root)
 	if err != nil {
 		return nil, warnings, err
 	}
-	return append(out, '\n'), warnings, nil
+	return out, warnings, nil
 }

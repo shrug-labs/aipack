@@ -301,6 +301,8 @@ packs:
 
 The profile is the sole source of tool permissions. `allowed_tools` limits visibility to the listed tools; `always_allowed_tools` additionally auto-approves without a per-call prompt; `disabled_tools` explicitly blocks. When both `allowed_tools` and `disabled_tools` are present, `disabled_tools` takes precedence. A tool in `always_allowed_tools` is implicitly visible, so setting it without also listing the tool in `allowed_tools` is valid and common.
 
+For normal packs, omitting `mcp:` or setting `mcp: {}` enables every server declared by the pack. A map containing only `enabled: false` entries is treated as an exclusion overlay, so disabling one server does not drop its siblings. Once `mcp:` contains any enabled server or tool policy, it is an inclusive selection map; list sibling servers explicitly if they should remain active. For quiet packs, `mcp:` is always opt-in-only.
+
 Leaving all three fields unset (silent) emits no allow list to the harness — the harness's native default (ask per call) applies, which is operationally equivalent to "grant all."
 
 **Per-harness rendering of `always_allowed_tools`:**

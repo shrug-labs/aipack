@@ -8,6 +8,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	harnesspkg "github.com/shrug-labs/aipack/internal/harness"
 )
 
 // mcpEntry is the Claude Code .mcp.json server format.
@@ -27,6 +28,10 @@ type mcpRoot struct {
 
 const mcpPermPrefix = "mcp__"
 const defaultClaudePluginMarketplace = "claude-plugins-official"
+
+const claudeTransportHTTP = "http"
+
+var claudeMCPTransport = harnesspkg.MCPTransportCodec{StreamableHTTP: claudeTransportHTTP}
 
 // filterOutMCPPerms removes mcp__* entries from a JSON-unmarshalled
 // permissions slice, preserving non-MCP entries. Accepts any; returns
@@ -63,11 +68,7 @@ func RenderMCPBytesFromTyped(servers []domain.MCPServer) ([]byte, []domain.Warni
 				entry.Env = s.Env
 			}
 		} else {
-			if s.Transport == "streamable-http" {
-				entry.Type = "http"
-			} else {
-				entry.Type = s.Transport
-			}
+			entry.Type = claudeMCPTransport.ToNative(s.Transport)
 			entry.URL = s.URL
 			if len(s.Headers) > 0 {
 				entry.Headers = s.Headers

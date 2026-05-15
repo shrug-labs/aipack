@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	harnesspkg "github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 func (Harness) EmptyManagedOverlay() []byte {
@@ -24,11 +25,11 @@ func (Harness) PruneMCPServersFromManagedOverlay(overlay []byte, serverNames map
 	if !changed {
 		return overlay, false, nil
 	}
-	out, err := json.MarshalIndent(root, "", "  ")
+	out, err := util.MarshalPrettyJSON(root)
 	if err != nil {
 		return nil, false, err
 	}
-	return append(out, '\n'), true, nil
+	return out, true, nil
 }
 
 func (Harness) RetainMCPServersInManagedOverlay(overlay []byte, serverNames map[string]struct{}) ([]byte, error) {
@@ -46,9 +47,9 @@ func (Harness) RetainMCPServersInManagedOverlay(overlay []byte, serverNames map[
 	if len(out) == 0 {
 		return []byte("{}\n"), nil
 	}
-	b, err := json.MarshalIndent(out, "", "  ")
+	b, err := util.MarshalPrettyJSON(out)
 	if err != nil {
 		return nil, err
 	}
-	return append(b, '\n'), nil
+	return b, nil
 }

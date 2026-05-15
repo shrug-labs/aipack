@@ -4,6 +4,15 @@ All notable user-facing changes to `aipack` will be documented in this file.
 
 The format is based on Keep a Changelog, and releases use semantic versioning tags.
 
+## [Unreleased]
+
+## [0.27.4]
+
+### Fixed
+
+- **Cline MCP sync now preserves literal shell operators and renders Streamable HTTP with Cline's native type.** Settings merges no longer rewrite `<`, `>`, or `&` as JSON unicode escapes, aipack `streamable-http` MCP servers now render as Cline `type: "streamableHttp"`, and Claude Code capture normalizes native `type: "http"` back to aipack `streamable-http`.
+- **Profile MCP disable-only entries no longer drop sibling servers from normal packs.** A non-quiet profile map that only contains `enabled: false` MCP entries now keeps the pack's default server set and applies those entries as exclusions; maps with enabled servers or tool policy keep their existing inclusive-selection behavior.
+
 ## [0.27.3]
 
 ### Added

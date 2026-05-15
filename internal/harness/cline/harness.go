@@ -378,10 +378,7 @@ func parseClineSettings(servers map[string]domain.MCPServer, allowed map[string]
 			continue
 		}
 		srv := domain.MCPServer{Name: name, Timeout: entry.Timeout}
-		transport := entry.Type
-		if transport == "" {
-			transport = domain.TransportStdio
-		}
+		transport := clineMCPTransport.ToCanonical(entry.Type)
 		srv.Transport = transport
 		switch transport {
 		case domain.TransportStdio:

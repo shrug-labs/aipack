@@ -357,10 +357,7 @@ func parseMCPJSON(servers map[string]domain.MCPServer, b []byte) []domain.Warnin
 			warnings = append(warnings, domain.Warning{Field: "mcp." + name, Message: fmt.Sprintf("invalid JSON: %v", err)})
 			continue
 		}
-		transport := entry.Type
-		if transport == "" {
-			transport = domain.TransportStdio
-		}
+		transport := claudeMCPTransport.ToCanonical(entry.Type)
 		srv := domain.MCPServer{Name: name, Transport: transport}
 		switch transport {
 		case domain.TransportStdio:

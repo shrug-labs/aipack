@@ -723,3 +723,31 @@ func TestCapture_Project_ParsesSettingsPermissions(t *testing.T) {
 		t.Fatal("expected captured settings.local.json to be preserved")
 	}
 }
+
+func TestCapture_Project_ParsesClaudeHTTPAsStreamableHTTP(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mcpJSON := []byte(`{
+	  "mcpServers": {
+	    "remote": {
+	      "type": "http",
+	      "url": "https://example.invalid/mcp"
+	    }
+	  }
+	}`)
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), mcpJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: dir})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	got, ok := res.MCPServers["remote"]
+	if !ok {
+		t.Fatalf("expected remote MCP server, got %+v", res.MCPServers)
+	}
+	if got.Transport != domain.TransportStreamableHTTP {
+		t.Fatalf("transport: got %q want %q", got.Transport, domain.TransportStreamableHTTP)
+	}
+}

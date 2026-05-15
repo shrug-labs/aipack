@@ -9,6 +9,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // MergeAction describes what the three-way merge did to a key.
@@ -371,11 +372,7 @@ func parseTOMLMap(b []byte) (map[string]any, error) {
 }
 
 func marshalJSON(m map[string]any) ([]byte, error) {
-	out, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
+	return util.MarshalPrettyJSON(m)
 }
 
 func marshalTOML(m map[string]any) ([]byte, error) {

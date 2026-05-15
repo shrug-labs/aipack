@@ -1944,6 +1944,76 @@ func TestResolveProfile_NonQuietPackEmptyMCPInheritsManifestServers(t *testing.T
 	}
 }
 
+func TestResolveProfile_MCPSelectionSemantics(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		quiet bool
+		mcp   map[string]MCPServerConfig
+		want  []string
+	}{
+		{
+			name: "non-quiet disable-only map keeps omitted siblings",
+			mcp:  map[string]MCPServerConfig{"srv-a": {Enabled: BoolPtr(false)}},
+			want: []string{"srv-b", "srv-c"},
+		},
+		{
+			name: "non-quiet mixed map remains inclusive",
+			mcp: map[string]MCPServerConfig{
+				"srv-a": {Enabled: BoolPtr(false)},
+				"srv-b": {Enabled: BoolPtr(true)},
+			},
+			want: []string{"srv-b"},
+		},
+		{
+			name:  "quiet disable-only map does not enable omitted siblings",
+			quiet: true,
+			mcp:   map[string]MCPServerConfig{"srv-a": {Enabled: BoolPtr(false)}},
+			want:  nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			installPackForResolveTest(t, root, "open-mcp", PackManifest{
+				SchemaVersion: 2,
+				Name:          "open-mcp",
+				Version:       "1.0.0",
+				Root:          ".",
+				MCP:           []string{"srv-a", "srv-b", "srv-c"},
+			}, map[string]string{
+				"mcp/srv-a.json": `{"name":"srv-a","command":["echo","a"]}`,
+				"mcp/srv-b.json": `{"name":"srv-b","command":["echo","b"]}`,
+				"mcp/srv-c.json": `{"name":"srv-c","command":["echo","c"]}`,
+			})
+
+			cfg := ProfileConfig{
+				SchemaVersion: ProfileSchemaVersion,
+				Packs: []PackEntry{{
+					Name:    "open-mcp",
+					Enabled: BoolPtr(true),
+					Quiet:   tc.quiet,
+					MCP:     tc.mcp,
+				}},
+			}
+			packs, _, err := resolveStrict(t, cfg, filepath.Join(root, "profile.yaml"), root)
+			if err != nil {
+				t.Fatalf("ResolveProfile: %v", err)
+			}
+			got := make([]string, 0, len(packs[0].MCP))
+			for name := range packs[0].MCP {
+				got = append(got, name)
+			}
+			if !StringSlicesEqual(got, tc.want) {
+				slices.Sort(got)
+				slices.Sort(tc.want)
+				t.Fatalf("resolved MCP servers = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveProfile_QuietPackSettingsDefaultSkipped pins the quiet-settings
 // gap fix: a quiet pack that has config files but no explicit settings
 // opt-in must NOT be added to settingsPacks. The settings branch previously

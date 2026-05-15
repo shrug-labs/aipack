@@ -138,6 +138,7 @@ First-class plugin references are additive-only. Save and clean do not remove pl
 - Workflows: individual command files in `.claude/commands/` only (no dual materialization).
 - `CLAUDE.managed.md` is no longer written. On first sync after upgrade, it is automatically removed as a stale managed file. `CLAUDE.md` is no longer touched.
 - Global scope syncs to `~/.claude/{rules,agents,skills,commands}/`.
+- Save/capture normalizes Claude Code's native `type: "http"` MCP entries back to aipack `streamable-http`.
 - `settings.local.json` always uses three-way merge, even without `--skip-settings`. User-controlled permissions (non-`mcp__` prefix) are always preserved in both `allow` and `deny` arrays.
 - Plugin references write `enabledPlugins` in `.claude/settings.json`. Source-prefixed marketplaces such as `github:owner/marketplace` are registered in `~/.claude/plugins/known_marketplaces.json`.
 - `permissions.deny` blocks tools entirely (deny > ask > allow precedence). Unlike OpenCode's `server_*: false` wildcard, Claude Code cannot use wildcard deny patterns because deny always takes precedence over allow regardless of specificity. Only explicit per-tool deny entries are rendered from `disabled_tools` in the profile config.
@@ -158,6 +159,7 @@ First-class plugin references are additive-only. Save and clean do not remove pl
 **Cline**
 - MCP is global-only — there is no project-level MCP settings path.
 - Sync writes Cline MCP settings to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`).
+- Cline remote transport names are adapter-specific: aipack `streamable-http` renders as `type: "streamableHttp"` in `cline_mcp_settings.json`, while `sse` remains `type: "sse"`.
 - Save/capture prefers the canonical VS Code path, falls back to the standalone path when the canonical file is missing, and warns when another discovered file differs from the capture source.
 - Agents (but not workflows) are promoted to skill directories in `.agents/skills/` (project) or `~/.agents/skills/` (global), since Cline natively reads both `.clinerules/` and `.agents/`. Enriched YAML frontmatter (`source_type: agent`) preserves agent metadata for round-trip capture. Workflows remain individual files in `.clinerules/workflows/`. Codex no longer shares this promotion path — Codex agents render as native TOML files in `.codex/agents/`.
 - The MCP settings file is generated fresh from inventory on every sync (no base template concept). Existing user-defined `mcpServers` entries are preserved during merge.

@@ -59,6 +59,16 @@ type MCPServerConfig struct {
 	DisabledTools      []string `yaml:"disabled_tools,omitempty"`
 }
 
+// HasToolPolicy reports whether the profile entry customizes tool visibility.
+func (c MCPServerConfig) HasToolPolicy() bool {
+	return len(c.AllowedTools) > 0 || len(c.AlwaysAllowedTools) > 0 || len(c.DisabledTools) > 0
+}
+
+// IsDisableOnly reports whether the entry only disables the server.
+func (c MCPServerConfig) IsDisableOnly() bool {
+	return !PackEnabled(c.Enabled) && !c.HasToolPolicy()
+}
+
 type mcpServerConfigYAML struct {
 	Enabled            *bool     `yaml:"enabled"`
 	AllowedTools       *[]string `yaml:"allowed_tools,omitempty"`
