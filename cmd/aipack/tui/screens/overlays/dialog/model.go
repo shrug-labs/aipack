@@ -164,6 +164,11 @@ func (d Model) UpdateModel(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case common.LayerHitMsg:
 		return d.handleLayerHit(msg)
+	case tea.PasteMsg:
+		if d.Kind == TextInput {
+			d.TextValue = common.AppendSingleLinePaste(d.TextValue, msg.Content)
+		}
+		return d, nil
 	case tea.KeyPressMsg:
 		switch d.Kind {
 		case Confirm:

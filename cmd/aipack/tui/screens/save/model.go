@@ -282,6 +282,12 @@ func (m Model) Update(msg tea.Msg) (common.Screen, tea.Cmd) {
 		m.stage = stageResult
 		return m, nil
 
+	case tea.PasteMsg:
+		if !m.loading && m.newPackInput {
+			m.newPackName = common.AppendSingleLinePaste(m.newPackName, msg.Content)
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

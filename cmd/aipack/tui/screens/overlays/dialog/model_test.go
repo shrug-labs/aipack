@@ -98,6 +98,21 @@ func TestChecklistItemHoverMovesCursorWithoutToggling(t *testing.T) {
 	}
 }
 
+func TestTextInputAcceptsBracketedPaste(t *testing.T) {
+	t.Parallel()
+
+	m := NewTextInput("pack-install", "Pack name, path, or URL:")
+	m.TextValue = "pre-"
+
+	next, cmd := m.UpdateModel(tea.PasteMsg{Content: "github.com/org/repo\r\n"})
+	if cmd != nil {
+		t.Fatal("paste should not submit text input")
+	}
+	if next.TextValue != "pre-github.com/org/repo" {
+		t.Fatalf("TextValue = %q, want pasted value appended", next.TextValue)
+	}
+}
+
 func TestListSelectRenderIsHeightBoundedAndKeepsCursorVisible(t *testing.T) {
 	t.Parallel()
 

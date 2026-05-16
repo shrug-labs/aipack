@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.27.6]
+
+### Fixed
+
+- **The manage TUI now accepts terminal paste in text inputs.** Bracketed paste works in modal text dialogs, Search query input, and the Save tab's inline new-pack field, with pasted line endings normalized for single-line controls.
+
 ## [0.27.5]
 
 ### Fixed

@@ -74,6 +74,19 @@ func TestResultsMsgPreservesSelectionOnRefresh(t *testing.T) {
 	}
 }
 
+func TestInputAcceptsBracketedPaste(t *testing.T) {
+	t.Parallel()
+
+	screen, cmd := New("").Update(tea.PasteMsg{Content: "rules owner\r\n"})
+	if cmd != nil {
+		t.Fatal("paste should not run search")
+	}
+	m := screen.(Model)
+	if m.query != "rules owner" {
+		t.Fatalf("query = %q, want pasted text", m.query)
+	}
+}
+
 func TestViewRegistersClickableLayers(t *testing.T) {
 	t.Parallel()
 

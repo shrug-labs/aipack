@@ -144,6 +144,19 @@ func TestSaveTabHelpTextMentionsDiffKey(t *testing.T) {
 	}
 }
 
+func TestNewPackInputAcceptsBracketedPaste(t *testing.T) {
+	t.Parallel()
+
+	screen, cmd := Model{newPackInput: true, newPackName: "team-"}.Update(tea.PasteMsg{Content: "ops\r\n"})
+	if cmd != nil {
+		t.Fatal("paste should not execute save pipeline")
+	}
+	m := screen.(Model)
+	if m.newPackName != "team-ops" {
+		t.Fatalf("newPackName = %q, want pasted text appended", m.newPackName)
+	}
+}
+
 func TestSaveTabFileListScrollsWithCursor(t *testing.T) {
 	t.Parallel()
 

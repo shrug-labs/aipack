@@ -47,6 +47,12 @@ func (m Model) Update(msg tea.Msg) (common.Screen, tea.Cmd) {
 		}
 		return m.handleLayerHit(msg)
 
+	case tea.PasteMsg:
+		if m.focus == focusInput {
+			m.query = common.AppendSingleLinePaste(m.query, msg.Content)
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		switch m.focus {
 		case focusInput:
