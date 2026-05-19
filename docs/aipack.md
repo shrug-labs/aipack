@@ -562,7 +562,9 @@ aipack trace rule anti-slop --json
 
 ### search
 
-Full-text search (FTS5 with BM25 ranking) across resource names, descriptions, and body text. The SQLite index is built automatically during `registry fetch --deep`, pack install/update, and `pack inspect`. Search reconciles installed status against `aipack.lock` and installed pack directories before applying installed/status filters, so stale registry rows do not make installed packs appear available.
+Opens the manage TUI on the Search tab for interactive search and install flows. Search terms plus `--kind`, `--category`, `--status`, `--installed`, and `--available` are carried into the TUI, so `aipack search deploy --kind workflow` opens Search with that query ready. Advanced CLI-only filters (`--tags`, `--role`, `--pack`) still use the text search output. Use `--json` for the machine-readable CLI search output.
+
+Full-text search uses FTS5 with BM25 ranking across resource names, descriptions, and body text. The SQLite index is built automatically during `registry fetch --deep`, pack install/update, and `pack inspect`. Search reconciles installed status against `aipack.lock` and installed pack directories before applying installed/status filters, so stale registry rows do not make installed packs appear available.
 
 Filters: `--tags` (comma-separated), `--role`, `--kind` (rule/skill/workflow/agent/prompt/plugin/mcp/pack), `--category` (ops/dev/infra/governance/meta), `--pack`, `--status installed|registered|inspected`, `--installed`, `--available`. `--available` is retained as a compatibility alias for uninstalled results; use `--status registered` for registry/deep-index content and `--status inspected` for pack previews created by `pack inspect`.
 

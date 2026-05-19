@@ -162,6 +162,44 @@ func TestSearch_FTS(t *testing.T) {
 	}
 }
 
+func TestSearch_HyphenatedTerms(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	db.Update(index.PackInfo{Name: "p1", Version: "1.0"}, []index.Resource{
+		{Kind: "skill", Name: "alpha-beta", Description: "For alpha beta workflows"},
+		{Kind: "skill", Name: "beta", Description: "Generic beta workflows"},
+	})
+
+	results, err := db.Search("alpha-beta", index.SearchFilters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Name != "alpha-beta" {
+		t.Errorf("search 'alpha-beta' got %v, want [alpha-beta]", results)
+	}
+}
+
+func TestSearch_HyphenatedPackTerms(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	if err := db.UpdateRegistryPacks([]index.PackInfo{
+		{Name: "alpha-pack", Description: "Contains alpha-beta workflows"},
+		{Name: "beta-pack", Description: "Contains beta workflows"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := db.Search("alpha-beta", index.SearchFilters{Kind: "pack"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Name != "alpha-pack" {
+		t.Errorf("pack search 'alpha-beta' got %v, want [alpha-pack]", results)
+	}
+}
+
 func TestSearch_WithTagFilter(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

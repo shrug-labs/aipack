@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.27.7]
+
+### Changed
+
+- **`aipack search` now opens the manage TUI Search tab by default on interactive terminals.** Search terms plus common filters seed the TUI, while `--json` and advanced filters such as `--tags`, `--role`, and `--pack` keep the machine-readable or text CLI output path.
+
+### Fixed
+
+- **Search now handles hyphenated terms literally.** Queries such as `alpha-beta` and `content-pack` no longer fail from SQLite FTS5 parsing the hyphen as query syntax.
+
 ## [0.27.6]
 
 ### Fixed

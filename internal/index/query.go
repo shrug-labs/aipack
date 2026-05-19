@@ -82,10 +82,11 @@ func (db *DB) searchResources(terms string, filters SearchFilters) ([]SearchResu
 	snippetExpr := "''" // no snippet without FTS
 	orderBy := "r.kind, r.name"
 
-	if terms != "" {
+	ftsTerms := literalFTSQuery(terms)
+	if ftsTerms != "" {
 		from += " JOIN resources_fts fts ON fts.rowid = r.id"
 		where = append(where, "resources_fts MATCH ?")
-		args = append(args, terms)
+		args = append(args, ftsTerms)
 		// BM25 weights: name=10, description=5, body=1.
 		orderBy = "bm25(resources_fts, 10.0, 5.0, 1.0)"
 		// Snippet from body column (index 2). Show 16 tokens of context.
@@ -164,10 +165,11 @@ func (db *DB) searchPacks(terms string, filters SearchFilters) ([]SearchResult, 
 
 	where = append(where, "p.installed = 0")
 
-	if terms != "" {
+	ftsTerms := literalFTSQuery(terms)
+	if ftsTerms != "" {
 		from += " JOIN packs_fts pfts ON pfts.rowid = p.id"
 		where = append(where, "packs_fts MATCH ?")
-		args = append(args, terms)
+		args = append(args, ftsTerms)
 	}
 	if filters.Pack != "" {
 		where = append(where, "p.name = ?")
@@ -206,6 +208,19 @@ func (db *DB) searchPacks(terms string, filters SearchFilters) ([]SearchResult, 
 		results = append(results, sr)
 	}
 	return results, rows.Err()
+}
+
+func literalFTSQuery(terms string) string {
+	fields := strings.Fields(terms)
+	if len(fields) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.ReplaceAll(field, `"`, `""`)
+		quoted = append(quoted, `"`+field+`"`)
+	}
+	return strings.Join(quoted, " ")
 }
 
 func resourceStatusCondition(status string) (string, bool) {

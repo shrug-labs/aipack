@@ -68,6 +68,27 @@ func New(configDir string) Model {
 	}
 }
 
+// NewWithInitial returns a Search model seeded with query/filter state. If any
+// search state is provided, Init runs the search immediately.
+func NewWithInitial(configDir, query, kind, category, installed string) Model {
+	m := New(configDir)
+	m.query = query
+	m.kindFilter = kind
+	m.categoryFilter = category
+	m.installedFilter = installed
+	if m.hasInitialSearch() {
+		m.loading = true
+	}
+	return m
+}
+
+func (m Model) hasInitialSearch() bool {
+	return strings.TrimSpace(m.query) != "" ||
+		m.kindFilter != "" ||
+		m.categoryFilter != "" ||
+		m.installedFilter != ""
+}
+
 // computeColumnWidths returns the longest Kind and Pack lengths across all
 // results. Called at ResultsMsg time so View() can read m.maxKindWidth /
 // m.maxPackWidth directly.
@@ -79,7 +100,12 @@ func computeColumnWidths(results []app.SearchResult) (kindW, packW int) {
 	return
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if !m.hasInitialSearch() {
+		return nil
+	}
+	return RunSearch(m.configDir, m.query, m.kindFilter, m.categoryFilter, m.installedFilter)
+}
 
 func (m Model) SetSize(width, height int) common.Screen {
 	m.width = width

@@ -309,6 +309,34 @@ func TestRootModel_TabSwitching(t *testing.T) {
 	}
 }
 
+func TestRootModel_InitialSearchTab(t *testing.T) {
+	t.Parallel()
+
+	m := newRootModel(context.Background(), RunConfig{
+		InitialTab:         "search",
+		InitialSearchQuery: "deploy",
+		InitialSearchKind:  "workflow",
+		InitialSearchCat:   "ops",
+		InitialSearchState: "registered",
+	})
+	m.width = 100
+	m.height = 24
+	m.router = m.router.SetSizeAll(100, 20)
+
+	if m.activeTab != tabSearch {
+		t.Fatalf("activeTab = %v, want search", m.activeTab)
+	}
+	if got := m.activeScreenID(); got != tuiapp.ScreenSearch {
+		t.Fatalf("active screen = %q, want search", got)
+	}
+	view := stripSGRForTUITest(m.View().Content)
+	for _, want := range []string{"Search: deploy", "Kind: [workflow]", "Category: [ops]", "Show: [registered]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestRootModel_QuitKeys(t *testing.T) {
 	t.Parallel()
 

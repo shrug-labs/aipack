@@ -35,9 +35,14 @@ import (
 
 // RunConfig provides the TUI with its initial configuration.
 type RunConfig struct {
-	ConfigDir string
-	SyncCfg   config.SyncConfig
-	Registry  *harness.Registry
+	ConfigDir          string
+	SyncCfg            config.SyncConfig
+	Registry           *harness.Registry
+	InitialTab         string
+	InitialSearchQuery string
+	InitialSearchKind  string
+	InitialSearchCat   string
+	InitialSearchState string
 }
 
 // RunResult carries post-TUI actions back to the CLI layer.
@@ -203,7 +208,14 @@ type pendingAutoSyncState struct {
 
 func newRootModel(ctx context.Context, cfg RunConfig) rootModel {
 	eng := engine.New(nil, nil)
-	return rootModel{
+	searchScreen := search.NewWithInitial(
+		cfg.ConfigDir,
+		cfg.InitialSearchQuery,
+		cfg.InitialSearchKind,
+		cfg.InitialSearchCat,
+		cfg.InitialSearchState,
+	)
+	m := rootModel{
 		ctx: ctx,
 		cfg: cfg,
 		eng: eng,
@@ -211,10 +223,15 @@ func newRootModel(ctx context.Context, cfg RunConfig) rootModel {
 			Set(tuiapp.ScreenProfiles, profilescreen.New(ctx, eng, cfg.ConfigDir)).
 			Set(tuiapp.ScreenPacks, packsscreen.New(cfg.ConfigDir)).
 			Set(tuiapp.ScreenConfig, configscreen.New(cfg.ConfigDir)).
-			Set(tuiapp.ScreenSearch, search.New(cfg.ConfigDir)).
+			Set(tuiapp.ScreenSearch, searchScreen).
 			Set(tuiapp.ScreenSave, savescreen.New(ctx, eng, cfg.ConfigDir, cfg.Registry)).
 			Set(tuiapp.ScreenSync, syncscreen.New(cfg.ConfigDir)),
 	}
+	if cfg.InitialTab == "search" {
+		m.activeTab = tabSearch
+		m.router = m.router.SetActive(tuiapp.ScreenSearch)
+	}
+	return m
 }
 
 // Screen accessors. These type-assert against the router's registry; a panic
@@ -406,7 +423,13 @@ func (m rootModel) Init() tea.Cmd {
 	// Load profiles first; packs and registry load after profiles arrive
 	// (triggered by profilescreen.LoadedMsg handler). Sequencing avoids a race
 	// condition where concurrent Init commands can freeze the TUI.
-	return m.profilesScreen().InitCmd(m.cfg.SyncCfg)
+	cmds := []tea.Cmd{m.profilesScreen().InitCmd(m.cfg.SyncCfg)}
+	if m.activeTab == tabSearch {
+		if cmd := m.searchScreen().Init(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

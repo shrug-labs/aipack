@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/shrug-labs/aipack/cmd/aipack/tui"
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
@@ -25,21 +26,22 @@ type SearchCmd struct {
 }
 
 func (c *SearchCmd) Help() string {
-	return `Search the pack index for resources by name, description, body text, tags, role, kind, or category.
-Uses FTS5 full-text search with BM25 ranking (name > description > body) when
-search terms are provided. Includes body-text snippets showing match context.
+	return `Open the manage TUI Search tab for interactive search and install flows.
+Search terms and common filters seed the TUI. Use --json for machine-readable
+index search output; advanced filters such as --tags, --role, and --pack also
+use text output.
 
 Examples:
-  # Full-text search (searches name, description, AND body text)
+  # Open Search in the manage TUI
   aipack search 5xx triage
 
-  # Filter by category
+  # Open Search filtered by category
   aipack search --category ops
 
-  # Filter by tags and role
+  # Text output with advanced filters
   aipack search --tags observability --role oncall-operator
 
-  # Combine text search with filters
+  # Open Search with text and filters
   aipack search deploy --kind workflow --category infra
 
   # Show only installed resources
@@ -73,6 +75,34 @@ func (c *SearchCmd) Run(ctx context.Context, g *Globals) error {
 	} else if c.Available {
 		f := false
 		installed = &f
+	}
+
+	if !c.JSON && g.StdinTTY && len(c.Tags) == 0 && c.Role == "" && c.Pack == "" {
+		cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+		if err != nil {
+			return err
+		}
+		syncCfg, err := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
+		if err != nil {
+			return err
+		}
+		state := c.Status
+		if c.Installed {
+			state = "installed"
+		} else if c.Available {
+			state = "available"
+		}
+		_, err = tui.Run(ctx, tui.RunConfig{
+			ConfigDir:          cfgDir,
+			SyncCfg:            syncCfg,
+			Registry:           g.Registry,
+			InitialTab:         "search",
+			InitialSearchQuery: strings.Join(c.Terms, " "),
+			InitialSearchKind:  c.Kind,
+			InitialSearchCat:   c.Category,
+			InitialSearchState: state,
+		})
+		return err
 	}
 
 	results, err := app.RunIndexSearch(app.IndexSearchRequest{
