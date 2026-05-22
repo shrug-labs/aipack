@@ -13,11 +13,14 @@ import (
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 type ProfileCmd struct {
 	Create     ProfileCreateCmd     `cmd:"" help:"Create a new empty profile"`
 	Delete     ProfileDeleteCmd     `cmd:"" help:"Delete a profile from the config directory"`
+	Include    ProfileIncludeCmd    `cmd:"" help:"Include exact content IDs in a profile"`
+	Exclude    ProfileExcludeCmd    `cmd:"" help:"Exclude exact content IDs from a profile"`
 	List       ProfileListCmd       `cmd:"" help:"List available profiles in the config directory"`
 	Set        ProfileSetCmd        `cmd:"" help:"Set the active profile (defaults.profile in sync-config)"`
 	Show       ProfileShowCmd       `cmd:"" help:"Show resolved configuration for a profile"`
@@ -33,6 +36,141 @@ sync to which harnesses.
 Profiles are stored as YAML files under %s.`,
 		configPathDisplay("profiles"),
 	)
+}
+
+// --- profile include / exclude ---
+
+type ProfileIncludeCmd struct {
+	IDs     []string `arg:"" name:"id" help:"Exact content ID(s) to include" predictor:"resource"`
+	Profile string   `help:"Profile to edit (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Pack    string   `help:"Limit matching to one installed pack" name:"pack" predictor:"pack"`
+	Kind    string   `help:"Limit matching to one kind: rule|agent|workflow|skill|hook|plugin|mcp" name:"kind" predictor:"kind"`
+}
+
+func (c *ProfileIncludeCmd) Help() string {
+	return `Includes exact content IDs in a profile. IDs are matched across the profile's
+enabled pack entries; use --pack or --kind when a name is ambiguous. MCP servers are
+toggled at server level only — tool allowlists stay under MCP-specific flows.
+
+Examples:
+  aipack profile include jira
+  aipack profile include anti-slop --kind rule
+  aipack profile include datetime-injector --pack team-pack --kind hook`
+}
+
+func (c *ProfileIncludeCmd) Run(ctx context.Context, g *Globals) error {
+	return runProfileContentMutation(ctx, g, profileContentMutation{
+		Action:  app.ProfileContentActionInclude,
+		IDs:     c.IDs,
+		Profile: c.Profile,
+		Pack:    c.Pack,
+		Kind:    c.Kind,
+	})
+}
+
+type ProfileExcludeCmd struct {
+	IDs     []string `arg:"" name:"id" help:"Exact content ID(s) to exclude" predictor:"resource"`
+	Profile string   `help:"Profile to edit (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Pack    string   `help:"Limit matching to one installed pack" name:"pack" predictor:"pack"`
+	Kind    string   `help:"Limit matching to one kind: rule|agent|workflow|skill|hook|plugin|mcp" name:"kind" predictor:"kind"`
+}
+
+func (c *ProfileExcludeCmd) Help() string {
+	return `Excludes exact content IDs from a profile. IDs are matched across the profile's
+enabled pack entries; use --pack or --kind when a name is ambiguous. MCP servers are
+toggled at server level only — tool allowlists stay under MCP-specific flows.
+
+Examples:
+  aipack profile exclude anti-slop
+  aipack profile exclude jira --kind mcp
+  aipack profile exclude datetime-injector --pack team-pack --kind hook`
+}
+
+func (c *ProfileExcludeCmd) Run(ctx context.Context, g *Globals) error {
+	return runProfileContentMutation(ctx, g, profileContentMutation{
+		Action:  app.ProfileContentActionExclude,
+		IDs:     c.IDs,
+		Profile: c.Profile,
+		Pack:    c.Pack,
+		Kind:    c.Kind,
+	})
+}
+
+type profileContentMutation struct {
+	Action  app.ProfileContentAction
+	IDs     []string
+	Profile string
+	Pack    string
+	Kind    string
+}
+
+func runProfileContentMutation(ctx context.Context, g *Globals, mutation profileContentMutation) error {
+	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
+	if err != nil {
+		return err
+	}
+	kind, err := parseProfileContentKind(mutation.Kind)
+	if err != nil {
+		return err
+	}
+	profileName := effectiveProfile(mutation.Profile, cfgDir)
+	req := app.ProfileContentRequest{
+		ConfigDir:   cfgDir,
+		ProfileName: profileName,
+		IDs:         mutation.IDs,
+		PackName:    mutation.Pack,
+		Kind:        kind,
+		Stdout:      g.Stdout,
+	}
+	var result app.ProfileContentResult
+	switch mutation.Action {
+	case app.ProfileContentActionInclude:
+		result, err = app.ProfileContentInclude(req)
+	case app.ProfileContentActionExclude:
+		result, err = app.ProfileContentExclude(req)
+	default:
+		err = fmt.Errorf("unknown profile content action %q", mutation.Action)
+	}
+	if err != nil {
+		return err
+	}
+	printProfileContentResult(g.Stdout, result)
+	if result.Changed {
+		return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, profileName)
+	}
+	return nil
+}
+
+func parseProfileContentKind(raw string) (domain.PackCategory, error) {
+	raw = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), "s")
+	switch raw {
+	case "":
+		return "", nil
+	case "mcp-server", "server":
+		return domain.CategoryMCP, nil
+	}
+	if cat, ok := domain.ParseSingularLabel(raw); ok {
+		switch cat {
+		case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows,
+			domain.CategorySkills, domain.CategoryHooks, domain.CategoryPlugins, domain.CategoryMCP:
+			return cat, nil
+		}
+	}
+	return "", fmt.Errorf("unsupported content kind %q (use rule, agent, workflow, skill, hook, plugin, or mcp)", raw)
+}
+
+func printProfileContentResult(w io.Writer, result app.ProfileContentResult) {
+	verb := "Included"
+	if result.Action == app.ProfileContentActionExclude {
+		verb = "Excluded"
+	}
+	for _, item := range result.Items {
+		status := ""
+		if !item.Changed {
+			status = " (already set)"
+		}
+		fmt.Fprintf(w, "%s %s/%s from %s in profile %s%s\n", verb, item.Category.DirName(), item.ID, item.PackName, result.Profile, status)
+	}
 }
 
 // --- profile refs ---
@@ -247,13 +385,13 @@ func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
 		if err := installMissingExitCode(results); err != nil {
 			return err
 		}
-		return maybeAutoSyncProfile(ctx, g, cfgDir, c.Name)
+		return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, c.Name)
 	} else {
 		if !profileHasInstalledPacks(cfgDir, c.Name, g.Stdout, g.Stderr) {
 			return nil
 		}
 	}
-	return maybeAutoSyncProfile(ctx, g, cfgDir, c.Name)
+	return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, c.Name)
 }
 
 func profileHasInstalledPacks(cfgDir, profileName string, stdout, stderr io.Writer) bool {
@@ -281,7 +419,7 @@ type ProfileShowCmd struct {
 
 func (c *ProfileShowCmd) Help() string {
 	return `Loads and fully resolves a profile, displaying its sources, packs (with content
-lists for rules, agents, workflows, skills, plugins, MCP servers), and harness
+lists for rules, agents, workflows, skills, hooks, plugins, MCP servers), and harness
 settings preferences.
 
 Profile name resolution: positional argument > sync-config defaults.profile > "default"
@@ -335,44 +473,13 @@ func (c *ProfileShowCmd) Run(ctx context.Context, g *Globals) error {
 		fmt.Fprintln(g.Stdout, "\nPacks:")
 		for _, p := range loaded.profile.Packs {
 			fmt.Fprintf(g.Stdout, "  %s\n", p.Name)
-			if len(p.Rules) > 0 {
-				names := make([]string, len(p.Rules))
-				for i, r := range p.Rules {
-					names[i] = r.Name
-				}
-				fmt.Fprintf(g.Stdout, "    Rules:       %s\n", strings.Join(names, ", "))
-			}
-			if len(p.Agents) > 0 {
-				names := make([]string, len(p.Agents))
-				for i, a := range p.Agents {
-					names[i] = a.Name
-				}
-				fmt.Fprintf(g.Stdout, "    Agents:      %s\n", strings.Join(names, ", "))
-			}
-			if len(p.Workflows) > 0 {
-				names := make([]string, len(p.Workflows))
-				for i, w := range p.Workflows {
-					names[i] = w.Name
-				}
-				fmt.Fprintf(g.Stdout, "    Workflows:   %s\n", strings.Join(names, ", "))
-			}
-			if len(p.Skills) > 0 {
-				names := make([]string, len(p.Skills))
-				for i, s := range p.Skills {
-					names[i] = s.Name
-				}
-				fmt.Fprintf(g.Stdout, "    Skills:      %s\n", strings.Join(names, ", "))
-			}
-			if len(p.Plugins) > 0 {
-				names := make([]string, len(p.Plugins))
-				for i, plugin := range p.Plugins {
-					names[i] = plugin.Name
-				}
-				fmt.Fprintf(g.Stdout, "    Plugins:     %s\n", strings.Join(names, ", "))
-			}
-			if mcpNames, ok := mcpByPack[p.Name]; ok && len(mcpNames) > 0 {
-				fmt.Fprintf(g.Stdout, "    MCP Servers: %s\n", strings.Join(mcpNames, ", "))
-			}
+			printProfileContentList(g.Stdout, "Rules", namesOf(p.Rules, func(r domain.Rule) string { return r.Name }))
+			printProfileContentList(g.Stdout, "Agents", namesOf(p.Agents, func(a domain.Agent) string { return a.Name }))
+			printProfileContentList(g.Stdout, "Workflows", namesOf(p.Workflows, func(w domain.Workflow) string { return w.Name }))
+			printProfileContentList(g.Stdout, "Skills", namesOf(p.Skills, func(s domain.Skill) string { return s.Name }))
+			printProfileContentList(g.Stdout, "Hooks", namesOf(p.Hooks, func(h domain.Hook) string { return h.Name }))
+			printProfileContentList(g.Stdout, "Plugins", namesOf(p.Plugins, func(plugin domain.Plugin) string { return plugin.Name }))
+			printProfileContentList(g.Stdout, "MCP Servers", mcpByPack[p.Name])
 		}
 
 		// Show disabled packs after enabled ones.
@@ -384,4 +491,19 @@ func (c *ProfileShowCmd) Run(ctx context.Context, g *Globals) error {
 	}
 
 	return nil
+}
+
+func namesOf[T any](items []T, name func(T) string) []string {
+	names := make([]string, len(items))
+	for i, item := range items {
+		names[i] = name(item)
+	}
+	return names
+}
+
+func printProfileContentList(w io.Writer, label string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "    %-12s %s\n", label+":", strings.Join(names, ", "))
 }

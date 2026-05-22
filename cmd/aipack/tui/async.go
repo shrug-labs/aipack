@@ -253,6 +253,8 @@ func planKindForPackPath(path string) app.PlanOpKind {
 			return app.PlanOpAgent
 		case "skills":
 			return app.PlanOpSkill
+		case "hooks":
+			return app.PlanOpHook
 		}
 	}
 	return app.PlanOpSkill

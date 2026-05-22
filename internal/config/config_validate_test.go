@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateProfileConfig_OK(t *testing.T) {
 	t.Parallel()
@@ -35,5 +38,17 @@ func TestValidateProfileConfig_DuplicatePackName(t *testing.T) {
 	errs := ValidateProfileConfig(cfg)
 	if len(errs) == 0 {
 		t.Fatal("expected error for duplicate pack name")
+	}
+}
+
+func TestValidateProfileConfig_ReservedPackNameSeparator(t *testing.T) {
+	t.Parallel()
+	cfg := ProfileConfig{SchemaVersion: ProfileSchemaVersion, Packs: []PackEntry{{Name: "bad__aipack__pack"}}}
+	errs := ValidateProfileConfig(cfg)
+	if len(errs) == 0 {
+		t.Fatal("expected error for reserved pack name separator")
+	}
+	if !strings.Contains(errs[0], `must not contain "__aipack__"`) {
+		t.Fatalf("error = %q, want reserved separator message", errs[0])
 	}
 }

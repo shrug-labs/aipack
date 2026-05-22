@@ -75,7 +75,7 @@ Classify the signal you want to surface:
 
 `resolveWalkRoot` follows the root-level symlink so packs whose category directories were symlinked in by `pack_create` get descended into correctly. Deeper symlinks are not followed.
 
-Manifest fields win over autodiscovery. `validatePackInventory` rejects literal `__` in rule ids (reserved as the harness escape for `/`) and rejects `/` in agent / workflow / skill ids — those ids are the leaf only; subdirectories are filesystem-only organization.
+Manifest fields win over autodiscovery. `validatePackInventory` rejects literal `__` in rule ids (reserved as the harness escape for `/`), rejects `__aipack__` in agent / workflow / skill / hook ids (reserved for rendered provenance), and rejects `/` in agent / workflow / skill / hook ids — those ids are the leaf only; subdirectories are filesystem-only organization.
 
 Consumers that map (category, id) → on-disk path must call `PackManifest.RelPath(cat, id)` rather than `PackCategory.PrimaryRelPath(id)` directly. `RelPath` consults `resolvedPaths` first and falls back to `PrimaryRelPath` for ids without recorded paths (rules, or unauthored content).
 

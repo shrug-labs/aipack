@@ -1174,6 +1174,27 @@ func TestRootModel_ProfileSavedSchedulesAutoSyncForActiveProfile(t *testing.T) {
 	}
 }
 
+func TestRootModel_ProfileSavedShowsSyncHintWhenAutoSyncDisabled(t *testing.T) {
+	t.Parallel()
+	cfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	m := newRootModel(context.Background(), RunConfig{SyncCfg: cfg})
+	m = seedProfiles(m, profilescreen.Seed{
+		Name:     "default",
+		Path:     "/tmp/default.yaml",
+		IsActive: true,
+		Dirty:    true,
+	})
+
+	result, _ := m.Update(profilescreen.SavedMsg{ProfileName: "default"})
+	rm := result.(rootModel)
+	if !strings.Contains(rm.statusText, "press s to sync") {
+		t.Fatalf("statusText = %q, want sync hint", rm.statusText)
+	}
+	if rm.pendingAutoSync != nil {
+		t.Fatalf("auto_sync disabled should not schedule auto-sync: %+v", rm.pendingAutoSync)
+	}
+}
+
 func TestRootModel_ProfileActivatedSchedulesAutoSyncForActiveProfile(t *testing.T) {
 	t.Parallel()
 	cfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}

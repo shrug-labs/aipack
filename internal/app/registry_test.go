@@ -3,7 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +33,14 @@ packs:
   gamma-kb:
     repo: https://github.com/org/gamma
     description: Gamma knowledge base
+collections:
+  starter:
+    description: Starter pack set
+    packs:
+      - alpha-pack
+      - name: beta-tools
+        ref: v1.2.3
+        with: [profiles]
 `
 
 func setupTestRegistry(t *testing.T) RegistryListRequest {
@@ -135,6 +145,136 @@ func TestRegistryLookup_NotFound(t *testing.T) {
 	_, err := RegistryLookup(req, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for missing pack")
+	}
+}
+
+func TestRegistryCollectionList(t *testing.T) {
+	t.Parallel()
+	req := setupTestRegistry(t)
+	results, err := RegistryCollectionList(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Name != "starter" {
+		t.Fatalf("collection name = %q, want starter", results[0].Name)
+	}
+	if len(results[0].Packs) != 2 {
+		t.Fatalf("collection packs = %d, want 2", len(results[0].Packs))
+	}
+}
+
+func TestRegistryCollectionLookup_NotFound(t *testing.T) {
+	t.Parallel()
+	req := setupTestRegistry(t)
+	_, err := RegistryCollectionLookup(req, "missing")
+	if err == nil {
+		t.Fatal("expected error for missing collection")
+	}
+	var notFound RegistryCollectionNotFoundError
+	if !errors.As(err, &notFound) || notFound.Name != "missing" {
+		t.Fatalf("error = %v, want RegistryCollectionNotFoundError for missing", err)
+	}
+}
+
+func TestCollectionInstall_InstallsRegistryPacks(t *testing.T) {
+	t.Parallel()
+	req := setupTestRegistry(t)
+
+	var installs []PackInstallRequest
+	result, err := CollectionInstall(context.Background(), CollectionInstallRequest{
+		ConfigDir:    req.ConfigDir,
+		RegistryPath: req.RegistryPath,
+		Name:         "starter",
+		Add:          true,
+		Profile:      "dev",
+		PackInstallFn: func(_ context.Context, installReq PackInstallRequest, _ io.Writer) error {
+			installs = append(installs, installReq)
+			return nil
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CollectionInstall: %v", err)
+	}
+	if len(result.Packs) != 2 || len(installs) != 2 {
+		t.Fatalf("installed result=%d requests=%d, want 2", len(result.Packs), len(installs))
+	}
+	if installs[0].Name != "alpha-pack" || installs[0].SubPath != "packs/alpha" {
+		t.Fatalf("first install = %+v, want alpha-pack from packs/alpha", installs[0])
+	}
+	if installs[1].Name != "beta-tools" || installs[1].Ref != "v1.2.3" {
+		t.Fatalf("second install = %+v, want beta-tools ref v1.2.3", installs[1])
+	}
+	if !installs[1].With.Has(domain.BundledProfiles) {
+		t.Fatalf("second install With = %v, want profiles", installs[1].With)
+	}
+	if installs[0].Profile != "dev" || !installs[0].Add {
+		t.Fatalf("collection install did not propagate add/profile: %+v", installs[0])
+	}
+}
+
+func TestCollectionInstall_WithOverrideAppliesToEveryPack(t *testing.T) {
+	t.Parallel()
+	req := setupTestRegistry(t)
+
+	override := domain.BundledAll()
+	var installs []PackInstallRequest
+	_, err := CollectionInstall(context.Background(), CollectionInstallRequest{
+		ConfigDir:    req.ConfigDir,
+		RegistryPath: req.RegistryPath,
+		Name:         "starter",
+		With:         override,
+		PackInstallFn: func(_ context.Context, installReq PackInstallRequest, _ io.Writer) error {
+			installs = append(installs, installReq)
+			return nil
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("CollectionInstall: %v", err)
+	}
+	for _, installReq := range installs {
+		for _, cat := range domain.AllBundledCategories {
+			if !installReq.With.Has(cat) {
+				t.Fatalf("install %s missing override category %s", installReq.Name, cat)
+			}
+		}
+	}
+}
+
+func TestCollectionInstall_RejectsArchiveRef(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	regPath := filepath.Join(dir, "registry.yaml")
+	if err := os.WriteFile(regPath, []byte(`schema_version: 1
+packs:
+  archive-pack:
+    method: archive
+    url: https://example.com/archive.zip
+collections:
+  starter:
+    packs:
+      - name: archive-pack
+        ref: v1.0.0
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CollectionInstall(context.Background(), CollectionInstallRequest{
+		ConfigDir:    dir,
+		RegistryPath: regPath,
+		Name:         "starter",
+		PackInstallFn: func(_ context.Context, _ PackInstallRequest, _ io.Writer) error {
+			t.Fatal("pack install should not be called")
+			return nil
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected archive ref to fail")
+	}
+	if len(result.Packs) != 1 || result.Packs[0].Status != "error" {
+		t.Fatalf("result = %+v, want one error", result)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/shrug-labs/aipack/cmd/aipack/tui/common"
@@ -33,7 +34,9 @@ func TestConfigTabIsLast(t *testing.T) {
 func TestConfigTabSyncDefaultsMutateRootSyncConfig(t *testing.T) {
 	t.Parallel()
 
-	rm := newRootModel(context.Background(), RunConfig{ConfigDir: "/tmp/cfg"})
+	configDir := t.TempDir()
+	rm := newRootModel(context.Background(), RunConfig{ConfigDir: configDir})
+	rm.cfg.SyncCfg.SchemaVersion = config.SyncConfigSchemaVersion
 	rm.cfg.SyncCfg.Defaults.Harnesses = []string{"cline"}
 	rm.cfg.SyncCfg.Defaults.Scope = "project"
 	rm = seedProfiles(rm, profilescreen.Seed{Name: "test", IsActive: true})
@@ -58,6 +61,56 @@ func TestConfigTabSyncDefaultsMutateRootSyncConfig(t *testing.T) {
 	rm = result.(rootModel)
 	if rm.cfg.SyncCfg.Defaults.Scope != "global" {
 		t.Fatalf("expected scope=global, got %q", rm.cfg.SyncCfg.Defaults.Scope)
+	}
+
+	result, cmd := rm.Update(configscreen.ToggleNamespacedMsg{})
+	rm = result.(rootModel)
+	if !rm.cfg.SyncCfg.Defaults.Namespaced {
+		t.Fatal("expected namespaced=true after toggle")
+	}
+	if !strings.Contains(rm.statusText, "press s to sync") {
+		t.Fatalf("expected sync hint after namespaced toggle, got %q", rm.statusText)
+	}
+	if cmd == nil {
+		t.Fatal("expected save command for namespaced toggle")
+	}
+	var savedMsg syncConfigSavedMsg
+	foundSave := false
+	switch msg := cmd().(type) {
+	case syncConfigSavedMsg:
+		savedMsg = msg
+		foundSave = true
+	case tea.BatchMsg:
+		for _, batched := range msg {
+			if batched == nil {
+				continue
+			}
+			if candidate, ok := batched().(syncConfigSavedMsg); ok {
+				savedMsg = candidate
+				foundSave = true
+				break
+			}
+		}
+	default:
+		t.Fatalf("expected syncConfigSavedMsg, got %#v", msg)
+	}
+	if !foundSave {
+		t.Fatal("expected sync-config save command in batch")
+	}
+	if savedMsg.err != nil {
+		t.Fatalf("save sync-config: %v", savedMsg.err)
+	}
+	if !savedMsg.syncCfg.Defaults.Namespaced {
+		t.Fatal("save command carried namespaced=false")
+	}
+	result, _ = rm.Update(savedMsg)
+	rm = result.(rootModel)
+	saved, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	if !saved.Defaults.Namespaced {
+		t.Fatal("expected namespaced=true persisted to sync-config")
 	}
 }
 

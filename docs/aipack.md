@@ -19,7 +19,8 @@ Use `pack import` for one markdown rule, prompt, or skill file; it can create a 
 
 - Setup: `init`, `doctor`, `setup`, `config defaults`, `config env`, `mcp inspect-tools`
 - Pack lifecycle: `pack create`, `pack import`, `pack install`, `pack inspect`, `pack delete`, `pack update`, `pack rename`, `pack add`, `pack remove`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
-- Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`, `profile refs`, `profile set-param`, `profile unset-param`
+- Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`, `profile include`, `profile exclude`, `profile refs`, `profile set-param`, `profile unset-param`
+- Collections: `collection list`, `collection show`, `collection install`
 - Registry: `registry fetch`, `registry list`, `registry sources`, `registry delete`, `registry validate`
 - Sync/Save: `sync`, `save`, `restore`, `clean`, `render`
 - Discovery: `search`, `query`, `status`, `trace`
@@ -50,7 +51,7 @@ aipack setup production
 
 ### config defaults
 
-Reads and sets scalar defaults in `sync-config.yaml` from the CLI. Supported keys are `profile`, `harnesses`, `scope`, `collision_strategy`, and `auto_sync`; hyphenated names and `defaults.<name>` are accepted as aliases.
+Reads and sets scalar defaults in `sync-config.yaml` from the CLI. Supported keys are `profile`, `harnesses`, `scope`, `collision_strategy`, `auto_sync`, and `namespaced`; hyphenated names and `defaults.<name>` are accepted as aliases.
 
 ```bash
 aipack config defaults get harnesses
@@ -59,6 +60,7 @@ aipack config defaults set harnesses codex,opencode
 aipack config defaults set scope global
 aipack config defaults set collision_strategy last-wins
 aipack config defaults set auto_sync true
+aipack config defaults set namespaced true
 ```
 
 ### doctor
@@ -131,7 +133,7 @@ Packs are portable, versioned bundles of AI agent configuration installed under 
 
 ### pack create
 
-Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `plugins/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync.
+Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `hooks/`, `plugins/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync.
 
 By default the pack is created in the current directory and symlinked into the packs directory. Use `--local` to create it directly inside the packs directory instead.
 
@@ -147,7 +149,7 @@ aipack pack create my-pack --skills ./src/skills --rules ./docs/rules
 aipack pack create my-pack --local --agents ./agents --workflows ./workflows
 ```
 
-Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`. Each takes a local directory path. The source directory must exist.
+Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--hooks`, `--prompts`. Each takes a local directory path. The source directory must exist.
 
 ### pack import
 
@@ -164,7 +166,7 @@ Flags: `--type skill|rule|prompt`, exactly one of `--name <new-pack>` or `--pack
 
 ### pack install
 
-Bare `aipack pack install` (no arguments) reconciles the active profile — any packs referenced by the profile that aren't already on disk are fetched via the registry. This is the easiest way to catch up after setting a profile or after a shared profile gains new pack references. Pass a path, URL, or registry name to target a specific pack instead.
+Bare `aipack pack install` (no arguments) reconciles the active profile — any packs referenced by the profile that aren't already on disk are fetched via the registry. This is the easiest way to catch up after setting a profile or after a shared profile gains new pack references. Pass a path, URL, or registry name to target a specific pack instead. Pass multiple registry names to install them in one command.
 
 Supports four explicit sources:
 
@@ -199,9 +201,11 @@ Use `aipack pack versions <name>` to discover available semver tags. Pack author
 
 By default, the pack is installed to disk but not added to any profile. Use `--add` to also add it to the active profile, or `--add --profile <name>` to target a specific one. Use `aipack pack add <name>` to add an installed pack to a profile later.
 
+Multiple positional sources are supported for registry pack names only. Shared flags such as `--add`, `--profile`, `--with`, `--quiet`, and `--no-quiet` apply to every pack in the batch. Use `name@<ref>` per pack when refs differ; use a single-pack install for local paths, direct URLs, `--path`, `--name`, `--copy`, `--ref`, or content-path flags.
+
 When `defaults.auto_sync: true` is set in `sync-config.yaml`, installs that add content to the active profile automatically run `aipack sync` after the install succeeds. Installs that target another profile do not auto-sync.
 
-Core content (rules, skills, workflows, agents, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name.
+Core content (rules, skills, workflows, agents, hooks, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name.
 
 ```bash
 # Reconcile the active profile — install any missing packs (default)
@@ -225,6 +229,8 @@ aipack pack install --url https://github.com/org/shared-repo.git --path team-pac
 
 # Registry name
 aipack pack install my-team-pack
+aipack pack install essentials aipack-core memory --add -w all
+aipack pack install my-pack@v1 other-pack@main --add
 
 # Apply bundled registries and profiles
 aipack pack install --url https://github.com/org/repo.git --path team-pack -w all
@@ -242,7 +248,7 @@ aipack pack install --url https://github.com/org/repo.git \
   --skills src/skills --rules docs/rules --name their-content -q
 ```
 
-Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts` (directory paths within the repo). `--quiet` / `-q` marks the pack as quiet in the profile (omitted selectors include nothing). Content flags require `--url` and `--name`.
+Flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--hooks`, `--prompts` (directory paths within the repo). `--quiet` / `-q` marks the pack as quiet in the profile (omitted selectors include nothing). Content flags require `--url` and `--name`.
 
 For the full guide on installing from non-pack repositories, see [Installing Packs](./installing-packs.md).
 
@@ -257,7 +263,7 @@ aipack pack list --json
 
 ### pack show
 
-Displays detailed metadata for an installed pack: name, version, path, install method, origin, git ref, commit hash, install timestamp, and content inventory (rules, agents, workflows, skills, MCP servers).
+Displays detailed metadata for an installed pack: name, version, path, install method, origin, git ref, commit hash, install timestamp, and content inventory (rules, agents, workflows, skills, hooks, MCP servers).
 
 ```bash
 aipack pack show my-pack
@@ -422,6 +428,17 @@ aipack profile show --json
 aipack profile show --profile-path /path/to/profile.yaml
 ```
 
+### profile include / profile exclude
+
+Toggles exact content IDs in a profile without hand-editing YAML. Bare IDs are matched across the profile's enabled pack entries for rules, agents, workflows, skills, hooks, plugins, and MCP servers. If a name appears in more than one place, rerun with `--kind` or `--pack` to choose the target. If the only match is in a disabled pack entry, enable the pack first with `aipack pack enable <pack> --profile <profile>`. MCP support is server-level only; keep per-tool allowlists in profile YAML or the TUI tool picker.
+
+```bash
+aipack profile include jira
+aipack profile exclude anti-slop
+aipack profile include datetime-injector --kind hook --pack team-pack
+aipack profile exclude jira --kind mcp
+```
+
 ### profile refs
 
 Reports the detailed `{params.*}` and `{env:*}` reference data behind `aipack setup`. Use `setup` for first-time remediation and `profile refs --json` when scripts or diagnostics need the full reference inventory. Param refs are marked `set`, `defaulted`, or `missing`; env refs are marked `dotenv`, `env`, `defaulted`, or `missing` depending on whether the value comes from the config directory's `.env` file, the process environment, an inline default, or neither.
@@ -441,9 +458,46 @@ aipack profile set-param production tracker_url https://tracker.example.com
 aipack profile unset-param production tracker_url
 ```
 
+## Collections
+
+Collections are registry-defined install recipes for multiple packs. Use them for onboarding sets such as "install the team starter packs." Profiles still decide which installed packs are active for a harness context.
+
+Collections come from fetched registry sources. The merged registry view resolves collection names in source order, the same as pack names.
+
+### collection list
+
+Lists available collections from the merged registry.
+
+```bash
+aipack collection list
+aipack collection list --registry /path/to/registry.yaml
+aipack collection list --json
+```
+
+### collection show
+
+Shows one collection's ordered pack recipe, including per-pack refs and bundled-content choices.
+
+```bash
+aipack collection show team-dev
+aipack collection show team-dev --json
+```
+
+### collection install
+
+Installs every pack referenced by the collection. By default, packs are installed to disk but not added to a profile. Use `--add` to add each installed pack to the active profile, or `--add --profile <name>` to target another profile. Use `-w all` or another `--with` value to override bundled-content choices for every pack in the collection.
+
+If the named collection is not found in the cached registry view, `collection install` fetches configured/default registries once and retries.
+
+```bash
+aipack collection install team-dev
+aipack collection install team-dev --add
+aipack collection install team-dev --add -w all
+```
+
 ## Registry
 
-The registry maps pack names to source repositories. The unified view merges all cached sources in `~/.config/aipack/registries/` in `registry_sources` order from sync-config (first-seen wins for pack name conflicts). Sources include remote registries fetched via `registry fetch` and embedded entries bundled inside installed packs.
+The registry maps pack names to source repositories and collection names to ordered pack install recipes. The unified view merges all cached sources in `~/.config/aipack/registries/` in `registry_sources` order from sync-config (first-seen wins for pack and collection name conflicts). Sources include remote registries fetched via `registry fetch` and embedded entries bundled inside installed packs.
 
 ### registry fetch
 
@@ -477,7 +531,7 @@ aipack registry fetch
 aipack registry fetch --deep
 ```
 
-`--deep` shallow-clones each registered pack and indexes resource-level frontmatter for search. Indexed kinds: rules, agents, workflows, skills, prompts, plugin descriptors, and MCP server inventories. Already-installed packs are skipped because the installed pack source remains authoritative. Deep-indexed resources show up under `aipack search --status registered` so users can search a registered pack's content before deciding to install.
+`--deep` shallow-clones each registered pack and indexes resource-level metadata for search. Indexed kinds: rules, agents, workflows, skills, hooks, prompts, plugin descriptors, and MCP server inventories. Already-installed packs are skipped because the installed pack source remains authoritative. Deep-indexed resources show up under `aipack search --status registered` so users can search a registered pack's content before deciding to install.
 
 ### registry list
 
@@ -538,7 +592,7 @@ Traces a single resource through the sync pipeline, showing where it comes from 
 
 If the resource name is unique in the active profile, the type can be omitted. If multiple active resources share the same name, `trace` prints the explicit commands to disambiguate.
 
-Valid resource types: `rule`, `agent`, `workflow`, `skill`, `plugin`, `mcp`.
+Valid resource types: `rule`, `agent`, `workflow`, `skill`, `hook`, `plugin`, `mcp`.
 
 The output shows the source pack, source file path, and each destination with its harness, file path, and on-disk state (`create`, `identical`, `managed`, `conflict`, `untracked`, or `error`). Use `--harness` to filter output to a single harness. Destinations where the resource is composited into a multi-resource file (e.g. Codex flattening rules into `AGENTS.override.md`) are flagged as embedded separately from the state.
 
@@ -627,4 +681,4 @@ aipack --version   # same output; -V also works
 
 ## Per-harness reference
 
-For rendering behavior, write targets, MCP configuration differences, and harness-specific notes, see the [Harness Reference](./harness-reference.md).
+For rendering behavior, rendered content identity, write targets, MCP configuration differences, and harness-specific notes, see the [Harness Reference](./harness-reference.md).

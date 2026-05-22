@@ -19,8 +19,9 @@ func TestPlan_Project_Rules(t *testing.T) {
 
 	h := Harness{}
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: dir,
+		Scope:      domain.ScopeProject,
+		TargetDir:  dir,
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{{
 				Rules: []domain.Rule{
@@ -42,7 +43,7 @@ func TestPlan_Project_Rules(t *testing.T) {
 	if len(f.Writes) != 1 {
 		t.Fatalf("writes: got %d want 1", len(f.Writes))
 	}
-	if !strings.HasSuffix(f.Writes[0].Dst, filepath.Join(".claude", "rules", "no-secrets.md")) {
+	if !strings.HasSuffix(f.Writes[0].Dst, filepath.Join(".claude", "rules", "no-secrets__aipack__test-pack.md")) {
 		t.Errorf("rule dst: got %q", f.Writes[0].Dst)
 	}
 }

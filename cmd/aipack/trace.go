@@ -130,6 +130,7 @@ func (c *TraceCmd) runResolved(ctx context.Context, g *Globals, loaded loadedPro
 			ProjectDir: projectDir,
 			Harnesses:  hs,
 			Home:       config.HomeDir(),
+			Namespaced: loaded.syncCfg.Defaults.Namespaced,
 		},
 		ResourceType: resType,
 		ResourceName: resName,
@@ -175,7 +176,7 @@ func resolveTraceArgs(profile domain.Profile, first, second string, stderr io.Wr
 	switch len(candidates) {
 	case 0:
 		fmt.Fprintf(stderr, "resource %q not found in active profile\n", name)
-		fmt.Fprintf(stderr, "Try: %s\n", shellCommand("aipack", "search", name))
+		fmt.Fprintf(stderr, "Try: %s\n", cmdutil.ShellCommand("aipack", "search", name))
 		return "", "", false, nil
 	case 1:
 		return candidates[0].ResourceType, candidates[0].ResourceName, true, nil
@@ -188,7 +189,7 @@ func resolveTraceArgs(profile domain.Profile, first, second string, stderr io.Wr
 func normalizeTraceType(raw string) (string, error) {
 	cat, ok := domain.ParseSingularLabel(strings.ToLower(strings.TrimSpace(raw)))
 	if !ok || !isTraceableCategory(cat) {
-		return "", fmt.Errorf("invalid resource type %q (valid: rule, agent, workflow, skill, plugin, mcp)", raw)
+		return "", fmt.Errorf("invalid resource type %q (valid: rule, agent, workflow, skill, hook, plugin, mcp)", raw)
 	}
 	if cat == domain.CategoryMCP {
 		return "mcp", nil
@@ -198,7 +199,7 @@ func normalizeTraceType(raw string) (string, error) {
 
 func isTraceableCategory(cat domain.PackCategory) bool {
 	switch cat {
-	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills, domain.CategoryPlugins, domain.CategoryMCP:
+	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills, domain.CategoryHooks, domain.CategoryPlugins, domain.CategoryMCP:
 		return true
 	default:
 		return false
@@ -212,6 +213,6 @@ func printTraceCandidates(w io.Writer, name string, candidates []app.TraceCandid
 	}
 	fmt.Fprintln(w, "\nRun one explicit command:")
 	for _, candidate := range candidates {
-		fmt.Fprintf(w, "  %s\n", shellCommand("aipack", "trace", candidate.ResourceType, candidate.ResourceName))
+		fmt.Fprintf(w, "  %s\n", cmdutil.ShellCommand("aipack", "trace", candidate.ResourceType, candidate.ResourceName))
 	}
 }

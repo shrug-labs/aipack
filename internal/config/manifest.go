@@ -55,6 +55,11 @@ type PackManifest struct {
 	// This is used for validation and deterministic settings pack selection.
 	Configs PackConfigs `json:"configs,omitzero"`
 
+	// Hooks lists hook IDs discovered from the hooks/ directory. Each ID
+	// corresponds to hooks/<id>/HOOK.yaml. Handler scripts and assets live
+	// alongside the descriptor inside the hook directory.
+	Hooks []string `json:"hooks,omitempty"`
+
 	// resolvedPaths maps id → pack-relative path, populated by DiscoverContent.
 	// For agents/workflows/skills, where authoring permits organizational
 	// subdirectories under the category root, the on-disk path may differ
@@ -124,6 +129,8 @@ func (m *PackManifest) ContentIDsPtr(cat domain.PackCategory) *[]string {
 		return &m.Workflows
 	case domain.CategorySkills:
 		return &m.Skills
+	case domain.CategoryHooks:
+		return &m.Hooks
 	case domain.CategoryPrompts:
 		return &m.Prompts
 	case domain.CategoryMCP:
@@ -154,6 +161,8 @@ func (pe *PackEntry) VectorSelectorFor(cat domain.PackCategory) *VectorSelector 
 		return &pe.Workflows
 	case domain.CategorySkills:
 		return &pe.Skills
+	case domain.CategoryHooks:
+		return &pe.Hooks.VectorSelector
 	case domain.CategoryPlugins:
 		return &pe.Plugins
 	}
@@ -359,6 +368,10 @@ func (m PackManifest) ContentPaths() []string {
 			paths = append(paths, filepath.ToSlash(filepath.Join("configs", harness, f)))
 		}
 	}
+	for _, id := range m.Hooks {
+		hookFile := m.RelPath(domain.CategoryHooks, id)
+		paths = append(paths, strings.TrimSuffix(hookFile, "/"+domain.HookEntryFile)+"/")
+	}
 	for _, ext := range m.Extras {
 		paths = append(paths, filepath.ToSlash(ext))
 	}
@@ -370,7 +383,7 @@ func (m PackManifest) ContentPaths() []string {
 // entries must not collide with. Shared between validation and extraction.
 var ExtrasReservedDirs = map[string]struct{}{
 	"rules": {}, "agents": {}, "workflows": {}, "skills": {},
-	"mcp": {}, "plugins": {}, "configs": {}, "prompts": {}, "profiles": {},
+	"mcp": {}, "plugins": {}, "configs": {}, "hooks": {}, "prompts": {}, "profiles": {},
 	"registries": {},
 }
 

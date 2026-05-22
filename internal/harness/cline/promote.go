@@ -12,7 +12,8 @@ import (
 // addPromotedAgents converts agents to SKILL.md WriteActions under skillsDir.
 // Each agent becomes a skill directory with a generated SKILL.md containing
 // enriched frontmatter that preserves agent metadata for round-trip capture.
-func addPromotedAgents(f *domain.Fragment, skillsDir string, agents []domain.Agent) {
+func addPromotedAgents(f *domain.Fragment, skillsDir string, namespaced bool, agents []domain.Agent, skills []domain.Skill) error {
+	skillRefs := harness.NewSkillRefResolver(skills, namespaced)
 	for _, a := range agents {
 		body := strings.TrimSpace(string(a.Body))
 		if body == "" {
@@ -29,24 +30,22 @@ func addPromotedAgents(f *domain.Fragment, skillsDir string, agents []domain.Age
 		if !strings.HasPrefix(desc, harness.DescPrefixAgent) {
 			desc = harness.DescPrefixAgent + desc
 		}
+		renderedName := harness.ContentName(namespaced, a.SourcePack, name)
+		renderedSkills, err := skillRefs.Render(a.SourcePack, a.Frontmatter.Skills)
+		if err != nil {
+			return fmt.Errorf("render promoted agent %s: %w", name, err)
+		}
 		fm := harness.PromotedFrontmatter{
-			Name:            name,
+			Name:            renderedName,
 			Description:     desc,
 			SourceType:      harness.SourceTypeAgent,
 			Tools:           a.Frontmatter.Tools,
 			DisallowedTools: a.Frontmatter.DisallowedTools,
-			Skills:          a.Frontmatter.Skills,
+			Skills:          renderedSkills,
 			MCPServers:      a.Frontmatter.MCPServers,
 		}
 		content := harness.BuildPromotedMD(fm, body)
-		skillDir := filepath.Join(skillsDir, name)
-		dst := filepath.Join(skillDir, "SKILL.md")
-		f.Writes = append(f.Writes, domain.WriteAction{
-			Dst:        dst,
-			Content:    []byte(content),
-			SourcePack: a.SourcePack,
-			Src:        a.SourcePath,
-		})
-		f.Desired = append(f.Desired, skillDir, dst)
+		harness.AddPromotedSkillWrite(f, skillsDir, renderedName, []byte(content), a.SourcePack, a.SourcePath)
 	}
+	return nil
 }

@@ -71,7 +71,7 @@ All managed files — content and config — go through unified diff classificat
 
 `--force` controls conflict resolution. Stale managed files (no longer in the profile) are always removed — sync converges to the profile's desired state. User-modified stale files prompt for confirmation (or require `--yes`).
 
-Config files are computed from pack base configs. String values in harness settings templates expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. `--skip-settings` skips harness settings files but first-class plugin references, drop-in plugin files (e.g., `oh-my-opencode.json`), and generated MCP configs (e.g., Cline) still sync.
+Config files are computed from pack base configs. String values in harness settings expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. Hook descriptor command strings expand `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references before native hook rendering. `--skip-settings` skips harness settings files but first-class plugin references, drop-in plugin files (e.g., `oh-my-opencode.json`), rendered hooks (e.g., Codex `.codex/hooks.json` plus managed trust state), and generated MCP configs (e.g., Cline) still sync.
 
 Plugin references are additive-only in v1. Sync writes the enablement entries required by supported harnesses, but removing a plugin from a profile or pack does not disable or uninstall it from the harness.
 
@@ -131,6 +131,8 @@ aipack save --profile default                    # save changed files
 aipack save --profile default --dry-run          # preview first
 aipack save --profile default --force            # include settings changes
 ```
+
+When `defaults.namespaced: true` renders pack provenance into markdown content names, save strips those rendered names back to source IDs before comparing and writing pack content.
 
 **Tool permissions are not captured.** If a harness-side MCP `allow` / `deny` list has drifted from what the profile declares, `save` ignores the drift. The profile is the sole source of truth for MCP tool permission policy; the harness allow list is a render target, not an input. Adjust permissions through `aipack manage`'s tool picker (`t` on an MCP entry) so the profile YAML stays the canonical record.
 

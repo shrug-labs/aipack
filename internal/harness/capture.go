@@ -62,8 +62,9 @@ func CaptureContentDir(
 //
 // ParseAgent is an optional custom agent parser (e.g., for reverse-transforming
 // harness-native schema). If nil, agents are parsed with engine.ParseAgentBytes.
-func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []byte, name, src string) (domain.Agent, error)) {
-	copies, warnings := CaptureContentDir(dirs.Rules, "rules", ".md", domain.CategoryRules,
+func CaptureContent(res *CaptureResult, dirs ContentDirs, knownPacks map[string]struct{}, parseAgent func(raw []byte, name, src string) (domain.Agent, error)) {
+	writes, copies, warnings := CaptureRenderedMarkdownContentDir(dirs.Rules, "rules", ".md", domain.CategoryRules,
+		knownPacks,
 		func(raw []byte, name, src string) error {
 			r, err := engine.ParseRuleBytes(raw, name, "")
 			if err != nil {
@@ -73,6 +74,7 @@ func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []
 			res.Rules = append(res.Rules, r)
 			return nil
 		})
+	res.Writes = append(res.Writes, writes...)
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
@@ -82,7 +84,8 @@ func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []
 			return engine.ParseAgentBytes(raw, name, "")
 		}
 	}
-	copies, warnings = CaptureContentDir(dirs.Agents, "agents", ".md", domain.CategoryAgents,
+	writes, copies, warnings = CaptureRenderedMarkdownContentDir(dirs.Agents, "agents", ".md", domain.CategoryAgents,
+		knownPacks,
 		func(raw []byte, name, src string) error {
 			a, err := agentParser(raw, name, src)
 			if err != nil {
@@ -92,10 +95,12 @@ func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []
 			res.Agents = append(res.Agents, a)
 			return nil
 		})
+	res.Writes = append(res.Writes, writes...)
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
-	copies, warnings = CaptureContentDir(dirs.Workflows, "workflows", ".md", domain.CategoryWorkflows,
+	writes, copies, warnings = CaptureRenderedMarkdownContentDir(dirs.Workflows, "workflows", ".md", domain.CategoryWorkflows,
+		knownPacks,
 		func(raw []byte, name, src string) error {
 			w, err := engine.ParseWorkflowBytes(raw, name, "")
 			if err != nil {
@@ -105,11 +110,9 @@ func CaptureContent(res *CaptureResult, dirs ContentDirs, parseAgent func(raw []
 			res.Workflows = append(res.Workflows, w)
 			return nil
 		})
+	res.Writes = append(res.Writes, writes...)
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
-	skillCopies, skills, skillWarnings := CaptureSkills(dirs.Skills, "skills")
-	res.Copies = append(res.Copies, skillCopies...)
-	res.Skills = append(res.Skills, skills...)
-	res.Warnings = append(res.Warnings, skillWarnings...)
+	CaptureRenderedSkills(dirs.Skills, knownPacks, res)
 }

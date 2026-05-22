@@ -158,6 +158,7 @@ func (c *SaveCmd) runRoundTrip(ctx context.Context, g *Globals) error {
 			ProjectDir: env.projectDir,
 			Harnesses:  env.harnesses,
 			Home:       config.HomeDir(),
+			Namespaced: loaded.syncCfg.Defaults.Namespaced,
 		},
 		PackRoots: packRoots,
 		DryRun:    c.DryRun,
@@ -330,9 +331,9 @@ func parseCategories(raw string) ([]domain.PackCategory, error) {
 			cat = domain.PackCategory(p)
 			switch cat {
 			case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows,
-				domain.CategorySkills, domain.CategoryMCP, domain.CategorySettings:
+				domain.CategorySkills, domain.CategoryHooks, domain.CategoryMCP, domain.CategorySettings:
 			default:
-				return nil, fmt.Errorf("unknown content type: %q (expected: rules, agents, workflows, skills, mcp, settings)", p)
+				return nil, fmt.Errorf("unknown content type: %q (expected: rules, agents, workflows, skills, hooks, mcp, settings)", p)
 			}
 		}
 		cats = append(cats, cat)

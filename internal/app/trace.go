@@ -60,6 +60,7 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 		ResourceType: req.ResourceType,
 		ResourceName: req.ResourceName,
 	}
+	knownPacks := knownPacksFromRoots(resolvePackRoots(profile))
 
 	// Find the resource in the profile.
 	source := findResource(profile, req.ResourceType, req.ResourceName)
@@ -81,6 +82,7 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 			Harnesses:  []domain.Harness{hid},
 			ProjectDir: req.ProjectDir,
 			Home:       req.Home,
+			Namespaced: req.Namespaced,
 		}
 		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
@@ -100,6 +102,7 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 			Scope:      req.Scope,
 			ProjectDir: req.ProjectDir,
 			Home:       req.Home,
+			KnownPacks: knownPacks,
 		})
 		if err != nil {
 			continue
@@ -177,6 +180,11 @@ func walkTraceResources(profile domain.Profile, visit func(domain.PackCategory, 
 			return
 		}
 	}
+	for _, h := range profile.AllHooks() {
+		if !visit(domain.CategoryHooks, h.ID, TraceSource{Pack: h.SourcePack, SourcePath: h.SourcePath, Category: string(domain.CategoryHooks)}) {
+			return
+		}
+	}
 	for _, p := range profile.AllPlugins() {
 		if !visit(domain.CategoryPlugins, p.Name, TraceSource{Pack: p.SourcePack, SourcePath: p.SourcePath, Category: string(domain.CategoryPlugins)}) {
 			return
@@ -237,6 +245,22 @@ func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource
 				dest.State, dest.DiffKind = classifySettingsState(eng, action, lg)
 				dests = append(dests, dest)
 			}
+		}
+	case domain.CategoryHooks:
+		for _, wr := range plan.Writes {
+			if filepath.Base(wr.Dst) != "hooks.json" {
+				continue
+			}
+			if wr.SourcePack != source.Pack && wr.SourcePack != "(composite)" {
+				continue
+			}
+			dest := TraceDestination{
+				Harness:  string(hid),
+				Path:     wr.Dst,
+				Embedded: true,
+			}
+			dest.State, dest.DiffKind = classifyWriteState(eng, wr, lg)
+			dests = append(dests, dest)
 		}
 	default:
 		// Rules, agents, workflows use WriteActions.

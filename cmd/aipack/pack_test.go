@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -155,8 +156,13 @@ func TestPackAdd_DoesNotAutoSyncInactiveProfile(t *testing.T) {
 	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK:") {
 		t.Fatalf("inactive profile should not auto-sync, got:\n%s", stdout)
 	}
-	if _, err := os.Stat(filepath.Join(projectDir, ".claude", "rules", "demo-rule.md")); !os.IsNotExist(err) {
-		t.Fatalf("inactive profile auto-sync wrote project rule; stat err=%v", err)
+	for _, rel := range []string{
+		filepath.Join(".claude", "rules", "demo-rule.md"),
+		filepath.Join(".claude", "rules", "demo-rule__aipack__demo.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(projectDir, rel)); !os.IsNotExist(err) {
+			t.Fatalf("inactive profile auto-sync wrote project rule %s; stat err=%v", rel, err)
+		}
 	}
 }
 
@@ -172,6 +178,9 @@ func TestPackAdd_DoesNotAutoSyncWhenDisabled(t *testing.T) {
 	}
 	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK:") {
 		t.Fatalf("auto_sync disabled should not sync, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "Next: run 'aipack sync'") {
+		t.Fatalf("auto_sync disabled should print sync hint, got:\n%s", stdout)
 	}
 }
 
@@ -491,6 +500,92 @@ func TestPackInstall_InfersLocalArchiveFromPath(t *testing.T) {
 	meta := lf.Packs["local-inferred-install"]
 	if meta.Method != config.MethodArchive || meta.Origin != expectedOrigin {
 		t.Fatalf("lockfile meta = %+v", meta)
+	}
+}
+
+func TestPackInstall_MultipleRegistryPacks(t *testing.T) {
+	t.Parallel()
+	archives := map[string][]byte{
+		"/alpha.zip": buildCLIPackZip(t, map[string]string{
+			"repo/pack.json": `{"schema_version":2,"name":"alpha-pack","version":"1.0.0","root":"."}`,
+		}),
+		"/beta.zip": buildCLIPackZip(t, map[string]string{
+			"repo/pack.json": `{"schema_version":2,"name":"beta-pack","version":"1.0.0","root":"."}`,
+		}),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := archives[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+
+	registryPath := filepath.Join(t.TempDir(), "registry.yaml")
+	if err := os.WriteFile(registryPath, []byte(`schema_version: 1
+packs:
+  alpha-pack:
+    method: archive
+    url: `+server.URL+`/alpha.zip
+  beta-pack:
+    method: archive
+    url: `+server.URL+`/beta.zip
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := t.TempDir()
+	stdout, stderr, code := runApp(t,
+		"pack", "install", "alpha-pack", "beta-pack",
+		"--registry", registryPath,
+		"--config-dir", configDir,
+		"--add",
+		"-w", "all",
+	)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("multi pack install exit=%d, want %d; stderr=%s stdout=%s", code, cmdutil.ExitOK, stderr, stdout)
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha-pack", "beta-pack"} {
+		meta, ok := lf.Packs[name]
+		if !ok {
+			t.Fatalf("lockfile missing %s", name)
+		}
+		if meta.Method != config.MethodArchive {
+			t.Fatalf("%s method = %q, want archive", name, meta.Method)
+		}
+		for _, cat := range domain.AllBundledCategories {
+			if !slices.Contains(meta.Approved, cat) {
+				t.Fatalf("%s approved = %v, missing %s", name, meta.Approved, cat)
+			}
+		}
+	}
+	profile, err := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotProfilePacks := map[string]bool{}
+	for _, entry := range profile.Packs {
+		gotProfilePacks[entry.Name] = true
+	}
+	if !gotProfilePacks["alpha-pack"] || !gotProfilePacks["beta-pack"] {
+		t.Fatalf("profile packs = %+v, want alpha-pack and beta-pack", profile.Packs)
+	}
+}
+
+func TestPackInstall_MultipleRejectsURLFlags(t *testing.T) {
+	t.Parallel()
+	_, stderr, code := runApp(t, "pack", "install", "alpha-pack", "beta-pack", "--url", "https://example.com/repo.git")
+	if code == cmdutil.ExitOK {
+		t.Fatal("multi pack install with --url should fail")
+	}
+	if !strings.Contains(stderr, "--url and path argument are mutually exclusive") {
+		t.Fatalf("stderr = %s", stderr)
 	}
 }
 

@@ -78,8 +78,9 @@ func sameRegistryCoordinates(a, b RegistrySourceEntry) bool {
 
 // Registry is a catalog of packs available for installation.
 type Registry struct {
-	SchemaVersion int                      `yaml:"schema_version"`
-	Packs         map[string]RegistryEntry `yaml:"packs"`
+	SchemaVersion int                           `yaml:"schema_version"`
+	Packs         map[string]RegistryEntry      `yaml:"packs"`
+	Collections   map[string]RegistryCollection `yaml:"collections,omitempty"`
 }
 
 // RegistryEntry describes a pack available in the registry.
@@ -94,6 +95,75 @@ type RegistryEntry struct {
 	Contact      string                         `yaml:"contact,omitempty" json:"contact,omitempty"`
 	Quiet        bool                           `yaml:"quiet,omitempty" json:"quiet,omitempty"`
 	ContentPaths map[domain.PackCategory]string `yaml:"content_paths,omitempty" json:"content_paths,omitempty"`
+}
+
+// RegistryCollection describes a named install recipe for multiple registry packs.
+type RegistryCollection struct {
+	Description string                   `yaml:"description,omitempty" json:"description,omitempty"`
+	Packs       []RegistryCollectionPack `yaml:"packs" json:"packs"`
+}
+
+// RegistryCollectionPack describes one pack reference inside a collection.
+type RegistryCollectionPack struct {
+	Name string                 `yaml:"name" json:"name"`
+	Ref  string                 `yaml:"ref,omitempty" json:"ref,omitempty"`
+	With RegistryCollectionWith `yaml:"with,omitempty" json:"with,omitempty"`
+}
+
+// RegistryCollectionWith holds collection-level bundled content choices.
+// It accepts both `with: all` and `with: [profiles, extras]` in YAML.
+type RegistryCollectionWith []string
+
+func (w *RegistryCollectionWith) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var raw string
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			*w = nil
+			return nil
+		}
+		*w = []string{raw}
+		return nil
+	case yaml.SequenceNode:
+		var vals []string
+		if err := value.Decode(&vals); err != nil {
+			return err
+		}
+		for i := range vals {
+			vals[i] = strings.TrimSpace(vals[i])
+		}
+		*w = vals
+		return nil
+	default:
+		return fmt.Errorf("with must be a string or list of strings")
+	}
+}
+
+func (p *RegistryCollectionPack) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var name string
+		if err := value.Decode(&name); err != nil {
+			return err
+		}
+		p.Name = strings.TrimSpace(name)
+		return nil
+	case yaml.MappingNode:
+		type raw RegistryCollectionPack
+		var decoded raw
+		if err := value.Decode(&decoded); err != nil {
+			return err
+		}
+		*p = RegistryCollectionPack(decoded)
+		p.Name = strings.TrimSpace(p.Name)
+		return nil
+	default:
+		return fmt.Errorf("collection pack must be a string or mapping")
+	}
 }
 
 // LoadRegistry loads a registry from a local YAML file.
@@ -116,6 +186,9 @@ func ParseRegistry(data []byte) (Registry, error) {
 	}
 	if reg.Packs == nil {
 		reg.Packs = make(map[string]RegistryEntry)
+	}
+	if reg.Collections == nil {
+		reg.Collections = make(map[string]RegistryCollection)
 	}
 	return reg, nil
 }
@@ -161,7 +234,63 @@ func ValidateRegistry(reg Registry) []string {
 			}
 		}
 	}
+	collectionNames := slices.Sorted(maps.Keys(reg.Collections))
+	for _, name := range collectionNames {
+		collection := reg.Collections[name]
+		if strings.TrimSpace(name) == "" {
+			errs = append(errs, "collection name is required")
+		}
+		if len(collection.Packs) == 0 {
+			errs = append(errs, fmt.Sprintf("collection %q: packs must contain at least one pack", name))
+			continue
+		}
+		seen := make(map[string]bool, len(collection.Packs))
+		for i, pack := range collection.Packs {
+			label := fmt.Sprintf("collection %q pack[%d]", name, i)
+			if pack.Name == "" {
+				errs = append(errs, fmt.Sprintf("%s: name is required", label))
+				continue
+			}
+			if seen[pack.Name] {
+				errs = append(errs, fmt.Sprintf("%s: duplicate pack %q", label, pack.Name))
+			}
+			seen[pack.Name] = true
+			if entry, ok := reg.Packs[pack.Name]; ok && entry.Method == MethodArchive && pack.Ref != "" {
+				errs = append(errs, fmt.Sprintf("%s: ref is not valid for archive pack %q", label, pack.Name))
+			}
+			if _, err := ParseRegistryCollectionWith(pack.With); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", label, err))
+			}
+		}
+	}
 	return errs
+}
+
+// ParseRegistryCollectionWith converts collection `with` values into a bundled
+// content set. Empty input returns nil, matching the pack install default.
+func ParseRegistryCollectionWith(vals []string) (domain.BundledSet, error) {
+	if len(vals) == 0 {
+		return nil, nil
+	}
+	cats := make([]domain.BundledCategory, 0, len(vals))
+	for _, raw := range vals {
+		v := strings.ToLower(strings.TrimSpace(raw))
+		if v == "" {
+			continue
+		}
+		if v == "all" {
+			return domain.BundledAll(), nil
+		}
+		cat, ok := domain.ParseBundledCategory(v)
+		if !ok {
+			return nil, fmt.Errorf("invalid with value %q (valid: profiles, registries, extras, all)", raw)
+		}
+		cats = append(cats, cat)
+	}
+	if len(cats) == 0 {
+		return nil, nil
+	}
+	return domain.NewBundledSet(cats...), nil
 }
 
 // FetchRegistryFromURL fetches raw YAML bytes from a remote URL.
@@ -234,6 +363,7 @@ func LoadMergedRegistry(configDir string) (Registry, error) {
 	merged := Registry{
 		SchemaVersion: RegistrySchemaVersion,
 		Packs:         make(map[string]RegistryEntry),
+		Collections:   make(map[string]RegistryCollection),
 	}
 
 	sc, _ := LoadSyncConfig(SyncConfigPath(configDir))
@@ -246,6 +376,11 @@ func LoadMergedRegistry(configDir string) (Registry, error) {
 		for name, entry := range cached.Packs {
 			if _, exists := merged.Packs[name]; !exists {
 				merged.Packs[name] = entry
+			}
+		}
+		for name, entry := range cached.Collections {
+			if _, exists := merged.Collections[name]; !exists {
+				merged.Collections[name] = entry
 			}
 		}
 	}

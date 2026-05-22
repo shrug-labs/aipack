@@ -1358,6 +1358,8 @@ func categoryDescription(c domain.PackCategory) string {
 		return "Executable multi-step processes invoked by\nname or trigger condition."
 	case domain.CategorySkills:
 		return "On-demand knowledge and methodology, loaded\nwhen a matching trigger fires."
+	case domain.CategoryHooks:
+		return "Executable lifecycle handlers rendered into\nnative harness hook configuration."
 	case domain.CategoryMCP:
 		return "MCP server configurations that provide\nexternal tool access."
 	case domain.CategorySettings:

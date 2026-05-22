@@ -8,7 +8,13 @@ import (
 
 func TestValidateRegistry_OK(t *testing.T) {
 	t.Parallel()
-	reg := Registry{SchemaVersion: RegistrySchemaVersion, Packs: map[string]RegistryEntry{"demo": {Repo: "https://github.com/org/repo.git"}}}
+	reg := Registry{
+		SchemaVersion: RegistrySchemaVersion,
+		Packs:         map[string]RegistryEntry{"demo": {Repo: "https://github.com/org/repo.git"}},
+		Collections: map[string]RegistryCollection{
+			"starter": {Packs: []RegistryCollectionPack{{Name: "demo", With: []string{"profiles"}}}},
+		},
+	}
 	errs := ValidateRegistry(reg)
 	if len(errs) > 0 {
 		t.Fatalf("expected no errors, got %v", errs)
@@ -86,5 +92,65 @@ func TestValidateRegistry_ContentPathsRejectsEscapes(t *testing.T) {
 	errs := ValidateRegistry(reg)
 	if len(errs) == 0 {
 		t.Fatal("expected error for escaping content_paths path")
+	}
+}
+
+func TestValidateRegistry_CollectionRequiresPacks(t *testing.T) {
+	t.Parallel()
+	reg := Registry{
+		SchemaVersion: RegistrySchemaVersion,
+		Packs:         map[string]RegistryEntry{"demo": {Repo: "https://github.com/org/repo.git"}},
+		Collections:   map[string]RegistryCollection{"starter": {}},
+	}
+	errs := ValidateRegistry(reg)
+	if len(errs) == 0 {
+		t.Fatal("expected error for empty collection")
+	}
+}
+
+func TestValidateRegistry_CollectionRejectsBadPack(t *testing.T) {
+	t.Parallel()
+	reg := Registry{
+		SchemaVersion: RegistrySchemaVersion,
+		Packs:         map[string]RegistryEntry{"demo": {Repo: "https://github.com/org/repo.git"}},
+		Collections: map[string]RegistryCollection{
+			"starter": {Packs: []RegistryCollectionPack{{}, {Name: "demo"}, {Name: "demo"}}},
+		},
+	}
+	errs := ValidateRegistry(reg)
+	if len(errs) < 2 {
+		t.Fatalf("expected errors for empty and duplicate pack refs, got %v", errs)
+	}
+}
+
+func TestValidateRegistry_CollectionRejectsBadWith(t *testing.T) {
+	t.Parallel()
+	reg := Registry{
+		SchemaVersion: RegistrySchemaVersion,
+		Packs:         map[string]RegistryEntry{"demo": {Repo: "https://github.com/org/repo.git"}},
+		Collections: map[string]RegistryCollection{
+			"starter": {Packs: []RegistryCollectionPack{{Name: "demo", With: []string{"plugins"}}}},
+		},
+	}
+	errs := ValidateRegistry(reg)
+	if len(errs) == 0 {
+		t.Fatal("expected error for invalid collection with value")
+	}
+}
+
+func TestValidateRegistry_CollectionRejectsArchiveRef(t *testing.T) {
+	t.Parallel()
+	reg := Registry{
+		SchemaVersion: RegistrySchemaVersion,
+		Packs: map[string]RegistryEntry{
+			"archive": {Method: MethodArchive, URL: "https://example.com/archive.zip"},
+		},
+		Collections: map[string]RegistryCollection{
+			"starter": {Packs: []RegistryCollectionPack{{Name: "archive", Ref: "v1.0.0"}}},
+		},
+	}
+	errs := ValidateRegistry(reg)
+	if len(errs) == 0 {
+		t.Fatal("expected error for archive pack ref")
 	}
 }

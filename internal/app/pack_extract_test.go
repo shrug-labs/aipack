@@ -592,8 +592,8 @@ func TestExtractPackContent_ContentPaths_OverlappingDirNamesIsolated(t *testing.
 	}
 }
 
-func TestExtractPackContent_ContentPaths_AllFourTypes(t *testing.T) {
-	// Map all four content types simultaneously — each from a different
+func TestExtractPackContent_ContentPaths_AllContentTypes(t *testing.T) {
+	// Map all directory-style content types simultaneously — each from a different
 	// non-standard path — and verify the standard layout is correct.
 	t.Parallel()
 	srcDir := t.TempDir()
@@ -609,12 +609,16 @@ func TestExtractPackContent_ContentPaths_AllFourTypes(t *testing.T) {
 	os.MkdirAll(filepath.Join(srcDir, "d", "my-workflows"), 0o755)
 	os.WriteFile(filepath.Join(srcDir, "d", "my-workflows", "w1.md"),
 		[]byte("---\nname: w1\n---\nbody\n"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "e", "my-hooks", "h1"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "e", "my-hooks", "h1", "HOOK.yaml"),
+		[]byte("name: h1\nevents:\n  - on: tool.after\n    handler:\n      type: command\n      command: echo ok\n"), 0o644)
 
 	paths := map[domain.PackCategory]string{
 		domain.CategoryRules:     "a/my-rules",
 		domain.CategorySkills:    "b/my-skills",
 		domain.CategoryAgents:    "c/my-agents",
 		domain.CategoryWorkflows: "d/my-workflows",
+		domain.CategoryHooks:     "e/my-hooks",
 	}
 
 	staging, manifest, err := extractPackContent(t.TempDir(), srcDir, paths, "quad", "")
@@ -632,6 +636,7 @@ func TestExtractPackContent_ContentPaths_AllFourTypes(t *testing.T) {
 		{"skills/s1/SKILL.md", manifest.Skills, "s1"},
 		{"agents/a1.md", manifest.Agents, "a1"},
 		{"workflows/w1.md", manifest.Workflows, "w1"},
+		{"hooks/h1/HOOK.yaml", manifest.Hooks, "h1"},
 	}
 	for _, c := range checks {
 		if _, err := os.Stat(filepath.Join(staging, c.path)); err != nil {
@@ -1162,7 +1167,7 @@ func buildFilterStaging(t *testing.T, m config.PackManifest) string {
 	staging := t.TempDir()
 
 	// Content directories.
-	for _, dir := range []string{"rules", "agents", "workflows", "skills", "prompts", "profiles", "registries", "mcp", "configs"} {
+	for _, dir := range []string{"rules", "agents", "workflows", "skills", "hooks", "prompts", "profiles", "registries", "mcp", "configs"} {
 		p := filepath.Join(staging, dir)
 		os.MkdirAll(p, 0o755)
 		os.WriteFile(filepath.Join(p, "placeholder.md"), []byte("content"), 0o644)
@@ -1227,7 +1232,7 @@ func TestApplyWithFilter_WithAll(t *testing.T) {
 		t.Fatalf("applyWithFilter: %v", err)
 	}
 	// Everything still present.
-	for _, dir := range []string{"rules", "skills", "agents", "workflows", "prompts", "profiles", "registries", "mcp", "configs"} {
+	for _, dir := range []string{"rules", "skills", "agents", "workflows", "hooks", "prompts", "profiles", "registries", "mcp", "configs"} {
 		if _, err := os.Stat(filepath.Join(staging, dir)); err != nil {
 			t.Errorf("%s should still exist with WithAll", dir)
 		}
@@ -1267,7 +1272,7 @@ func TestApplyWithFilter_Partial(t *testing.T) {
 	}
 
 	// Core content dirs always kept regardless of domain.BundledSet.
-	for _, dir := range []string{"rules", "skills", "agents", "workflows", "prompts", "mcp", "configs"} {
+	for _, dir := range []string{"rules", "skills", "agents", "workflows", "hooks", "prompts", "mcp", "configs"} {
 		if _, err := os.Stat(filepath.Join(staging, dir)); err != nil {
 			t.Errorf("%s should always be kept (core dir), but was removed", dir)
 		}

@@ -31,7 +31,7 @@ func (p ProfilePackInfo) ContentPath(category domain.PackCategory, id string) st
 func (p ProfilePackInfo) ContentSize(category domain.PackCategory, id string) int64 {
 	fp := p.ContentPath(category, id)
 	kind := domain.CopyKindFile
-	if category == domain.CategorySkills {
+	if category == domain.CategorySkills || category == domain.CategoryHooks {
 		fp = filepath.Dir(fp)
 		kind = domain.CopyKindDir
 	}
@@ -106,14 +106,13 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 
 	for pi, p := range packs {
 		pe := entries[p.Index]
+		packDisabled := !config.PackEnabled(pe.Enabled)
 
-		// Authored categories use VectorSelector for selection state.
+		// Profile-selectable categories use VectorSelector for selection state.
 		// Quiet packs flip the default: without an explicit non-empty
-		// include list, nothing is selected. Non-quiet packs fall through
-		// to ResolveCurrentVector's "nil/empty include = include all" rule.
-		// This mirrors the sync-time resolver at
-		// internal/config/profile_resolve.go:422 so the tree's [x]/[ ]
-		// state matches what sync would actually deliver.
+		// include list, nothing is selected. ResolveProfileVectorSelection
+		// mirrors sync-time profile resolution so the tree's [x]/[ ] state
+		// matches what sync would actually deliver.
 		for _, cat := range domain.SelectableCategories() {
 			inventory := p.Manifest.ContentIDs(cat)
 			if len(inventory) == 0 {
@@ -123,11 +122,15 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 			if sel == nil {
 				continue
 			}
-			var selected map[string]bool
-			if pe.Quiet && (sel.Include == nil || len(*sel.Include) == 0) {
-				selected = map[string]bool{}
-			} else {
-				selected = config.ToStringSet(config.ResolveCurrentVector(inventory, *sel))
+			selected := map[string]bool{}
+			if cat != domain.CategoryHooks || pe.Hooks.Enabled == nil || *pe.Hooks.Enabled {
+				if !packDisabled {
+					selectedIDs, err := config.ResolveProfileVectorSelection(p.Name, cat, inventory, *sel, pe.Quiet)
+					selected = config.ToStringSet(selectedIDs)
+					if err != nil {
+						selected = map[string]bool{}
+					}
+				}
 			}
 			for _, id := range inventory {
 				categoryItems[cat] = append(categoryItems[cat], ContentItem{
@@ -140,29 +143,21 @@ func BuildContentTree(packs []ProfilePackInfo, entries []config.PackEntry) Conte
 			}
 		}
 
-		// MCP servers use a different config structure. Quiet packs
-		// default to disabled; only an explicit profile entry with
-		// enabled != false activates a server. Non-quiet packs inherit
-		// the manifest-declared set.
-		for _, name := range p.Manifest.ContentIDs(domain.CategoryMCP) {
-			enabled := !pe.Quiet
-			if mcpCfg, ok := pe.MCP[name]; ok {
-				switch {
-				case mcpCfg.Enabled == nil:
-					// Profile entry present with enabled unset — quiet
-					// packs still opt out; non-quiet packs stay enabled.
-				case *mcpCfg.Enabled:
-					enabled = true
-				default:
-					enabled = false
-				}
-			}
+		// MCP servers use a different config structure, but the tree state must
+		// mirror sync-time profile resolution exactly.
+		manifestMCP := p.Manifest.ContentIDs(domain.CategoryMCP)
+		mcpSelection := map[string]config.MCPServerConfig(nil)
+		if !packDisabled {
+			mcpSelection = config.ResolveProfileMCPSelection(manifestMCP, pe.MCP, pe.Quiet)
+		}
+		for _, name := range manifestMCP {
+			mcpCfg, ok := mcpSelection[name]
 			categoryItems[domain.CategoryMCP] = append(categoryItems[domain.CategoryMCP], ContentItem{
 				ID:       name,
 				Category: domain.CategoryMCP,
 				PackIdx:  pi,
 				PackName: p.Name,
-				Enabled:  enabled,
+				Enabled:  ok && config.PackEnabled(mcpCfg.Enabled),
 			})
 		}
 	}
@@ -286,6 +281,9 @@ func DetectConflicts[T ContentRef](items []T, packs []ProfilePackInfo, entries [
 func ApplyContentTree(tree ContentTree, entries []config.PackEntry) {
 	for pi, p := range tree.Packs {
 		pe := &entries[p.Index]
+		if profilePackDisabled(p, entries) {
+			continue
+		}
 
 		// Collect enabled items for this pack.
 		cats := map[domain.PackCategory][]string{}
@@ -299,7 +297,15 @@ func ApplyContentTree(tree ContentTree, entries []config.PackEntry) {
 		for _, cat := range domain.SelectableCategories() {
 			ids := p.Manifest.ContentIDs(cat)
 			if len(ids) > 0 {
-				*pe.VectorSelectorFor(cat) = config.SelectionsToVector(ids, cats[cat])
+				selected := cats[cat]
+				*pe.VectorSelectorFor(cat) = config.SelectionsToProfileVector(ids, selected, pe.Quiet)
+				if cat == domain.CategoryHooks {
+					if len(selected) == 0 {
+						pe.Hooks.Enabled = config.BoolPtr(false)
+					} else {
+						pe.Hooks.Enabled = nil
+					}
+				}
 			}
 		}
 

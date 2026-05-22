@@ -21,6 +21,7 @@ const (
 	capAgents    = "agents"
 	capWorkflows = "workflows"
 	capSkills    = "skills"
+	capHooks     = "hooks"
 	capPlugins   = "plugins"
 )
 
@@ -32,6 +33,7 @@ type ResolvedPack struct {
 	Agents    []string
 	Workflows []string
 	Skills    []string
+	Hooks     []string
 	Plugins   []string
 	MCP       map[string]ResolvedMCPServer
 }
@@ -48,6 +50,8 @@ func (rp ResolvedPack) ContentIDs(cat domain.PackCategory) []string {
 		return rp.Workflows
 	case domain.CategorySkills:
 		return rp.Skills
+	case domain.CategoryHooks:
+		return rp.Hooks
 	case domain.CategoryPlugins:
 		return rp.Plugins
 	}
@@ -71,12 +75,27 @@ type ResolveResult struct {
 	BrokenRefs []domain.BrokenRef
 }
 
+type ResolveOptions struct {
+	CollisionStrategy CollisionStrategy
+	Namespaced        bool
+	PrevInventories   map[string]domain.PackInventory
+}
+
 // ResolveProfile resolves a profile. When prevInventories is non-nil, an
 // exact-ID reference that isn't in the current pack inventory but WAS in
 // the previous one becomes a BrokenRef instead of a hard error — the pack
 // removed content the profile still references. Typos (IDs that were
 // never in the pack) still hard-error.
 func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, strategy CollisionStrategy, prevInventories map[string]domain.PackInventory) (ResolveResult, error) {
+	return ResolveProfileWithOptions(cfg, profilePath, configDir, ResolveOptions{
+		CollisionStrategy: strategy,
+		PrevInventories:   prevInventories,
+	})
+}
+
+func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir string, opts ResolveOptions) (ResolveResult, error) {
+	strategy := opts.CollisionStrategy
+	prevInventories := opts.PrevInventories
 	if strategy == "" {
 		strategy = CollisionLastWins
 	}
@@ -95,18 +114,20 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 	// vectorState tracks seen IDs and override owners for each string-slice
 	// resource vector (rules, agents, workflows, skills). Keyed by label.
 	type vectorState struct {
-		label     string
-		seen      map[string]string
-		owner     map[string]string
-		field     func(*ResolvedPack) *[]string
-		overrides func(PackEntry) []string
+		label      string
+		namespaced bool
+		seen       map[string]string
+		owner      map[string]string
+		field      func(*ResolvedPack) *[]string
+		overrides  func(PackEntry) []string
 	}
 	vectors := []vectorState{
-		{capRules, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Rules }, func(pe PackEntry) []string { return pe.Overrides.Rules }},
-		{capAgents, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Agents }, func(pe PackEntry) []string { return pe.Overrides.Agents }},
-		{capWorkflows, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Workflows }, func(pe PackEntry) []string { return pe.Overrides.Workflows }},
-		{capSkills, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Skills }, func(pe PackEntry) []string { return pe.Overrides.Skills }},
-		{capPlugins, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Plugins }, func(pe PackEntry) []string { return pe.Overrides.Plugins }},
+		{capRules, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Rules }, func(pe PackEntry) []string { return pe.Overrides.Rules }},
+		{capAgents, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Agents }, func(pe PackEntry) []string { return pe.Overrides.Agents }},
+		{capWorkflows, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Workflows }, func(pe PackEntry) []string { return pe.Overrides.Workflows }},
+		{capSkills, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Skills }, func(pe PackEntry) []string { return pe.Overrides.Skills }},
+		{capHooks, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Hooks }, func(pe PackEntry) []string { return pe.Overrides.Hooks }},
+		{capPlugins, false, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Plugins }, func(pe PackEntry) []string { return pe.Overrides.Plugins }},
 	}
 
 	// Pre-scan: build override owner maps so the declaring pack wins
@@ -132,6 +153,10 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		packName := strings.TrimSpace(packCfg.Name)
 		if packName == "" {
 			return ResolveResult{}, errors.New("profile packs entries must have name")
+		}
+		if strings.Contains(packName, domain.RenderedIdentitySeparator) {
+			return ResolveResult{}, fmt.Errorf("profile pack %q must not contain %q (reserved for rendered content identity)",
+				packName, domain.RenderedIdentitySeparator)
 		}
 		if !defaultTrue(packCfg.Enabled) {
 			continue
@@ -181,6 +206,14 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 			return ResolveResult{}, err
 		}
 		brokenRefs = append(brokenRefs, broken...)
+		var hooks []string
+		if defaultTrue(packCfg.Hooks.Enabled) {
+			hooks, broken, err = resolveVector(packName, capHooks, manifest.Hooks, packCfg.Hooks.VectorSelector, quiet, prevInv)
+			if err != nil {
+				return ResolveResult{}, err
+			}
+			brokenRefs = append(brokenRefs, broken...)
+		}
 		plugins, broken, err := resolveVector(packName, capPlugins, manifest.Plugins, packCfg.Plugins, quiet, prevInv)
 		if err != nil {
 			return ResolveResult{}, err
@@ -195,6 +228,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 			Agents:    agents,
 			Workflows: workflows,
 			Skills:    skills,
+			Hooks:     hooks,
 			Plugins:   plugins,
 			MCP:       map[string]ResolvedMCPServer{},
 		}
@@ -205,36 +239,45 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		// We must not mutate the current pack's slice while ranging over it
 		// (slices.DeleteFunc shifts elements, causing the range to skip items).
 		// Instead, collect IDs to strip and apply after the loop.
+		resolveVectorCollision := func(v *vectorState, id, prev string, stripFromCurrent *[]string) bool {
+			owner := v.owner[id]
+			if owner == "" {
+				if opts.Namespaced && v.namespaced {
+					return true
+				}
+				switch strategy {
+				case CollisionFirstWins:
+					*stripFromCurrent = append(*stripFromCurrent, id)
+					collisionWarnings = append(collisionWarnings, domain.Warning{
+						Field:   v.label,
+						Message: fmt.Sprintf("%s %q: %q wins over %q (first-wins)", v.label, id, prev, packName),
+					})
+					return false
+				case CollisionLastWins:
+					stripFromPack(packs, prev, id, v.field)
+					collisionWarnings = append(collisionWarnings, domain.Warning{
+						Field:   v.label,
+						Message: fmt.Sprintf("%s %q: %q wins over %q (last-wins)", v.label, id, packName, prev),
+					})
+					return true
+				default: // CollisionError
+					collisions = append(collisions, collisionInfo{kind: v.label, id: id, packA: prev, packB: packName})
+					return false
+				}
+			}
+			if owner == packName {
+				stripFromPack(packs, prev, id, v.field)
+				return true
+			}
+			*stripFromCurrent = append(*stripFromCurrent, id)
+			return false
+		}
 		for vi := range vectors {
 			v := &vectors[vi]
 			var stripFromCurrent []string
 			for _, id := range *v.field(&packResolved) {
 				if prev, ok := v.seen[id]; ok {
-					owner := v.owner[id]
-					if owner == "" {
-						switch strategy {
-						case CollisionFirstWins:
-							stripFromCurrent = append(stripFromCurrent, id)
-							collisionWarnings = append(collisionWarnings, domain.Warning{
-								Field:   v.label,
-								Message: fmt.Sprintf("%s %q: %q wins over %q (first-wins)", v.label, id, prev, packName),
-							})
-							continue
-						case CollisionLastWins:
-							stripFromPack(packs, prev, id, v.field)
-							collisionWarnings = append(collisionWarnings, domain.Warning{
-								Field:   v.label,
-								Message: fmt.Sprintf("%s %q: %q wins over %q (last-wins)", v.label, id, packName, prev),
-							})
-							// fall through to update v.seen[id]
-						default: // CollisionError
-							collisions = append(collisions, collisionInfo{kind: v.label, id: id, packA: prev, packB: packName})
-							continue
-						}
-					} else if owner == packName {
-						stripFromPack(packs, prev, id, v.field)
-					} else {
-						stripFromCurrent = append(stripFromCurrent, id)
+					if !resolveVectorCollision(v, id, prev, &stripFromCurrent) {
 						continue
 					}
 				}
@@ -259,7 +302,7 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 		// become available automatically. A non-quiet disable-only map keeps
 		// that default and applies the listed entries as exclusions; maps with
 		// any enabled entry or tool policy keep the existing inclusive semantics.
-		mcpSelection := resolveMCPSelection(manifest.MCP, packCfg.MCP, quiet)
+		mcpSelection := ResolveProfileMCPSelection(manifest.MCP, packCfg.MCP, quiet)
 		manifestMCPSet := ToStringSet(manifest.MCP)
 		for name, serverCfg := range mcpSelection {
 			if !manifestMCPSet[name] {
@@ -375,14 +418,16 @@ func ResolveProfile(cfg ProfileConfig, profilePath string, configDir string, str
 	}, nil
 }
 
-func resolveMCPSelection(manifestMCP []string, profileMCP map[string]MCPServerConfig, quiet bool) map[string]MCPServerConfig {
+// ResolveProfileMCPSelection applies profile MCP selection semantics to a
+// pack's manifest-declared servers.
+func ResolveProfileMCPSelection(manifestMCP []string, profileMCP map[string]MCPServerConfig, quiet bool) map[string]MCPServerConfig {
 	if len(profileMCP) == 0 {
 		if quiet {
 			return nil
 		}
 		return defaultMCPSelection(manifestMCP)
 	}
-	if !quiet && mcpSelectionIsDisableOnly(profileMCP) {
+	if !quiet && MCPSelectionIsDisableOnly(profileMCP) {
 		out := defaultMCPSelection(manifestMCP)
 		maps.Copy(out, profileMCP)
 		return out
@@ -398,7 +443,9 @@ func defaultMCPSelection(manifestMCP []string) map[string]MCPServerConfig {
 	return out
 }
 
-func mcpSelectionIsDisableOnly(profileMCP map[string]MCPServerConfig) bool {
+// MCPSelectionIsDisableOnly reports whether a profile MCP map only subtracts
+// servers from the non-quiet manifest default.
+func MCPSelectionIsDisableOnly(profileMCP map[string]MCPServerConfig) bool {
 	if len(profileMCP) == 0 {
 		return false
 	}
@@ -449,6 +496,8 @@ func labelToCategory(label string) domain.PackCategory {
 		return domain.CategoryWorkflows
 	case capSkills:
 		return domain.CategorySkills
+	case capHooks:
+		return domain.CategoryHooks
 	case capPlugins:
 		return domain.CategoryPlugins
 	}
@@ -600,6 +649,7 @@ func formatCollisionError(cc []collisionInfo) error {
 		}
 	}
 	buf.WriteString("\nOr set defaults.collision_strategy in sync-config.yaml to first-wins or last-wins.")
+	buf.WriteString("\nFor rule, agent, workflow, skill, and hook collisions, defaults.namespaced: true preserves both packs by rendering provenance-suffixed names; MCP servers, plugins, and settings keys still need a single winner.")
 	return errors.New(buf.String())
 }
 

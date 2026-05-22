@@ -23,8 +23,20 @@ func (e *Engine) Resolve(
 	collisionStrategy config.CollisionStrategy,
 	prevInventories map[string]domain.PackInventory,
 ) (domain.Profile, []domain.Warning, error) {
+	return e.ResolveWithOptions(profileCfg, profilePath, configDir, config.ResolveOptions{
+		CollisionStrategy: collisionStrategy,
+		PrevInventories:   prevInventories,
+	})
+}
+
+func (e *Engine) ResolveWithOptions(
+	profileCfg config.ProfileConfig,
+	profilePath string,
+	configDir string,
+	opts config.ResolveOptions,
+) (domain.Profile, []domain.Warning, error) {
 	// Step 1: Validate profile, resolve packs, apply selectors, check overrides.
-	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, collisionStrategy, prevInventories)
+	resolved, err := config.ResolveProfileWithOptions(profileCfg, profilePath, configDir, opts)
 	if err != nil {
 		return domain.Profile{}, nil, err
 	}
@@ -40,7 +52,7 @@ func (e *Engine) Resolve(
 	warnings = append(warnings, brokenRefWarnings(resolved.BrokenRefs)...)
 
 	// Step 2: Parse content per pack into typed domain structs.
-	packs, contentWarnings, err := e.resolvePackContent(resolvedPacks)
+	packs, contentWarnings, err := e.resolvePackContent(resolvedPacks, profileCfg.Params, env)
 	if err != nil {
 		return domain.Profile{}, warnings, err
 	}
@@ -105,7 +117,7 @@ func brokenRefWarnings(refs []domain.BrokenRef) []domain.Warning {
 }
 
 // resolvePackContent parses all content from resolved packs into typed Pack structs.
-func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]domain.Pack, []domain.Warning, error) {
+func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack, params map[string]string, env map[string]string) ([]domain.Pack, []domain.Warning, error) {
 	var packs []domain.Pack
 	var warnings []domain.Warning
 
@@ -134,6 +146,12 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]doma
 		}
 		warnings = append(warnings, w...)
 
+		hooks, w, err := e.parseHooks(rp, params, env)
+		if err != nil {
+			return nil, warnings, err
+		}
+		warnings = append(warnings, w...)
+
 		plugins, w, err := e.parsePlugins(rp)
 		if err != nil {
 			return nil, warnings, err
@@ -148,6 +166,7 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack) ([]doma
 			Agents:     agents,
 			Workflows:  workflows,
 			Skills:     skills,
+			Hooks:      hooks,
 			Plugins:    plugins,
 			Registries: rp.Manifest.Registries,
 		})

@@ -1,8 +1,11 @@
 package domain
 
 import (
+	"fmt"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // RuleFrontmatter is the harness-neutral rule frontmatter schema.
@@ -49,6 +52,116 @@ type SkillFrontmatter struct {
 	Name        string         `yaml:"name,omitempty"`
 	Description string         `yaml:"description,omitempty"`
 	Metadata    map[string]any `yaml:"metadata,omitempty"`
+}
+
+// HookEntryFile is the descriptor filename for a pack hook directory.
+const HookEntryFile = "HOOK.yaml"
+
+// Hook event names are AIPack's portable lifecycle vocabulary. Harness
+// adapters map these to their native event names.
+type HookEventName string
+
+const (
+	HookEventRunStart      HookEventName = "run.start"
+	HookEventPromptSubmit  HookEventName = "prompt.submit"
+	HookEventToolBefore    HookEventName = "tool.before"
+	HookEventToolAfter     HookEventName = "tool.after"
+	HookEventCompactBefore HookEventName = "compact.before"
+)
+
+func IsSupportedHookEvent(event HookEventName) bool {
+	switch event {
+	case HookEventRunStart, HookEventPromptSubmit, HookEventToolBefore, HookEventToolAfter, HookEventCompactBefore:
+		return true
+	default:
+		return false
+	}
+}
+
+// Hook is a parsed pack hook descriptor plus source location metadata.
+type Hook struct {
+	ID          string
+	Name        string
+	Description string
+	Events      []HookEvent
+	DirPath     string
+	SourcePath  string
+	SourcePack  string
+}
+
+// HookEvent describes one portable lifecycle event handled by a hook.
+type HookEvent struct {
+	On       HookEventName `yaml:"on"`
+	Match    HookMatch     `yaml:"match,omitempty"`
+	Handler  HookHandler   `yaml:"handler,omitempty"`
+	Handlers []HookHandler `yaml:"handlers,omitempty"`
+}
+
+// EffectiveHandlers returns the handlers attached to the event. `handler` is
+// the authoring shorthand for the common one-handler case.
+func (e HookEvent) EffectiveHandlers() []HookHandler {
+	if len(e.Handlers) > 0 {
+		return e.Handlers
+	}
+	if e.Handler.Type != "" || e.Handler.Command != "" || e.Handler.CommandWindows != "" {
+		return []HookHandler{e.Handler}
+	}
+	return nil
+}
+
+// HookMatch carries portable matcher fields. Harness adapters ignore fields
+// that do not apply to the mapped native event.
+type HookMatch struct {
+	Tool   string `yaml:"tool,omitempty"`
+	Source string `yaml:"source,omitempty"`
+}
+
+// HookHandlerType identifies the portable hook handler backend.
+type HookHandlerType string
+
+const HookHandlerTypeCommand HookHandlerType = "command"
+
+// HookHandlerMode controls how a hook handler is executed.
+type HookHandlerMode string
+
+const (
+	HookHandlerModeSync  HookHandlerMode = "sync"
+	HookHandlerModeAsync HookHandlerMode = "async"
+)
+
+// HookHandler describes how AIPack should invoke a hook handler. Command is a
+// shell command string; timeout accepts either seconds ("5") or Go duration
+// syntax ("5s").
+type HookHandler struct {
+	Type           HookHandlerType `yaml:"type,omitempty"`
+	Command        string          `yaml:"command,omitempty"`
+	CommandWindows string          `yaml:"command_windows,omitempty"`
+	Timeout        string          `yaml:"timeout,omitempty"`
+	Mode           HookHandlerMode `yaml:"mode,omitempty"`
+	StatusMessage  string          `yaml:"status_message,omitempty"`
+}
+
+// HookTimeoutSeconds parses a hook timeout string. Empty returns 0 so callers
+// can omit native timeout fields and let harness defaults apply.
+func HookTimeoutSeconds(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	if n, err := strconv.Atoi(raw); err == nil {
+		if n < 1 {
+			return 0, fmt.Errorf("timeout must be at least 1 second")
+		}
+		return n, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("timeout must be seconds or duration syntax: %w", err)
+	}
+	if d < time.Second {
+		return 0, fmt.Errorf("timeout must be at least 1 second")
+	}
+	return int(d.Round(time.Second) / time.Second), nil
 }
 
 // writableContent is satisfied by Rule, Workflow, and Agent for generic write generation.

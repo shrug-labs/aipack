@@ -82,6 +82,7 @@ type SyncConfig struct {
 		RegistryURL       string            `yaml:"registry_url,omitempty"`
 		CollisionStrategy CollisionStrategy `yaml:"collision_strategy,omitempty"`
 		AutoSync          bool              `yaml:"auto_sync"`
+		Namespaced        bool              `yaml:"namespaced"`
 	} `yaml:"defaults"`
 	InstalledPacks  map[string]InstalledPackMeta `yaml:"installed_packs,omitempty"` // vestigial — lockfile is the SSOT; kept for migration reads
 	RegistrySources []RegistrySourceEntry        `yaml:"registry_sources,omitempty"`

@@ -76,6 +76,7 @@ const (
 	CategoryMCP       PackCategory = "mcp"
 	CategoryPlugins   PackCategory = "plugins"
 	CategoryPrompts   PackCategory = "prompts"
+	CategoryHooks     PackCategory = "hooks"
 	CategorySettings  PackCategory = "settings"
 )
 
@@ -83,7 +84,7 @@ const (
 // Settings is excluded — it is not user-authored pack content but rather
 // harness configuration derived from MCP server definitions and settings packs.
 func AllPackCategories() []PackCategory {
-	return []PackCategory{CategoryAgents, CategoryMCP, CategoryPlugins, CategoryPrompts, CategoryRules, CategorySkills, CategoryWorkflows}
+	return []PackCategory{CategoryAgents, CategoryHooks, CategoryMCP, CategoryPlugins, CategoryPrompts, CategoryRules, CategorySkills, CategoryWorkflows}
 }
 
 // AuthoredCategories returns the subset of categories that have authored
@@ -94,7 +95,7 @@ func AuthoredCategories() []PackCategory {
 
 // SelectableCategories returns categories controlled by profile vector selectors.
 func SelectableCategories() []PackCategory {
-	return []PackCategory{CategoryAgents, CategoryPlugins, CategoryRules, CategorySkills, CategoryWorkflows}
+	return []PackCategory{CategoryAgents, CategoryHooks, CategoryPlugins, CategoryRules, CategorySkills, CategoryWorkflows}
 }
 
 // IsAuthored returns true for categories with authored markdown+frontmatter files.
@@ -105,9 +106,9 @@ func (c PackCategory) IsAuthored() bool {
 
 // IsContentPathTarget returns true for categories that can be used as
 // content_paths keys (CLI flags or registry entries). This is the authored
-// set plus prompts — everything a user can remap into a pack.
+// set plus hooks and prompts — everything a user can remap into a pack.
 func (c PackCategory) IsContentPathTarget() bool {
-	return c.IsAuthored() || c == CategoryPrompts
+	return c.IsAuthored() || c == CategoryHooks || c == CategoryPrompts
 }
 
 // DirName returns the directory name for this category within a pack.
@@ -129,6 +130,9 @@ func (c PackCategory) PrimaryRelPath(id string) string {
 	if c == CategorySkills {
 		return c.DirName() + "/" + id + "/" + SkillEntryFile
 	}
+	if c == CategoryHooks {
+		return c.DirName() + "/" + id + "/" + HookEntryFile
+	}
 	return c.DirName() + "/" + id + c.Ext()
 }
 
@@ -149,6 +153,8 @@ func (c PackCategory) Label() string {
 		return "Plugins"
 	case CategoryPrompts:
 		return "Prompts"
+	case CategoryHooks:
+		return "Hooks"
 	case CategorySettings:
 		return "Settings"
 	}
@@ -172,6 +178,8 @@ func (c PackCategory) SingularLabel() string {
 		return "Plugin"
 	case CategoryPrompts:
 		return "Prompt"
+	case CategoryHooks:
+		return "Hook"
 	case CategorySettings:
 		return "Setting"
 	}
@@ -197,6 +205,8 @@ func ParseSingularLabel(s string) (PackCategory, bool) {
 		return CategoryPlugins, true
 	case "prompt":
 		return CategoryPrompts, true
+	case "hook":
+		return CategoryHooks, true
 	case "setting":
 		return CategorySettings, true
 	}

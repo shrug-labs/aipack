@@ -329,6 +329,7 @@ func formatInspectPreview(result app.PackInspectResult) string {
 	appendPreviewList(&sb, "Agents", result.Agents)
 	appendPreviewList(&sb, "Workflows", result.Workflows)
 	appendPreviewList(&sb, "Skills", result.Skills)
+	appendPreviewList(&sb, "Hooks", result.Hooks)
 	appendPreviewList(&sb, "Plugins", result.Plugins)
 	appendPreviewList(&sb, "Prompts", result.Prompts)
 	appendPreviewList(&sb, "MCP", result.MCPServers)

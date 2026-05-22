@@ -59,14 +59,15 @@ A pack contains these content vectors, all auto-discovered from standard directo
 | Profiles | `profiles/` | `*.yaml` | `.yaml` |
 | Registries | `registries/` | `*.yaml` | `.yaml` |
 | MCP | `mcp/` | `*.json` (via manifest) | `.json` |
-| Configs | `configs/` | per-harness subdirs (via manifest) | varies |
+| Hooks | `hooks/` | `*/HOOK.yaml` | dir-based |
+| Configs | `configs/` | per-harness settings and drop-ins (via manifest) | varies |
 | Extras | — | via manifest `extras` field | arbitrary |
 
 Manifest fields for all vectors are **ID-based** (e.g., `"rules": ["anti-slop"]`, `"profiles": ["dev"]`). Extras are the exception — they use relative paths because they can reference files outside standard directories.
 
 ### Bundled content and `--with`
 
-Core content (rules, skills, workflows, agents, prompts, MCP, configs) is always installed. Profiles, registries, and extras are **bundled content** — gated by `--with` (`-w`). Remote installs without `--with` preview bundled content then strip it from the installed pack. `WithSet` in code tracks which categories are approved; `applyWithFilter` in `pack_extract.go` removes unapproved files and updates the manifest.
+Core content (rules, skills, workflows, agents, prompts, hooks, MCP, configs) is always installed. Profiles, registries, and extras are **bundled content** — gated by `--with` (`-w`). Remote installs without `--with` preview bundled content then strip it from the installed pack. `WithSet` in code tracks which categories are approved; `applyWithFilter` in `pack_extract.go` removes unapproved files and updates the manifest.
 
 ### Content extraction
 

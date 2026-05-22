@@ -98,36 +98,67 @@ func buildPluginEntries(plugins []domain.Plugin) map[string]map[string]any {
 // RenderBytes produces the full config.toml content including MCP servers and
 // agent registrations.
 func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any) ([]byte, []domain.Warning, error) {
-	return RenderBytesWithPlugins(base, servers, agentRegs, nil)
+	return RenderBytesWithOptions(RenderOptions{
+		Base:      base,
+		Servers:   servers,
+		AgentRegs: agentRegs,
+	})
 }
 
 // RenderBytesWithPlugins produces the full config.toml content including MCP
 // servers, agent registrations, and plugin enable stanzas.
 func RenderBytesWithPlugins(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin) ([]byte, []domain.Warning, error) {
+	return RenderBytesWithOptions(RenderOptions{
+		Base:      base,
+		Servers:   servers,
+		AgentRegs: agentRegs,
+		Plugins:   plugins,
+	})
+}
+
+type RenderOptions struct {
+	Base      []byte
+	Servers   []domain.MCPServer
+	AgentRegs map[string]map[string]any
+	Plugins   []domain.Plugin
+	HookState map[string]string
+}
+
+func RenderBytesWithPluginsAndHookState(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin, hookState map[string]string) ([]byte, []domain.Warning, error) {
+	return RenderBytesWithOptions(RenderOptions{
+		Base:      base,
+		Servers:   servers,
+		AgentRegs: agentRegs,
+		Plugins:   plugins,
+		HookState: hookState,
+	})
+}
+
+func RenderBytesWithOptions(opts RenderOptions) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
-	if len(base) > 0 {
-		if err := toml.Unmarshal(base, &root); err != nil {
+	if len(opts.Base) > 0 {
+		if err := toml.Unmarshal(opts.Base, &root); err != nil {
 			return nil, nil, err
 		}
 	}
 
-	entries, warnings := buildMCPEntries(servers)
+	entries, warnings := buildMCPEntries(opts.Servers)
 	root["mcp_servers"] = entries
 
 	// Merge agent registrations into the [agents] table.
-	if len(agentRegs) > 0 {
+	if len(opts.AgentRegs) > 0 {
 		agents := map[string]any{}
 		// Preserve existing global agent settings (max_threads, max_depth, etc.).
 		if existing, ok := root["agents"].(map[string]any); ok {
 			maps.Copy(agents, existing)
 		}
-		for name, reg := range agentRegs {
+		for name, reg := range opts.AgentRegs {
 			agents[name] = reg
 		}
 		root["agents"] = agents
 	}
 
-	if pluginEntries := buildPluginEntries(plugins); len(pluginEntries) > 0 {
+	if pluginEntries := buildPluginEntries(opts.Plugins); len(pluginEntries) > 0 {
 		pluginRoot := map[string]any{}
 		if existing, ok := root["plugins"].(map[string]any); ok {
 			maps.Copy(pluginRoot, existing)
@@ -137,6 +168,7 @@ func RenderBytesWithPlugins(base []byte, servers []domain.MCPServer, agentRegs m
 		}
 		root["plugins"] = pluginRoot
 	}
+	mergeHookState(root, opts.HookState)
 
 	out, err := toml.Marshal(root)
 	if err != nil {
@@ -153,4 +185,13 @@ func RenderManagedKeysOnly(servers []domain.MCPServer, agentRegs map[string]map[
 
 func RenderManagedKeysOnlyWithPlugins(servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin) ([]byte, []domain.Warning, error) {
 	return RenderBytesWithPlugins(nil, servers, agentRegs, plugins)
+}
+
+func RenderManagedKeysOnlyWithPluginsAndHookState(servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin, hookState map[string]string) ([]byte, []domain.Warning, error) {
+	return RenderBytesWithOptions(RenderOptions{
+		Servers:   servers,
+		AgentRegs: agentRegs,
+		Plugins:   plugins,
+		HookState: hookState,
+	})
 }

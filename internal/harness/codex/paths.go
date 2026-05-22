@@ -11,6 +11,7 @@ type Paths struct {
 	AgentsDir    string
 	OverrideFile string
 	SettingsFile string
+	HooksFile    string
 }
 
 // ProjectPaths defines Codex's project-scope paths (relative to project dir).
@@ -19,6 +20,7 @@ var ProjectPaths = Paths{
 	AgentsDir:    ".codex/agents",
 	OverrideFile: "AGENTS.override.md",
 	SettingsFile: ".codex/config.toml",
+	HooksFile:    ".codex/hooks.json",
 }
 
 // GlobalPaths defines Codex's global-scope paths (relative to $HOME).
@@ -27,6 +29,7 @@ var GlobalPaths = Paths{
 	AgentsDir:    ".codex/agents",
 	OverrideFile: ".codex/AGENTS.override.md",
 	SettingsFile: ".codex/config.toml",
+	HooksFile:    ".codex/hooks.json",
 }
 
 // PathsForScope returns the Paths for the given scope.

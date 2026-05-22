@@ -167,6 +167,7 @@ var kindStyles = map[string]lipgloss.Style{
 	"skill":    lipgloss.NewStyle().Foreground(lipgloss.Color("114")),
 	"workflow": lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
 	"agent":    lipgloss.NewStyle().Foreground(lipgloss.Color("141")),
+	"hook":     lipgloss.NewStyle().Foreground(lipgloss.Color("176")),
 	"pack":     lipgloss.NewStyle().Foreground(lipgloss.Color("204")),
 }
 

@@ -1959,7 +1959,7 @@ func TestPackInstall_URL_LatestSentinelClearsPin(t *testing.T) {
 func TestValidatePackName(t *testing.T) {
 	t.Parallel()
 
-	valid := []string{"my-pack", "test_pack", "pack123"}
+	valid := []string{"my-pack", "test_pack", "pack123", "team__pack"}
 	for _, name := range valid {
 		if err := validatePackName(name); err != nil {
 			t.Errorf("validatePackName(%q) unexpected error: %v", name, err)
@@ -1975,6 +1975,7 @@ func TestValidatePackName(t *testing.T) {
 		{"path/traversal", "forward slash"},
 		{"back\\slash", "backslash"},
 		{"null\x00byte", "null byte"},
+		{"bad__aipack__pack", "rendered identity separator"},
 	}
 	for _, tc := range invalid {
 		if err := validatePackName(tc.name); err == nil {

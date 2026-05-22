@@ -343,7 +343,11 @@ func TestAddNativeAgents_EmptyBody_Skipped(t *testing.T) {
 		{Name: "empty", Body: []byte("  \n  "), SourcePack: "pack-a"},
 	}
 
-	regs, _ := addNativeAgents(&f, "/agents", agents, nil, "/project", ".agents/skills")
+	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
+		AgentsDir:    "/agents",
+		SkillsBase:   "/project",
+		SkillsSubDir: ".agents/skills",
+	})
 
 	if len(f.Writes) != 0 {
 		t.Fatalf("expected 0 writes for empty body, got %d", len(f.Writes))
@@ -371,7 +375,11 @@ func TestAddNativeAgents_MultipleAgents(t *testing.T) {
 		},
 	}
 
-	regs, _ := addNativeAgents(&f, "/project/.codex/agents", agents, nil, "/project", ".agents/skills")
+	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
+		AgentsDir:    "/project/.codex/agents",
+		SkillsBase:   "/project",
+		SkillsSubDir: ".agents/skills",
+	})
 
 	if len(f.Writes) != 2 {
 		t.Fatalf("expected 2 writes, got %d", len(f.Writes))

@@ -11,6 +11,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 // --- Plan tests ---
@@ -19,9 +20,10 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: projectDir,
-		Home:      t.TempDir(),
+		Scope:      domain.ScopeProject,
+		TargetDir:  projectDir,
+		Home:       t.TempDir(),
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{{
 				Rules: []domain.Rule{
@@ -39,29 +41,91 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// Rule write → .clinerules/team.md
-	wantRule := filepath.Join(projectDir, ".clinerules", "team.md")
+	// Rule write → .clinerules/team__aipack__pack-a.md
+	wantRule := filepath.Join(projectDir, ".clinerules", "team__aipack__pack-a.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
-	// Agent promoted to skill → .agents/skills/reviewer/SKILL.md
-	wantAgent := filepath.Join(projectDir, ".agents", "skills", "reviewer", "SKILL.md")
+	// Agent promoted to skill → .agents/skills/reviewer__aipack__pack-a/SKILL.md
+	wantAgent := filepath.Join(projectDir, ".agents", "skills", "reviewer__aipack__pack-a", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
+}
+
+func TestPlan_Project_NamespacedAgentSkillRefsUseAgentPack(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	skillADir := testutil.SkillDir(t, "deploy")
+	skillBDir := testutil.SkillDir(t, "deploy")
+	ctx := engine.SyncContext{
+		Scope:      domain.ScopeProject,
+		TargetDir:  projectDir,
+		Home:       t.TempDir(),
+		Namespaced: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{
+				{
+					Name: "pack-b",
+					Skills: []domain.Skill{
+						{Name: "deploy", DirPath: skillBDir, SourcePack: "pack-b"},
+					},
+				},
+				{
+					Name: "pack-a",
+					Agents: []domain.Agent{{
+						Name: "reviewer",
+						Frontmatter: domain.AgentFrontmatter{
+							Name:   "reviewer",
+							Skills: []string{"deploy"},
+						},
+						Body:       []byte("Review code carefully"),
+						SourcePack: "pack-a",
+						SourcePath: "/pack/agents/reviewer.md",
+					}},
+					Skills: []domain.Skill{
+						{Name: "deploy", DirPath: skillADir, SourcePack: "pack-a"},
+					},
+				},
+			},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	wantAgent := filepath.Join(projectDir, ".agents", "skills", "reviewer__aipack__pack-a", "SKILL.md")
+	for _, w := range f.Writes {
+		if w.Dst != wantAgent {
+			continue
+		}
+		content := string(w.Content)
+		if !strings.Contains(content, "deploy__aipack__pack-a") {
+			t.Fatalf("expected agent skill ref to use pack-a skill:\n%s", content)
+		}
+		if strings.Contains(content, "deploy__aipack__pack-b") {
+			t.Fatalf("agent skill ref used wrong pack:\n%s", content)
+		}
+		return
+	}
+	t.Fatalf("expected write to %q", wantAgent)
 }
 
 func TestPlan_Project_WorkflowsAndSkills(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
+	skillDir := testutil.SkillDir(t, "deploy")
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: projectDir,
-		Home:      t.TempDir(),
+		Scope:      domain.ScopeProject,
+		TargetDir:  projectDir,
+		Home:       t.TempDir(),
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{{
 				Workflows: []domain.Workflow{
 					{Name: "onboard", Raw: []byte("# Onboard"), SourcePack: "pack-a"},
 				},
 				Skills: []domain.Skill{
-					{Name: "deploy", DirPath: "/pack/skills/deploy", SourcePack: "pack-a"},
+					{Name: "deploy", DirPath: skillDir, SourcePack: "pack-a"},
 				},
 			}},
 		},
@@ -72,29 +136,23 @@ func TestPlan_Project_WorkflowsAndSkills(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// Workflow → .clinerules/workflows/onboard.md
-	wantWf := filepath.Join(projectDir, ".clinerules", "workflows", "onboard.md")
+	// Workflow → .clinerules/workflows/onboard__aipack__pack-a.md
+	wantWf := filepath.Join(projectDir, ".clinerules", "workflows", "onboard__aipack__pack-a.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
-	// Skill → .agents/skills/deploy
-	wantSkill := filepath.Join(projectDir, ".agents", "skills", "deploy")
-	found := false
-	for _, c := range f.Copies {
-		if c.Dst == wantSkill {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected skill copy to %q", wantSkill)
-	}
+	// Skill → .agents/skills/deploy__aipack__pack-a/SKILL.md
+	wantSkill := filepath.Join(projectDir, ".agents", "skills", "deploy__aipack__pack-a", domain.SkillEntryFile)
+	assertHasWriteDst(t, f.Writes, wantSkill)
 }
 
 func TestPlan_Global_Content(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	skillDir := testutil.SkillDir(t, "diagnose")
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeGlobal,
-		TargetDir: home,
+		Scope:      domain.ScopeGlobal,
+		TargetDir:  home,
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{{
 				Rules: []domain.Rule{
@@ -107,7 +165,7 @@ func TestPlan_Global_Content(t *testing.T) {
 					{Name: "deploy", Raw: []byte("# Deploy"), SourcePack: "pack-a"},
 				},
 				Skills: []domain.Skill{
-					{Name: "diagnose", DirPath: "/pack/skills/diagnose", SourcePack: "pack-a"},
+					{Name: "diagnose", DirPath: skillDir, SourcePack: "pack-a"},
 				},
 			}},
 		},
@@ -119,27 +177,19 @@ func TestPlan_Global_Content(t *testing.T) {
 	}
 
 	docs := documentsDir(home)
-	wantRule := filepath.Join(docs, "Cline", "Rules", "global-rule.md")
+	wantRule := filepath.Join(docs, "Cline", "Rules", "global-rule__aipack__pack-a.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
-	// Agent promoted to skill → ~/.agents/skills/planner/SKILL.md
-	wantAgent := filepath.Join(home, ".agents", "skills", "planner", "SKILL.md")
+	// Agent promoted to skill → ~/.agents/skills/planner__aipack__pack-a/SKILL.md
+	wantAgent := filepath.Join(home, ".agents", "skills", "planner__aipack__pack-a", "SKILL.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 
-	wantWf := filepath.Join(docs, "Cline", "Workflows", "deploy.md")
+	wantWf := filepath.Join(docs, "Cline", "Workflows", "deploy__aipack__pack-a.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
-	// Skill → ~/.agents/skills/diagnose
-	wantSkill := filepath.Join(home, ".agents", "skills", "diagnose")
-	found := false
-	for _, c := range f.Copies {
-		if c.Dst == wantSkill {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected skill copy to %q", wantSkill)
-	}
+	// Skill → ~/.agents/skills/diagnose__aipack__pack-a/SKILL.md
+	wantSkill := filepath.Join(home, ".agents", "skills", "diagnose__aipack__pack-a", domain.SkillEntryFile)
+	assertHasWriteDst(t, f.Writes, wantSkill)
 }
 
 func TestPlan_Global_MCP(t *testing.T) {

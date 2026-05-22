@@ -28,6 +28,7 @@ type PackShowEntry struct {
 	Agents        []string `json:"agents"`
 	Workflows     []string `json:"workflows"`
 	Skills        []string `json:"skills"`
+	Hooks         []string `json:"hooks"`
 	Plugins       []string `json:"plugins"`
 	Prompts       []string `json:"prompts"`
 	MCPServers    []string `json:"mcp_servers"`
@@ -49,7 +50,7 @@ func (e PackShowEntry) ContentPath(category domain.PackCategory, id string) stri
 func (e PackShowEntry) ContentSize(category domain.PackCategory, id string) int64 {
 	fp := e.ContentPath(category, id)
 	kind := domain.CopyKindFile
-	if category == domain.CategorySkills {
+	if category == domain.CategorySkills || category == domain.CategoryHooks {
 		fp = filepath.Dir(fp)
 		kind = domain.CopyKindDir
 	}
@@ -95,6 +96,8 @@ func (e PackShowEntry) ContentIDs(cat domain.PackCategory) []string {
 		return e.Workflows
 	case domain.CategorySkills:
 		return e.Skills
+	case domain.CategoryHooks:
+		return e.Hooks
 	case domain.CategoryPlugins:
 		return e.Plugins
 	case domain.CategoryPrompts:
@@ -110,6 +113,7 @@ func (e PackShowEntry) Counts() ContentCounts {
 	return ContentCounts{
 		Rules:     len(e.Rules),
 		Skills:    len(e.Skills),
+		Hooks:     len(e.Hooks),
 		Plugins:   len(e.Plugins),
 		Workflows: len(e.Workflows),
 		Agents:    len(e.Agents),
@@ -213,6 +217,7 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Agents = m.Agents
 		entry.Workflows = m.Workflows
 		entry.Skills = m.Skills
+		entry.Hooks = m.Hooks
 		entry.Plugins = m.Plugins
 		entry.Prompts = m.Prompts
 		entry.MCPServers = slices.Clone(m.MCP)
@@ -247,6 +252,9 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 	}
 	if entry.Skills == nil {
 		entry.Skills = []string{}
+	}
+	if entry.Hooks == nil {
+		entry.Hooks = []string{}
 	}
 	if entry.Plugins == nil {
 		entry.Plugins = []string{}

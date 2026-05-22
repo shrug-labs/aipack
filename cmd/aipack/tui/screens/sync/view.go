@@ -76,6 +76,7 @@ func (m Model) viewStatusPanel(width, height int) string {
 		fmt.Fprintf(&sb, "  Workflows: %d\n", snap.Target.NumWorkflows)
 		fmt.Fprintf(&sb, "  Agents:    %d\n", snap.Target.NumAgents)
 		fmt.Fprintf(&sb, "  Skills:    %d\n", snap.Target.NumSkills)
+		fmt.Fprintf(&sb, "  Hooks:     %d\n", snap.Target.NumHooks)
 		fmt.Fprintf(&sb, "  Settings:  %d\n", snap.Target.NumSettings)
 		fmt.Fprintf(&sb, "  MCP:       %d\n", snap.Target.NumMCP)
 		fmt.Fprintf(&sb, "  Stale:     %d\n", snap.Target.NumStale)

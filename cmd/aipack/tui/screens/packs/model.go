@@ -1082,6 +1082,8 @@ func kindForCategory(category domain.PackCategory) string {
 		return "workflow"
 	case domain.CategorySkills:
 		return "skill"
+	case domain.CategoryHooks:
+		return "hook"
 	case domain.CategoryMCP:
 		return "mcp"
 	case domain.CategoryPlugins:
@@ -1094,17 +1096,14 @@ func kindForCategory(category domain.PackCategory) string {
 }
 
 // packTabCategories returns the category display order for the Packs tab.
-// Unlike domain.AllPackCategories (which enumerates categories that sync/save
-// processes), this list also includes prompts so pack-shipped slash commands
-// surface alongside rules, agents, workflows, skills, and MCP servers in the
-// pack content browser. Prompts are not captured by harness save pipelines,
-// so they stay out of the global category list.
+// Keep a stable, scan-friendly content display order for installed packs.
 func packTabCategories() []domain.PackCategory {
 	return []domain.PackCategory{
 		domain.CategoryRules,
 		domain.CategoryAgents,
 		domain.CategoryWorkflows,
 		domain.CategorySkills,
+		domain.CategoryHooks,
 		domain.CategoryPlugins,
 		domain.CategoryPrompts,
 		domain.CategoryMCP,

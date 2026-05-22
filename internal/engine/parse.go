@@ -158,6 +158,137 @@ func (e *Engine) parseSkills(rp config.ResolvedPack) ([]domain.Skill, []domain.W
 	return skills, warnings, nil
 }
 
+func (e *Engine) parseHooks(rp config.ResolvedPack, params map[string]string, env map[string]string) ([]domain.Hook, []domain.Warning, error) {
+	var hooks []domain.Hook
+	var warnings []domain.Warning
+	for _, id := range rp.Hooks {
+		path := filepath.Join(rp.Root, filepath.FromSlash(rp.Manifest.RelPath(domain.CategoryHooks, id)))
+		raw, err := e.FS.ReadFile(path)
+		if err != nil {
+			return nil, warnings, fmt.Errorf("reading hook %s: %w", path, err)
+		}
+		var desc struct {
+			Name        string             `yaml:"name"`
+			Description string             `yaml:"description"`
+			Events      []domain.HookEvent `yaml:"events"`
+		}
+		if err := yaml.Unmarshal(raw, &desc); err != nil {
+			return nil, warnings, fmt.Errorf("parsing hook %s: %w", path, err)
+		}
+		hookRoot := filepath.Dir(path)
+		hookCtx := hookParseContext{
+			params:   params,
+			env:      env,
+			packRoot: rp.Root,
+			hookRoot: hookRoot,
+		}
+		events, err := hookCtx.expandAndValidateEvents(desc.Events)
+		if err != nil {
+			return nil, warnings, fmt.Errorf("hook %q from pack %q: %w", id, rp.Name, err)
+		}
+		name := strings.TrimSpace(desc.Name)
+		if name == "" {
+			name = id
+		}
+		hooks = append(hooks, domain.Hook{
+			ID:          id,
+			Name:        name,
+			Description: strings.TrimSpace(desc.Description),
+			Events:      events,
+			DirPath:     hookRoot,
+			SourcePath:  path,
+			SourcePack:  rp.Name,
+		})
+	}
+	return hooks, warnings, nil
+}
+
+type hookParseContext struct {
+	params   map[string]string
+	env      map[string]string
+	packRoot string
+	hookRoot string
+}
+
+func (c hookParseContext) expandAndValidateEvents(events []domain.HookEvent) ([]domain.HookEvent, error) {
+	if len(events) == 0 {
+		return nil, fmt.Errorf("events must contain at least one event")
+	}
+	out := make([]domain.HookEvent, 0, len(events))
+	for eventIndex, event := range events {
+		event.On = domain.HookEventName(strings.TrimSpace(string(event.On)))
+		if !domain.IsSupportedHookEvent(event.On) {
+			return nil, fmt.Errorf("events[%d].on %q is not supported", eventIndex, event.On)
+		}
+		handlers := event.EffectiveHandlers()
+		if len(handlers) == 0 {
+			return nil, fmt.Errorf("events[%d] must define handler or handlers", eventIndex)
+		}
+		expandedHandlers := make([]domain.HookHandler, 0, len(handlers))
+		for handlerIndex, handler := range handlers {
+			expanded, err := c.expandAndValidateHandler(handler)
+			if err != nil {
+				return nil, fmt.Errorf("events[%d].handlers[%d]: %w", eventIndex, handlerIndex, err)
+			}
+			expandedHandlers = append(expandedHandlers, expanded)
+		}
+		event.Handler = domain.HookHandler{}
+		event.Handlers = expandedHandlers
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+func (c hookParseContext) expandAndValidateHandler(handler domain.HookHandler) (domain.HookHandler, error) {
+	handler.Type = domain.HookHandlerType(strings.TrimSpace(string(handler.Type)))
+	if handler.Type == "" {
+		handler.Type = domain.HookHandlerTypeCommand
+	}
+	if handler.Type != domain.HookHandlerTypeCommand {
+		return handler, fmt.Errorf("type %q is not supported", handler.Type)
+	}
+	if strings.TrimSpace(handler.Command) == "" && strings.TrimSpace(handler.CommandWindows) == "" {
+		return handler, fmt.Errorf("command is required")
+	}
+	var err error
+	handler.Command, err = c.expandRefs(handler.Command)
+	if err != nil {
+		return handler, err
+	}
+	handler.CommandWindows, err = c.expandRefs(handler.CommandWindows)
+	if err != nil {
+		return handler, err
+	}
+	if _, err := domain.HookTimeoutSeconds(handler.Timeout); err != nil {
+		return handler, err
+	}
+	handler.Mode = domain.HookHandlerMode(strings.TrimSpace(string(handler.Mode)))
+	switch handler.Mode {
+	case "", domain.HookHandlerModeSync:
+	case domain.HookHandlerModeAsync:
+		return handler, fmt.Errorf("mode async is not supported by current harness renderers")
+	default:
+		return handler, fmt.Errorf("mode %q is not supported", handler.Mode)
+	}
+	return handler, nil
+}
+
+func (c hookParseContext) expandRefs(s string) (string, error) {
+	if strings.TrimSpace(s) == "" {
+		return s, nil
+	}
+	if strings.Contains(s, HookRootRef) {
+		if c.hookRoot == "" {
+			return "", fmt.Errorf("unresolved %s reference in %q (hook root is unavailable)", HookRootRef, s)
+		}
+		s = strings.ReplaceAll(s, HookRootRef, filepath.Clean(c.hookRoot))
+	}
+	if strings.Contains(s, HookRootRef) {
+		return "", fmt.Errorf("unresolved %s reference in %q", HookRootRef, s)
+	}
+	return expandTemplateRefsWithEnv(c.params, c.env, c.packRoot, s)
+}
+
 func (e *Engine) parsePlugins(rp config.ResolvedPack) ([]domain.Plugin, []domain.Warning, error) {
 	var plugins []domain.Plugin
 	for _, id := range rp.Plugins {

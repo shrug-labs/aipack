@@ -20,6 +20,7 @@ type ProfileRefsRequest struct {
 	ProfileName  string
 	ProfilePath  string
 	Collision    config.CollisionStrategy
+	Namespaced   bool
 	ProcessEnvFn func(string) (string, bool)
 }
 
@@ -56,15 +57,14 @@ func ProfileRefs(req ProfileRefsRequest) (ProfileRefsResult, error) {
 		return ProfileRefsResult{}, fmt.Errorf("config dir is required")
 	}
 	profileName := strings.TrimSpace(req.ProfileName)
-	if profileName == "" || req.Collision == "" {
-		if sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir)); err == nil {
-			if profileName == "" {
-				profileName = strings.TrimSpace(sc.Defaults.Profile)
-			}
-			if req.Collision == "" {
-				req.Collision = sc.Defaults.CollisionStrategy
-			}
+	if sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir)); err == nil {
+		if profileName == "" {
+			profileName = strings.TrimSpace(sc.Defaults.Profile)
 		}
+		if req.Collision == "" {
+			req.Collision = sc.Defaults.CollisionStrategy
+		}
+		req.Namespaced = req.Namespaced || sc.Defaults.Namespaced
 	}
 	if profileName == "" {
 		profileName = "default"
@@ -77,7 +77,10 @@ func ProfileRefs(req ProfileRefsRequest) (ProfileRefsResult, error) {
 	if err != nil {
 		return ProfileRefsResult{}, err
 	}
-	resolved, err := config.ResolveProfile(profileCfg, profilePath, req.ConfigDir, req.Collision, nil)
+	resolved, err := config.ResolveProfileWithOptions(profileCfg, profilePath, req.ConfigDir, config.ResolveOptions{
+		CollisionStrategy: req.Collision,
+		Namespaced:        req.Namespaced,
+	})
 	if err != nil {
 		return ProfileRefsResult{}, err
 	}
@@ -177,19 +180,28 @@ func ProfileRefs(req ProfileRefsRequest) (ProfileRefsResult, error) {
 		settingsPack[name] = struct{}{}
 	}
 	for _, pack := range resolved.Packs {
-		if _, ok := settingsPack[pack.Name]; !ok {
-			continue
+		if _, ok := settingsPack[pack.Name]; ok {
+			for harness, files := range pack.Manifest.Configs.HarnessSettings {
+				for _, f := range files {
+					path := filepath.Join(pack.Root, "configs", harness, f)
+					b, err := os.ReadFile(path)
+					if err != nil {
+						continue
+					}
+					if err := scanString(string(b), pack.Name, harness, "configs."+harness+"."+f); err != nil {
+						return ProfileRefsResult{}, err
+					}
+				}
+			}
 		}
-		for harness, files := range pack.Manifest.Configs.HarnessSettings {
-			for _, f := range files {
-				path := filepath.Join(pack.Root, "configs", harness, f)
-				b, err := os.ReadFile(path)
-				if err != nil {
-					continue
-				}
-				if err := scanString(string(b), pack.Name, harness, "configs."+harness+"."+f); err != nil {
-					return ProfileRefsResult{}, err
-				}
+		for _, id := range pack.Hooks {
+			path := filepath.Join(pack.Root, filepath.FromSlash(pack.Manifest.RelPath(domain.CategoryHooks, id)))
+			b, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			if err := scanString(string(b), pack.Name, id, "hooks."+id); err != nil {
+				return ProfileRefsResult{}, err
 			}
 		}
 	}

@@ -23,6 +23,7 @@ type PackInventory struct {
 	Rules         []string                     `yaml:"rules,omitempty"`
 	Agents        []string                     `yaml:"agents,omitempty"`
 	Workflows     []string                     `yaml:"workflows,omitempty"`
+	Hooks         []string                     `yaml:"hooks,omitempty"`
 	Plugins       []string                     `yaml:"plugins,omitempty"`
 	Skills        map[string]SkillSnapshot     `yaml:"skills,omitempty"`
 	MCPServers    map[string]MCPServerSnapshot `yaml:"mcp_servers,omitempty"`
@@ -94,6 +95,8 @@ func (inv PackInventory) Contains(category PackCategory, id string) bool {
 	case CategorySkills:
 		_, ok := inv.Skills[id]
 		return ok
+	case CategoryHooks:
+		return slices.Contains(inv.Hooks, id)
 	case CategoryPlugins:
 		return slices.Contains(inv.Plugins, id)
 	case CategoryMCP:
@@ -112,6 +115,8 @@ type InventoryDiff struct {
 	RemovedAgents    []string
 	AddedWorkflows   []string
 	RemovedWorkflows []string
+	AddedHooks       []string
+	RemovedHooks     []string
 	AddedPlugins     []string
 	RemovedPlugins   []string
 	AddedSkills      map[string]SkillSnapshot
@@ -127,6 +132,7 @@ func (d InventoryDiff) Empty() bool {
 	return len(d.AddedRules) == 0 && len(d.RemovedRules) == 0 &&
 		len(d.AddedAgents) == 0 && len(d.RemovedAgents) == 0 &&
 		len(d.AddedWorkflows) == 0 && len(d.RemovedWorkflows) == 0 &&
+		len(d.AddedHooks) == 0 && len(d.RemovedHooks) == 0 &&
 		len(d.AddedPlugins) == 0 && len(d.RemovedPlugins) == 0 &&
 		len(d.AddedSkills) == 0 && len(d.RemovedSkills) == 0 &&
 		len(d.ChangedSkills) == 0 &&

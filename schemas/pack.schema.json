@@ -29,16 +29,16 @@
       "minLength": 1
     },
     "rules": {
-      "$ref": "#/definitions/nullableSlashedIDs"
+      "$ref": "#/definitions/nullableContentSlashedIDs"
     },
     "agents": {
-      "$ref": "#/definitions/nullableLeafIDs"
+      "$ref": "#/definitions/nullableContentLeafIDs"
     },
     "workflows": {
-      "$ref": "#/definitions/nullableLeafIDs"
+      "$ref": "#/definitions/nullableContentLeafIDs"
     },
     "skills": {
-      "$ref": "#/definitions/nullableLeafIDs"
+      "$ref": "#/definitions/nullableContentLeafIDs"
     },
     "prompts": {
       "$ref": "#/definitions/nullableSlashedIDs"
@@ -49,6 +49,9 @@
     "mcp": true,
     "configs": {
       "$ref": "#/definitions/nullableConfigs"
+    },
+    "hooks": {
+      "$ref": "#/definitions/nullableContentLeafIDs"
     },
     "profiles": {
       "$ref": "#/definitions/nullableYAMLRefs"
@@ -132,16 +135,49 @@
   ],
   "definitions": {
     "packName": {
-      "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+      "allOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        {
+          "not": {
+            "pattern": "__aipack__"
+          }
+        }
+      ]
     },
     "leafID": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]*$"
     },
+    "contentLeafID": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/leafID"
+        },
+        {
+          "not": {
+            "pattern": "__aipack__"
+          }
+        }
+      ]
+    },
     "slashedID": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*$"
+    },
+    "contentSlashedID": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/slashedID"
+        },
+        {
+          "not": {
+            "pattern": "__"
+          }
+        }
+      ]
     },
     "yamlRef": {
       "type": "string",
@@ -162,11 +198,25 @@
         "$ref": "#/definitions/leafID"
       }
     },
+    "contentLeafIDs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/contentLeafID"
+      }
+    },
     "slashedIDs": {
       "type": "array",
       "uniqueItems": true,
       "items": {
         "$ref": "#/definitions/slashedID"
+      }
+    },
+    "contentSlashedIDs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/contentSlashedID"
       }
     },
     "yamlRefs": {
@@ -186,6 +236,16 @@
         }
       ]
     },
+    "nullableContentLeafIDs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/contentLeafIDs"
+        }
+      ]
+    },
     "nullableSlashedIDs": {
       "oneOf": [
         {
@@ -193,6 +253,16 @@
         },
         {
           "$ref": "#/definitions/slashedIDs"
+        }
+      ]
+    },
+    "nullableContentSlashedIDs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/contentSlashedIDs"
         }
       ]
     },
@@ -238,7 +308,7 @@
         {
           "not": {
             "type": "string",
-            "pattern": "^(rules|agents|workflows|skills|prompts|plugins|mcp|configs|profiles|registries)(/|$)"
+            "pattern": "^(rules|agents|workflows|skills|prompts|plugins|mcp|configs|hooks|profiles|registries)(/|$)"
           }
         }
       ]
@@ -278,6 +348,16 @@
         },
         {
           "$ref": "#/definitions/configs"
+        }
+      ]
+    },
+    "nullableHarnessFileMap": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/definitions/harnessFileMap"
         }
       ]
     },

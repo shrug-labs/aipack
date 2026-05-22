@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ func TestContentPaths(t *testing.T) {
 				"claudecode": {"settings.json"},
 			},
 		},
+		Hooks: []string{"tool-audit"},
 	}
 
 	got := m.ContentPaths()
@@ -41,6 +43,7 @@ func TestContentPaths(t *testing.T) {
 		"profiles/default.yaml":            false,
 		"registries/team.yaml":             false,
 		"configs/claudecode/settings.json": false,
+		"hooks/tool-audit/":                false,
 	}
 
 	for _, p := range got {
@@ -96,6 +99,7 @@ func TestContentPaths_FullManifest(t *testing.T) {
 				"opencode": {"plugin.json"},
 			},
 		},
+		Hooks: []string{"tool-audit"},
 	}
 
 	paths := m.ContentPaths()
@@ -115,6 +119,7 @@ func TestContentPaths_FullManifest(t *testing.T) {
 		"registries/team.yaml",
 		"configs/claudecode/settings.json",
 		"configs/opencode/plugin.json",
+		"hooks/tool-audit/",
 	}
 
 	slices.Sort(paths)
@@ -387,6 +392,54 @@ func TestParsePackManifest_MissingSchemaVersionRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "schema_version") {
 		t.Errorf("error should mention schema_version; got: %v", err)
+	}
+}
+
+func TestPackSchema_ReservesRenderedSeparator(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", "schemas", "pack.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties  map[string]json.RawMessage `json:"properties"`
+		Definitions map[string]json.RawMessage `json:"definitions"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+
+	wantRefs := map[string]string{
+		"name":      "#/definitions/packName",
+		"rules":     "#/definitions/nullableContentSlashedIDs",
+		"agents":    "#/definitions/nullableContentLeafIDs",
+		"workflows": "#/definitions/nullableContentLeafIDs",
+		"skills":    "#/definitions/nullableContentLeafIDs",
+	}
+	for prop, want := range wantRefs {
+		var spec struct {
+			Ref string `json:"$ref"`
+		}
+		if err := json.Unmarshal(schema.Properties[prop], &spec); err != nil {
+			t.Fatalf("schema property %s: %v", prop, err)
+		}
+		if got := spec.Ref; got != want {
+			t.Fatalf("schema property %s ref = %q, want %q", prop, got, want)
+		}
+	}
+	wantReserved := map[string]string{
+		"packName":         "__aipack__",
+		"contentLeafID":    "__aipack__",
+		"contentSlashedID": "__",
+	}
+	for def, separator := range wantReserved {
+		body := string(schema.Definitions[def])
+		compact := fmt.Sprintf(`"pattern":"%s"`, separator)
+		spaced := fmt.Sprintf(`"pattern": "%s"`, separator)
+		if !strings.Contains(body, compact) && !strings.Contains(body, spaced) {
+			t.Fatalf("schema definition %s does not reserve separator %q: %s", def, separator, body)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 // --- Plan tests ---
@@ -106,6 +108,49 @@ func TestPlan_Project_AgentsOverride_WithRulesAndAgents(t *testing.T) {
 		}
 	}
 	t.Fatal("expected agent registration in config.toml settings")
+}
+
+func TestPlan_Project_AgentsOverride_NamespacedRules(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	ctx := engine.SyncContext{
+		Scope:      domain.ScopeProject,
+		TargetDir:  projectDir,
+		Namespaced: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Rules: []domain.Rule{
+					{
+						Name:       "rule-a",
+						Raw:        []byte("---\nname: rule-a\ndescription: Rule A\n---\nRule body\n"),
+						SourcePack: "pack-a",
+					},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	overridePath := filepath.Join(projectDir, "AGENTS.override.md")
+	var content string
+	for _, w := range f.Writes {
+		if w.Dst == overridePath {
+			content = string(w.Content)
+		}
+	}
+	if content == "" {
+		t.Fatalf("expected write to %q; got writes: %v", overridePath, writeDsts(f.Writes))
+	}
+	for _, want := range []string{"<!-- source: rule-a__aipack__pack-a.md -->", "name: rule-a__aipack__pack-a", "Rule body"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("namespaced AGENTS.override.md missing %q:\n%s", want, content)
+		}
+	}
 }
 
 func TestPlan_Project_AgentsOverride_NoExistingAgents(t *testing.T) {
@@ -222,6 +267,122 @@ func TestPlan_Project_PluginsIgnoreSkipSettings(t *testing.T) {
 	}
 }
 
+func TestPlan_Project_CodexHooksJSONAndTrustState(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	hooksPath := filepath.Join(projectDir, ".codex", "hooks.json")
+	ctx := engine.SyncContext{
+		ConfigDir: "/tmp/aipack-config",
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "pack-a",
+				Hooks: []domain.Hook{{
+					ID:         "tool-audit",
+					SourcePack: "pack-a",
+					Events: []domain.HookEvent{{
+						On:    domain.HookEventToolAfter,
+						Match: domain.HookMatch{Tool: "*"},
+						Handlers: []domain.HookHandler{{
+							Type:          "command",
+							Command:       "python3 /tmp/post.py",
+							Timeout:       "5",
+							StatusMessage: "sending",
+						}},
+					}},
+				}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	var hooksJSON []byte
+	for _, w := range f.Writes {
+		if w.Dst == hooksPath {
+			hooksJSON = w.Content
+			if w.SourcePack != "pack-a" {
+				t.Fatalf("hooks.json SourcePack = %q, want pack-a", w.SourcePack)
+			}
+		}
+	}
+	if len(hooksJSON) == 0 {
+		t.Fatalf("expected hooks.json write; got writes: %v", writeDsts(f.Writes))
+	}
+	var hooksRoot map[string]any
+	if err := json.Unmarshal(hooksJSON, &hooksRoot); err != nil {
+		t.Fatalf("unmarshal hooks.json: %v\n%s", err, hooksJSON)
+	}
+	if _, ok := hooksRoot["hooks"].(map[string]any)["PostToolUse"]; !ok {
+		t.Fatalf("PostToolUse missing from hooks.json:\n%s", hooksJSON)
+	}
+	postGroups := hooksRoot["hooks"].(map[string]any)["PostToolUse"].([]any)
+	postGroup := postGroups[0].(map[string]any)
+	handlers := postGroup["hooks"].([]any)
+	handler := handlers[0].(map[string]any)
+	if command := handler["command"].(string); command != "python3 /tmp/post.py" {
+		t.Fatalf("hook command = %q, want direct pack command", command)
+	}
+	if len(f.Settings) != 1 {
+		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
+	}
+	state := codexHookStateFromTOML(t, f.Settings[0].Desired)
+	key := hooksPath + ":post_tool_use:0:0"
+	entry, ok := state[key].(map[string]any)
+	if !ok {
+		t.Fatalf("hook state %q missing in %v", key, state)
+	}
+	if got, _ := entry["trusted_hash"].(string); !strings.HasPrefix(got, "sha256:") {
+		t.Fatalf("trusted_hash = %v, want sha256", entry["trusted_hash"])
+	}
+}
+
+func TestPlan_Project_CodexHooksIgnoreSkipSettings(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:        domain.ScopeProject,
+		TargetDir:    projectDir,
+		SkipSettings: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "pack-a",
+				Hooks: []domain.Hook{{
+					ID:         "tool-audit",
+					SourcePack: "pack-a",
+					Events: []domain.HookEvent{{
+						On:    domain.HookEventToolAfter,
+						Match: domain.HookMatch{Tool: "*"},
+						Handlers: []domain.HookHandler{{
+							Type:    "command",
+							Command: "python3 /tmp/post.py",
+						}},
+					}},
+				}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(f.Settings) != 0 {
+		t.Fatalf("settings actions = %d, want 0 with skip settings", len(f.Settings))
+	}
+	if len(f.MCP) != 1 {
+		t.Fatalf("managed config actions = %d, want 1", len(f.MCP))
+	}
+	state := codexHookStateFromTOML(t, f.MCP[0].Desired)
+	key := filepath.Join(projectDir, ".codex", "hooks.json") + ":post_tool_use:0:0"
+	if _, ok := state[key]; !ok {
+		t.Fatalf("hook state %q missing in %v", key, state)
+	}
+}
+
 func TestPlan_Project_AgentsOverride_SourcePackSingle(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
@@ -329,7 +490,7 @@ func TestPlan_Project_WithWorkflows(t *testing.T) {
 		t.Fatalf("expected promoted workflow skill at %q; got writes: %v", skillPath, writeDsts(f.Writes))
 	}
 	if !strings.Contains(skillContent, "name: promote") {
-		t.Fatal("expected name in skill frontmatter")
+		t.Fatal("expected source content name in skill frontmatter")
 	}
 	if !strings.Contains(skillContent, "Promote a tier") {
 		t.Fatal("expected workflow body in promoted skill")
@@ -369,6 +530,55 @@ func TestPlan_Project_Skills(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected copy to %q", wantSkill)
+	}
+}
+
+func TestPlan_Project_SkillsRenderedWithNamespacedFrontmatter(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	skillDir := testutil.SkillDir(t, "deploy")
+	if err := os.WriteFile(filepath.Join(skillDir, "helper.md"), []byte("helper\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := engine.SyncContext{
+		Scope:      domain.ScopeProject,
+		TargetDir:  projectDir,
+		Namespaced: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Skills: []domain.Skill{
+					{Name: "deploy", DirPath: skillDir, SourcePack: "pack-a", Assets: []string{"helper.md"}},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	skillPath := filepath.Join(projectDir, ".agents", "skills", "deploy__aipack__pack-a", domain.SkillEntryFile)
+	var skillContent string
+	for _, w := range f.Writes {
+		if w.Dst == skillPath {
+			skillContent = string(w.Content)
+		}
+	}
+	if !strings.Contains(skillContent, "name: deploy__aipack__pack-a") {
+		t.Fatalf("rendered SKILL.md missing namespaced frontmatter:\n%s", skillContent)
+	}
+
+	helperDst := filepath.Join(projectDir, ".agents", "skills", "deploy__aipack__pack-a", "helper.md")
+	foundHelper := false
+	for _, c := range f.Copies {
+		if c.Dst == helperDst && c.Kind == domain.CopyKindFile {
+			foundHelper = true
+		}
+	}
+	if !foundHelper {
+		t.Fatalf("expected helper asset copy to %q; got %v", helperDst, f.Copies)
 	}
 }
 
@@ -835,6 +1045,34 @@ func TestLayout_StripManaged_RemovesMCPServersAndAgents(t *testing.T) {
 	}
 }
 
+func TestLayout_StripManaged_RemovesOnlyAIPackHookState(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
+	hooksPath := filepath.Join(projectDir, ".codex", "hooks.json")
+	otherPath := filepath.Join(projectDir, ".codex", "other-hooks.json")
+	input := []byte(`
+[hooks.state."` + hooksPath + `:post_tool_use:0:0"]
+trusted_hash = "sha256:managed"
+
+[hooks.state."` + otherPath + `:post_tool_use:0:0"]
+trusted_hash = "sha256:user"
+`)
+
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
+	if err != nil {
+		t.Fatalf("StripManaged: %v", err)
+	}
+	state := codexHookStateFromTOML(t, out)
+	if _, ok := state[hooksPath+":post_tool_use:0:0"]; ok {
+		t.Fatalf("managed hook state was not stripped: %v", state)
+	}
+	if _, ok := state[otherPath+":post_tool_use:0:0"]; !ok {
+		t.Fatalf("user hook state was stripped: %v", state)
+	}
+}
+
 // --- Capture tests ---
 
 func TestCapture_Project(t *testing.T) {
@@ -987,19 +1225,19 @@ func TestPromoteWorkflows_GeneratesSkillMD(t *testing.T) {
 		},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), true, workflows)
 
 	if len(f.Writes) != 1 {
 		t.Fatalf("expected 1 write, got %d", len(f.Writes))
 	}
 	w := f.Writes[0]
-	wantDst := filepath.Join("/project", ".agents", "skills", "remediate", "SKILL.md")
+	wantDst := filepath.Join("/project", ".agents", "skills", "remediate__aipack__pack-a", "SKILL.md")
 	if w.Dst != wantDst {
 		t.Fatalf("dst: got %q want %q", w.Dst, wantDst)
 	}
 	content := string(w.Content)
-	if !strings.Contains(content, "name: remediate") {
-		t.Fatal("expected name in frontmatter")
+	if !strings.Contains(content, "name: remediate__aipack__pack-a") {
+		t.Fatal("expected rendered content name in frontmatter")
 	}
 	if !strings.Contains(content, "[Workflow] Automated issue remediation workflow") {
 		t.Fatal("expected [Workflow] prefixed description in frontmatter")
@@ -1011,7 +1249,7 @@ func TestPromoteWorkflows_GeneratesSkillMD(t *testing.T) {
 		t.Fatal("expected body content")
 	}
 	// Desired should include both the skill directory and the SKILL.md file.
-	wantDir := filepath.Join("/project", ".agents", "skills", "remediate")
+	wantDir := filepath.Join("/project", ".agents", "skills", "remediate__aipack__pack-a")
 	wantFile := filepath.Join(wantDir, "SKILL.md")
 	if len(f.Desired) != 2 || f.Desired[0] != wantDir || f.Desired[1] != wantFile {
 		t.Fatalf("desired: got %v want [%s %s]", f.Desired, wantDir, wantFile)
@@ -1039,7 +1277,11 @@ func TestNativeAgents_GeneratesToml(t *testing.T) {
 		},
 	}
 
-	regs, _ := addNativeAgents(&f, "/project/.codex/agents", agents, nil, "/project", filepath.Join(".agents", "skills"))
+	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
+		AgentsDir:    "/project/.codex/agents",
+		SkillsBase:   "/project",
+		SkillsSubDir: filepath.Join(".agents", "skills"),
+	})
 
 	if len(f.Writes) != 1 {
 		t.Fatalf("expected 1 write, got %d", len(f.Writes))
@@ -1070,6 +1312,96 @@ func TestNativeAgents_GeneratesToml(t *testing.T) {
 	}
 }
 
+func TestNativeAgents_NamespacedGeneratesToml(t *testing.T) {
+	t.Parallel()
+	var f domain.Fragment
+	agents := []domain.Agent{
+		{
+			Name: "reviewer",
+			Frontmatter: domain.AgentFrontmatter{
+				Name:        "reviewer",
+				Description: "Code review specialist",
+			},
+			Body:       []byte("You are a code reviewer."),
+			SourcePack: "pack-a",
+			SourcePath: "/packs/pack-a/agents/reviewer.md",
+		},
+	}
+
+	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
+		AgentsDir:    "/project/.codex/agents",
+		SkillsBase:   "/project",
+		SkillsSubDir: filepath.Join(".agents", "skills"),
+		Namespaced:   true,
+	})
+
+	if len(f.Writes) != 1 {
+		t.Fatalf("expected 1 write, got %d", len(f.Writes))
+	}
+	w := f.Writes[0]
+	wantDst := filepath.Join("/project", ".codex", "agents", "reviewer__aipack__pack-a.toml")
+	if w.Dst != wantDst {
+		t.Fatalf("dst: got %q want %q", w.Dst, wantDst)
+	}
+	content := string(w.Content)
+	if !strings.Contains(content, "name = 'reviewer__aipack__pack-a'") {
+		t.Fatalf("expected namespaced name in TOML:\n%s", content)
+	}
+	if _, ok := regs["reviewer"]; ok {
+		t.Fatal("registration should use rendered namespaced key")
+	}
+	reg, ok := regs["reviewer__aipack__pack-a"]
+	if !ok {
+		t.Fatalf("expected namespaced registration, got %v", regs)
+	}
+	if reg["config_file"] != wantDst {
+		t.Fatalf("config_file = %v", reg["config_file"])
+	}
+}
+
+func TestNativeAgents_NamespacedSkillRefsUseAgentPack(t *testing.T) {
+	t.Parallel()
+	var f domain.Fragment
+	agents := []domain.Agent{
+		{
+			Name: "reviewer",
+			Frontmatter: domain.AgentFrontmatter{
+				Name:   "reviewer",
+				Skills: []string{"deploy"},
+			},
+			Body:       []byte("You are a code reviewer."),
+			SourcePack: "pack-a",
+			SourcePath: "/packs/pack-a/agents/reviewer.md",
+		},
+	}
+	skills := []domain.Skill{
+		{Name: "deploy", SourcePack: "pack-b", DirPath: "/packs/pack-b/skills/deploy"},
+		{Name: "deploy", SourcePack: "pack-a", DirPath: "/packs/pack-a/skills/deploy"},
+	}
+
+	_, warnings := addNativeAgents(&f, agents, nativeAgentRenderContext{
+		AgentsDir:    "/project/.codex/agents",
+		Skills:       skills,
+		SkillsBase:   "/project",
+		SkillsSubDir: filepath.Join(".agents", "skills"),
+		Namespaced:   true,
+	})
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings: %v", warnings)
+	}
+	if len(f.Writes) != 1 {
+		t.Fatalf("expected 1 write, got %d", len(f.Writes))
+	}
+	content := string(f.Writes[0].Content)
+	if !strings.Contains(content, filepath.Join("/project", ".agents", "skills", "deploy__aipack__pack-a")) {
+		t.Fatalf("expected agent skill config to reference pack-a skill:\n%s", content)
+	}
+	if strings.Contains(content, "deploy__aipack__pack-b") {
+		t.Fatalf("agent skill config referenced wrong pack:\n%s", content)
+	}
+}
+
 func TestPromoteWorkflow_EmptyBody_Skipped(t *testing.T) {
 	t.Parallel()
 	var f domain.Fragment
@@ -1077,7 +1409,7 @@ func TestPromoteWorkflow_EmptyBody_Skipped(t *testing.T) {
 		{Name: "empty", Body: []byte("  \n  "), SourcePack: "pack-a"},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), false, workflows)
 
 	if len(f.Writes) != 0 {
 		t.Fatalf("expected 0 writes for empty body, got %d", len(f.Writes))
@@ -1091,7 +1423,7 @@ func TestPromoteWorkflow_FallbackDescription(t *testing.T) {
 		{Name: "deploy", Body: []byte("deploy steps"), SourcePack: "pack-a"},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), false, workflows)
 
 	content := string(f.Writes[0].Content)
 	if !strings.Contains(content, "[Workflow] Workflow: deploy") {
@@ -1111,7 +1443,7 @@ func TestPromoteWorkflow_DescriptionPrefix_NotDuplicated(t *testing.T) {
 		},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), false, workflows)
 
 	content := string(f.Writes[0].Content)
 	if strings.Contains(content, "[Workflow] [Workflow]") {
@@ -1292,6 +1624,37 @@ func TestCapturePromoted_Workflow(t *testing.T) {
 	}
 }
 
+func TestCapturePromoted_WorkflowStripsRenderedContentName(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	skillDir := filepath.Join(projectDir, ".agents", "skills", "remediate")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: remediate__aipack__pack-a\ndescription: StarFix remediation\nsource_type: workflow\n---\n\n## Steps\n\n1. Run remediate\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		KnownPacks: map[string]struct{}{"pack-a": {}},
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if len(res.Workflows) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(res.Workflows))
+	}
+	wf := res.Workflows[0]
+	if wf.Name != "remediate" || wf.Frontmatter.Name != "remediate" {
+		t.Fatalf("workflow names = %q/%q, want remediate/remediate", wf.Name, wf.Frontmatter.Name)
+	}
+}
+
 func TestCapturePromoted_PlainSkill(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
@@ -1324,6 +1687,62 @@ func TestCapturePromoted_PlainSkill(t *testing.T) {
 	}
 	if res.Skills[0].Name != "deploy" {
 		t.Fatalf("skill name: got %q", res.Skills[0].Name)
+	}
+}
+
+func TestCapturePromoted_PlainSkillStripsRenderedContentName(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	skillDir := filepath.Join(projectDir, ".agents", "skills", "deploy")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("---\nname: deploy__aipack__pack-a\ndescription: Deploy to prod\n---\n\n# Deploy\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "helper.md"), []byte("helper\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		KnownPacks: map[string]struct{}{"pack-a": {}},
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if len(res.Skills) != 1 || res.Skills[0].Name != "deploy" {
+		t.Fatalf("skills = %v, want deploy", res.Skills)
+	}
+
+	foundSkillWrite := false
+	for _, w := range res.Writes {
+		if w.Dst == filepath.Join("skills", "deploy", "SKILL.md") {
+			foundSkillWrite = true
+			if !strings.Contains(string(w.Content), "name: deploy") {
+				t.Fatalf("captured SKILL.md did not strip namespace:\n%s", string(w.Content))
+			}
+			if w.SourceDigest != domain.SingleFileDigest(raw) {
+				t.Fatalf("SourceDigest = %q, want raw harness digest", w.SourceDigest)
+			}
+		}
+	}
+	if !foundSkillWrite {
+		t.Fatalf("expected WriteAction for skills/deploy/SKILL.md; got %v", writeDsts(res.Writes))
+	}
+
+	foundAssetCopy := false
+	for _, c := range res.Copies {
+		if c.Dst == filepath.Join("skills", "deploy", "helper.md") && c.Kind == domain.CopyKindFile {
+			foundAssetCopy = true
+		}
+	}
+	if !foundAssetCopy {
+		t.Fatalf("expected helper asset CopyAction; got %v", res.Copies)
 	}
 }
 
@@ -1448,6 +1867,53 @@ startup_timeout_sec = 10
 	codex := a.Frontmatter.Harness["codex"]
 	if codex["model"] != "o3" {
 		t.Fatalf("model = %v", codex["model"])
+	}
+}
+
+func TestCapture_NativeAgent_StripsNamespacedName(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	agentsDir := filepath.Join(projectDir, ".codex", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentTOML := `name = "investigator__aipack__pack-a"
+description = "Investigates issues"
+developer_instructions = "You investigate."
+`
+	src := filepath.Join(agentsDir, "investigator__aipack__pack-a.toml")
+	if err := os.WriteFile(src, []byte(agentTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harness{}.Capture(context.Background(), harness.CaptureContext{
+		Scope:      domain.ScopeProject,
+		ProjectDir: projectDir,
+		KnownPacks: map[string]struct{}{"pack-a": {}},
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	if len(res.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(res.Agents))
+	}
+	a := res.Agents[0]
+	if a.Name != "investigator" || a.Frontmatter.Name != "investigator" {
+		t.Fatalf("agent names = %q/%q, want investigator/investigator", a.Name, a.Frontmatter.Name)
+	}
+	found := false
+	for _, w := range res.Writes {
+		if filepath.ToSlash(w.Dst) == "agents/investigator.md" {
+			found = true
+			if w.Src != src {
+				t.Fatalf("write src = %q, want %q", w.Src, src)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected WriteAction for agents/investigator.md; got writes: %v", writeDsts(res.Writes))
 	}
 }
 
@@ -1680,7 +2146,7 @@ developer_instructions = "body"
 	writeTOML("README.md", `name = "ignore me"`)
 
 	res := &harness.CaptureResult{}
-	captureNativeAgents(agentsDir, res)
+	captureNativeAgents(agentsDir, nil, res)
 
 	names := map[string]bool{}
 	for _, a := range res.Agents {
@@ -1710,6 +2176,23 @@ developer_instructions = "body"
 }
 
 // --- Helpers ---
+
+func codexHookStateFromTOML(t *testing.T, content []byte) map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := toml.Unmarshal(content, &root); err != nil {
+		t.Fatalf("unmarshal config.toml: %v\n%s", err, content)
+	}
+	hooks, ok := root["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("hooks table missing in:\n%s", content)
+	}
+	state, ok := hooks["state"].(map[string]any)
+	if !ok {
+		t.Fatalf("hooks.state table missing in:\n%s", content)
+	}
+	return state
+}
 
 func writeDsts(writes []domain.WriteAction) []string {
 	var out []string

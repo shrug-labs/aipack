@@ -16,7 +16,7 @@ type SearchCmd struct {
 	Terms     []string `arg:"" optional:"" help:"Search terms (FTS5 full-text search on name, description, and body)"`
 	Tags      []string `help:"Filter by tags (comma-separated or repeated)" name:"tags" sep:","`
 	Role      string   `help:"Filter by role" name:"role"`
-	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, prompt, plugin, mcp, pack)" name:"kind" predictor:"kind"`
+	Kind      string   `help:"Filter by resource kind (rule, skill, workflow, agent, hook, prompt, plugin, mcp, pack)" name:"kind" predictor:"kind"`
 	Pack      string   `help:"Filter by pack name" name:"pack" predictor:"pack"`
 	Category  string   `help:"Filter by category (ops, dev, infra, governance, meta)" name:"category" predictor:"category"`
 	Status    string   `help:"Filter by discovery status (installed, registered, inspected)" name:"status"`
@@ -146,7 +146,7 @@ func printSearchResults(w io.Writer, results []app.SearchResult, hasTerms bool) 
 		packs[r.Pack] = true
 	}
 	var parts []string
-	for _, kind := range []string{"rule", "skill", "workflow", "agent", "prompt", "plugin", "mcp", "pack"} {
+	for _, kind := range []string{"rule", "skill", "workflow", "agent", "hook", "prompt", "plugin", "mcp", "pack"} {
 		if n, ok := kindCounts[kind]; ok {
 			label := kind + "s"
 			if n == 1 {

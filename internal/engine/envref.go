@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,7 +77,11 @@ func ExpandRefsWithEnv(params map[string]string, env map[string]string, s string
 	if !strings.Contains(out, util.EnvRefPrefix) {
 		return out, nil
 	}
-	return util.ExpandEnvRefsWith(out, envLookup(env))
+	out, err = util.ExpandEnvRefsWith(out, envLookup(env))
+	if err != nil {
+		return "", withEnvRefRemediation(err)
+	}
+	return out, nil
 }
 
 func envLookup(env map[string]string) func(string) (string, bool) {
@@ -90,11 +95,22 @@ func envLookup(env map[string]string) func(string) (string, bool) {
 	}
 }
 
+func withEnvRefRemediation(err error) error {
+	var missing util.MissingEnvError
+	if errors.As(err, &missing) {
+		return fmt.Errorf("%w (run: aipack config env set %s <value>)", err, missing.Name)
+	}
+	return err
+}
+
 // PackRootRef is the literal token resolved to the installed pack's root path.
 const PackRootRef = "{pack:root}"
 
+// HookRootRef is the literal token resolved to the hook descriptor directory.
+const HookRootRef = "{hook:root}"
+
 func hasTemplateRefs(s string) bool {
-	return util.HasParamRef(s) || strings.Contains(s, util.EnvRefPrefix) || strings.Contains(s, PackRootRef)
+	return util.HasParamRef(s) || strings.Contains(s, util.EnvRefPrefix) || strings.Contains(s, PackRootRef) || strings.Contains(s, HookRootRef)
 }
 
 func expandTemplateRefsWithEnv(params map[string]string, env map[string]string, packRoot string, s string) (string, error) {

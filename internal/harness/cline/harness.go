@@ -98,14 +98,20 @@ func planProject(f *domain.Fragment, ctx engine.SyncContext) error {
 	skills := ctx.Profile.AllSkills()
 	agents := ctx.Profile.AllAgents()
 
-	if err := harness.CheckPromotionCollisions(skills, nil, agents); err != nil {
+	if err := harness.CheckPromotionCollisions(ctx.Namespaced, skills, nil, agents); err != nil {
 		return fmt.Errorf("cline: %w", err)
 	}
 
-	f.AddRuleWrites(rulesDir, "", ctx.Profile.AllRules())
-	f.AddWorkflowWrites(filepath.Join(pd, paths.WorkflowsDir), "", ctx.Profile.AllWorkflows())
-	f.AddSkillCopies(skillsDir, "", skills)
-	addPromotedAgents(f, skillsDir, agents)
+	if err := harness.AddRenderedRuleWrites(f, rulesDir, "", ctx.Namespaced, ctx.Profile.AllRules()); err != nil {
+		return err
+	}
+	if err := harness.AddRenderedWorkflowWrites(f, filepath.Join(pd, paths.WorkflowsDir), "", ctx.Namespaced, ctx.Profile.AllWorkflows()); err != nil {
+		return err
+	}
+	harness.AddRenderedSkillCopies(f, skillsDir, "", ctx.Namespaced, skills)
+	if err := addPromotedAgents(f, skillsDir, ctx.Namespaced, agents, skills); err != nil {
+		return err
+	}
 
 	// Cline MCP settings are always global — sync them even in project scope.
 	return planGlobalMCP(f, ctx)
@@ -117,14 +123,20 @@ func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 	skills := ctx.Profile.AllSkills()
 	agents := ctx.Profile.AllAgents()
 
-	if err := harness.CheckPromotionCollisions(skills, nil, agents); err != nil {
+	if err := harness.CheckPromotionCollisions(ctx.Namespaced, skills, nil, agents); err != nil {
 		return fmt.Errorf("cline: %w", err)
 	}
 
-	f.AddRuleWrites(paths.RulesDir, "", ctx.Profile.AllRules())
-	f.AddWorkflowWrites(paths.WorkflowsDir, "", ctx.Profile.AllWorkflows())
-	f.AddSkillCopies(paths.SkillsDir, "", skills)
-	addPromotedAgents(f, paths.SkillsDir, agents)
+	if err := harness.AddRenderedRuleWrites(f, paths.RulesDir, "", ctx.Namespaced, ctx.Profile.AllRules()); err != nil {
+		return err
+	}
+	if err := harness.AddRenderedWorkflowWrites(f, paths.WorkflowsDir, "", ctx.Namespaced, ctx.Profile.AllWorkflows()); err != nil {
+		return err
+	}
+	harness.AddRenderedSkillCopies(f, paths.SkillsDir, "", ctx.Namespaced, skills)
+	if err := addPromotedAgents(f, paths.SkillsDir, ctx.Namespaced, agents, skills); err != nil {
+		return err
+	}
 
 	return planGlobalMCP(f, ctx)
 }
@@ -197,12 +209,12 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 	res := harness.NewCaptureResult()
 
 	if ctx.Scope == domain.ScopeProject {
-		return captureProject(ctx.ProjectDir, ctx.Home, res)
+		return captureProject(ctx.ProjectDir, ctx.Home, ctx.KnownPacks, res)
 	}
-	return captureGlobal(ctx.Home, res)
+	return captureGlobal(ctx.Home, ctx.KnownPacks, res)
 }
 
-func captureProject(projectDir string, home string, res harness.CaptureResult) (harness.CaptureResult, error) {
+func captureProject(projectDir string, home string, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
 	paths := ProjectPaths
 	// Rules and workflows have their own directories; agents are promoted
 	// into skills, so we capture rules/workflows individually and scan the
@@ -210,8 +222,8 @@ func captureProject(projectDir string, home string, res harness.CaptureResult) (
 	captureRulesAndWorkflows(&res, harness.ContentDirs{
 		Rules:     filepath.Join(projectDir, paths.RulesDir),
 		Workflows: filepath.Join(projectDir, paths.WorkflowsDir),
-	})
-	harness.CapturePromotedContent(filepath.Join(projectDir, paths.SkillsDir), &res)
+	}, knownPacks)
+	harness.CapturePromotedContent(filepath.Join(projectDir, paths.SkillsDir), knownPacks, &res)
 
 	// Cline MCP settings are always global — capture them in project scope too
 	// to maintain round-trip symmetry with Plan.
@@ -228,7 +240,7 @@ func captureProject(projectDir string, home string, res harness.CaptureResult) (
 	return res, nil
 }
 
-func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResult, error) {
+func captureGlobal(home string, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
 	if home == "" {
 		return res, fmt.Errorf("HOME not set (required for global-scope capture)")
 	}
@@ -236,8 +248,8 @@ func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResul
 	captureRulesAndWorkflows(&res, harness.ContentDirs{
 		Rules:     paths.RulesDir,
 		Workflows: paths.WorkflowsDir,
-	})
-	harness.CapturePromotedContent(paths.SkillsDir, &res)
+	}, knownPacks)
+	harness.CapturePromotedContent(paths.SkillsDir, knownPacks, &res)
 
 	if err := captureMCP(home, &res); err != nil {
 		return res, err
@@ -324,8 +336,9 @@ func captureMCP(home string, res *harness.CaptureResult) error {
 // (they live as promoted skills). Both scans are non-recursive, so the
 // project layout where `.clinerules/workflows/` nests inside `.clinerules/`
 // separates them naturally.
-func captureRulesAndWorkflows(res *harness.CaptureResult, dirs harness.ContentDirs) {
-	copies, warnings := harness.CaptureContentDir(dirs.Rules, "rules", ".md", domain.CategoryRules,
+func captureRulesAndWorkflows(res *harness.CaptureResult, dirs harness.ContentDirs, knownPacks map[string]struct{}) {
+	writes, copies, warnings := harness.CaptureRenderedMarkdownContentDir(dirs.Rules, "rules", ".md", domain.CategoryRules,
+		knownPacks,
 		func(raw []byte, name, src string) error {
 			r, err := engine.ParseRuleBytes(raw, name, "")
 			if err != nil {
@@ -335,10 +348,12 @@ func captureRulesAndWorkflows(res *harness.CaptureResult, dirs harness.ContentDi
 			res.Rules = append(res.Rules, r)
 			return nil
 		})
+	res.Writes = append(res.Writes, writes...)
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 
-	copies, warnings = harness.CaptureContentDir(dirs.Workflows, "workflows", ".md", domain.CategoryWorkflows,
+	writes, copies, warnings = harness.CaptureRenderedMarkdownContentDir(dirs.Workflows, "workflows", ".md", domain.CategoryWorkflows,
+		knownPacks,
 		func(raw []byte, name, src string) error {
 			w, err := engine.ParseWorkflowBytes(raw, name, "")
 			if err != nil {
@@ -348,6 +363,7 @@ func captureRulesAndWorkflows(res *harness.CaptureResult, dirs harness.ContentDi
 			res.Workflows = append(res.Workflows, w)
 			return nil
 		})
+	res.Writes = append(res.Writes, writes...)
 	res.Copies = append(res.Copies, copies...)
 	res.Warnings = append(res.Warnings, warnings...)
 }

@@ -41,6 +41,9 @@ func TestEnsureInit_CreatesAllFiles(t *testing.T) {
 	if !strings.Contains(string(gotSyncConfig), "auto_sync: false") {
 		t.Errorf("sync-config template missing visible auto_sync default:\n%s", string(gotSyncConfig))
 	}
+	if !strings.Contains(string(gotSyncConfig), "namespaced: false") {
+		t.Errorf("sync-config template missing visible namespaced default:\n%s", string(gotSyncConfig))
+	}
 
 	// default profile must exist.
 	profPath := filepath.Join(configDir, "profiles", "default.yaml")

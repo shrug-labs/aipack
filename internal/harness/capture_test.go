@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -175,6 +176,82 @@ func TestCaptureContentDir_NonRuleNoEncoding(t *testing.T) {
 	}
 	if len(copies) != 1 || filepath.ToSlash(copies[0].Dst) != "workflows/team__deploy.md" {
 		t.Fatalf("expected flat Dst workflows/team__deploy.md, got %q", copies[0].Dst)
+	}
+}
+
+func TestCaptureRenderedMarkdownContentDir_StripsRenderedIdentity(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	raw := []byte("---\nname: deploy__aipack__pack-a\ndescription: Deploy\n---\nBody\n")
+	if err := os.WriteFile(filepath.Join(dir, "deploy__aipack__pack-a.md"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var parsedName string
+	var parsedRaw []byte
+	writes, copies, warnings := harness.CaptureRenderedMarkdownContentDir(dir, "workflows", ".md", domain.CategoryWorkflows,
+		map[string]struct{}{"pack-a": {}},
+		func(raw []byte, name, srcPath string) error {
+			parsedName = name
+			parsedRaw = raw
+			return nil
+		})
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings: %v", warnings)
+	}
+	if len(copies) != 0 {
+		t.Fatalf("copies = %v, want none", copies)
+	}
+	if parsedName != "deploy" {
+		t.Fatalf("parsed name = %q", parsedName)
+	}
+	if !strings.Contains(string(parsedRaw), "name: deploy") {
+		t.Fatalf("parsed raw did not strip rendered name:\n%s", string(parsedRaw))
+	}
+	if len(writes) != 1 {
+		t.Fatalf("writes = %d, want 1", len(writes))
+	}
+	if filepath.ToSlash(writes[0].Dst) != "workflows/deploy.md" {
+		t.Fatalf("write dst = %q", writes[0].Dst)
+	}
+	if !strings.Contains(string(writes[0].Content), "name: deploy") {
+		t.Fatalf("write content did not strip rendered name:\n%s", string(writes[0].Content))
+	}
+}
+
+func TestCaptureRenderedMarkdownContentDir_KeepsUnknownRenderedShape(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	raw := []byte("---\nname: deploy__aipack__pack-a\ndescription: Deploy\n---\nBody\n")
+	if err := os.WriteFile(filepath.Join(dir, "deploy__aipack__pack-a.md"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var parsedName string
+	var parsedRaw []byte
+	writes, copies, warnings := harness.CaptureRenderedMarkdownContentDir(dir, "workflows", ".md", domain.CategoryWorkflows,
+		nil,
+		func(raw []byte, name, srcPath string) error {
+			parsedName = name
+			parsedRaw = raw
+			return nil
+		})
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings: %v", warnings)
+	}
+	if len(writes) != 0 {
+		t.Fatalf("writes = %v, want none", writes)
+	}
+	if len(copies) != 1 || filepath.ToSlash(copies[0].Dst) != "workflows/deploy__aipack__pack-a.md" {
+		t.Fatalf("copies = %v, want workflows/deploy__aipack__pack-a.md", copies)
+	}
+	if parsedName != "deploy__aipack__pack-a" {
+		t.Fatalf("parsed name = %q", parsedName)
+	}
+	if !strings.Contains(string(parsedRaw), "name: deploy__aipack__pack-a") {
+		t.Fatalf("parsed raw stripped unknown rendered shape:\n%s", string(parsedRaw))
 	}
 }
 

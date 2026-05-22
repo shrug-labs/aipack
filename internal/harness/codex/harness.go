@@ -26,6 +26,7 @@ func (Harness) ID() domain.Harness { return domain.HarnessCodex }
 func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 	paths := PathsForScope(scope)
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
+	hooksPath := filepath.Join(baseDir, paths.HooksFile)
 	agentsDir := filepath.Join(baseDir, paths.AgentsDir)
 	l := harness.Layout{
 		ValidationRoots: []string{
@@ -33,11 +34,13 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 			agentsDir,
 			filepath.Join(baseDir, paths.OverrideFile),
 			configPath,
+			hooksPath,
 		},
 		RemovePaths: []string{
 			filepath.Join(baseDir, paths.SkillsDir),
 			agentsDir,
 			filepath.Join(baseDir, paths.OverrideFile),
+			hooksPath,
 		},
 	}
 	if configPath != "" {
@@ -46,10 +49,12 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 			Strip: func(root map[string]any) {
 				delete(root, "mcp_servers")
 				delete(root, "agents")
+				stripManagedHookState(root, hooksPath)
 			},
 			Reset: func(root map[string]any) {
 				delete(root, "mcp_servers")
 				delete(root, "agents")
+				stripManagedHookState(root, hooksPath)
 				if m, ok := root["mcp"].(map[string]any); ok {
 					delete(m, "servers")
 					if len(m) == 0 {
@@ -105,12 +110,15 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		if err == nil {
 			existing = string(b)
 		}
-		override := buildAgentsOverride(rules, existing)
+		override, err := buildAgentsOverride(rules, existing, ctx.Namespaced)
+		if err != nil {
+			return err
+		}
 		dst := filepath.Join(overrideBase, "AGENTS.override.md")
 		f.Writes = append(f.Writes, domain.WriteAction{
 			Dst:        dst,
 			Content:    []byte(override),
-			SourcePack: compositeSourcePack(rules),
+			SourcePack: compositeSourcePack(rules, func(r domain.Rule) string { return r.SourcePack }),
 		})
 		f.Desired = append(f.Desired, dst)
 	}
@@ -118,31 +126,61 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	workflows := ctx.Profile.AllWorkflows()
 	agents := ctx.Profile.AllAgents()
 
-	if err := harness.CheckPromotionCollisions(skills, workflows, nil); err != nil {
+	if err := harness.CheckPromotionCollisions(ctx.Namespaced, skills, workflows, nil); err != nil {
 		return fmt.Errorf("codex: %w", err)
 	}
 
-	f.AddSkillCopies(skillsBase, skillsSubDir, skills)
-	addPromotedWorkflows(f, skillsBase, skillsSubDir, workflows)
+	harness.AddRenderedSkillCopies(f, skillsBase, skillsSubDir, ctx.Namespaced, skills)
+	addPromotedWorkflows(f, skillsBase, skillsSubDir, ctx.Namespaced, workflows)
 
 	// Render agents as native Codex TOML files and collect registration entries.
 	paths := PathsForScope(ctx.Scope)
 	agentsDir := filepath.Join(skillsBase, paths.AgentsDir)
-	agentRegs, agentWarnings := addNativeAgents(f, agentsDir, agents, ctx.Profile.MCPServers, skillsBase, skillsSubDir)
-	_ = agentWarnings // TODO: surface via Plan warnings when Fragment supports it
+	agentRegs, agentWarnings := addNativeAgents(f, agents, nativeAgentRenderContext{
+		AgentsDir:     agentsDir,
+		Skills:        skills,
+		AllMCPServers: ctx.Profile.MCPServers,
+		SkillsBase:    skillsBase,
+		SkillsSubDir:  skillsSubDir,
+		Namespaced:    ctx.Namespaced,
+	})
+	f.Warnings = append(f.Warnings, agentWarnings...)
 
 	sp := ctx.Profile.SettingsPackName(domain.HarnessCodex)
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 	hasAgents := len(agentRegs) > 0
 	plugins := ctx.Profile.AllPlugins()
 	hasPlugins := len(plugins) > 0
-	hasManagedKeys := hasMCP || hasAgents || hasPlugins
+	hooksPath := filepath.Join(skillsBase, paths.HooksFile)
+	renderedHooks, err := RenderHooksJSON(ctx.Profile.AllHooks(), hooksPath)
+	if err != nil {
+		return err
+	}
+	if len(renderedHooks.JSON) > 0 {
+		f.Writes = append(f.Writes, domain.WriteAction{
+			Dst:        hooksPath,
+			Content:    renderedHooks.JSON,
+			SourcePack: renderedHooks.SourcePack,
+		})
+		f.Desired = append(f.Desired, filepath.Clean(hooksPath))
+	}
+	hasHooks := len(renderedHooks.TrustState) > 0
+	if sp == "" && hasHooks {
+		sp = renderedHooks.SourcePack
+	}
+	hasManagedKeys := hasMCP || hasAgents || hasPlugins || hasHooks
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
 
 	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
 	var mcpRendered []byte
 	if decision.EmitSettings {
-		out, _, err := RenderBytesWithPlugins(base, ctx.Profile.MCPServers, agentRegs, plugins)
+		out, _, err := RenderBytesWithOptions(RenderOptions{
+			Base:      base,
+			Servers:   ctx.Profile.MCPServers,
+			AgentRegs: agentRegs,
+			Plugins:   plugins,
+			HookState: renderedHooks.TrustState,
+		})
 		if err != nil {
 			return err
 		}
@@ -153,7 +191,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
-		managed, _, err := RenderManagedKeysOnlyWithPlugins(ctx.Profile.MCPServers, agentRegs, plugins)
+		managed, _, err := RenderManagedKeysOnlyWithPluginsAndHookState(ctx.Profile.MCPServers, agentRegs, plugins, renderedHooks.TrustState)
 		if err != nil {
 			return err
 		}
@@ -183,43 +221,76 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 }
 
 // compositeSourcePack returns the SourcePack for a composite file built from
-// multiple rules. If all rules share the same pack, that name is returned;
+// multiple items. If all items share the same pack, that name is returned;
 // otherwise "(composite)" signals multi-pack provenance.
-func compositeSourcePack(rules []domain.Rule) string {
-	if len(rules) == 0 {
+func compositeSourcePack[T any](items []T, sourcePack func(T) string) string {
+	if len(items) == 0 {
 		return ""
 	}
-	first := rules[0].SourcePack
-	for _, r := range rules[1:] {
-		if r.SourcePack != first {
+	first := sourcePack(items[0])
+	for _, item := range items[1:] {
+		if sourcePack(item) != first {
 			return "(composite)"
 		}
 	}
 	return first
 }
 
-func buildAgentsOverride(rules []domain.Rule, existingAgents string) string {
-	out := BuildManagedContent("# aipack managed rules (flattened)", engine.FlattenRules(rules))
+func buildAgentsOverride(rules []domain.Rule, existingAgents string, namespaced bool) (string, error) {
+	renderedRules, err := codexRulesForFlatten(rules, namespaced)
+	if err != nil {
+		return "", err
+	}
+	out := BuildManagedContent("# aipack managed rules (flattened)", engine.FlattenRules(renderedRules))
 	if strings.TrimSpace(existingAgents) != "" {
 		out += "\n---\n\n<!-- preserved from existing AGENTS.md -->\n\n"
 		out += strings.TrimRight(existingAgents, "\n")
 		out += "\n"
 	}
-	return out
+	return out, nil
+}
+
+func codexRulesForFlatten(rules []domain.Rule, namespaced bool) ([]domain.Rule, error) {
+	if !namespaced {
+		return rules, nil
+	}
+	out := make([]domain.Rule, 0, len(rules))
+	for _, r := range rules {
+		rendered, _, _, err := harness.RenderedRuleForHarness(r, namespaced)
+		if err != nil {
+			return nil, fmt.Errorf("render codex rule identity %s: %w", r.Name, err)
+		}
+		out = append(out, rendered)
+	}
+	return out, nil
 }
 
 // Render produces a Fragment for pack rendering.
 func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
-	out, _, err := RenderBytes(base, ctx.Profile.MCPServers, nil)
+	configPath := filepath.Join(ctx.OutDir, "codex", "config.toml")
+	hooksPath := filepath.Join(ctx.OutDir, "codex", "hooks.json")
+	renderedHooks, err := RenderHooksJSON(ctx.Profile.AllHooks(), hooksPath)
 	if err != nil {
 		return domain.Fragment{}, err
 	}
-	p := filepath.Join(ctx.OutDir, "codex", "config.toml")
-	return domain.Fragment{
-		Writes:  []domain.WriteAction{{Dst: p, Content: out}},
-		Desired: []string{p},
-	}, nil
+	out, _, err := RenderBytesWithOptions(RenderOptions{
+		Base:      base,
+		Servers:   ctx.Profile.MCPServers,
+		HookState: renderedHooks.TrustState,
+	})
+	if err != nil {
+		return domain.Fragment{}, err
+	}
+	f := domain.Fragment{
+		Writes:  []domain.WriteAction{{Dst: configPath, Content: out}},
+		Desired: []string{configPath},
+	}
+	if len(renderedHooks.JSON) > 0 {
+		f.Writes = append(f.Writes, domain.WriteAction{Dst: hooksPath, Content: renderedHooks.JSON, SourcePack: renderedHooks.SourcePack})
+		f.Desired = append(f.Desired, hooksPath)
+	}
+	return f, nil
 }
 
 // Capture extracts Codex content for round-trip save.
@@ -227,18 +298,19 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 	res := harness.NewCaptureResult()
 
 	if ctx.Scope == domain.ScopeProject {
-		return captureProject(ctx.ProjectDir, res)
+		return captureProject(ctx.ProjectDir, ctx.KnownPacks, res)
 	}
-	return captureGlobal(ctx.Home, res)
+	return captureGlobal(ctx.Home, ctx.KnownPacks, res)
 }
 
-func captureProject(projectDir string, res harness.CaptureResult) (harness.CaptureResult, error) {
+func captureProject(projectDir string, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
 	paths := ProjectPaths
 	harness.CapturePromotedContent(
 		filepath.Join(projectDir, paths.SkillsDir),
+		knownPacks,
 		&res,
 	)
-	captureNativeAgents(filepath.Join(projectDir, paths.AgentsDir), &res)
+	captureNativeAgents(filepath.Join(projectDir, paths.AgentsDir), knownPacks, &res)
 	// AGENTS.override.md is fully generated by sync — not captured.
 	// Rules are flattened into AGENTS.override.md during Plan and cannot be
 	// individually recovered. CaptureResult.Rules will be empty for Codex.
@@ -258,13 +330,14 @@ func captureProject(projectDir string, res harness.CaptureResult) (harness.Captu
 	return res, nil
 }
 
-func captureGlobal(home string, res harness.CaptureResult) (harness.CaptureResult, error) {
+func captureGlobal(home string, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
 	paths := GlobalPaths
 	harness.CapturePromotedContent(
 		filepath.Join(home, paths.SkillsDir),
+		knownPacks,
 		&res,
 	)
-	captureNativeAgents(filepath.Join(home, paths.AgentsDir), &res)
+	captureNativeAgents(filepath.Join(home, paths.AgentsDir), knownPacks, &res)
 	// AGENTS.override.md is fully generated by sync — not captured (see captureProject).
 
 	settingsPath := filepath.Join(home, paths.SettingsFile)
@@ -292,7 +365,7 @@ var agentTOMLKnownKeys = map[string]bool{
 // reconstructs domain.Agent objects with the Harness map populated from
 // Codex-specific fields. When a TOML omits `name`, the file basename
 // (extension stripped) becomes the name.
-func captureNativeAgents(agentsDir string, res *harness.CaptureResult) {
+func captureNativeAgents(agentsDir string, knownPacks map[string]struct{}, res *harness.CaptureResult) {
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		return // directory may not exist — not an error
@@ -323,6 +396,9 @@ func captureNativeAgents(agentsDir string, res *harness.CaptureResult) {
 		name, _ := parsed["name"].(string)
 		if name == "" {
 			name = strings.TrimSuffix(e.Name(), ".toml")
+		}
+		if stripped, ok := harness.StripKnownRenderedContentName(name, knownPacks); ok {
+			name = stripped
 		}
 		desc, _ := parsed["description"].(string)
 		body, _ := parsed["developer_instructions"].(string)

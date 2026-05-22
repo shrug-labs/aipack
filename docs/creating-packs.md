@@ -18,7 +18,8 @@ my-pack/
 ├── agents/            # tool-using sub-personas
 ├── plugins/           # harness plugin references
 ├── mcp/               # MCP server definitions
-└── configs/           # harness settings templates (advanced)
+├── hooks/             # portable hook descriptors (advanced)
+└── configs/           # harness settings and drop-ins (advanced)
 ```
 
 If you already have markdown files with instructions for AI agents — in a shared repo, an `agents.md`, a set of review guidelines — you have most of a pack already.
@@ -50,7 +51,7 @@ To create a pack that references existing content directories (useful when conte
 aipack pack create my-pack --skills ./src/skills --rules ./docs/rules
 ```
 
-This creates the pack scaffold with directory-level symlinks instead of empty directories, so edits to the source are immediately reflected in the pack. Available flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`.
+This creates the pack scaffold with directory-level symlinks instead of empty directories, so edits to the source are immediately reflected in the pack. Available flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--hooks`, `--prompts`.
 
 ### From existing content
 

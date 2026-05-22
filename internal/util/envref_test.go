@@ -1,6 +1,7 @@
 package util
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
@@ -216,10 +217,18 @@ func TestExpandEnvRefs_DefaultRejectsNestedRef(t *testing.T) {
 
 func TestExpandEnvRefs_Unset(t *testing.T) {
 	// Truly unset env vars should error.
-	os.Unsetenv("AIPACK_TEST_TRULY_UNSET")
-	_, err := ExpandEnvRefs("{env:AIPACK_TEST_TRULY_UNSET}")
+	const missingEnv = "AIPACK_TEST_TRULY_UNSET"
+	os.Unsetenv(missingEnv)
+	_, err := ExpandEnvRefs("{env:" + missingEnv + "}")
 	if err == nil {
 		t.Fatal("expected error for unset env var")
+	}
+	var missing MissingEnvError
+	if !errors.As(err, &missing) {
+		t.Fatalf("error type = %T, want MissingEnvError", err)
+	}
+	if missing.Name != missingEnv {
+		t.Fatalf("missing env name = %q, want %q", missing.Name, missingEnv)
 	}
 }
 

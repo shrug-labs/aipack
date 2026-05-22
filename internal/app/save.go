@@ -61,10 +61,7 @@ func saveDirToPack(src, dst string) error {
 	}
 
 	// Remove files in dst that no longer exist in src.
-	if _, statErr := os.Stat(dst); statErr != nil {
-		return nil // dst doesn't exist yet, nothing to prune
-	}
-	return filepath.WalkDir(dst, func(p string, d os.DirEntry, werr error) error {
+	err = filepath.WalkDir(dst, func(p string, d os.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
@@ -80,6 +77,10 @@ func saveDirToPack(src, dst string) error {
 		}
 		return nil
 	})
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func desiredBytesForCopy(c domain.CopyAction, res harness.CaptureResult, srcContent []byte) ([]byte, error) {
@@ -114,6 +115,23 @@ func desiredBytesForCopy(c domain.CopyAction, res harness.CaptureResult, srcCont
 	return srcContent, nil
 }
 
+func resolveSkillAssetPackDst(manifest config.PackManifest, packRoot, dst string) (string, bool) {
+	rest, ok := strings.CutPrefix(filepath.ToSlash(dst), domain.CategorySkills.DirName()+"/")
+	if !ok {
+		return "", false
+	}
+	skillID, assetRel, ok := strings.Cut(rest, "/")
+	if !ok || skillID == "" || assetRel == "" || assetRel == domain.SkillEntryFile {
+		return "", false
+	}
+	skillFile := manifest.RelPath(domain.CategorySkills, skillID)
+	skillDir := strings.TrimSuffix(skillFile, "/"+domain.SkillEntryFile)
+	if skillDir == skillFile {
+		return "", false
+	}
+	return filepath.Join(packRoot, filepath.FromSlash(skillDir), filepath.FromSlash(assetRel)), true
+}
+
 // checkFileConflict returns true if dst exists with content different from srcContent.
 func checkFileConflict(srcContent []byte, dst string) (bool, error) {
 	dstContent, err := os.ReadFile(dst)
@@ -124,6 +142,25 @@ func checkFileConflict(srcContent []byte, dst string) (bool, error) {
 		return false, err
 	}
 	return !bytes.Equal(srcContent, dstContent), nil
+}
+
+func renderedPackChangedSinceLedger(dst, packName string, cat domain.PackCategory, id, ledgerDigest string) (bool, error) {
+	if ledgerDigest == "" {
+		return true, nil
+	}
+	packContent, err := os.ReadFile(dst)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	renderedName := harness.RenderedCategoryContentName(packName, cat, id)
+	rendered, err := harness.RewriteFrontmatterName(packContent, renderedName)
+	if err != nil {
+		return true, nil
+	}
+	return domain.SingleFileDigest(rendered) != ledgerDigest, nil
 }
 
 func checkMCPConflict(srcContent []byte, dst string) (bool, error) {
@@ -226,7 +263,7 @@ type PendingSettingsChange struct {
 func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest, reg *harness.Registry) (RoundTripResult, error) {
 	home := req.Home
 	configDir := config.FallbackConfigDir(req.ConfigDir, home)
-	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
+	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home, KnownPacks: knownPacksFromRoots(req.PackRoots)}
 	var result RoundTripResult
 
 	for _, hid := range req.Harnesses {
@@ -291,11 +328,18 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 		// paths must resolve nested authored locations so promoted and
 		// native-TOML agent/workflow saves don't flatten into a duplicate.
 		resolvePackDst := func(packName, packRoot, dst string, isDir bool) string {
+			slashedDst := filepath.ToSlash(dst)
+			skillPrefix := domain.CategorySkills.DirName() + "/"
 			if isDir {
-				if id, ok := strings.CutPrefix(filepath.ToSlash(dst), domain.CategorySkills.DirName()+"/"); ok && id != "" && !strings.ContainsRune(id, '/') {
+				if id, ok := strings.CutPrefix(slashedDst, skillPrefix); ok && id != "" && !strings.ContainsRune(id, '/') {
 					skillFile := loadManifest(packName, packRoot).RelPath(domain.CategorySkills, id)
 					skillDir := strings.TrimSuffix(skillFile, "/"+domain.SkillEntryFile)
 					return filepath.Join(packRoot, filepath.FromSlash(skillDir))
+				}
+			}
+			if strings.HasPrefix(slashedDst, skillPrefix) {
+				if skillDst, ok := resolveSkillAssetPackDst(loadManifest(packName, packRoot), packRoot, dst); ok {
+					return skillDst
 				}
 			}
 			cat, id, ok := domain.MatchPrimaryContentFile(dst)
@@ -482,11 +526,19 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 
 			if w.IsContent {
 				// Content write — save re-rendered content directly.
-				conflict, err := checkFileConflict(w.Content, dst)
-				if err != nil {
-					return RoundTripResult{}, err
+				packChanged := true
+				if cat, id, ok := domain.MatchPrimaryContentFile(w.Dst); ok && req.Namespaced && renderedLedgerComparable(cat, w.Src) {
+					packChanged, err = renderedPackChangedSinceLedger(dst, packName, cat, id, entry.Digest)
+					if err != nil {
+						return RoundTripResult{}, err
+					}
+				} else {
+					packChanged, err = checkFileConflict(w.Content, dst)
+					if err != nil {
+						return RoundTripResult{}, err
+					}
 				}
-				if conflict {
+				if packChanged {
 					result.Conflicts = append(result.Conflicts, ConflictFile{
 						HarnessPath: src, PackPath: dst, PackName: packName,
 					})
@@ -553,6 +605,17 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 	}
 
 	return result, nil
+}
+
+func renderedLedgerComparable(cat domain.PackCategory, src string) bool {
+	switch cat {
+	case domain.CategoryRules, domain.CategorySkills:
+		return true
+	case domain.CategoryWorkflows:
+		return filepath.Base(src) != domain.SkillEntryFile
+	default:
+		return false
+	}
 }
 
 // contentChangedSinceLedger checks if pre-read content (for files) or on-disk

@@ -14,8 +14,33 @@ func TestCheckPromotionCollisions_NoCollision(t *testing.T) {
 	workflows := []domain.Workflow{{Name: "beta"}}
 	agents := []domain.Agent{{Name: "gamma"}}
 
-	if err := CheckPromotionCollisions(skills, workflows, agents); err != nil {
+	if err := CheckPromotionCollisions(false, skills, workflows, agents); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCheckPromotionCollisions_NamespacedAllowsCrossPackSourceIDOverlap(t *testing.T) {
+	t.Parallel()
+	skills := []domain.Skill{{Name: "deploy", SourcePack: "pack-a"}}
+	workflows := []domain.Workflow{{Name: "deploy", SourcePack: "pack-b"}}
+	agents := []domain.Agent{{Name: "deploy", SourcePack: "pack-c"}}
+
+	if err := CheckPromotionCollisions(true, skills, workflows, agents); err != nil {
+		t.Fatalf("unexpected namespaced collision: %v", err)
+	}
+}
+
+func TestCheckPromotionCollisions_NamespacedSamePackSourceIDCollides(t *testing.T) {
+	t.Parallel()
+	skills := []domain.Skill{{Name: "deploy", SourcePack: "pack-a"}}
+	workflows := []domain.Workflow{{Name: "deploy", SourcePack: "pack-a"}}
+
+	err := CheckPromotionCollisions(true, skills, workflows, nil)
+	if err == nil {
+		t.Fatal("expected namespaced collision error for same-pack skill+workflow with same name")
+	}
+	if want := `name collision: skill "deploy" and workflow "deploy"`; !contains(err.Error(), want) {
+		t.Fatalf("error message: got %q, want substring %q", err.Error(), want)
 	}
 }
 
@@ -24,7 +49,7 @@ func TestCheckPromotionCollisions_SkillWorkflow(t *testing.T) {
 	skills := []domain.Skill{{Name: "deploy"}}
 	workflows := []domain.Workflow{{Name: "deploy"}}
 
-	err := CheckPromotionCollisions(skills, workflows, nil)
+	err := CheckPromotionCollisions(false, skills, workflows, nil)
 	if err == nil {
 		t.Fatal("expected collision error for skill+workflow with same name")
 	}
@@ -38,7 +63,7 @@ func TestCheckPromotionCollisions_SkillAgent(t *testing.T) {
 	skills := []domain.Skill{{Name: "review"}}
 	agents := []domain.Agent{{Name: "review"}}
 
-	err := CheckPromotionCollisions(skills, nil, agents)
+	err := CheckPromotionCollisions(false, skills, nil, agents)
 	if err == nil {
 		t.Fatal("expected collision error for skill+agent with same name")
 	}
@@ -52,7 +77,7 @@ func TestCheckPromotionCollisions_WorkflowAgent(t *testing.T) {
 	workflows := []domain.Workflow{{Name: "triage"}}
 	agents := []domain.Agent{{Name: "triage"}}
 
-	err := CheckPromotionCollisions(nil, workflows, agents)
+	err := CheckPromotionCollisions(false, nil, workflows, agents)
 	if err == nil {
 		t.Fatal("expected collision error for workflow+agent with same name")
 	}
@@ -63,7 +88,7 @@ func TestCheckPromotionCollisions_WorkflowAgent(t *testing.T) {
 
 func TestCheckPromotionCollisions_NilSlices(t *testing.T) {
 	t.Parallel()
-	if err := CheckPromotionCollisions(nil, nil, nil); err != nil {
+	if err := CheckPromotionCollisions(false, nil, nil, nil); err != nil {
 		t.Fatalf("unexpected error for nil slices: %v", err)
 	}
 }
@@ -144,7 +169,7 @@ func TestCapturePromotedContent_FlatOnly(t *testing.T) {
 	}
 
 	res := &CaptureResult{}
-	CapturePromotedContent(skillsDir, res)
+	CapturePromotedContent(skillsDir, nil, res)
 
 	if len(res.Agents) != 1 || res.Agents[0].Name != "reviewer" {
 		t.Fatalf("agents: want [reviewer], got %v", res.Agents)
@@ -200,7 +225,7 @@ func TestCapturePromotedContent_FlatOnly(t *testing.T) {
 func TestCapturePromotedContent_NonexistentDir(t *testing.T) {
 	t.Parallel()
 	res := &CaptureResult{}
-	CapturePromotedContent("/nonexistent/skillsDir", res)
+	CapturePromotedContent("/nonexistent/skillsDir", nil, res)
 	if len(res.Skills) != 0 || len(res.Agents) != 0 || len(res.Workflows) != 0 ||
 		len(res.Copies) != 0 || len(res.Writes) != 0 || len(res.Warnings) != 0 {
 		t.Fatalf("expected empty result for missing dir, got %+v", res)

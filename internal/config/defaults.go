@@ -13,7 +13,8 @@ var InitSyncConfigBytes = []byte("schema_version: 1\n" +
 	"  harnesses: [codex]\n" +
 	"  scope: global\n" +
 	"  collision_strategy: last-wins\n" +
-	"  auto_sync: false\n")
+	"  auto_sync: false\n" +
+	"  namespaced: false\n")
 
 // InitProfileBytes is the content written into profiles/default.yaml by init.
 var InitProfileBytes = []byte("schema_version: 2\n" +

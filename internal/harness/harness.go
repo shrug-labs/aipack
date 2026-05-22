@@ -107,6 +107,9 @@ type CaptureContext struct {
 	Scope      domain.Scope
 	ProjectDir string
 	Home       string
+	// KnownPacks is the installed/profile pack-name set. Capture only strips
+	// rendered <id>__aipack__<pack> identities when the pack is present here.
+	KnownPacks map[string]struct{}
 }
 
 // CaptureResult holds captured content from a harness.
@@ -355,46 +358,22 @@ func serversEqual(a, b domain.MCPServer) bool {
 	if a.Transport != b.Transport || a.Timeout != b.Timeout || a.URL != b.URL {
 		return false
 	}
-	if !stringSliceEqual(a.Command, b.Command) {
+	if !slices.Equal(a.Command, b.Command) {
 		return false
 	}
-	if !stringSliceEqual(a.AllowedTools, b.AllowedTools) {
+	if !slices.Equal(a.AllowedTools, b.AllowedTools) {
 		return false
 	}
-	if !stringSliceEqual(a.AlwaysAllowedTools, b.AlwaysAllowedTools) {
+	if !slices.Equal(a.AlwaysAllowedTools, b.AlwaysAllowedTools) {
 		return false
 	}
-	if !stringSliceEqual(a.DisabledTools, b.DisabledTools) {
+	if !slices.Equal(a.DisabledTools, b.DisabledTools) {
 		return false
 	}
-	if !stringMapEqual(a.Headers, b.Headers) {
+	if !maps.Equal(a.Headers, b.Headers) {
 		return false
 	}
-	return stringMapEqual(a.Env, b.Env)
-}
-
-func stringSliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func stringMapEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
+	return maps.Equal(a.Env, b.Env)
 }
 
 // ---------------------------------------------------------------------------
@@ -417,9 +396,12 @@ func PlanStandardContent(
 	f *domain.Fragment,
 	p domain.Profile,
 	dirs ContentDirs,
+	namespaced bool,
 	transformAgent func(domain.Agent) (domain.Agent, error),
 ) error {
-	f.AddRuleWrites(dirs.Rules, "", p.AllRules())
+	if err := AddRenderedRuleWrites(f, dirs.Rules, "", namespaced, p.AllRules()); err != nil {
+		return err
+	}
 
 	agents := p.AllAgents()
 	if transformAgent != nil {
@@ -433,10 +415,15 @@ func PlanStandardContent(
 		}
 		agents = out
 	}
-	f.AddAgentWrites(dirs.Agents, "", agents)
+	skills := p.AllSkills()
+	if err := AddRenderedAgentWrites(f, dirs.Agents, "", namespaced, agents, skills); err != nil {
+		return err
+	}
 
-	f.AddWorkflowWrites(dirs.Workflows, "", p.AllWorkflows())
-	f.AddSkillCopies(dirs.Skills, "", p.AllSkills())
+	if err := AddRenderedWorkflowWrites(f, dirs.Workflows, "", namespaced, p.AllWorkflows()); err != nil {
+		return err
+	}
+	AddRenderedSkillCopies(f, dirs.Skills, "", namespaced, skills)
 	return nil
 }
 

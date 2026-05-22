@@ -130,7 +130,19 @@ func DiscoverIDsByLeaf(dir, dirName, suffix string) ([]string, map[string]string
 // leaf. A SKILL.md nested inside another skill's tree (a bundled fixture)
 // stays an asset of the outer skill — descent stops at the first match.
 func DiscoverSkills(skillsDir string) ([]string, map[string]string, error) {
-	root, err := resolveWalkRoot(skillsDir)
+	return DiscoverEntryDirs(skillsDir, "skills", domain.SkillEntryFile, "skill")
+}
+
+// DiscoverHooks walks hooksDir recursively for directories containing a
+// regular HOOK.yaml and returns leaf-only hook IDs plus an id -> descriptor
+// path map. Handler scripts and assets under the hook directory stay bundled
+// with that hook; descent stops at the first HOOK.yaml match.
+func DiscoverHooks(hooksDir string) ([]string, map[string]string, error) {
+	return DiscoverEntryDirs(hooksDir, "hooks", domain.HookEntryFile, "hook")
+}
+
+func DiscoverEntryDirs(rootDir, dirName, entryFile, label string) ([]string, map[string]string, error) {
+	root, err := resolveWalkRoot(rootDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -145,7 +157,7 @@ func DiscoverSkills(skillsDir string) ([]string, map[string]string, error) {
 		if !d.IsDir() || path == root {
 			return nil
 		}
-		entryStat, statErr := os.Stat(filepath.Join(path, domain.SkillEntryFile))
+		entryStat, statErr := os.Stat(filepath.Join(path, entryFile))
 		if statErr != nil || !entryStat.Mode().IsRegular() {
 			return nil
 		}
@@ -154,11 +166,11 @@ func DiscoverSkills(skillsDir string) ([]string, map[string]string, error) {
 		if relErr != nil {
 			return relErr
 		}
-		relSlashed := filepath.ToSlash(filepath.Join("skills", rel, domain.SkillEntryFile))
+		relSlashed := filepath.ToSlash(filepath.Join(dirName, rel, entryFile))
 		if existing, dup := paths[id]; dup {
 			return fmt.Errorf(
-				"duplicate skill id %q: %s and %s — leaf names must be unique within a pack",
-				id, existing, relSlashed,
+				"duplicate %s id %q: %s and %s — leaf names must be unique within a pack",
+				label, id, existing, relSlashed,
 			)
 		}
 		paths[id] = relSlashed
@@ -181,7 +193,7 @@ func DiscoverSkills(skillsDir string) ([]string, map[string]string, error) {
 //
 //   - rules, prompts, mcp, profiles, registries: id preserves the slashed
 //     relative path (the directory structure is part of the id).
-//   - agents, workflows, skills, plugins: id is the leaf only (subdirectories are
+//   - agents, workflows, skills, hooks, plugins: id is the leaf only (subdirectories are
 //     authoring organization). Same-leaf collisions within one pack are an
 //     error. The actual on-disk path is recorded via SetResolvedPath so
 //     downstream callers (parse, validation, save round-trip) find the file.
@@ -241,6 +253,17 @@ func DiscoverContent(m *PackManifest, packRoot string) error {
 	}
 	for id, p := range skillPaths {
 		m.SetResolvedPath(domain.CategorySkills, id, p)
+	}
+
+	hookIDs, hookPaths, err := DiscoverHooks(filepath.Join(packRoot, "hooks"))
+	if err != nil {
+		return fmt.Errorf("discover hooks: %w", err)
+	}
+	if len(m.Hooks) == 0 {
+		m.Hooks = hookIDs
+	}
+	for id, p := range hookPaths {
+		m.SetResolvedPath(domain.CategoryHooks, id, p)
 	}
 	return nil
 }

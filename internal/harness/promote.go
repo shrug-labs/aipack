@@ -3,7 +3,6 @@ package harness
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -37,39 +36,36 @@ func StripDescPrefix(desc string) string {
 	return desc
 }
 
-// CheckPromotionCollisions detects name collisions between content types that
-// will be promoted to the same skill directory. Returns an error describing the
-// first collision found, or nil if names are unique.
-func CheckPromotionCollisions(skills []domain.Skill, workflows []domain.Workflow, agents []domain.Agent) error {
-	names := map[string]string{} // name → content type
+// CheckPromotionCollisions detects collisions between content types that render
+// to the same promoted skill directory. In namespaced mode the pack name is
+// part of the key, but content type is not; same-pack source IDs still collide.
+func CheckPromotionCollisions(namespaced bool, skills []domain.Skill, workflows []domain.Workflow, agents []domain.Agent) error {
+	names := map[string]string{} // rendered directory name → content type
 	for _, s := range skills {
-		names[s.Name] = "skill"
+		rendered := ContentName(namespaced, s.SourcePack, s.Name)
+		names[rendered] = "skill"
 	}
 	for _, w := range workflows {
-		name := w.Name
-		if name == "" {
-			name = strings.TrimSuffix(filepath.Base(w.SourcePath), ".md")
-		}
-		if existing, ok := names[name]; ok {
+		name := workflowSourceID(w)
+		rendered := ContentName(namespaced, w.SourcePack, name)
+		if existing, ok := names[rendered]; ok {
 			return fmt.Errorf(
 				"name collision: %s %q and workflow %q would both be promoted to the same skill directory; rename one to avoid silent overwrite",
 				existing, name, name,
 			)
 		}
-		names[name] = "workflow"
+		names[rendered] = "workflow"
 	}
 	for _, a := range agents {
-		name := a.Name
-		if name == "" {
-			name = strings.TrimSuffix(filepath.Base(a.SourcePath), ".md")
-		}
-		if existing, ok := names[name]; ok {
+		name := agentSourceID(a)
+		rendered := ContentName(namespaced, a.SourcePack, name)
+		if existing, ok := names[rendered]; ok {
 			return fmt.Errorf(
 				"name collision: %s %q and agent %q would both be promoted to the same skill directory; rename one to avoid silent overwrite",
 				existing, name, name,
 			)
 		}
-		names[name] = "agent"
+		names[rendered] = "agent"
 	}
 	return nil
 }
@@ -112,6 +108,18 @@ func BuildPromotedMD(fm PromotedFrontmatter, body string) string {
 	return buf.String()
 }
 
+func AddPromotedSkillWrite(f *domain.Fragment, skillsDir, name string, content []byte, sourcePack, sourcePath string) {
+	skillDir := filepath.Join(skillsDir, name)
+	dst := filepath.Join(skillDir, domain.SkillEntryFile)
+	f.Writes = append(f.Writes, domain.WriteAction{
+		Dst:        dst,
+		Content:    content,
+		SourcePack: sourcePack,
+		Src:        sourcePath,
+	})
+	f.Desired = append(f.Desired, skillDir, dst)
+}
+
 // ParsePromotedFrontmatter splits SKILL.md raw bytes into the enriched
 // frontmatter struct and the markdown body.
 func ParsePromotedFrontmatter(raw []byte) (PromotedFrontmatter, []byte, error) {
@@ -132,45 +140,25 @@ func ParsePromotedFrontmatter(raw []byte) (PromotedFrontmatter, []byte, error) {
 // containing a SKILL.md. The enriched SKILL.md frontmatter determines
 // whether the entry is reconstructed as an agent, workflow, or plain skill.
 // The directory leaf name becomes the content name.
-func CapturePromotedContent(skillsDir string, res *CaptureResult) {
-	walkWarnings := listSkillDirs(skillsDir, func(abs, name string) {
-		skillFile := filepath.Join(abs, domain.SkillEntryFile)
-		raw, readErr := os.ReadFile(skillFile)
-		if readErr != nil {
-			res.Warnings = append(res.Warnings, domain.Warning{
-				Path:    skillFile,
-				Message: fmt.Sprintf("read SKILL.md: %v", readErr),
-			})
-			return
+func CapturePromotedContent(skillsDir string, knownPacks map[string]struct{}, res *CaptureResult) {
+	captureSkillEntries(skillsDir, res, func(entry CapturedSkillEntry) {
+		captureName := entry.DirName
+		if id, ok := ParseKnownRenderedContentName(entry.DirName, knownPacks); ok {
+			captureName = id.ID
 		}
-
-		fm, body, parseErr := ParsePromotedFrontmatter(raw)
-		if parseErr != nil {
-			res.Warnings = append(res.Warnings, domain.Warning{
-				Path:    skillFile,
-				Message: fmt.Sprintf("parse promoted frontmatter: %v", parseErr),
-			})
-			res.Copies = append(res.Copies, domain.CopyAction{
-				Src: abs, Dst: filepath.Join("skills", name), Kind: domain.CopyKindDir,
-			})
-			res.Skills = append(res.Skills, domain.Skill{Name: name, DirPath: abs})
-			return
-		}
+		fm := entry.Frontmatter
+		StripRenderedPromotedFrontmatter(&fm, knownPacks)
 
 		switch fm.SourceType {
 		case SourceTypeAgent:
-			CaptureAsAgent(res, fm, body, name, skillFile, raw)
+			CaptureAsAgent(res, fm, entry.Body, captureName, entry.SkillFile, entry.Raw)
 		case SourceTypeWorkflow:
-			CaptureAsWorkflow(res, fm, body, name, skillFile, raw)
+			CaptureAsWorkflow(res, fm, entry.Body, captureName, entry.SkillFile, entry.Raw)
 		default:
-			// Plain skill — directory copy.
-			res.Copies = append(res.Copies, domain.CopyAction{
-				Src: abs, Dst: filepath.Join("skills", name), Kind: domain.CopyKindDir,
-			})
-			res.Skills = append(res.Skills, domain.Skill{Name: name, DirPath: abs})
+			entry.Frontmatter = fm
+			CaptureRenderedPlainSkill(entry, knownPacks, res)
 		}
 	})
-	res.Warnings = append(res.Warnings, walkWarnings...)
 }
 
 // CaptureAsAgent reconstructs a domain.Agent from promoted frontmatter and

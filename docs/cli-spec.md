@@ -56,6 +56,8 @@ aipack
 │   ├── create
 │   ├── set
 │   ├── show
+│   ├── include
+│   ├── exclude
 │   ├── refs
 │   ├── set-param
 │   ├── unset-param
@@ -67,6 +69,10 @@ aipack
 │   ├── sources
 │   ├── validate
 │   └── delete
+├── collection
+│   ├── list
+│   ├── show
+│   └── install
 ├── mcp
 │   └── inspect-tools
 └── prompt
@@ -155,6 +161,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
       "agents": 1,
       "workflows": 11,
       "skills": 5,
+      "hooks": 0,
       "plugins": 2,
       "mcp_servers": 5,
       "settings": true
@@ -164,6 +171,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
   "total_agents": 1,
   "total_workflows": 11,
   "total_skills": 10,
+  "total_hooks": 0,
   "total_plugins": 2,
   "total_mcp_servers": 5,
   "settings_packs": ["my-example-pack"]
@@ -182,6 +190,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 | `packs[].agents` | int | Agent count |
 | `packs[].workflows` | int | Workflow count |
 | `packs[].skills` | int | Skill count |
+| `packs[].hooks` | int | Hook count |
 | `packs[].plugins` | int | Plugin reference count |
 | `packs[].mcp_servers` | int | MCP server count |
 | `packs[].settings` | bool | Whether this pack provides settings |
@@ -189,6 +198,7 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 | `total_agents` | int | Sum of agents |
 | `total_workflows` | int | Sum of workflows |
 | `total_skills` | int | Sum of skills |
+| `total_hooks` | int | Sum of hooks |
 | `total_plugins` | int | Sum of plugin references |
 | `total_mcp_servers` | int | Sum of MCP servers |
 | `settings_packs` | string[] | Packs contributing settings, in profile order (omitempty) |
@@ -233,7 +243,7 @@ Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single
 | `source` | object or null | Source location (absent when `found` is false) |
 | `source.pack` | string | Pack name containing the resource |
 | `source.source_path` | string | Absolute path to the source file |
-| `source.category` | string | Content category: `rules`, `agents`, `workflows`, `skills`, `plugins`, `mcp` |
+| `source.category` | string | Content category: `rules`, `agents`, `workflows`, `skills`, `hooks`, `plugins`, `mcp` |
 | `destinations` | array | Per-harness destination info (empty when not found) |
 | `destinations[].harness` | string | Harness ID |
 | `destinations[].path` | string | Absolute path where the resource lands |
@@ -285,6 +295,7 @@ Overall `ok` is false only when a critical-severity check fails. Warning-level c
     "total_agents": 1,
     "total_workflows": 11,
     "total_skills": 10,
+    "total_hooks": 0,
     "total_mcp_servers": 5,
     "settings_packs": ["base-pack"]
   }
@@ -399,6 +410,7 @@ Content ID arrays are always present (empty `[]`, never null).
   "agents": ["code-reviewer"],
   "workflows": ["session-retro", "brainstorm"],
   "skills": ["deep-research", "writing-plans"],
+  "hooks": [],
   "plugins": ["linear"],
   "prompts": [],
   "mcp_servers": [],
@@ -420,6 +432,7 @@ Content ID arrays are always present (empty `[]`, never null).
 | `agents` | string[] | Agent IDs |
 | `workflows` | string[] | Workflow IDs |
 | `skills` | string[] | Skill IDs |
+| `hooks` | string[] | Hook IDs |
 | `plugins` | string[] | Plugin reference IDs |
 | `prompts` | string[] | Prompt IDs |
 | `mcp_servers` | string[] | MCP server names |
@@ -443,6 +456,7 @@ Inspects a source without installing it. Content ID arrays are always present (e
   "counts": {
     "rules": 2,
     "skills": 3,
+    "hooks": 0,
     "workflows": 1,
     "agents": 0,
     "plugins": 1,
@@ -453,6 +467,7 @@ Inspects a source without installing it. Content ID arrays are always present (e
   "agents": [],
   "workflows": ["deploy"],
   "skills": ["triage"],
+  "hooks": [],
   "plugins": ["linear"],
   "prompts": [],
   "mcp_servers": ["issue-tracker"],
@@ -484,7 +499,7 @@ Inspects a source without installing it. Content ID arrays are always present (e
 | `ref` | string | Git ref used for clone inspection (omitempty) |
 | `path_in_source` | string | Subdirectory within the source (omitempty) |
 | `counts` | object | Content counts by vector |
-| `rules`, `agents`, `workflows`, `skills`, `plugins`, `prompts`, `mcp_servers` | string[] | Discovered content IDs |
+| `rules`, `agents`, `workflows`, `skills`, `hooks`, `plugins`, `prompts`, `mcp_servers` | string[] | Discovered content IDs |
 | `profiles`, `registries`, `extras` | string[] | Bundled content IDs or paths (omitempty) |
 | `warnings` | string[] | Trust warnings surfaced by inspection, such as MCP external tool access (omitempty) |
 | `registry` | object | Registry metadata when inspected by registry name (omitempty) |
@@ -591,6 +606,10 @@ Deletes an installed pack, removes safe rendered harness files, strips pack-mana
 
 The fully-resolved profile object. Shape follows the `domain.Profile` struct — packs with typed content, MCP servers, and settings bundle. This is the most complex JSON output and its shape is not yet stabilized. Use `status --json` for a stable summary.
 
+### `aipack profile include` / `aipack profile exclude`
+
+Text-only mutating commands. They update the target profile's content selectors or MCP server `enabled` flag for exact IDs already present in the profile's enabled pack entries. There is no JSON output contract.
+
 ### `aipack profile refs`
 
 ```json
@@ -662,6 +681,38 @@ Lists keys from the config-dir `.env` file. Values are omitted by default and pr
 | `entries[].key` | string | Environment variable name |
 | `entries[].value` | string | Environment variable value, present only with `--show` |
 | `entries[].length` | int | Character length of the stored value |
+
+### `aipack collection list`
+
+```json
+[
+  {
+    "name": "team-dev",
+    "description": "Team developer starter set",
+    "packs": [
+      {
+        "name": "essentials"
+      },
+      {
+        "name": "aipack-core",
+        "ref": "aipack-core/v1.2.3",
+        "with": ["profiles", "registries"]
+      }
+    ]
+  }
+]
+```
+
+`aipack collection show <name> --json` returns the same object shape for one collection instead of an array.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Collection name |
+| `description` | string | Human-readable description (omitempty) |
+| `packs` | array | Ordered pack install recipe |
+| `packs[].name` | string | Registry pack name |
+| `packs[].ref` | string | Git ref override for this collection install (omitempty) |
+| `packs[].with` | string[] | Bundled content categories accepted for this pack; may contain `all` before parsing (omitempty) |
 
 ### `aipack registry list`
 
@@ -835,7 +886,7 @@ Several flags follow a common resolution chain across commands:
 
 **Scopes:** `project`, `global`
 
-**Resource types (for trace):** `rule`, `agent`, `workflow`, `skill`, `plugin`, `mcp`
+**Resource types (for trace):** `rule`, `agent`, `workflow`, `skill`, `hook`, `plugin`, `mcp`
 
 **Diff kinds:** `create` (file doesn't exist on disk), `identical` (desired matches on-disk), `managed` (on-disk matches ledger — safe to update), `conflict` (user-modified since last sync), `untracked` (exists on disk but not in ledger), `error` (classification failed)
 

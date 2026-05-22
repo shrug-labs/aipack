@@ -16,6 +16,7 @@ type PlanRequest struct {
 	ProjectDir   string
 	Home         string // $HOME — threaded explicitly for testability
 	SkipSettings bool
+	Namespaced   bool
 }
 
 // Planner is the interface harness adapters implement for plan contribution.
@@ -29,11 +30,13 @@ type Planner interface {
 // Profile carries all resolved content (rules, agents, workflows, skills,
 // MCP servers, settings, plugins) — replacing the former 4 separate fields.
 type SyncContext struct {
+	ConfigDir    string
 	Scope        domain.Scope
 	TargetDir    string         // project dir or $HOME
 	Home         string         // $HOME — always set, even in project scope (needed by Cline)
 	Profile      domain.Profile // fully-resolved profile with typed content
 	SkipSettings bool
+	Namespaced   bool
 }
 
 // PlanSync produces a sync Plan by asking each harness planner to contribute a Fragment.
@@ -54,11 +57,13 @@ func PlanSync(ctx context.Context, profile domain.Profile, req PlanRequest, harn
 	// Each harness contributes a Fragment.
 	for _, h := range harnesses {
 		sctx := SyncContext{
+			ConfigDir:    req.ConfigDir,
 			Scope:        req.Scope,
 			TargetDir:    targetDir,
 			Home:         req.Home,
 			Profile:      profile,
 			SkipSettings: req.SkipSettings,
+			Namespaced:   req.Namespaced,
 		}
 		frag, err := h.Plan(ctx, sctx)
 		if err != nil {

@@ -109,6 +109,37 @@ func TestBuildContentTree_ExcludeFilter(t *testing.T) {
 	}
 }
 
+func TestBuildContentTree_HooksDisabledOptOut(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "hook-pack",
+		Root:          ".",
+		Hooks:         []string{"datetime-injector"},
+	}
+	entries := []config.PackEntry{{
+		Name: "hook-pack",
+		Hooks: config.HookSelector{
+			Enabled: config.BoolPtr(false),
+		},
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "hook-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+
+	if len(tree.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(tree.Items))
+	}
+	item := tree.Items[0]
+	if item.Category != domain.CategoryHooks || item.ID != "datetime-injector" {
+		t.Fatalf("item = (%s, %s), want hook datetime-injector", item.Category, item.ID)
+	}
+	if item.Enabled {
+		t.Fatal("hook should be disabled when hooks.enabled is false")
+	}
+}
+
 // TestBuildContentTree_QuietPack pins the TUI tree's selection state against
 // quiet-pack semantics — the resolver at internal/config/profile_resolve.go
 // treats a nil-include selector on a quiet pack as "include nothing," but
@@ -225,6 +256,31 @@ func TestBuildContentTree_QuietPackExplicitIncludeActivates(t *testing.T) {
 	}
 }
 
+func TestBuildContentTree_GlobSelector(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "glob-pack",
+		Root:          ".",
+		Rules:         []string{"ops-a", "ops-b", "dev"},
+	}
+	include := []string{"ops-*"}
+	entries := []config.PackEntry{{
+		Name:  "glob-pack",
+		Rules: config.VectorSelector{Include: &include},
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "glob-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+	for _, item := range tree.Items {
+		want := item.ID != "dev"
+		if item.Enabled != want {
+			t.Fatalf("%s enabled=%v, want %v", item.ID, item.Enabled, want)
+		}
+	}
+}
+
 func TestBuildContentTree_MCPServers(t *testing.T) {
 	t.Parallel()
 
@@ -334,6 +390,79 @@ func TestApplyContentTree_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestApplyContentTree_QuietPackAllSelectedUsesInclude(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "quiet-pack",
+		Root:          ".",
+		Rules:         []string{"alpha", "beta"},
+	}
+	include := []string{"alpha"}
+	entries := []config.PackEntry{{
+		Name:  "quiet-pack",
+		Quiet: true,
+		Rules: config.VectorSelector{Include: &include},
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "quiet-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+	for i := range tree.Items {
+		tree.Items[i].Enabled = true
+	}
+	ApplyContentTree(tree, entries)
+
+	sel := entries[0].VectorSelectorFor(domain.CategoryRules)
+	if sel.Include == nil || len(*sel.Include) != 2 {
+		t.Fatalf("quiet all-selected should remain explicit include, got include=%v exclude=%v", sel.Include, sel.Exclude)
+	}
+	resolved, err := config.ResolveProfileVectorSelection("quiet-pack", domain.CategoryRules, manifest.Rules, *sel, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 2 {
+		t.Fatalf("quiet all-selected round trip = %v, want all rules", resolved)
+	}
+}
+
+func TestApplyContentTree_HookToggleClearsEnabledOptOut(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "hook-pack",
+		Root:          ".",
+		Hooks:         []string{"datetime-injector", "audit-log"},
+	}
+	entries := []config.PackEntry{{
+		Name: "hook-pack",
+		Hooks: config.HookSelector{
+			Enabled: config.BoolPtr(false),
+		},
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "hook-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+	for i := range tree.Items {
+		if tree.Items[i].ID == "datetime-injector" {
+			tree.Items[i].Enabled = true
+		}
+	}
+	ApplyContentTree(tree, entries)
+
+	if entries[0].Hooks.Enabled != nil {
+		t.Fatalf("Hooks.Enabled = %v, want nil so selected hooks can render", *entries[0].Hooks.Enabled)
+	}
+	selected, err := config.ResolveProfileVectorSelection("hook-pack", domain.CategoryHooks, manifest.Hooks, entries[0].Hooks.VectorSelector, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 1 || selected[0] != "datetime-injector" {
+		t.Fatalf("selected hooks = %v, want [datetime-injector]", selected)
+	}
+}
+
 func TestApplyContentTree_MCPToggle(t *testing.T) {
 	t.Parallel()
 
@@ -365,6 +494,97 @@ func TestApplyContentTree_MCPToggle(t *testing.T) {
 		t.Error("deploy-tool should be in MCP config")
 	} else if dtCfg.Enabled == nil || *dtCfg.Enabled {
 		t.Error("deploy-tool should be disabled")
+	}
+}
+
+func TestBuildContentTree_MCPInclusiveMapMatchesResolver(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "test-pack",
+		Root:          ".",
+		MCP:           []string{"jira", "slack"},
+	}
+	entries := []config.PackEntry{{
+		Name: "test-pack",
+		MCP: map[string]config.MCPServerConfig{
+			"slack": {Enabled: config.BoolPtr(true)},
+		},
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "test-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+
+	enabled := map[string]bool{}
+	for _, item := range tree.Items {
+		if item.Category == domain.CategoryMCP {
+			enabled[item.ID] = item.Enabled
+		}
+	}
+	if enabled["jira"] {
+		t.Fatal("jira should be disabled because a non-disable-only MCP map is inclusive")
+	}
+	if !enabled["slack"] {
+		t.Fatal("slack should be enabled from the explicit MCP map")
+	}
+}
+
+func TestBuildContentTree_DisabledPackItemsInactive(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "test-pack",
+		Root:          ".",
+		Rules:         []string{"anti-slop"},
+		MCP:           []string{"jira"},
+	}
+	entries := []config.PackEntry{{
+		Name:    "test-pack",
+		Enabled: config.BoolPtr(false),
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "test-pack", Root: "/tmp", Manifest: manifest}}
+
+	tree := BuildContentTree(packs, entries)
+
+	if len(tree.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(tree.Items))
+	}
+	for _, item := range tree.Items {
+		if item.Enabled {
+			t.Fatalf("%s/%s should be inactive while pack is disabled", item.Category, item.ID)
+		}
+	}
+}
+
+func TestApplyContentTree_DisabledPackPreservesSelectors(t *testing.T) {
+	t.Parallel()
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "test-pack",
+		Root:          ".",
+		Rules:         []string{"anti-slop"},
+		MCP:           []string{"jira"},
+	}
+	entries := []config.PackEntry{{
+		Name:    "test-pack",
+		Enabled: config.BoolPtr(false),
+	}}
+	packs := []ProfilePackInfo{{Index: 0, Name: "test-pack", Root: "/tmp", Manifest: manifest}}
+	tree := BuildContentTree(packs, entries)
+	for i := range tree.Items {
+		tree.Items[i].Enabled = true
+	}
+
+	ApplyContentTree(tree, entries)
+
+	if entries[0].Rules.Include != nil || entries[0].Rules.Exclude != nil {
+		t.Fatalf("rules selector = %+v, want preserved empty selector", entries[0].Rules)
+	}
+	if entries[0].MCP != nil {
+		t.Fatalf("mcp = %+v, want preserved nil map", entries[0].MCP)
 	}
 }
 
@@ -455,6 +675,7 @@ func TestBuildContentTree_CategoryOrdering(t *testing.T) {
 		Agents:        []string{"a1"},
 		Workflows:     []string{"w1"},
 		Skills:        []string{"s1"},
+		Hooks:         []string{"h1"},
 		Plugins:       []string{"p1"},
 		MCP:           []string{"m1"},
 	}
@@ -463,13 +684,13 @@ func TestBuildContentTree_CategoryOrdering(t *testing.T) {
 
 	tree := BuildContentTree(packs, entries)
 
-	if len(tree.Items) != 6 {
-		t.Fatalf("items = %d, want 6", len(tree.Items))
+	if len(tree.Items) != 7 {
+		t.Fatalf("items = %d, want 7", len(tree.Items))
 	}
 
 	// Items should follow domain category order.
 	expected := []domain.PackCategory{
-		domain.CategoryAgents, domain.CategoryMCP, domain.CategoryPlugins, domain.CategoryRules,
+		domain.CategoryAgents, domain.CategoryHooks, domain.CategoryMCP, domain.CategoryPlugins, domain.CategoryRules,
 		domain.CategorySkills, domain.CategoryWorkflows,
 	}
 	for i, item := range tree.Items {

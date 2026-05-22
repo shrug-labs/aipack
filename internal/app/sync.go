@@ -45,7 +45,11 @@ type SyncContext struct {
 // ResolveProfile resolves a profile config into a fully-typed profile with
 // targeting information (scope, harnesses, project dir) from sync-config defaults.
 func ResolveProfile(eng *engine.Engine, req ResolveRequest) (SyncContext, []domain.Warning, error) {
-	profile, warnings, err := eng.Resolve(req.ProfileCfg, req.ProfilePath, req.ConfigDir, req.SyncCfg.Defaults.CollisionStrategy, req.PrevInventories)
+	profile, warnings, err := eng.ResolveWithOptions(req.ProfileCfg, req.ProfilePath, req.ConfigDir, config.ResolveOptions{
+		CollisionStrategy: req.SyncCfg.Defaults.CollisionStrategy,
+		Namespaced:        req.SyncCfg.Defaults.Namespaced,
+		PrevInventories:   req.PrevInventories,
+	})
 	if err != nil {
 		return SyncContext{}, warnings, err
 	}
@@ -70,6 +74,7 @@ func ResolveProfile(eng *engine.Engine, req ResolveRequest) (SyncContext, []doma
 			ProjectDir: req.ProjectDir,
 			Harnesses:  hs,
 			Home:       req.Home,
+			Namespaced: req.SyncCfg.Defaults.Namespaced,
 		},
 	}, warnings, nil
 }
@@ -157,6 +162,7 @@ func ResolveTargetSpec(syncCfg config.SyncConfig, configDir, projectDir, home st
 		ProjectDir: projectDir,
 		Harnesses:  hs,
 		Home:       home,
+		Namespaced: syncCfg.Defaults.Namespaced,
 	}, nil
 }
 
@@ -169,6 +175,17 @@ func resolvePackRoots(profile domain.Profile) map[string]string {
 	return roots
 }
 
+func knownPacksFromRoots(packRoots map[string]string) map[string]struct{} {
+	if len(packRoots) == 0 {
+		return nil
+	}
+	known := make(map[string]struct{}, len(packRoots))
+	for name := range packRoots {
+		known[name] = struct{}{}
+	}
+	return known
+}
+
 // TargetSpec holds the common targeting fields shared across request types.
 type TargetSpec struct {
 	ConfigDir  string
@@ -176,6 +193,7 @@ type TargetSpec struct {
 	ProjectDir string
 	Harnesses  []domain.Harness
 	Home       string // $HOME — threaded explicitly for testability
+	Namespaced bool   // render pack-authored content with pack provenance suffixes
 }
 
 // SyncRequest holds the parameters for a sync operation.
@@ -264,6 +282,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 			ProjectDir:   req.ProjectDir,
 			Home:         req.Home,
 			SkipSettings: req.SkipSettings,
+			Namespaced:   req.Namespaced,
 		}
 
 		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
@@ -722,6 +741,10 @@ func indexManifestContent(packName string, m config.PackManifest, packRoot strin
 	var resources []index.Resource
 	resources = append(resources, indexContentFromManifest("rule", diffIDs(m.Rules, skip), flatPath(filepath.Join(packRoot, "rules"), ".md"))...)
 	resources = append(resources, indexContentFromManifest("skill", diffIDs(m.Skills, skip), skillPath)...)
+	resources = append(resources, indexHooksFromManifest(diffIDs(m.Hooks, skip), func(id string) (string, string) {
+		p := filepath.Join(packRoot, filepath.FromSlash(m.RelPath(domain.CategoryHooks, id)))
+		return p, filepath.Dir(p)
+	})...)
 	resources = append(resources, indexContentFromManifest("agent", diffIDs(m.Agents, skip), flatPath(filepath.Join(packRoot, "agents"), ".md"))...)
 	resources = append(resources, indexContentFromManifest("workflow", diffIDs(m.Workflows, skip), flatPath(filepath.Join(packRoot, "workflows"), ".md"))...)
 
@@ -729,6 +752,23 @@ func indexManifestContent(packName string, m config.PackManifest, packRoot strin
 		resources = append(resources, index.PromptResource(
 			pe.Name, pe.Description, pe.SourcePath, pe.Category, string(pe.Body),
 		))
+	}
+	return resources
+}
+
+func indexHooksFromManifest(ids []string, pathFn func(id string) (filePath, resourcePath string)) []index.Resource {
+	var resources []index.Resource
+	for _, id := range ids {
+		fp, rp := pathFn(id)
+		raw, err := os.ReadFile(fp)
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			Description string `yaml:"description"`
+		}
+		_ = yaml.Unmarshal(raw, &meta)
+		resources = append(resources, index.ResourceFromMetadata("hook", id, meta.Description, rp, nil, string(raw)))
 	}
 	return resources
 }
@@ -864,9 +904,9 @@ func printDryRunVerbose(summary PlanSummary, stdout io.Writer) {
 		return
 	}
 	if stdout != nil {
-		fmt.Fprintf(stdout, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d settings, %d mcp, %d stale)\n",
+		fmt.Fprintf(stdout, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d hooks, %d settings, %d mcp, %d stale)\n",
 			total, summary.NumRules, summary.NumWorkflows, summary.NumAgents, summary.NumSkills,
-			summary.NumSettings, summary.NumMCP, summary.NumStale)
+			summary.NumHooks, summary.NumSettings, summary.NumMCP, summary.NumStale)
 	}
 
 	for _, op := range summary.Ops {

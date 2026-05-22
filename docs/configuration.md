@@ -1,6 +1,6 @@
 # Configuration and State
 
-What aipack puts on your machine, how to configure it, and how to manage it. For the CLI commands that operate on these files, see the [aipack reference](./aipack.md). For profiles and composition, see [Profiles](./profiles.md). For registry schemas, see the [Pack Format Specification](./pack-format.md#102-registry). For JSON output contracts and environment variables, see the [CLI Specification](./cli-spec.md).
+What aipack puts on your machine, how to configure it, and how to manage it. For the CLI commands that operate on these files, see the [aipack reference](./aipack.md). For profiles and composition, see [Profiles](./profiles.md). For registry schemas, see the [Pack Format Specification](./pack-format.md#112-registry). For JSON output contracts and environment variables, see the [CLI Specification](./cli-spec.md).
 
 ## Config directory layout
 
@@ -89,6 +89,7 @@ defaults:
     - codex
   scope: global           # "project" or "global" (default: global)
   auto_sync: false        # automatically sync after active-profile changes
+  namespaced: false       # render pack provenance into content names
 
 registry_sources:         # managed by registry fetch
   - name: default
@@ -106,6 +107,7 @@ aipack config defaults get harnesses
 aipack config defaults set auto_sync true
 aipack config defaults set collision_strategy error
 aipack config defaults set harnesses codex,opencode
+aipack config defaults set namespaced true
 aipack config defaults set profile default
 aipack config defaults set scope global
 ```
@@ -121,6 +123,7 @@ Installed pack metadata used to live here under an `installed_packs` section. It
 | `scope` | string | `global` | Default scope when `--scope` is not specified. Set with `config defaults set scope global` or `project`. |
 | `collision_strategy` | string | `last-wins` | How content ID collisions between packs are resolved: `last-wins`, `first-wins`, or `error`. Explicit profile `overrides` always take precedence. |
 | `auto_sync` | bool | `false` | When true, successful pack/profile changes that affect the active profile automatically run a normal sync using the current defaults. Set with `config defaults set auto_sync true`. |
+| `namespaced` | bool | `false` | When true, rendered pack-authored markdown content uses namespaced names (`<id>__aipack__<pack>`) for path leaves and frontmatter names. Natural names remain the default. Cross-pack ID collisions for rules, agents, workflows, skills, and hooks are preserved instead of resolved by `collision_strategy`; MCP servers, plugins, and settings keys still use the configured collision behavior. Toggling this setting reconciles the target on the next sync; previous managed names are removed unless there is a user conflict. |
 
 CLI flags override these defaults. The full resolution chain is documented in the [CLI Specification](./cli-spec.md#shared-flag-resolution).
 
@@ -215,15 +218,15 @@ Profiles installed via `-w all` (or `-w profiles`) from a team pack are copied h
 
 ## Registry configuration
 
-Registries map pack names to git repositories. Three layers merge at resolution time:
+Registries map pack names to git repositories and collection names to ordered pack install recipes. Three layers merge at resolution time:
 
 1. **Local entries** in `~/.config/aipack/registry.yaml` — highest priority, manually maintained
 2. **Cached remote sources** in `~/.config/aipack/registries/<source-name>.yaml` — one file per source, fetched by `registry fetch`
 3. **Compiled-in default** pointing to `shrug-labs/packs` — used when no sources are configured
 
-When multiple sources define the same pack name, the first source in the list wins (local > cached sources in sync-config order > default).
+When multiple sources define the same pack or collection name, the first source in the list wins (local > cached sources in sync-config order > default). Collections do not have a separate local directory; they are part of registry YAML.
 
-The registry YAML format is documented in the [Pack Format Specification](./pack-format.md#102-registry).
+The registry YAML format is documented in the [Pack Format Specification](./pack-format.md#112-registry).
 
 ## Ledger
 
@@ -249,7 +252,7 @@ Each entry in the ledger records a content digest (SHA256), the sync timestamp, 
 
 Each time `aipack sync` writes a settings file, it first snapshots the existing content into a `presync/` directory alongside the ledger. This enables `aipack restore` to undo the last sync's settings changes.
 
-Cache files are keyed by `<harness>--<filename>` (e.g., `claudecode--settings.local.json`). An `index.json` manifest maps cache keys to their original file paths. Only settings and drop-in plugin files are cached — content files (rules, agents, workflows, skills, plugin descriptors) are not.
+Cache files are keyed by `<harness>--<filename>` (e.g., `claudecode--settings.local.json`). An `index.json` manifest maps cache keys to their original file paths. Only settings and drop-in plugin files are cached — content files (rules, agents, workflows, skills, hooks, plugin descriptors) are not.
 
 The cache is overwritten on every sync. `--dry-run` does not write cache files. `aipack restore --dry-run` previews what would be recovered.
 

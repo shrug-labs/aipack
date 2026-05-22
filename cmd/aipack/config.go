@@ -24,6 +24,7 @@ func (c *ConfigCmd) Help() string {
 Examples:
   aipack config defaults get auto_sync
   aipack config defaults set auto_sync true
+  aipack config defaults set namespaced true
   aipack config env list
   aipack config env set API_TOKEN abc123`
 }
@@ -39,12 +40,13 @@ func (c *ConfigDefaultsCmd) Help() string {
 
 Examples:
   aipack config defaults get auto_sync
-  aipack config defaults set auto_sync true`
+  aipack config defaults set auto_sync true
+  aipack config defaults set namespaced true`
 }
 
 // ConfigDefaultsGetCmd prints scalar defaults from sync-config.yaml.
 type ConfigDefaultsGetCmd struct {
-	Key string `arg:"" help:"Setting key (profile, harnesses, scope, collision_strategy, auto_sync)"`
+	Key string `arg:"" help:"Setting key (profile, harnesses, scope, collision_strategy, auto_sync, namespaced)"`
 }
 
 func (c *ConfigDefaultsGetCmd) Help() string {
@@ -58,7 +60,8 @@ Aliases:
 Examples:
   aipack config defaults get profile
   aipack config defaults get harnesses
-  aipack config defaults get auto_sync`, supportedConfigDefaults())
+  aipack config defaults get auto_sync
+  aipack config defaults get namespaced`, supportedConfigDefaults())
 }
 
 func (c *ConfigDefaultsGetCmd) Run(_ context.Context, g *Globals) error {
@@ -83,7 +86,7 @@ func (c *ConfigDefaultsGetCmd) Run(_ context.Context, g *Globals) error {
 
 // ConfigDefaultsSetCmd updates scalar defaults in sync-config.yaml.
 type ConfigDefaultsSetCmd struct {
-	Key   string `arg:"" help:"Setting key (profile, harnesses, scope, collision_strategy, auto_sync)"`
+	Key   string `arg:"" help:"Setting key (profile, harnesses, scope, collision_strategy, auto_sync, namespaced)"`
 	Value string `arg:"" help:"Setting value"`
 }
 
@@ -101,7 +104,8 @@ Examples:
   aipack config defaults set scope global
   aipack config defaults set collision_strategy last-wins
   aipack config defaults set auto_sync true
-  aipack config defaults set auto-sync false`, supportedConfigDefaults())
+  aipack config defaults set auto-sync false
+  aipack config defaults set namespaced true`, supportedConfigDefaults())
 }
 
 func (c *ConfigDefaultsSetCmd) Run(ctx context.Context, g *Globals) error {
@@ -125,7 +129,7 @@ func (c *ConfigDefaultsSetCmd) Run(ctx context.Context, g *Globals) error {
 		if !profileHasInstalledPacks(cfgDir, name, g.Stdout, g.Stderr) {
 			return nil
 		}
-		return maybeAutoSyncProfile(ctx, g, cfgDir, name)
+		return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, name)
 	}
 
 	syncCfg, err := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
@@ -141,6 +145,9 @@ func (c *ConfigDefaultsSetCmd) Run(ctx context.Context, g *Globals) error {
 		return err
 	}
 	fmt.Fprintf(g.Stdout, "Set %s to %s\n", key, value)
+	if key == defaultNamespaced {
+		fmt.Fprintln(g.Stdout, "Next: run 'aipack sync --dry-run' to preview rendered name changes, then 'aipack sync' to apply.")
+	}
 	return nil
 }
 
@@ -152,6 +159,7 @@ const (
 	defaultScope             configDefaultKey = "defaults.scope"
 	defaultCollisionStrategy configDefaultKey = "defaults.collision_strategy"
 	defaultAutoSync          configDefaultKey = "defaults.auto_sync"
+	defaultNamespaced        configDefaultKey = "defaults.namespaced"
 )
 
 type configDefaultSpec struct {
@@ -235,6 +243,21 @@ var configDefaultSpecs = []configDefaultSpec{
 				return err
 			}
 			syncCfg.Defaults.AutoSync = value
+			return nil
+		},
+	},
+	{
+		key:  defaultNamespaced,
+		name: "namespaced",
+		get: func(syncCfg config.SyncConfig) string {
+			return strconv.FormatBool(syncCfg.Defaults.Namespaced)
+		},
+		set: func(syncCfg *config.SyncConfig, raw string) error {
+			value, err := parseConfigBool(raw)
+			if err != nil {
+				return err
+			}
+			syncCfg.Defaults.Namespaced = value
 			return nil
 		},
 	},

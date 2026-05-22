@@ -34,11 +34,69 @@ type RegistrySearchResult struct {
 	config.RegistryEntry
 }
 
+// RegistryCollectionResult describes a collection found in the registry.
+type RegistryCollectionResult struct {
+	Name string `json:"name"`
+	config.RegistryCollection
+}
+
 // RegistryValidateResult describes semantic validation of one registry file.
 type RegistryValidateResult struct {
 	Path   string   `json:"path"`
 	Valid  bool     `json:"valid"`
 	Errors []string `json:"errors"`
+}
+
+// RegistryCollectionNotFoundError reports a missing registry collection.
+type RegistryCollectionNotFoundError struct {
+	Name string
+}
+
+func (e RegistryCollectionNotFoundError) Error() string {
+	return fmt.Sprintf("collection %q not found in registry", e.Name)
+}
+
+// CollectionInstallRequest holds the inputs for installing a registry collection.
+type CollectionInstallRequest struct {
+	ConfigDir    string
+	RegistryPath string
+	Name         string
+	Add          bool
+	Profile      string
+	With         domain.BundledSet
+
+	PackInstallFn func(context.Context, PackInstallRequest, io.Writer) error
+}
+
+// CollectionInstallStatus is the per-pack outcome for collection installs.
+type CollectionInstallStatus string
+
+const (
+	CollectionInstallStatusError     CollectionInstallStatus = "error"
+	CollectionInstallStatusInstalled CollectionInstallStatus = "installed"
+)
+
+// CollectionInstallPackResult describes one pack outcome in a collection install.
+type CollectionInstallPackResult struct {
+	Name   string                  `json:"name"`
+	Status CollectionInstallStatus `json:"status"`
+	Detail string                  `json:"detail,omitempty"`
+}
+
+// CollectionInstallResult describes collection install outcomes.
+type CollectionInstallResult struct {
+	Name  string                        `json:"name"`
+	Packs []CollectionInstallPackResult `json:"packs"`
+}
+
+// CollectionInstallError reports a partially or wholly failed collection install.
+type CollectionInstallError struct {
+	Name   string
+	Failed int
+}
+
+func (e CollectionInstallError) Error() string {
+	return fmt.Sprintf("collection %q: %d pack(s) failed", e.Name, e.Failed)
 }
 
 // RegistryValidate parses and validates a registry YAML file.
@@ -84,6 +142,28 @@ func RegistrySearch(req RegistryListRequest, query string) ([]RegistrySearchResu
 	return matched, nil
 }
 
+// RegistryCollectionList returns all collections in the registry, sorted by name.
+func RegistryCollectionList(req RegistryListRequest) ([]RegistryCollectionResult, error) {
+	reg, err := loadRegistryForRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return registryCollectionsToResults(reg), nil
+}
+
+// RegistryCollectionLookup returns the registry collection for a collection by name.
+func RegistryCollectionLookup(req RegistryListRequest, name string) (config.RegistryCollection, error) {
+	reg, err := loadRegistryForRequest(req)
+	if err != nil {
+		return config.RegistryCollection{}, err
+	}
+	entry, ok := reg.Collections[name]
+	if !ok {
+		return config.RegistryCollection{}, RegistryCollectionNotFoundError{Name: name}
+	}
+	return entry, nil
+}
+
 // RegistryLookup returns the registry entry for a pack by name.
 func RegistryLookup(req RegistryListRequest, name string) (config.RegistryEntry, error) {
 	reg, err := loadRegistryForRequest(req)
@@ -98,6 +178,73 @@ func RegistryLookup(req RegistryListRequest, name string) (config.RegistryEntry,
 		return config.RegistryEntry{}, fmt.Errorf("pack %q not found in registry", name)
 	}
 	return entry, nil
+}
+
+// CollectionInstall installs every pack referenced by a registry collection.
+func CollectionInstall(ctx context.Context, req CollectionInstallRequest, stdout io.Writer) (CollectionInstallResult, error) {
+	result := CollectionInstallResult{Name: req.Name}
+	reg, err := loadRegistryForRequest(RegistryListRequest{ConfigDir: req.ConfigDir, RegistryPath: req.RegistryPath})
+	if err != nil {
+		return result, err
+	}
+	collection, ok := reg.Collections[req.Name]
+	if !ok {
+		return result, RegistryCollectionNotFoundError{Name: req.Name}
+	}
+	installFn := req.PackInstallFn
+	if installFn == nil {
+		installFn = PackInstall
+	}
+	if stdout != nil {
+		fmt.Fprintf(stdout, "Installing collection %q (%d pack(s))\n", req.Name, len(collection.Packs))
+	}
+
+	failed := 0
+	recordFailure := func(name, detail string) {
+		failed++
+		result.Packs = append(result.Packs, CollectionInstallPackResult{Name: name, Status: CollectionInstallStatusError, Detail: detail})
+		if stdout != nil {
+			fmt.Fprintf(stdout, "error: %s\n", detail)
+		}
+	}
+	for i, pack := range collection.Packs {
+		if stdout != nil {
+			fmt.Fprintf(stdout, "\n[%d/%d] %s\n", i+1, len(collection.Packs), pack.Name)
+		}
+		entry, ok := reg.Packs[pack.Name]
+		if !ok {
+			recordFailure(pack.Name, fmt.Sprintf("pack %q not found in registry", pack.Name))
+			continue
+		}
+		with := req.With
+		if with == nil {
+			with, err = config.ParseRegistryCollectionWith(pack.With)
+			if err != nil {
+				recordFailure(pack.Name, err.Error())
+				continue
+			}
+		}
+		if entry.Method == config.MethodArchive && pack.Ref != "" {
+			recordFailure(pack.Name, fmt.Sprintf("ref is not valid for archive pack %q", pack.Name))
+			continue
+		}
+		installReq := PackInstallRequestFromRegistryEntry(req.ConfigDir, pack.Name, entry)
+		installReq.Add = req.Add
+		installReq.Profile = req.Profile
+		installReq.With = with
+		if pack.Ref != "" {
+			installReq.Ref = pack.Ref
+		}
+		if err := installFn(ctx, installReq, stdout); err != nil {
+			recordFailure(pack.Name, err.Error())
+			continue
+		}
+		result.Packs = append(result.Packs, CollectionInstallPackResult{Name: pack.Name, Status: CollectionInstallStatusInstalled})
+	}
+	if failed > 0 {
+		return result, CollectionInstallError{Name: req.Name, Failed: failed}
+	}
+	return result, nil
 }
 
 // PackInstallRequestFromRegistryEntry maps registry metadata into the canonical
@@ -811,6 +958,20 @@ func registryEntriesToResults(reg config.Registry) []RegistrySearchResult {
 		})
 	}
 	slices.SortFunc(results, func(a, b RegistrySearchResult) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return results
+}
+
+func registryCollectionsToResults(reg config.Registry) []RegistryCollectionResult {
+	results := make([]RegistryCollectionResult, 0, len(reg.Collections))
+	for name, entry := range reg.Collections {
+		results = append(results, RegistryCollectionResult{
+			Name:               name,
+			RegistryCollection: entry,
+		})
+	}
+	slices.SortFunc(results, func(a, b RegistryCollectionResult) int {
 		return cmp.Compare(a.Name, b.Name)
 	})
 	return results

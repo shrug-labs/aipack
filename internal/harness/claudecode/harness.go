@@ -96,7 +96,7 @@ func stripManagedPermissions(root map[string]any) {
 func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
-	if err := planContent(&f, ctx.TargetDir, ctx.Profile); err != nil {
+	if err := planContent(&f, ctx.TargetDir, ctx.Profile, ctx.Namespaced); err != nil {
 		return domain.Fragment{}, err
 	}
 	if err := planMCPAndSettings(&f, ctx); err != nil {
@@ -106,14 +106,14 @@ func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment,
 	return f, nil
 }
 
-func planContent(f *domain.Fragment, baseDir string, p domain.Profile) error {
+func planContent(f *domain.Fragment, baseDir string, p domain.Profile, namespaced bool) error {
 	paths := ProjectPaths // content paths are the same for both scopes
 	return harness.PlanStandardContent(f, p, harness.ContentDirs{
 		Rules:     filepath.Join(baseDir, paths.RulesDir),
 		Agents:    filepath.Join(baseDir, paths.AgentsDir),
 		Workflows: filepath.Join(baseDir, paths.WorkflowsDir),
 		Skills:    filepath.Join(baseDir, paths.SkillsDir),
-	}, func(a domain.Agent) (domain.Agent, error) {
+	}, namespaced, func(a domain.Agent) (domain.Agent, error) {
 		transformed, err := TransformAgent(a)
 		if err != nil {
 			return domain.Agent{}, fmt.Errorf("transform agent %s: %w", a.Name, err)
@@ -281,7 +281,7 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 	mcpPath := filepath.Join(baseDir, paths.MCPFile)
 	settingsPath := filepath.Join(baseDir, paths.SettingsFile)
 
-	captureContent(&res, baseDir)
+	captureContent(&res, baseDir, ctx.KnownPacks)
 
 	if err := captureMCPAndSettings(&res, mcpPath, settingsPath); err != nil {
 		return res, err
@@ -291,14 +291,14 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 }
 
 // captureContent captures rules, agents, commands, and skills from baseDir/.claude/.
-func captureContent(res *harness.CaptureResult, baseDir string) {
+func captureContent(res *harness.CaptureResult, baseDir string, knownPacks map[string]struct{}) {
 	paths := ProjectPaths // content paths are the same for both scopes
 	harness.CaptureContent(res, harness.ContentDirs{
 		Rules:     filepath.Join(baseDir, paths.RulesDir),
 		Agents:    filepath.Join(baseDir, paths.AgentsDir),
 		Workflows: filepath.Join(baseDir, paths.WorkflowsDir),
 		Skills:    filepath.Join(baseDir, paths.SkillsDir),
-	}, func(raw []byte, _ string, src string) (domain.Agent, error) {
+	}, knownPacks, func(raw []byte, _ string, src string) (domain.Agent, error) {
 		return ReverseTransformAgent(raw, filepath.Base(src))
 	})
 }

@@ -271,6 +271,30 @@ func TestResolveProfile_AllowsDeclaredOverrideAndSettingsPackValidation(t *testi
 	if len(settingsPacks) != 1 || settingsPacks[0] != "third" {
 		t.Fatalf("settingsPacks = %v, want [third]", settingsPacks)
 	}
+
+	installPackForResolveTest(t, root, "hooks", PackManifest{
+		SchemaVersion: 2,
+		Name:          "hooks",
+		Version:       "1",
+		Root:          ".",
+		MCP:           []string{},
+		Hooks:         []string{"tool-audit"},
+	}, map[string]string{
+		"hooks/tool-audit/HOOK.yaml": "events:\n  - on: tool.after\n    handler:\n      type: command\n      command: echo ok\n",
+	})
+	resolved, err := ResolveProfile(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "hooks"}},
+	}, filepath.Join(root, "profile.yaml"), root, CollisionError, nil)
+	if err != nil {
+		t.Fatalf("ResolveProfile with hook-only config: %v", err)
+	}
+	if len(resolved.SettingsPacks) != 0 {
+		t.Fatalf("settingsPacks = %v, want []", resolved.SettingsPacks)
+	}
+	if len(resolved.Packs) != 1 || len(resolved.Packs[0].Hooks) != 1 || resolved.Packs[0].Hooks[0] != "tool-audit" {
+		t.Fatalf("resolved hooks = %+v, want [tool-audit]", resolved.Packs)
+	}
 }
 
 func TestResolveProfile_OverrideStripsEarlierPack(t *testing.T) {
@@ -1179,6 +1203,107 @@ func TestResolveProfile_CollisionStrategy_ErrorCollectsAll(t *testing.T) {
 	}
 	if !strings.Contains(msg, "collision_strategy") {
 		t.Errorf("expected collision_strategy hint in error, got:\n%s", msg)
+	}
+}
+
+func TestResolveProfile_NamespacedPreservesCrossPackContentCollisions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, pack := range []string{"pack-a", "pack-b"} {
+		installPackForResolveTest(t, root, pack, PackManifest{
+			SchemaVersion: 2, Name: pack, Version: "1", Root: ".",
+			Rules:     []string{"shared"},
+			Agents:    []string{"reviewer"},
+			Workflows: []string{"deploy"},
+			Skills:    []string{"diagnose"},
+		}, map[string]string{
+			"rules/shared.md":          "---\nname: shared\ndescription: Shared rule\n---\nrule body\n",
+			"agents/reviewer.md":       "---\nname: reviewer\ndescription: Reviewer\n---\nagent body\n",
+			"workflows/deploy.md":      "---\nname: deploy\ndescription: Deploy\n---\nworkflow body\n",
+			"skills/diagnose/SKILL.md": "---\nname: diagnose\ndescription: Diagnose\n---\nskill body\n",
+		})
+	}
+
+	r, err := ResolveProfileWithOptions(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "pack-a"}, {Name: "pack-b"}},
+	}, filepath.Join(root, "profile.yaml"), root, ResolveOptions{
+		CollisionStrategy: CollisionError,
+		Namespaced:        true,
+	})
+	if err != nil {
+		t.Fatalf("namespaced resolve should preserve content collisions: %v", err)
+	}
+	if len(r.CollisionWarnings) != 0 {
+		t.Fatalf("namespaced content collisions should not warn, got %v", r.CollisionWarnings)
+	}
+	if len(r.Packs) != 2 {
+		t.Fatalf("packs = %d, want 2", len(r.Packs))
+	}
+	for _, pack := range r.Packs {
+		if !slices.Contains(pack.Rules, "shared") {
+			t.Errorf("%s lost shared rule: %v", pack.Name, pack.Rules)
+		}
+		if !slices.Contains(pack.Agents, "reviewer") {
+			t.Errorf("%s lost reviewer agent: %v", pack.Name, pack.Agents)
+		}
+		if !slices.Contains(pack.Workflows, "deploy") {
+			t.Errorf("%s lost deploy workflow: %v", pack.Name, pack.Workflows)
+		}
+		if !slices.Contains(pack.Skills, "diagnose") {
+			t.Errorf("%s lost diagnose skill: %v", pack.Name, pack.Skills)
+		}
+	}
+}
+
+func TestResolveProfile_RejectsPackNameWithRenderedSeparator(t *testing.T) {
+	t.Parallel()
+	_, err := ResolveProfileWithOptions(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "bad__aipack__pack"}},
+	}, filepath.Join(t.TempDir(), "profile.yaml"), t.TempDir(), ResolveOptions{})
+	if err == nil {
+		t.Fatal("expected error for pack name containing rendered identity separator")
+	}
+	if !strings.Contains(err.Error(), `must not contain "__aipack__"`) {
+		t.Fatalf("error = %q, want reserved separator message", err.Error())
+	}
+}
+
+func TestResolveProfile_NamespacedStillErrorsMCP(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, pack := range []string{"pack-a", "pack-b"} {
+		installPackForResolveTest(t, root, pack, PackManifest{
+			SchemaVersion: 2, Name: pack, Version: "1", Root: ".",
+			Rules: []string{"shared"},
+			MCP:   []string{"shared-srv"},
+		}, map[string]string{
+			"rules/shared.md": "---\nname: shared\ndescription: Shared rule\n---\nrule body\n",
+			"mcp/shared-srv.json": `{
+  "name": "shared-srv",
+  "transport": "stdio",
+  "command": ["shared-srv"]
+}`,
+		})
+	}
+
+	_, err := ResolveProfileWithOptions(ProfileConfig{
+		SchemaVersion: ProfileSchemaVersion,
+		Packs:         []PackEntry{{Name: "pack-a"}, {Name: "pack-b"}},
+	}, filepath.Join(root, "profile.yaml"), root, ResolveOptions{
+		CollisionStrategy: CollisionError,
+		Namespaced:        true,
+	})
+	if err == nil {
+		t.Fatal("expected namespaced resolve to keep MCP collisions fatal")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `mcp "shared-srv"`) {
+		t.Fatalf("expected MCP collision, got:\n%s", msg)
+	}
+	if strings.Contains(msg, `rules "shared"`) {
+		t.Fatalf("namespaced content collision should not be reported, got:\n%s", msg)
 	}
 }
 
@@ -2278,6 +2403,7 @@ func TestResolveProfile_ContentPathsPackYAMLRoundTrip(t *testing.T) {
 			RegistryURL       string            `yaml:"registry_url,omitempty"`
 			CollisionStrategy CollisionStrategy `yaml:"collision_strategy,omitempty"`
 			AutoSync          bool              `yaml:"auto_sync"`
+			Namespaced        bool              `yaml:"namespaced"`
 		}{Profile: "default", Harnesses: []string{"claudecode"}, Scope: "global"},
 		InstalledPacks: map[string]InstalledPackMeta{
 			"ext-skills": {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
@@ -11,14 +12,29 @@ import (
 )
 
 func maybeAutoSyncProfile(ctx context.Context, g *Globals, cfgDir, profileName string) error {
+	return maybeAutoSyncProfileWithOptions(ctx, g, cfgDir, profileName, autoSyncProfileOptions{})
+}
+
+func maybeAutoSyncProfileWithHint(ctx context.Context, g *Globals, cfgDir, profileName string) error {
+	return maybeAutoSyncProfileWithOptions(ctx, g, cfgDir, profileName, autoSyncProfileOptions{PrintHint: true})
+}
+
+type autoSyncProfileOptions struct {
+	PrintHint bool
+}
+
+func maybeAutoSyncProfileWithOptions(ctx context.Context, g *Globals, cfgDir, profileName string, opts autoSyncProfileOptions) error {
 	syncCfg, err := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
 	if err != nil {
 		return fmt.Errorf("auto-sync: loading sync-config: %w", err)
 	}
+	active := cmdutil.ResolveProfileName("", syncCfg)
 	if !syncCfg.Defaults.AutoSync {
+		if opts.PrintHint && profileName == active {
+			printProfileSyncHint(g.Stdout)
+		}
 		return nil
 	}
-	active := cmdutil.ResolveProfileName("", syncCfg)
 	if profileName != active {
 		return nil
 	}
@@ -29,10 +45,24 @@ func maybeAutoSyncProfile(ctx context.Context, g *Globals, cfgDir, profileName s
 	return runAutoSync(ctx, g, loaded)
 }
 
+func printProfileSyncHint(w io.Writer) {
+	fmt.Fprintln(w, "\nNext: run 'aipack sync' to sync the active profile to your harness.")
+}
+
+func finishPackContentChange(ctx context.Context, g *Globals, cfgDir, profileName string, add bool) error {
+	if add {
+		if err := maybeAutoSyncProfile(ctx, g, cfgDir, profileName); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintln(g.Stdout, "\nNext: run 'aipack sync' to sync pack content to your harness.")
+	return nil
+}
+
 func maybeAutoSyncAfterInstallMissing(ctx context.Context, g *Globals, cfgDir, profileName string, results []app.PackInstallMissingResult) error {
 	for _, result := range results {
 		if result.Status == app.MissingStatusInstalled {
-			return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
+			return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, profileName)
 		}
 	}
 	return nil

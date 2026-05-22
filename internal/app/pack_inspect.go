@@ -45,6 +45,7 @@ type PackInspectResult struct {
 	Agents     []string             `json:"agents"`
 	Workflows  []string             `json:"workflows"`
 	Skills     []string             `json:"skills"`
+	Hooks      []string             `json:"hooks"`
 	Plugins    []string             `json:"plugins"`
 	Prompts    []string             `json:"prompts"`
 	MCPServers []string             `json:"mcp_servers"`
@@ -267,6 +268,7 @@ func finishPackInspect(req PackInspectRequest, staging string, manifest config.P
 		Counts: ContentCounts{
 			Rules:     len(manifest.Rules),
 			Skills:    len(manifest.Skills),
+			Hooks:     len(manifest.Hooks),
 			Workflows: len(manifest.Workflows),
 			Agents:    len(manifest.Agents),
 			Plugins:   len(manifest.Plugins),
@@ -277,6 +279,7 @@ func finishPackInspect(req PackInspectRequest, staging string, manifest config.P
 		Agents:     nonNilStrings(manifest.Agents),
 		Workflows:  nonNilStrings(manifest.Workflows),
 		Skills:     nonNilStrings(manifest.Skills),
+		Hooks:      nonNilStrings(manifest.Hooks),
 		Plugins:    nonNilStrings(manifest.Plugins),
 		Prompts:    nonNilStrings(manifest.Prompts),
 		MCPServers: nonNilStrings(manifest.MCP),

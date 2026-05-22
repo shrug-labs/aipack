@@ -2,7 +2,7 @@
 
 A package manager for AI agent knowledge.
 
-Rules, skills, workflows, agent definitions, MCP server configs — authored once as portable **packs**, composed through **profiles**, and synced to whatever coding assistant you use.
+Rules, skills, workflows, agent definitions, MCP server configs, hooks — authored once as portable **packs**, composed through **profiles**, and synced to whatever coding assistant you use.
 
 ## The Problem
 
@@ -163,7 +163,7 @@ harness.
 
 ## Key Concepts
 
-A **pack** is a directory of agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — with a `pack.json` manifest. Content is markdown with YAML frontmatter. Drop files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `mcp/`) and the sync engine discovers them automatically. Any git repository can also be consumed as a pack by mapping its directories to content types — no `pack.json` required in the source. See [Installing Packs](docs/installing-packs.md).
+A **pack** is a directory of agent configuration — rules, skills, workflows, agent definitions, MCP server configs, hooks, and harness settings — with a `pack.json` manifest. Content is markdown or YAML with typed entry files. Drop files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `mcp/`, `hooks/`) and the sync engine discovers them automatically. Any git repository can also be consumed as a pack by mapping its directories to content types — no `pack.json` required in the source. See [Installing Packs](docs/installing-packs.md).
 
 **Profiles** control which packs to sync and how — content filtering, parameter expansion, per-pack content overrides, context-based scoping. Packs can bundle profiles so setup is `pack install -w all` + `profile set` + `sync`. See [Profiles](docs/profiles.md) for the full guide.
 
@@ -181,7 +181,7 @@ A **pack** is a directory of agent configuration — rules, skills, workflows, a
 | `aipack pack create/install/list/show/update/delete` | Pack lifecycle management |
 | `aipack pack add/remove/enable/disable` | Profile membership and activation |
 | `aipack pack rename/validate` | Pack configuration and validation |
-| `aipack profile create/set/show/list/delete` | Profile management |
+| `aipack profile create/set/show/list/delete/include/exclude` | Profile management |
 | `aipack registry fetch/list/sources/delete` | Discover and manage pack registries |
 | `aipack search` | Full-text search across all installed packs |
 | `aipack query` | Run raw SQL against the pack index |

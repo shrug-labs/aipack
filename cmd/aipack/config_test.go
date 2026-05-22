@@ -133,6 +133,54 @@ func TestConfigSetAutoSyncFalseAlias(t *testing.T) {
 	}
 }
 
+func TestConfigSetNamespacedTrueFalse(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+
+	stdout, stderr, code := runApp(t, "config", "defaults", "set", "namespaced", "true", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config defaults set namespaced exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, "Set defaults.namespaced to true") {
+		t.Fatalf("stdout = %q, want confirmation", stdout)
+	}
+	if !strings.Contains(stdout, "aipack sync --dry-run") {
+		t.Fatalf("stdout = %q, want sync preview hint", stdout)
+	}
+
+	syncCfg, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if err != nil {
+		t.Fatalf("LoadSyncConfig: %v", err)
+	}
+	if !syncCfg.Defaults.Namespaced {
+		t.Fatal("defaults.namespaced = false, want true")
+	}
+
+	stdout, stderr, code = runApp(t, "config", "defaults", "get", "defaults.namespaced", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config defaults get namespaced exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if strings.TrimSpace(stdout) != "true" {
+		t.Fatalf("config get namespaced stdout = %q, want true", stdout)
+	}
+
+	stdout, stderr, code = runApp(t, "config", "defaults", "set", "namespaced", "false", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config defaults set namespaced false exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, "Set defaults.namespaced to false") {
+		t.Fatalf("stdout = %q, want confirmation", stdout)
+	}
+
+	content, err := os.ReadFile(config.SyncConfigPath(configDir))
+	if err != nil {
+		t.Fatalf("read sync-config: %v", err)
+	}
+	if !strings.Contains(string(content), "namespaced: false") {
+		t.Fatalf("sync-config = %q, want visible namespaced: false", string(content))
+	}
+}
+
 func TestConfigSetUnknownSettingReturnsUsage(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()

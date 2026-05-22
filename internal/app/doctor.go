@@ -64,6 +64,7 @@ type EcosystemStatus struct {
 	TotalAgents    int          `json:"total_agents"`
 	TotalWorkflows int          `json:"total_workflows"`
 	TotalSkills    int          `json:"total_skills"`
+	TotalHooks     int          `json:"total_hooks"`
 	TotalPlugins   int          `json:"total_plugins"`
 	TotalMCP       int          `json:"total_mcp_servers"`
 	SettingsPacks  []string     `json:"settings_packs,omitempty"`
@@ -77,6 +78,7 @@ type PackStatus struct {
 	Agents     int    `json:"agents"`
 	Workflows  int    `json:"workflows"`
 	Skills     int    `json:"skills"`
+	Hooks      int    `json:"hooks"`
 	Plugins    int    `json:"plugins"`
 	MCPServers int    `json:"mcp_servers"`
 	Settings   bool   `json:"settings"`
@@ -240,7 +242,12 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	// below rather than blocking the whole report.
 	prevInv := doctorLoadPrevInventories(configDir)
 	packsCheck := CheckResult{Name: "packs_resolved", Severity: "critical", Status: "fail", OK: false}
-	resolved, rcErr := config.ResolveProfile(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy, prevInv)
+	resolveOpts := config.ResolveOptions{
+		CollisionStrategy: syncCfg.Defaults.CollisionStrategy,
+		Namespaced:        syncCfg.Defaults.Namespaced,
+		PrevInventories:   prevInv,
+	}
+	resolved, rcErr := config.ResolveProfileWithOptions(prof, pp, configDir, resolveOpts)
 	resolvedPacks := resolved.Packs
 	if rcErr != nil {
 		packsCheck.Message = rcErr.Error()
@@ -281,7 +288,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	add(packsCheck)
 
 	if req.Status {
-		statusProfile, _, engErr := eng.Resolve(prof, pp, configDir, syncCfg.Defaults.CollisionStrategy, prevInv)
+		statusProfile, _, engErr := eng.ResolveWithOptions(prof, pp, configDir, resolveOpts)
 		if engErr == nil {
 			rep.Ecosystem = BuildEcosystemStatus(statusProfile, profileName, pp, configDir)
 		}
@@ -989,6 +996,7 @@ func BuildEcosystemStatus(profile domain.Profile, profileName, profilePath, conf
 			Agents:     len(pk.Agents),
 			Workflows:  len(pk.Workflows),
 			Skills:     len(pk.Skills),
+			Hooks:      len(pk.Hooks),
 			Plugins:    len(pk.Plugins),
 			MCPServers: mcpPerPack[pk.Name],
 			Settings:   slices.Contains(profile.SettingsPacks, pk.Name),
@@ -997,6 +1005,7 @@ func BuildEcosystemStatus(profile domain.Profile, profileName, profilePath, conf
 		es.TotalAgents += ps.Agents
 		es.TotalWorkflows += ps.Workflows
 		es.TotalSkills += ps.Skills
+		es.TotalHooks += ps.Hooks
 		es.TotalPlugins += ps.Plugins
 		es.TotalMCP += ps.MCPServers
 		es.Packs = append(es.Packs, ps)

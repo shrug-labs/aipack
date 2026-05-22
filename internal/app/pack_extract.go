@@ -19,7 +19,7 @@ var errPackRootEscape = fmt.Errorf("pack.json root escapes source boundary")
 // packContentDirs lists directories that constitute pack content.
 // Only these are extracted from a source into the installed pack.
 var packContentDirs = []string{
-	"rules", "agents", "workflows", "skills",
+	"rules", "agents", "workflows", "skills", "hooks",
 	"mcp", "plugins", "configs", "prompts", "profiles", "registries",
 }
 
@@ -168,7 +168,7 @@ func extractStandardPack(staging, srcRoot, symlinkBoundary string) (string, conf
 
 // applyWithFilter removes bundled content (profiles, registries, extras)
 // from a staging directory when not approved via --with. Core content
-// (rules, agents, workflows, skills, prompts, mcp, configs) is always
+// (rules, agents, workflows, skills, hooks, prompts, mcp, configs) is always
 // kept. Updates the manifest in-place, deletes unapproved files from
 // disk, and re-saves pack.json. No-op when with is nil or when all
 // bundled categories are approved.
@@ -219,7 +219,7 @@ func extractWithContentPaths(staging, srcRoot, symlinkBoundary string, contentPa
 
 	for cat, rel := range contentPaths {
 		if !cat.IsContentPathTarget() {
-			return cleanup(fmt.Errorf("invalid content_paths key %q: valid keys are rules, agents, workflows, skills, prompts", cat))
+			return cleanup(fmt.Errorf("invalid content_paths key %q: valid keys are rules, agents, workflows, skills, hooks, prompts", cat))
 		}
 		src, err := resolveContentPathSource(srcRoot, rel)
 		if err != nil {

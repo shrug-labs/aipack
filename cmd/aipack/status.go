@@ -19,7 +19,7 @@ type StatusCmd struct {
 
 func (c *StatusCmd) Help() string {
 	return `Shows ecosystem status: active profile, installed packs with content
-inventories (rules, agents, workflows, skills, plugins, MCP servers), and totals.
+inventories (rules, agents, workflows, skills, hooks, plugins, MCP servers), and totals.
 
 Examples:
   # Show status for the default profile
@@ -84,6 +84,7 @@ func statusContentSummary(p app.PackStatus) string {
 	c := app.ContentCounts{
 		Rules: p.Rules, Skills: p.Skills,
 		Workflows: p.Workflows, Agents: p.Agents,
+		Hooks:   p.Hooks,
 		Plugins: p.Plugins,
 		MCP:     p.MCPServers,
 	}
@@ -97,6 +98,7 @@ func statusTotals(es *app.EcosystemStatus) string {
 	c := app.ContentCounts{
 		Rules: es.TotalRules, Skills: es.TotalSkills,
 		Workflows: es.TotalWorkflows, Agents: es.TotalAgents,
+		Hooks:   es.TotalHooks,
 		Plugins: es.TotalPlugins,
 		MCP:     es.TotalMCP,
 	}

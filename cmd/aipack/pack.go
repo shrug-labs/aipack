@@ -37,8 +37,8 @@ type PackCmd struct {
 
 func (c *PackCmd) Help() string {
 	return fmt.Sprintf(`Manage installed packs. Packs are portable, versioned bundles of AI agent
-configuration containing rules, agents, workflows, skills, plugin references, MCP server
-definitions, and harness base configs.
+configuration containing rules, agents, workflows, skills, hooks, plugin references,
+MCP server definitions, and harness base configs.
 
 Packs are installed under %s.`,
 		configPathDisplay("packs", "<name>"),
@@ -176,18 +176,32 @@ func parseWithFlag(vals []string) (domain.BundledSet, error) {
 	return domain.NewBundledSet(cats...), nil
 }
 
-// buildContentPaths builds a content type map from CLI flag values.
+type contentPathFlags struct {
+	Rules     string `help:"Use this directory for rules content" name:"rules" type:"path"`
+	Skills    string `help:"Use this directory for skills content" name:"skills" type:"path"`
+	Agents    string `help:"Use this directory for agents content" name:"agents" type:"path"`
+	Workflows string `help:"Use this directory for workflows content" name:"workflows" type:"path"`
+	Hooks     string `help:"Use this directory for hooks content" name:"hooks" type:"path"`
+	Prompts   string `help:"Use this directory for prompts content" name:"prompts" type:"path"`
+}
+
+func (f contentPathFlags) HasAny() bool {
+	return f.Rules != "" || f.Skills != "" || f.Agents != "" || f.Workflows != "" || f.Hooks != "" || f.Prompts != ""
+}
+
+// ContentPaths builds a content type map from CLI flag values.
 // Returns nil when all inputs are empty.
-func buildContentPaths(rules, skills, agents, workflows, prompts string) map[domain.PackCategory]string {
+func (f contentPathFlags) ContentPaths() map[domain.PackCategory]string {
 	pairs := []struct {
 		cat domain.PackCategory
 		val string
 	}{
-		{domain.CategoryRules, rules},
-		{domain.CategorySkills, skills},
-		{domain.CategoryAgents, agents},
-		{domain.CategoryWorkflows, workflows},
-		{domain.CategoryPrompts, prompts},
+		{domain.CategoryRules, f.Rules},
+		{domain.CategorySkills, f.Skills},
+		{domain.CategoryAgents, f.Agents},
+		{domain.CategoryWorkflows, f.Workflows},
+		{domain.CategoryHooks, f.Hooks},
+		{domain.CategoryPrompts, f.Prompts},
 	}
 	var cp map[domain.PackCategory]string
 	for _, p := range pairs {
@@ -204,13 +218,9 @@ func buildContentPaths(rules, skills, agents, workflows, prompts string) map[dom
 // --- pack create ---
 
 type PackCreateCmd struct {
-	Name      string `arg:"" help:"Pack name"`
-	Local     bool   `help:"Create pack inside the packs directory instead of the current directory" name:"local"`
-	Rules     string `help:"Symlink rules/ to this directory" name:"rules" type:"path"`
-	Skills    string `help:"Symlink skills/ to this directory" name:"skills" type:"path"`
-	Agents    string `help:"Symlink agents/ to this directory" name:"agents" type:"path"`
-	Workflows string `help:"Symlink workflows/ to this directory" name:"workflows" type:"path"`
-	Prompts   string `help:"Symlink prompts/ to this directory" name:"prompts" type:"path"`
+	Name  string `arg:"" help:"Pack name"`
+	Local bool   `help:"Create pack inside the packs directory instead of the current directory" name:"local"`
+	contentPathFlags
 }
 
 func (c *PackCreateCmd) Help() string {
@@ -243,7 +253,7 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 		ConfigDir: cfgDir,
 		Local:     c.Local,
 	}
-	if cs := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cs != nil {
+	if cs := c.ContentPaths(); cs != nil {
 		req.ContentSources = cs
 	}
 	if err := app.PackCreate(req); err != nil {
@@ -260,32 +270,29 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 // --- pack install ---
 
 type PackInstallCmd struct {
-	Path      string   `arg:"" optional:"" help:"Local directory path, registry pack name, or name@ref"`
-	URL       string   `help:"Install pack from a git repository URL or static archive URL/path" name:"url"`
-	Archive   bool     `help:"Treat source as a static zip/tar archive instead of a git repository; inferred for archive URLs/files" name:"archive"`
-	Ref       string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
-	SubPath   string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
-	Name      string   `help:"Override the pack name from pack.json" name:"name"`
-	Registry  string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
-	Profile   string   `help:"Profile to add pack to (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
-	Add       bool     `help:"Add pack to the active profile after installing" name:"add"`
-	Copy      bool     `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
-	With      []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
-	Missing   bool     `help:"Install all missing packs from the active profile" short:"m"`
-	Quiet     bool     `help:"Install as quiet-by-nature — omitted profile-entry selectors include nothing; persists via lockfile so future profile adds default to quiet" short:"q"`
-	NoQuiet   bool     `help:"Force non-quiet install even if a prior lockfile entry says quiet. Mutually exclusive with -q." name:"no-quiet"`
-	Rules     string   `help:"Extract rules from this directory within the repo" name:"rules"`
-	Skills    string   `help:"Extract skills from this directory within the repo" name:"skills"`
-	Agents    string   `help:"Extract agents from this directory within the repo" name:"agents"`
-	Workflows string   `help:"Extract workflows from this directory within the repo" name:"workflows"`
-	Prompts   string   `help:"Extract prompts from this directory within the repo" name:"prompts"`
+	Sources  []string `arg:"" optional:"" help:"Local directory path, registry pack name, name@ref, URL, or archive path"`
+	URL      string   `help:"Install pack from a git repository URL or static archive URL/path" name:"url"`
+	Archive  bool     `help:"Treat source as a static zip/tar archive instead of a git repository; inferred for archive URLs/files" name:"archive"`
+	Ref      string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
+	SubPath  string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
+	Name     string   `help:"Override the pack name from pack.json" name:"name"`
+	Registry string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
+	Profile  string   `help:"Profile to add pack to (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
+	Add      bool     `help:"Add pack to the active profile after installing" name:"add"`
+	Copy     bool     `help:"Copy pack files instead of symlinking (local paths only; not valid with --url)"`
+	With     []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
+	Missing  bool     `help:"Install all missing packs from the active profile" short:"m"`
+	Quiet    bool     `help:"Install as quiet-by-nature — omitted profile-entry selectors include nothing; persists via lockfile so future profile adds default to quiet" short:"q"`
+	NoQuiet  bool     `help:"Force non-quiet install even if a prior lockfile entry says quiet. Mutually exclusive with -q." name:"no-quiet"`
+	contentPathFlags
 }
 
 func (c *PackInstallCmd) Help() string {
 	return fmt.Sprintf(`Installs a pack into %s. Bare 'pack install' (no
 arguments) reconciles the active profile — any packs referenced by the
 profile that aren't already installed are fetched via the registry. Pass a
-path, URL, or registry name to target a specific pack instead.
+path, URL, or registry name to target a specific pack instead. Pass multiple
+registry names to install them in one command.
 
 Local directory packs are symlinked by default; use --copy to make a full
 copy instead. Remote packs are fetched via shallow git clone unless the source
@@ -339,6 +346,9 @@ Examples:
   # Install a pack by registry name
   aipack pack install my-team-pack
 
+  # Install several registry packs
+  aipack pack install essentials aipack-core memory --add -w all
+
   # Install a specific version
   aipack pack install my-team-pack@1.2.3
   aipack pack install --url https://github.com/org/repo --ref 1.2.3
@@ -360,10 +370,15 @@ See also: pack delete, pack list, pack update, registry list`,
 }
 
 func (c *PackInstallCmd) Validate() error {
-	hasPath := c.Path != ""
+	hasPath := len(c.Sources) > 0
+	hasMultipleSources := len(c.Sources) > 1
 	hasURL := c.URL != ""
-	hasContentFlags := c.Rules != "" || c.Skills != "" || c.Agents != "" || c.Workflows != "" || c.Prompts != ""
-	if shouldTreatPackSourceAsArchive(c.URL) || shouldTreatPackSourceAsArchive(c.Path) {
+	hasContentFlags := c.HasAny()
+	path := ""
+	if len(c.Sources) == 1 {
+		path = c.Sources[0]
+	}
+	if shouldTreatPackSourceAsArchive(c.URL) || shouldTreatPackSourceAsArchive(path) {
 		c.Archive = true
 	}
 
@@ -376,6 +391,18 @@ func (c *PackInstallCmd) Validate() error {
 
 	if hasURL && hasPath {
 		return fmt.Errorf("--url and path argument are mutually exclusive")
+	}
+	if hasMultipleSources {
+		if c.Archive || c.Copy || c.Ref != "" || c.SubPath != "" || c.Name != "" || hasContentFlags {
+			return fmt.Errorf("multiple pack install only supports registry names with shared --add, --profile, --with, and quiet flags")
+		}
+		for _, source := range c.Sources {
+			if _, _, ok, err := splitRegistrySourceRef(source, ""); err != nil {
+				return err
+			} else if !ok {
+				return fmt.Errorf("multiple pack install only supports registry names; got %q", source)
+			}
+		}
 	}
 	if hasURL && c.Copy {
 		return fmt.Errorf("--copy is not valid with --url (URL packs are fetched remotely)")
@@ -399,7 +426,7 @@ func (c *PackInstallCmd) Validate() error {
 		return fmt.Errorf("profile reconciliation cannot be combined with --ref/--version; target a specific pack")
 	}
 	if hasContentFlags && !hasURL {
-		return fmt.Errorf("content flags (--rules, --skills, --agents, --workflows, --prompts) require --url")
+		return fmt.Errorf("content flags (--rules, --skills, --agents, --workflows, --hooks, --prompts) require --url")
 	}
 	if hasContentFlags && c.Name == "" {
 		return fmt.Errorf("content flags require --name (no pack.json to derive name from)")
@@ -408,6 +435,28 @@ func (c *PackInstallCmd) Validate() error {
 }
 
 var isRegistryName = cmdutil.IsRegistryName
+
+func splitRegistrySourceRef(input, flagRef string) (name, ref string, ok bool, err error) {
+	candidate := input
+	suffix := ""
+	hasRef := false
+	if n, s, found := strings.Cut(input, "@"); found && s != "" {
+		candidate = n
+		suffix = s
+		hasRef = true
+	}
+	if !isRegistryName(candidate) {
+		return input, flagRef, false, nil
+	}
+	ref = flagRef
+	if hasRef {
+		if flagRef != "" {
+			return "", "", false, fmt.Errorf("cannot combine @<ref> in name with --ref/--version")
+		}
+		ref = suffix
+	}
+	return candidate, ref, true, nil
+}
 
 func shouldTreatPackSourceAsArchive(input string) bool {
 	if !source.LooksLikeArchive(input) {
@@ -462,18 +511,6 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 	// for other reasons (e.g. git SSH URLs). The suffix is a ref spec
 	// (semver, partial semver, commit, namespaced tag, branch name, or
 	// latest) and feeds the same dispatch as --ref/--version.
-	ref := c.Ref
-	path := c.Path
-	if path != "" && !c.Missing && c.URL == "" && isRegistryName(path) {
-		if name, suffix, ok := strings.Cut(path, "@"); ok && suffix != "" {
-			path = name
-			if ref != "" {
-				return fmt.Errorf("cannot combine @<ref> in name with --ref/--version")
-			}
-			ref = suffix
-		}
-	}
-
 	profile := ""
 	if c.Add {
 		profile = effectiveProfile(c.Profile, cfgDir)
@@ -488,6 +525,25 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 	if err != nil {
 		return err
 	}
+
+	if len(c.Sources) > 1 {
+		if err := c.runBatchInstall(ctx, g, cfgDir, c.Sources, profile, with, quietOverride); err != nil {
+			return err
+		}
+		return finishPackContentChange(ctx, g, cfgDir, profile, c.Add)
+	}
+
+	ref := c.Ref
+	path := ""
+	if len(c.Sources) == 1 {
+		path = c.Sources[0]
+		if parsedName, parsedRef, ok, err := splitRegistrySourceRef(path, ref); err != nil {
+			return err
+		} else if ok {
+			path = parsedName
+			ref = parsedRef
+		}
+	}
 	req := app.PackInstallRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
@@ -499,7 +555,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		Archive:   c.Archive,
 	}
 	// CLI content flags take precedence over registry entry content_paths.
-	cliContentPaths := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts)
+	cliContentPaths := c.ContentPaths()
 	if cliContentPaths != nil {
 		req.ContentPaths = cliContentPaths
 	}
@@ -516,21 +572,7 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 		req.SubPath = c.SubPath
 	} else if path != "" && isRegistryName(path) {
 		// Not a local path — try registry lookup.
-		regReq := app.RegistryListRequest{
-			ConfigDir:    cfgDir,
-			RegistryPath: c.Registry,
-		}
-		entry, err := app.RegistryLookup(regReq, path)
-		if err != nil {
-			// Auto-fetch registry and retry once.
-			fmt.Fprintln(g.Stderr, "Fetching registry...")
-			fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{
-				ConfigDir: cfgDir,
-			}, nil)
-			if fetchErr == nil {
-				entry, err = app.RegistryLookup(regReq, path)
-			}
-		}
+		entry, err := lookupRegistryPackForInstall(ctx, g, cfgDir, c.Registry, path)
 		if err != nil {
 			return fmt.Errorf("registry lookup for %q: %w\n\nHint: use --url for a direct URL install, or check 'aipack registry list'", path, err)
 		}
@@ -562,13 +604,118 @@ func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
 	if err := app.PackInstall(ctx, req, g.Stdout); err != nil {
 		return err
 	}
-	if c.Add {
-		if err := maybeAutoSyncProfile(ctx, g, cfgDir, profile); err != nil {
-			return err
+	return finishPackContentChange(ctx, g, cfgDir, profile, c.Add)
+}
+
+func (c *PackInstallCmd) runBatchInstall(ctx context.Context, g *Globals, cfgDir string, sources []string, profile string, with domain.BundledSet, quietOverride *bool) error {
+	parsed, err := parseBatchRegistrySources(sources)
+	if err != nil {
+		return err
+	}
+	reg, err := loadBatchInstallRegistry(ctx, g, cfgDir, c.Registry, parsed)
+	if err != nil {
+		return err
+	}
+	failed := 0
+	for i, source := range parsed {
+		fmt.Fprintf(g.Stdout, "\n[%d/%d] %s\n", i+1, len(parsed), source.Raw)
+		entry, ok := reg.Packs[source.Name]
+		if !ok {
+			failed++
+			fmt.Fprintf(g.Stdout, "error: registry lookup for %q: pack not found in registry\n", source.Name)
+			continue
+		}
+		req := app.PackInstallRequestFromRegistryEntry(cfgDir, source.Name, entry)
+		req.Add = c.Add
+		req.Profile = profile
+		req.With = with
+		if source.Ref != "" {
+			req.Ref = source.Ref
+		}
+		if quietOverride != nil {
+			req.Quiet = quietOverride
+		}
+		if err := app.PackInstall(ctx, req, g.Stdout); err != nil {
+			failed++
+			continue
 		}
 	}
-	fmt.Fprintln(g.Stdout, "\nNext: run 'aipack sync' to sync pack content to your harness.")
+	if failed > 0 {
+		return fmt.Errorf("batch install: %d pack(s) failed", failed)
+	}
 	return nil
+}
+
+type batchRegistrySource struct {
+	Raw  string
+	Name string
+	Ref  string
+}
+
+func parseBatchRegistrySources(sources []string) ([]batchRegistrySource, error) {
+	out := make([]batchRegistrySource, 0, len(sources))
+	for _, raw := range sources {
+		name, ref, ok, err := splitRegistrySourceRef(raw, "")
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("multiple pack install only supports registry names; got %q", raw)
+		}
+		out = append(out, batchRegistrySource{Raw: raw, Name: name, Ref: ref})
+	}
+	return out, nil
+}
+
+func loadBatchInstallRegistry(ctx context.Context, g *Globals, cfgDir, registryPath string, sources []batchRegistrySource) (config.Registry, error) {
+	reg, err := loadRegistryForInstall(cfgDir, registryPath)
+	if err != nil {
+		return config.Registry{}, err
+	}
+	if registryPath != "" || allBatchSourcesExist(reg, sources) {
+		return reg, nil
+	}
+	fmt.Fprintln(g.Stderr, "Fetching registry...")
+	if fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{ConfigDir: cfgDir}, nil); fetchErr != nil {
+		return reg, nil
+	}
+	return loadRegistryForInstall(cfgDir, registryPath)
+}
+
+func loadRegistryForInstall(cfgDir, registryPath string) (config.Registry, error) {
+	if registryPath != "" {
+		return config.LoadRegistry(registryPath)
+	}
+	return config.LoadMergedRegistry(cfgDir)
+}
+
+func allBatchSourcesExist(reg config.Registry, sources []batchRegistrySource) bool {
+	for _, source := range sources {
+		if _, ok := reg.Packs[source.Name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func lookupRegistryPackForInstall(ctx context.Context, g *Globals, cfgDir, registryPath, name string) (config.RegistryEntry, error) {
+	regReq := app.RegistryListRequest{
+		ConfigDir:    cfgDir,
+		RegistryPath: registryPath,
+	}
+	entry, err := app.RegistryLookup(regReq, name)
+	if err == nil {
+		return entry, nil
+	}
+	if registryPath != "" {
+		return config.RegistryEntry{}, err
+	}
+	fmt.Fprintln(g.Stderr, "Fetching registry...")
+	fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{ConfigDir: cfgDir}, nil)
+	if fetchErr != nil {
+		return config.RegistryEntry{}, err
+	}
+	return app.RegistryLookup(regReq, name)
 }
 
 // --- pack list ---
@@ -851,7 +998,7 @@ func (c *PackAddCmd) Run(ctx context.Context, g *Globals) error {
 	if err := app.PackAdd(cfgDir, profileName, c.Name, quietOverride, g.Stdout); err != nil {
 		return err
 	}
-	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
+	return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, profileName)
 }
 
 // resolveQuietFlags converts the CLI pair (-q / --no-quiet) to the tri-state
@@ -904,7 +1051,7 @@ func (c *PackRemoveCmd) Run(ctx context.Context, g *Globals) error {
 	if err := app.PackRemove(cfgDir, profileName, c.Name, g.Stdout); err != nil {
 		return err
 	}
-	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
+	return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, profileName)
 }
 
 // --- pack enable (profile) ---
@@ -938,7 +1085,7 @@ func (c *PackEnableCmd) Run(ctx context.Context, g *Globals) error {
 	if err := app.PackEnable(cfgDir, profileName, c.Name, g.Stdout); err != nil {
 		return err
 	}
-	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
+	return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, profileName)
 }
 
 // --- pack disable (profile) ---
@@ -973,7 +1120,7 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 	if err := app.PackDisable(cfgDir, profileName, c.Name, g.Stdout); err != nil {
 		return err
 	}
-	return maybeAutoSyncProfile(ctx, g, cfgDir, profileName)
+	return maybeAutoSyncProfileWithHint(ctx, g, cfgDir, profileName)
 }
 
 // --- pack update ---
@@ -1144,6 +1291,7 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 	printContentList(g.Stdout, "Agents", entry.Agents)
 	printContentList(g.Stdout, "Workflows", entry.Workflows)
 	printContentList(g.Stdout, "Skills", entry.Skills)
+	printContentList(g.Stdout, "Hooks", entry.Hooks)
 	printContentList(g.Stdout, "Plugins", entry.Plugins)
 	printContentList(g.Stdout, "Prompts", entry.Prompts)
 	printContentList(g.Stdout, "MCP", entry.MCPServers)
@@ -1161,20 +1309,16 @@ func printContentList(w io.Writer, label string, items []string) {
 // --- pack inspect ---
 
 type PackInspectCmd struct {
-	Input     string `arg:"" optional:"" help:"Pack name, local path, or URL to inspect" predictor:"pack"`
-	URL       string `help:"Inspect a git repository URL or static archive URL/path" name:"url"`
-	Archive   bool   `help:"Treat --url/input as a static zip/tar archive; inferred for archive URLs/files" name:"archive"`
-	Ref       string `help:"Git ref to inspect" name:"ref" aliases:"version"`
-	SubPath   string `help:"Subdirectory within the repo/archive where pack.json lives" name:"path"`
-	Name      string `help:"Override pack name for content_paths sources" name:"name"`
-	Registry  string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
-	Rules     string `help:"Use this directory as rules content when source has no pack.json" name:"rules" type:"path"`
-	Skills    string `help:"Use this directory as skills content when source has no pack.json" name:"skills" type:"path"`
-	Agents    string `help:"Use this directory as agents content when source has no pack.json" name:"agents" type:"path"`
-	Workflows string `help:"Use this directory as workflows content when source has no pack.json" name:"workflows" type:"path"`
-	Prompts   string `help:"Use this directory as prompts content when source has no pack.json" name:"prompts" type:"path"`
-	Clear     bool   `help:"Remove all inspected packs from the search index and exit" name:"clear"`
-	JSON      bool   `help:"Emit machine-readable JSON" name:"json"`
+	Input    string `arg:"" optional:"" help:"Pack name, local path, or URL to inspect" predictor:"pack"`
+	URL      string `help:"Inspect a git repository URL or static archive URL/path" name:"url"`
+	Archive  bool   `help:"Treat --url/input as a static zip/tar archive; inferred for archive URLs/files" name:"archive"`
+	Ref      string `help:"Git ref to inspect" name:"ref" aliases:"version"`
+	SubPath  string `help:"Subdirectory within the repo/archive where pack.json lives" name:"path"`
+	Name     string `help:"Override pack name for content_paths sources" name:"name"`
+	Registry string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
+	contentPathFlags
+	Clear bool `help:"Remove all inspected packs from the search index and exit" name:"clear"`
+	JSON  bool `help:"Emit machine-readable JSON" name:"json"`
 }
 
 func (c *PackInspectCmd) Help() string {
@@ -1230,7 +1374,7 @@ func (c *PackInspectCmd) Run(ctx context.Context, g *Globals) error {
 		Ref:          c.Ref,
 		SubPath:      c.SubPath,
 	}
-	if cp := buildContentPaths(c.Rules, c.Skills, c.Agents, c.Workflows, c.Prompts); cp != nil {
+	if cp := c.ContentPaths(); cp != nil {
 		req.ContentPaths = cp
 	}
 	result, err := app.PackInspect(ctx, req)
@@ -1257,6 +1401,7 @@ func (c *PackInspectCmd) Run(ctx context.Context, g *Globals) error {
 	printContentList(g.Stdout, "Agents", result.Agents)
 	printContentList(g.Stdout, "Workflows", result.Workflows)
 	printContentList(g.Stdout, "Skills", result.Skills)
+	printContentList(g.Stdout, "Hooks", result.Hooks)
 	printContentList(g.Stdout, "Plugins", result.Plugins)
 	printContentList(g.Stdout, "Prompts", result.Prompts)
 	printContentList(g.Stdout, "MCP", result.MCPServers)

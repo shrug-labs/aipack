@@ -41,6 +41,7 @@ type Pack struct {
 	Agents     []Agent
 	Workflows  []Workflow
 	Skills     []Skill
+	Hooks      []Hook
 	Plugins    []Plugin
 	Registries []string // registry IDs (files live at registries/<id>.yaml)
 }
@@ -81,6 +82,15 @@ func (p Profile) AllSkills() []Skill {
 	return out
 }
 
+// AllHooks returns all hooks across all packs, in pack order.
+func (p Profile) AllHooks() []Hook {
+	var out []Hook
+	for _, pk := range p.Packs {
+		out = append(out, pk.Hooks...)
+	}
+	return out
+}
+
 // AllPlugins returns all plugin references across all packs, in pack order.
 func (p Profile) AllPlugins() []Plugin {
 	var out []Plugin
@@ -107,7 +117,7 @@ func (p Profile) SettingsPackName(_ Harness) string {
 // HasContent reports whether the profile has any rules, agents, workflows, or skills.
 func (p Profile) HasContent() bool {
 	for _, pk := range p.Packs {
-		if len(pk.Rules) > 0 || len(pk.Agents) > 0 || len(pk.Workflows) > 0 || len(pk.Skills) > 0 || len(pk.Plugins) > 0 {
+		if len(pk.Rules) > 0 || len(pk.Agents) > 0 || len(pk.Workflows) > 0 || len(pk.Skills) > 0 || len(pk.Hooks) > 0 || len(pk.Plugins) > 0 {
 			return true
 		}
 	}

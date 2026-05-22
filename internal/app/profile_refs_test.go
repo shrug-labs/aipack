@@ -336,6 +336,47 @@ packs:
 	}
 }
 
+func TestProfileRefs_ScansHookDescriptorOnly(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packDir := filepath.Join(configDir, "packs", "hook-pack")
+	writePackManifest(t, packDir, "hook-pack")
+	manifest, err := config.LoadPackManifest(filepath.Join(packDir, "pack.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Hooks = []string{"tool-audit"}
+	if err := config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(packDir, "hooks", "tool-audit", "HOOK.yaml"), `name: tool-audit
+events:
+  - on: tool.after
+    handler:
+      command: "python3 {hook:root}/handler.py --token {env:HOOK_TOKEN}"
+`)
+	writeFile(t, filepath.Join(packDir, "hooks", "tool-audit", "handler.py"), `{env:SHOULD_NOT_SCAN_ASSET}`)
+	writeFile(t, filepath.Join(configDir, "profiles", "default.yaml"), `schema_version: 2
+packs:
+  - name: hook-pack
+`)
+
+	result, err := ProfileRefs(ProfileRefsRequest{ConfigDir: configDir, ProfileName: "default"})
+	if err != nil {
+		t.Fatalf("ProfileRefs: %v", err)
+	}
+	seen := map[string]ProfileRef{}
+	for _, ref := range result.Refs {
+		seen[ref.Display] = ref
+	}
+	if seen["{env:HOOK_TOKEN}"].Location != "hooks.tool-audit" {
+		t.Fatalf("HOOK_TOKEN ref = %+v, want hooks.tool-audit location; refs=%+v", seen["{env:HOOK_TOKEN}"], result.Refs)
+	}
+	if _, ok := seen["{env:SHOULD_NOT_SCAN_ASSET}"]; ok {
+		t.Fatalf("hook asset refs should not be scanned: %+v", result.Refs)
+	}
+}
+
 // TestProfileSetParam_NoWarnForLocalProfile confirms the warning fires only
 // for bundled profiles, so users editing their own profiles aren't nagged.
 func TestProfileSetParam_NoWarnForLocalProfile(t *testing.T) {

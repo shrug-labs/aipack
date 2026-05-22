@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
@@ -104,6 +106,34 @@ func TestSelectionsToVector_Deterministic(t *testing.T) {
 		if v != sorted[i] {
 			t.Fatalf("Include not sorted: %v", *got.Include)
 		}
+	}
+}
+
+func TestSelectionsToProfileVector_QuietAllUsesExplicitInclude(t *testing.T) {
+	t.Parallel()
+	inv := []string{"a", "b"}
+	got := SelectionsToProfileVector(inv, []string{"a", "b"}, true)
+	if got.Include == nil || !slices.Equal(*got.Include, []string{"a", "b"}) {
+		t.Fatalf("quiet all-selected must emit explicit include, got include=%v exclude=%v", got.Include, got.Exclude)
+	}
+	resolved, err := ResolveProfileVectorSelection("quiet-pack", domain.CategoryRules, inv, got, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(resolved, inv) {
+		t.Fatalf("quiet all-selected round trip = %v, want %v", resolved, inv)
+	}
+}
+
+func TestResolveProfileVectorSelection_ExpandsGlobs(t *testing.T) {
+	t.Parallel()
+	include := []string{"ops-*"}
+	got, err := ResolveProfileVectorSelection("glob-pack", domain.CategoryRules, []string{"ops-a", "ops-b", "dev"}, VectorSelector{Include: &include}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"ops-a", "ops-b"}) {
+		t.Fatalf("glob selection = %v, want [ops-a ops-b]", got)
 	}
 }
 

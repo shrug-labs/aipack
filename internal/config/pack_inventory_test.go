@@ -109,6 +109,16 @@ func TestValidatePackInventory_RequiresManifestReferencedFiles(t *testing.T) {
 			},
 			wantErr: `pack "demo" configs.harness_plugins[opencode] missing "plugin.json"`,
 		},
+		{
+			name: "missing hook descriptor",
+			manifest: PackManifest{
+				SchemaVersion: 2,
+				Name:          "demo",
+				Root:          ".",
+				Hooks:         []string{"tool-audit"},
+			},
+			wantErr: `pack "demo" hooks "tool-audit" missing`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -230,6 +240,14 @@ func TestValidatePackInventory_RejectsInvalidIDChars(t *testing.T) {
 			wantErr: "pack \"demo\" agents id \"team/reviewer\" must not contain `/`",
 		},
 		{
+			name: "agent id with rendered identity separator is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Agents: []string{"team__aipack__reviewer"},
+			},
+			wantErr: `pack "demo" agents id "team__aipack__reviewer" must not contain "__aipack__"`,
+		},
+		{
 			name: "workflow id with `/` is rejected",
 			manifest: PackManifest{
 				SchemaVersion: 2, Name: "demo", Root: ".",
@@ -238,12 +256,28 @@ func TestValidatePackInventory_RejectsInvalidIDChars(t *testing.T) {
 			wantErr: "pack \"demo\" workflows id \"team/deploy\" must not contain `/`",
 		},
 		{
+			name: "workflow id with rendered identity separator is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Workflows: []string{"team__aipack__deploy"},
+			},
+			wantErr: `pack "demo" workflows id "team__aipack__deploy" must not contain "__aipack__"`,
+		},
+		{
 			name: "skill id with `/` is rejected",
 			manifest: PackManifest{
 				SchemaVersion: 2, Name: "demo", Root: ".",
 				Skills: []string{"team/oncall"},
 			},
 			wantErr: "pack \"demo\" skills id \"team/oncall\" must not contain `/`",
+		},
+		{
+			name: "skill id with rendered identity separator is rejected",
+			manifest: PackManifest{
+				SchemaVersion: 2, Name: "demo", Root: ".",
+				Skills: []string{"team__aipack__oncall"},
+			},
+			wantErr: `pack "demo" skills id "team__aipack__oncall" must not contain "__aipack__"`,
 		},
 		{
 			name: "plugin id with `/` is rejected",
@@ -271,7 +305,7 @@ func TestValidatePackInventory_RejectsInvalidIDChars(t *testing.T) {
 }
 
 // TestValidatePackInventory_AcceptsSlashedRuleIDs confirms rules can carry
-// nested ids — only `__` is reserved.
+// nested ids; literal `__` remains reserved for rule slash escaping.
 func TestValidatePackInventory_AcceptsSlashedRuleIDs(t *testing.T) {
 	t.Parallel()
 	packRoot := t.TempDir()
@@ -291,6 +325,36 @@ func TestValidatePackInventory_AcceptsSlashedRuleIDs(t *testing.T) {
 	manifest := PackManifest{
 		SchemaVersion: 2, Name: "demo", Root: ".",
 		Rules: []string{"team-a/style", "team-b/style", "group/sub/deep"},
+	}
+	if err := validatePackInventory("demo", packRoot, manifest); err != nil {
+		t.Fatalf("validatePackInventory: %v", err)
+	}
+}
+
+func TestValidatePackInventory_AcceptsDoubleUnderscoreLeafIDs(t *testing.T) {
+	t.Parallel()
+	packRoot := t.TempDir()
+	files := []string{
+		"agents/team__reviewer.md",
+		"workflows/team__deploy.md",
+		"skills/team__oncall/SKILL.md",
+		"hooks/team__after-tool/HOOK.yaml",
+	}
+	for _, p := range files {
+		full := filepath.Join(packRoot, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("body"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := PackManifest{
+		SchemaVersion: 2, Name: "demo", Root: ".",
+		Agents:    []string{"team__reviewer"},
+		Workflows: []string{"team__deploy"},
+		Skills:    []string{"team__oncall"},
+		Hooks:     []string{"team__after-tool"},
 	}
 	if err := validatePackInventory("demo", packRoot, manifest); err != nil {
 		t.Fatalf("validatePackInventory: %v", err)

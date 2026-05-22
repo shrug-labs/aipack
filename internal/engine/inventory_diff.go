@@ -19,6 +19,7 @@ func DiffInventory(packName string, old, new domain.PackInventory) domain.Invent
 	d.AddedRules, d.RemovedRules = DiffStrings(old.Rules, new.Rules)
 	d.AddedAgents, d.RemovedAgents = DiffStrings(old.Agents, new.Agents)
 	d.AddedWorkflows, d.RemovedWorkflows = DiffStrings(old.Workflows, new.Workflows)
+	d.AddedHooks, d.RemovedHooks = DiffStrings(old.Hooks, new.Hooks)
 	d.AddedPlugins, d.RemovedPlugins = DiffStrings(old.Plugins, new.Plugins)
 	d.AddedSkills, d.RemovedSkills, d.ChangedSkills = diffSkills(old.Skills, new.Skills)
 	d.AddedServers, d.RemovedServers, d.ChangedServers = diffServers(old.MCPServers, new.MCPServers)
@@ -196,6 +197,7 @@ func EmitDriftReport(w io.Writer, diff domain.InventoryDiff, brokenRefs []domain
 	collect(domain.CategoryRules, diff.RemovedRules)
 	collect(domain.CategoryAgents, diff.RemovedAgents)
 	collect(domain.CategoryWorkflows, diff.RemovedWorkflows)
+	collect(domain.CategoryHooks, diff.RemovedHooks)
 	collect(domain.CategoryPlugins, diff.RemovedPlugins)
 	collect(domain.CategorySkills, diff.RemovedSkills)
 	collect(domain.CategoryMCP, diff.RemovedServers)
@@ -215,13 +217,14 @@ func EmitDriftReport(w io.Writer, diff domain.InventoryDiff, brokenRefs []domain
 	}
 
 	hasAdds := len(diff.AddedRules) > 0 || len(diff.AddedAgents) > 0 ||
-		len(diff.AddedWorkflows) > 0 || len(diff.AddedPlugins) > 0 ||
+		len(diff.AddedWorkflows) > 0 || len(diff.AddedHooks) > 0 || len(diff.AddedPlugins) > 0 ||
 		len(diff.AddedSkills) > 0 || len(diff.AddedServers) > 0
 	if hasAdds {
 		emitDriftSection(w, "added")
 		emitAddedIDs(w, domain.CategoryRules, diff.AddedRules)
 		emitAddedIDs(w, domain.CategoryAgents, diff.AddedAgents)
 		emitAddedIDs(w, domain.CategoryWorkflows, diff.AddedWorkflows)
+		emitAddedIDs(w, domain.CategoryHooks, diff.AddedHooks)
 		emitAddedIDs(w, domain.CategoryPlugins, diff.AddedPlugins)
 		for _, name := range slices.Sorted(maps.Keys(diff.AddedSkills)) {
 			snap := diff.AddedSkills[name]

@@ -30,6 +30,7 @@ var kindOptions = []string{
 	domain.CategorySkills.SingularLabel(),
 	domain.CategoryWorkflows.SingularLabel(),
 	domain.CategoryAgents.SingularLabel(),
+	domain.CategoryHooks.SingularLabel(),
 	"pack",
 }
 var categoryOptions = []string{"", "ops", "dev", "infra", "governance", "meta"}

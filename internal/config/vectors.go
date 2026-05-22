@@ -4,6 +4,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // SelectionsToVector converts a set of selected items from an inventory into
@@ -50,6 +52,23 @@ func SelectionsToVector(inventory, selected []string) VectorSelector {
 	return VectorSelector{Exclude: &excluded}
 }
 
+// SelectionsToProfileVector converts selected items into a profile selector
+// while honoring quiet-pack semantics. Quiet packs default to no content, so
+// any non-empty selection must be represented as an explicit include list.
+func SelectionsToProfileVector(inventory, selected []string, quiet bool) VectorSelector {
+	if !quiet {
+		return SelectionsToVector(inventory, selected)
+	}
+	if len(inventory) == 0 {
+		return VectorSelector{}
+	}
+	sorted := normalizeList(selected)
+	if len(sorted) == 0 {
+		return VectorSelector{}
+	}
+	return VectorSelector{Include: &sorted}
+}
+
 // ResolveCurrentVector returns the currently selected items for a vector,
 // resolving the VectorSelector against the manifest inventory.
 func ResolveCurrentVector(inventory []string, sel VectorSelector) []string {
@@ -67,6 +86,16 @@ func ResolveCurrentVector(inventory []string, sel VectorSelector) []string {
 		return out
 	}
 	return slices.Clone(inventory)
+}
+
+// ResolveProfileVectorSelection resolves a profile vector using the same
+// quiet-pack and glob-selector semantics as sync-time profile resolution.
+func ResolveProfileVectorSelection(packName string, cat domain.PackCategory, inventory []string, sel VectorSelector, quiet bool) ([]string, error) {
+	selected, _, err := resolveVector(packName, cat.DirName(), inventory, sel, quiet, nil)
+	if err != nil {
+		return nil, err
+	}
+	return selected, nil
 }
 
 // MCPToConfig converts selected MCP servers and tool allowlists back to

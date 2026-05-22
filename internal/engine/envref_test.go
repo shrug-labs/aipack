@@ -2,6 +2,7 @@ package engine
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -80,9 +81,13 @@ func TestExpandRefs_EnvVar(t *testing.T) {
 
 func TestExpandRefs_UnresolvedEnvVar(t *testing.T) {
 	t.Parallel()
-	_, err := ExpandRefs(nil, "{env:DEFINITELY_NOT_SET_VAR_12345}")
+	const missingEnv = "DEFINITELY_NOT_SET_VAR_12345"
+	_, err := ExpandRefs(nil, "{env:"+missingEnv+"}")
 	if err == nil {
 		t.Error("expected error for unresolved env var")
+	}
+	if !strings.Contains(err.Error(), "aipack config env set "+missingEnv+" <value>") {
+		t.Fatalf("error %q missing config env set remediation", err)
 	}
 }
 

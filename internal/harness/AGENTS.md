@@ -80,9 +80,11 @@ The optional `transformAgent` callback lets harnesses modify agent output (Claud
 
 ## Promote pattern
 
-Codex and Cline can't represent agents/workflows natively, so they're **promoted** to skill directories with enriched YAML frontmatter. See `promote.go`.
+Codex and Cline can't represent some content types natively, so they're **promoted** to skill directories with enriched YAML frontmatter. See `promote.go`.
 
-Forward (sync): agent/workflow → `skills/<name>/SKILL.md` with `source_type: agent` or `source_type: workflow` in frontmatter. Reverse (capture): `CapturePromotedContent()` reads `source_type` from the SKILL.md frontmatter and reconstructs the original domain type.
+Forward (sync): agent/workflow → `skills/<rendered-name>/SKILL.md` with matching `name: <rendered-name>` and `source_type: agent` or `source_type: workflow` in frontmatter. In natural mode `<rendered-name>` is the source ID; when `SyncContext.Namespaced` is true, it is `<id>__aipack__<pack>`. Reverse (capture): `CapturePromotedContent()` reads `source_type` from the SKILL.md frontmatter and reconstructs the original domain type.
+
+Rendered path leaves and rendered frontmatter names must match for rules rendered as individual files, agents, skills, workflows/commands, and promoted content. Namespaced mode is mutually exclusive with natural mode in the desired set for a single harness target/scope; sync should converge to one spelling and prune the other through ledger cleanup. Capture strips `<id>__aipack__<pack>` back to the source ID before save writes pack content.
 
 This round-trip is critical — the enriched frontmatter preserves enough metadata to reconstruct the original agent/workflow when saving back to packs.
 
@@ -108,6 +110,8 @@ Multiple packs can contribute harness settings via `configs/harness_settings` in
 
 Plugin files (`configs/harness_plugins`) are pure copies. Same-filename plugins from different packs produce an error (collision detection).
 
+Hooks are first-class pack content under `hooks/<id>/HOOK.yaml`. Harness adapters render native hook configuration from typed hook descriptors. Codex writes `.codex/hooks.json` and matching `hooks.state` trust hashes into `config.toml`.
+
 ## Vector rendering per harness
 
 | Vector | Claude Code | OpenCode | Codex | Cline |
@@ -118,6 +122,7 @@ Plugin files (`configs/harness_plugins`) are pure copies. Same-filename plugins 
 | Skills | `.claude/skills/` | `.opencode/skills/` | `.agents/skills/` | `.agents/skills/` (shared with Codex) |
 | MCP | `.mcp.json` | `opencode.json` | `config.toml` | Global VS Code storage |
 | Settings | `settings.local.json` | `opencode.json` | `config.toml` | N/A |
+| Hooks | N/A | N/A | `.codex/hooks.json` + `config.toml` trust state | N/A |
 
 Full per-harness details including merge behavior and tool permissions: `docs/aipack.md` Per-harness reference.
 

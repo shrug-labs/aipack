@@ -36,10 +36,11 @@ type cliCore struct {
 	Clean   CleanCmd   `cmd:"" group:"Sync/Save:" help:"Remove all managed files from harness locations"`
 	Restore RestoreCmd `cmd:"" group:"Sync/Save:" help:"Restore settings files from pre-sync or base cache"`
 
-	Install  InstallCmd  `cmd:"" hidden:"" help:"Alias for 'pack install'"`
-	Pack     PackCmd     `cmd:"" group:"Pack Management:" help:"Manage installed packs"`
-	Registry RegistryCmd `cmd:"" group:"Pack Management:" help:"Browse and search the pack registry"`
-	Profile  ProfileCmd  `cmd:"" group:"Profile Management:" help:"Manage sync profiles"`
+	Install    InstallCmd    `cmd:"" hidden:"" help:"Alias for 'pack install'"`
+	Pack       PackCmd       `cmd:"" group:"Pack Management:" help:"Manage installed packs"`
+	Collection CollectionCmd `cmd:"" group:"Pack Management:" help:"Install curated pack collections"`
+	Registry   RegistryCmd   `cmd:"" group:"Pack Management:" help:"Browse and search the pack registry"`
+	Profile    ProfileCmd    `cmd:"" group:"Profile Management:" help:"Manage sync profiles"`
 
 	MCP    MCPCmd    `cmd:"" group:"Discovery:" help:"MCP server operations (inspect tools, discover inventory)"`
 	Search SearchCmd `cmd:"" group:"Discovery:" help:"Search the pack index by name, tags, role, or kind"`

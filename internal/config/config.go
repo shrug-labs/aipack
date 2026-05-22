@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -35,6 +36,7 @@ type PackEntry struct {
 	Agents    VectorSelector             `yaml:"agents"`
 	Workflows VectorSelector             `yaml:"workflows"`
 	Skills    VectorSelector             `yaml:"skills"`
+	Hooks     HookSelector               `yaml:"hooks"`
 	Plugins   VectorSelector             `yaml:"plugins"`
 	MCP       map[string]MCPServerConfig `yaml:"mcp"`
 
@@ -50,6 +52,14 @@ type PackSettingsConfig struct {
 type VectorSelector struct {
 	Include *[]string `yaml:"include"`
 	Exclude *[]string `yaml:"exclude"`
+}
+
+// HookSelector is a content selector for executable hook descriptors. It
+// behaves like other vector selectors, with an explicit enabled switch for
+// users who want to opt out without changing include/exclude lists.
+type HookSelector struct {
+	VectorSelector `yaml:",inline"`
+	Enabled        *bool `yaml:"enabled"`
 }
 
 type MCPServerConfig struct {
@@ -102,6 +112,7 @@ type Overrides struct {
 	Agents    []string `yaml:"agents"`
 	Workflows []string `yaml:"workflows"`
 	Skills    []string `yaml:"skills"`
+	Hooks     []string `yaml:"hooks"`
 	Plugins   []string `yaml:"plugins"`
 	MCP       []string `yaml:"mcp"`
 }
@@ -119,6 +130,8 @@ func (pe *PackEntry) OverridesForCategory(cat domain.PackCategory) *[]string {
 		return &pe.Overrides.Workflows
 	case domain.CategorySkills:
 		return &pe.Overrides.Skills
+	case domain.CategoryHooks:
+		return &pe.Overrides.Hooks
 	case domain.CategoryPlugins:
 		return &pe.Overrides.Plugins
 	case domain.CategoryMCP:
@@ -165,6 +178,9 @@ func ValidateProfileConfig(cfg ProfileConfig) []string {
 		if p.Name == "" {
 			errs = append(errs, fmt.Sprintf("packs[%d]: empty name", i))
 			continue
+		}
+		if strings.Contains(p.Name, domain.RenderedIdentitySeparator) {
+			errs = append(errs, fmt.Sprintf("packs[%d]: name %q must not contain %q", i, p.Name, domain.RenderedIdentitySeparator))
 		}
 		if _, ok := seen[p.Name]; ok {
 			errs = append(errs, fmt.Sprintf("packs[%d]: duplicate name %q", i, p.Name))

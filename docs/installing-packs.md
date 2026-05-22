@@ -62,7 +62,7 @@ aipack pack inspect ./team-pack.zip
 aipack search --status inspected
 ```
 
-The inspected pack is added to the search index as a preview. That makes `aipack search --status inspected` useful for browsing rules, skills, workflows, agents, and prompts before deciding whether to run `pack install`. Use `pack inspect --json` when automation needs the full structured inventory.
+The inspected pack is added to the search index as a preview. That makes `aipack search --status inspected` useful for browsing rules, skills, workflows, agents, hooks, and prompts before deciding whether to run `pack install`. Use `pack inspect --json` when automation needs the full structured inventory.
 
 When the pack defines MCP servers, `aipack pack inspect` surfaces a warning listing the server names. MCP servers run external tools with whatever credentials the harness gives them, so the warning is a chance to check the source before sync wires them in. Inspected rows accumulate over time; they age out automatically after 30 days, and `aipack pack inspect --clear` wipes them on demand without touching installed or registered packs.
 
@@ -108,7 +108,7 @@ No `.git/`, no test directories, no CI files — just the content you pointed at
 
 The `-q` flag marks the pack as **quiet** in your profile: omitted content types include nothing instead of everything. Since you only mapped skills and rules, those are what you get. See [Profiles — Quiet packs](./profiles.md#quiet-packs) for the full semantics.
 
-Content flags require `--url` (this is a remote extraction feature) and `--name` (there's no `pack.json` to derive a name from). Available flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--prompts`. Each takes a directory path relative to the repository root.
+Content flags require `--url` (this is a remote extraction feature) and `--name` (there's no `pack.json` to derive a name from). Available flags: `--rules`, `--skills`, `--agents`, `--workflows`, `--hooks`, `--prompts`. Each takes a directory path relative to the repository root.
 
 ## Selecting content from a quiet pack
 
@@ -169,7 +169,7 @@ aipack pack install example-pack --add
 
 The content flags, quiet hint, and description are baked into the registry entry. `pack update` re-clones and re-extracts, picking up upstream changes.
 
-Registry entries also support `ref` (git branch/tag/commit) and `path` (subdirectory within the repo for standard packs that include a `pack.json`). For the full registry schema, see the [Pack Format Specification](./pack-format.md#102-registry).
+Registry entries also support `ref` (git branch/tag/commit) and `path` (subdirectory within the repo for standard packs that include a `pack.json`). For the full registry schema, see the [Pack Format Specification](./pack-format.md#112-registry).
 
 If a foundational public pack like `aipack-core` or `essentials` is missing from your merged registries on first run, the lookup error suggests fetching the default public registry directly:
 
@@ -251,9 +251,9 @@ In every case, the source repo stays untouched. aipack reads the content from wh
 
 ## Content path reference
 
-Valid content type keys: `rules`, `agents`, `workflows`, `skills`, `prompts`. Values are directory paths relative to the repository root. When `--path` (subpath) is also set, paths are relative to the subpath root.
+Valid content type keys: `rules`, `agents`, `workflows`, `skills`, `hooks`, `prompts`. Values are directory paths relative to the repository root. When `--path` (subpath) is also set, paths are relative to the subpath root.
 
-Files within mapped directories follow the same conventions as standard packs: `.md` files with YAML frontmatter for rules, agents, workflows, and prompts; `<name>/SKILL.md` subdirectories for skills.
+Files within mapped directories follow the same conventions as standard packs: `.md` files with YAML frontmatter for rules, agents, workflows, and prompts; `<name>/SKILL.md` subdirectories for skills; `<name>/HOOK.yaml` subdirectories for hooks.
 
 Only declared types are discovered — omitted types have no content. This is independent of the `quiet` flag: `content_paths` controls what's *extracted*, while `quiet` controls what's *activated* in a profile.
 

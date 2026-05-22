@@ -218,6 +218,7 @@ func runLoadedSync(ctx context.Context, g *Globals, loaded loadedProfile, opts l
 			ProjectDir: projectDirValue,
 			Harnesses:  hs,
 			Home:       config.HomeDir(),
+			Namespaced: loaded.syncCfg.Defaults.Namespaced,
 		},
 		Force:        opts.Force,
 		SkipSettings: opts.SkipSettings,
@@ -250,6 +251,7 @@ func runLoadedSync(ctx context.Context, g *Globals, loaded loadedProfile, opts l
 			"workflows": counts.Workflows,
 			"agents":    counts.Agents,
 			"skills":    counts.Skills,
+			"hooks":     counts.Hooks,
 			"plugins":   counts.Plugins,
 			"settings":  len(p.Settings),
 			"mcp":       counts.MCP,
@@ -292,7 +294,11 @@ func resolveWatchDirs(profileFlag, profilePathFlag, configDirFlag string) ([]str
 	}
 
 	prevInventories, _ := loadLockfileInventories(configDir)
-	resolved, err := config.ResolveProfile(profileCfg, profilePath, configDir, syncCfg.Defaults.CollisionStrategy, prevInventories)
+	resolved, err := config.ResolveProfileWithOptions(profileCfg, profilePath, configDir, config.ResolveOptions{
+		CollisionStrategy: syncCfg.Defaults.CollisionStrategy,
+		Namespaced:        syncCfg.Defaults.Namespaced,
+		PrevInventories:   prevInventories,
+	})
 	if err != nil {
 		return resolveWatchDirsFallback(profileCfg, configDir), nil
 	}

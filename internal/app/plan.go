@@ -20,6 +20,7 @@ const (
 	PlanOpWorkflow PlanOpKind = "workflow"
 	PlanOpAgent    PlanOpKind = "agent"
 	PlanOpSkill    PlanOpKind = "skill"
+	PlanOpHook     PlanOpKind = "hook"
 	PlanOpSettings PlanOpKind = "settings"
 	PlanOpMCP      PlanOpKind = "mcp"
 	PlanOpStale    PlanOpKind = "stale"
@@ -54,6 +55,7 @@ type PlanSummary struct {
 	NumWorkflows   int
 	NumAgents      int
 	NumSkills      int
+	NumHooks       int
 	NumSettings    int
 	NumMCP         int
 	NumStale       int
@@ -63,9 +65,9 @@ type PlanSummary struct {
 	Warnings       []domain.Warning
 }
 
-// NumContent returns the total number of content changes (rules + workflows + agents + skills).
+// NumContent returns the total number of content changes.
 func (ps PlanSummary) NumContent() int {
-	return ps.NumRules + ps.NumWorkflows + ps.NumAgents + ps.NumSkills
+	return ps.NumRules + ps.NumWorkflows + ps.NumAgents + ps.NumSkills + ps.NumHooks
 }
 
 // TotalChanges returns the total number of pending changes.
@@ -78,6 +80,7 @@ func (ps PlanSummary) TotalChanges() int {
 // details" entry point used by the TUI and potentially CLI --dry-run.
 func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry) (PlanSummary, error) {
 	var summary PlanSummary
+	knownPacks := knownPacksFromRoots(resolvePackRoots(profile))
 
 	baseDir := req.ProjectDir
 	if req.Scope == domain.ScopeGlobal {
@@ -100,6 +103,7 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 			ProjectDir:   req.ProjectDir,
 			Home:         req.Home,
 			SkipSettings: req.SkipSettings,
+			Namespaced:   req.Namespaced,
 		}
 
 		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
@@ -111,6 +115,7 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 			Scope:      req.Scope,
 			ProjectDir: req.ProjectDir,
 			Home:       req.Home,
+			KnownPacks: knownPacks,
 		})
 		if err != nil {
 			return PlanSummary{}, err
@@ -259,6 +264,9 @@ func appendPlanOpFromFileDiff(summary *PlanSummary, fd engine.FileDiff, kind Pla
 // checking parent directory names. Harnesses use varying names for the same
 // concept (e.g. "commands" vs "workflows"), so we check for all known variants.
 func inferContentKind(dst string) PlanOpKind {
+	if strings.EqualFold(filepath.Base(dst), "hooks.json") {
+		return PlanOpHook
+	}
 	// Walk up path components looking for a known directory name.
 	dir := filepath.Dir(dst)
 	for dir != "." && dir != string(filepath.Separator) {
@@ -272,6 +280,8 @@ func inferContentKind(dst string) PlanOpKind {
 			return PlanOpAgent
 		case "skills":
 			return PlanOpSkill
+		case "hooks":
+			return PlanOpHook
 		}
 		dir = filepath.Dir(dir)
 	}
@@ -288,6 +298,8 @@ func incrContentCount(s *PlanSummary, kind PlanOpKind) {
 		s.NumAgents++
 	case PlanOpSkill:
 		s.NumSkills++
+	case PlanOpHook:
+		s.NumHooks++
 	}
 }
 
@@ -324,6 +336,7 @@ type ContentCounts struct {
 	Skills    int `json:"skills"`
 	Workflows int `json:"workflows"`
 	Agents    int `json:"agents"`
+	Hooks     int `json:"hooks"`
 	Plugins   int `json:"plugins"`
 	Prompts   int `json:"prompts"`
 	MCP       int `json:"mcp"`
@@ -339,6 +352,8 @@ func (c *ContentCounts) Add(category domain.PackCategory) {
 		c.Workflows++
 	case domain.CategoryAgents:
 		c.Agents++
+	case domain.CategoryHooks:
+		c.Hooks++
 	case domain.CategoryPlugins:
 		c.Plugins++
 	case domain.CategoryPrompts:
@@ -372,14 +387,14 @@ func (c ContentCounts) IsZero() bool {
 }
 
 func (c ContentCounts) Total() int {
-	return c.Rules + c.Skills + c.Workflows + c.Agents + c.Plugins + c.Prompts + c.MCP
+	return c.Rules + c.Skills + c.Workflows + c.Agents + c.Hooks + c.Plugins + c.Prompts + c.MCP
 }
 
-func (c ContentCounts) pairs() [7]struct {
+func (c ContentCounts) pairs() [8]struct {
 	n     int
 	label string
 } {
-	return [7]struct {
+	return [8]struct {
 		n     int
 		label string
 	}{
@@ -387,6 +402,7 @@ func (c ContentCounts) pairs() [7]struct {
 		{c.Skills, "skill"},
 		{c.Workflows, "workflow"},
 		{c.Agents, "agent"},
+		{c.Hooks, "hook"},
 		{c.Plugins, "plugin"},
 		{c.Prompts, "prompt"},
 		{c.MCP, "mcp-server"},
@@ -402,6 +418,7 @@ func CountProfileContent(p domain.Profile) ContentCounts {
 		Workflows: len(p.AllWorkflows()),
 		Agents:    len(p.AllAgents()),
 		Skills:    len(p.AllSkills()),
+		Hooks:     len(p.AllHooks()),
 		Plugins:   len(p.AllPlugins()),
 		MCP:       len(p.MCPServers),
 	}

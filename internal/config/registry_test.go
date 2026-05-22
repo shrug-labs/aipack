@@ -26,6 +26,14 @@ packs:
   root-pack:
     repo: https://github.com/org/other
     description: Pack at repo root
+collections:
+  starter:
+    description: Starter collection
+    packs:
+      - root-pack
+      - name: my-pack
+        ref: v1.1.0
+        with: all
 `), 0o600)
 
 	reg, err := LoadRegistry(path)
@@ -52,6 +60,23 @@ packs:
 	root := reg.Packs["root-pack"]
 	if root.Path != "" {
 		t.Errorf("root-pack Path = %q, want empty", root.Path)
+	}
+
+	collection := reg.Collections["starter"]
+	if collection.Description != "Starter collection" {
+		t.Errorf("collection Description = %q", collection.Description)
+	}
+	if len(collection.Packs) != 2 {
+		t.Fatalf("collection packs = %d, want 2", len(collection.Packs))
+	}
+	if collection.Packs[0].Name != "root-pack" {
+		t.Errorf("first collection pack = %q, want root-pack", collection.Packs[0].Name)
+	}
+	if collection.Packs[1].Name != "my-pack" || collection.Packs[1].Ref != "v1.1.0" {
+		t.Errorf("second collection pack = %+v, want my-pack ref v1.1.0", collection.Packs[1])
+	}
+	if got := []string(collection.Packs[1].With); len(got) != 1 || got[0] != "all" {
+		t.Errorf("second collection pack With = %v, want [all]", got)
 	}
 }
 
@@ -92,6 +117,9 @@ schema_version: 1
 	}
 	if reg.Packs == nil {
 		t.Fatal("Packs map should be initialized, not nil")
+	}
+	if reg.Collections == nil {
+		t.Fatal("Collections map should be initialized, not nil")
 	}
 	if len(reg.Packs) != 0 {
 		t.Errorf("expected 0 packs, got %d", len(reg.Packs))
@@ -260,11 +288,17 @@ func TestLoadMergedRegistry_MultipleSources(t *testing.T) {
 packs:
   pack-a:
     repo: https://github.com/org/a
+collections:
+  starter:
+    packs: [pack-a]
 `
 	source2YAML := `schema_version: 1
 packs:
   pack-b:
     repo: https://github.com/org/b
+collections:
+  ops:
+    packs: [pack-b]
 `
 	os.MkdirAll(RegistriesCacheDir(dir), 0o700)
 	os.WriteFile(SourceCachePath(dir, "source-1"), []byte(source1YAML), 0o600)
@@ -284,6 +318,9 @@ packs:
 	if len(reg.Packs) != 2 {
 		t.Fatalf("expected 2 packs, got %d", len(reg.Packs))
 	}
+	if len(reg.Collections) != 2 {
+		t.Fatalf("expected 2 collections, got %d", len(reg.Collections))
+	}
 }
 
 func TestLoadMergedRegistry_SourceOrderRespected(t *testing.T) {
@@ -296,12 +333,20 @@ packs:
   my-pack:
     repo: https://github.com/org/a
     description: source A wins
+collections:
+  team:
+    description: collection A wins
+    packs: [my-pack]
 `
 	cacheB := `schema_version: 1
 packs:
   my-pack:
     repo: https://github.com/org/b
     description: source B loses
+collections:
+  team:
+    description: collection B loses
+    packs: [my-pack]
 `
 	os.MkdirAll(RegistriesCacheDir(dir), 0o700)
 	os.WriteFile(SourceCachePath(dir, "source-a"), []byte(cacheA), 0o600)
@@ -320,6 +365,38 @@ packs:
 	}
 	if reg.Packs["my-pack"].Description != "source A wins" {
 		t.Errorf("expected source A to win, got %q", reg.Packs["my-pack"].Description)
+	}
+	if reg.Collections["team"].Description != "collection A wins" {
+		t.Errorf("expected source A collection to win, got %q", reg.Collections["team"].Description)
+	}
+}
+
+func TestParseRegistryCollectionWith(t *testing.T) {
+	t.Parallel()
+
+	all, err := ParseRegistryCollectionWith([]string{"all"})
+	if err != nil {
+		t.Fatalf("ParseRegistryCollectionWith(all): %v", err)
+	}
+	for _, cat := range domain.AllBundledCategories {
+		if !all.Has(cat) {
+			t.Fatalf("all missing category %s", cat)
+		}
+	}
+
+	partial, err := ParseRegistryCollectionWith([]string{"profiles", "extras"})
+	if err != nil {
+		t.Fatalf("ParseRegistryCollectionWith(partial): %v", err)
+	}
+	if !partial.Has(domain.BundledProfiles) || !partial.Has(domain.BundledExtras) {
+		t.Fatalf("partial set missing profiles/extras: %v", partial)
+	}
+	if partial.Has(domain.BundledRegistries) {
+		t.Fatalf("partial set unexpectedly includes registries: %v", partial)
+	}
+
+	if _, err := ParseRegistryCollectionWith([]string{"bad"}); err == nil {
+		t.Fatal("expected invalid with value to fail")
 	}
 }
 

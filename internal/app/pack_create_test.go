@@ -49,9 +49,12 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 	if len(m.Skills) != 0 {
 		t.Fatalf("Skills = %v, want empty (auto-discovery friendly)", m.Skills)
 	}
+	if len(m.Hooks) != 0 {
+		t.Fatalf("Hooks = %v, want empty (auto-discovery friendly)", m.Hooks)
+	}
 
 	// Verify all vector dirs exist.
-	for _, sub := range []string{"rules", "agents", "workflows", "skills", "plugins", "mcp", "configs", "profiles"} {
+	for _, sub := range []string{"rules", "agents", "workflows", "skills", "hooks", "plugins", "prompts", "mcp", "configs", "profiles"} {
 		d := filepath.Join(packDir, sub)
 		st, err := os.Stat(d)
 		if err != nil {

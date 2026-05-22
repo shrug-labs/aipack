@@ -75,6 +75,7 @@ func PackCreate(req PackCreateRequest) error {
 		filepath.Join(contentDir, "agents"),
 		filepath.Join(contentDir, "workflows"),
 		filepath.Join(contentDir, "skills"),
+		filepath.Join(contentDir, "hooks"),
 		filepath.Join(contentDir, "plugins"),
 		filepath.Join(contentDir, "prompts"),
 		filepath.Join(contentDir, "mcp"),

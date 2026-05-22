@@ -102,7 +102,7 @@ func InspectHarness(ctx context.Context, eng *engine.Engine, req InspectRequest,
 	result.HasLedger = len(lg.Managed) > 0
 	result.LedgerFiles = len(lg.Managed)
 
-	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home}
+	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home, KnownPacks: knownPacksFromRoots(req.PackRoots)}
 
 	for _, hid := range req.Harnesses {
 		h, err := reg.Lookup(hid)

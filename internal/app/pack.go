@@ -1199,6 +1199,9 @@ func validatePackName(name string) error {
 		strings.Contains(name, "\\") || strings.Contains(name, "\x00") {
 		return fmt.Errorf("invalid pack name %q: must not contain path separators or traversal sequences", name)
 	}
+	if strings.Contains(name, domain.RenderedIdentitySeparator) {
+		return fmt.Errorf("invalid pack name %q: must not contain %q (reserved for rendered content identity)", name, domain.RenderedIdentitySeparator)
+	}
 	return nil
 }
 

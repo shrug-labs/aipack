@@ -13,6 +13,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 // --- Plan tests ---
@@ -21,8 +22,9 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: projectDir,
+		Scope:      domain.ScopeProject,
+		TargetDir:  projectDir,
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{{
 				Rules: []domain.Rule{
@@ -45,8 +47,8 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// Rule write → .opencode/rules/team.md
-	wantRule := filepath.Join(projectDir, ".opencode", "rules", "team.md")
+	// Rule write → .opencode/rules/team__aipack__pack-a.md
+	wantRule := filepath.Join(projectDir, ".opencode", "rules", "team__aipack__pack-a.md")
 	found := false
 	for _, w := range f.Writes {
 		if w.Dst == wantRule {
@@ -60,8 +62,8 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 		t.Fatalf("expected write to %q; got writes: %v", wantRule, writeDsts(f.Writes))
 	}
 
-	// Agent write → .opencode/agents/reviewer.md
-	wantAgent := filepath.Join(projectDir, ".opencode", "agents", "reviewer.md")
+	// Agent write → .opencode/agents/reviewer__aipack__pack-a.md
+	wantAgent := filepath.Join(projectDir, ".opencode", "agents", "reviewer__aipack__pack-a.md")
 	found = false
 	for _, w := range f.Writes {
 		if w.Dst == wantAgent {
@@ -73,6 +75,9 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 			if !bytes.Contains(w.Content, []byte("tools:\n")) || !bytes.Contains(w.Content, []byte("bash: true")) {
 				t.Fatalf("expected transformed tools map in agent write; got content:\n%s", string(w.Content))
 			}
+			if !bytes.Contains(w.Content, []byte("name: reviewer__aipack__pack-a")) {
+				t.Fatalf("expected namespaced agent name in content:\n%s", string(w.Content))
+			}
 		}
 	}
 	if !found {
@@ -83,16 +88,18 @@ func TestPlan_Project_RulesAndAgents(t *testing.T) {
 func TestPlan_Project_SkillsAndWorkflows(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
+	skillDir := testutil.SkillDir(t, "deploy")
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: projectDir,
+		Scope:      domain.ScopeProject,
+		TargetDir:  projectDir,
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{{
 				Workflows: []domain.Workflow{
 					{Name: "onboard", Raw: []byte("# Onboard"), SourcePack: "pack-a"},
 				},
 				Skills: []domain.Skill{
-					{Name: "deploy", DirPath: "/pack/skills/deploy", SourcePack: "pack-a"},
+					{Name: "deploy", DirPath: skillDir, SourcePack: "pack-a"},
 				},
 			}},
 		},
@@ -103,8 +110,8 @@ func TestPlan_Project_SkillsAndWorkflows(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// Workflow write → .opencode/commands/onboard.md
-	wantWf := filepath.Join(projectDir, ".opencode", "commands", "onboard.md")
+	// Workflow write → .opencode/commands/onboard__aipack__pack-a.md
+	wantWf := filepath.Join(projectDir, ".opencode", "commands", "onboard__aipack__pack-a.md")
 	found := false
 	for _, w := range f.Writes {
 		if w.Dst == wantWf {
@@ -115,28 +122,19 @@ func TestPlan_Project_SkillsAndWorkflows(t *testing.T) {
 		t.Fatalf("expected write to %q; got writes: %v", wantWf, writeDsts(f.Writes))
 	}
 
-	// Skill copy → .opencode/skills/deploy
-	wantSkill := filepath.Join(projectDir, ".opencode", "skills", "deploy")
-	foundCopy := false
-	for _, c := range f.Copies {
-		if c.Dst == wantSkill {
-			foundCopy = true
-			if c.Kind != domain.CopyKindDir {
-				t.Fatalf("skill copy kind: got %q want %q", c.Kind, domain.CopyKindDir)
-			}
-		}
-	}
-	if !foundCopy {
-		t.Fatalf("expected copy to %q; got copies: %v", wantSkill, copyDsts(f.Copies))
-	}
+	// Skill → .opencode/skills/deploy__aipack__pack-a/SKILL.md
+	wantSkill := filepath.Join(projectDir, ".opencode", "skills", "deploy__aipack__pack-a", domain.SkillEntryFile)
+	assertHasWriteDst(t, f.Writes, wantSkill)
 }
 
 func TestPlan_Global_ContentPaths(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
+	skillDir := testutil.SkillDir(t, "diagnose")
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeGlobal,
-		TargetDir: home,
+		Scope:      domain.ScopeGlobal,
+		TargetDir:  home,
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{{
 				Rules: []domain.Rule{
@@ -149,7 +147,7 @@ func TestPlan_Global_ContentPaths(t *testing.T) {
 					{Name: "deploy", Raw: []byte("# Deploy"), SourcePack: "pack-a"},
 				},
 				Skills: []domain.Skill{
-					{Name: "diagnose", DirPath: "/pack/skills/diagnose", SourcePack: "pack-a"},
+					{Name: "diagnose", DirPath: skillDir, SourcePack: "pack-a"},
 				},
 			}},
 		},
@@ -162,29 +160,21 @@ func TestPlan_Global_ContentPaths(t *testing.T) {
 
 	ocBase := filepath.Join(home, ".config", "opencode")
 
-	// Rule → ~/.config/opencode/rules/global-rule.md
-	wantRule := filepath.Join(ocBase, "rules", "global-rule.md")
+	// Rule → ~/.config/opencode/rules/global-rule__aipack__pack-a.md
+	wantRule := filepath.Join(ocBase, "rules", "global-rule__aipack__pack-a.md")
 	assertHasWriteDst(t, f.Writes, wantRule)
 
-	// Agent → ~/.config/opencode/agents/planner.md
-	wantAgent := filepath.Join(ocBase, "agents", "planner.md")
+	// Agent → ~/.config/opencode/agents/planner__aipack__pack-a.md
+	wantAgent := filepath.Join(ocBase, "agents", "planner__aipack__pack-a.md")
 	assertHasWriteDst(t, f.Writes, wantAgent)
 
-	// Workflow → ~/.config/opencode/commands/deploy.md
-	wantWf := filepath.Join(ocBase, "commands", "deploy.md")
+	// Workflow → ~/.config/opencode/commands/deploy__aipack__pack-a.md
+	wantWf := filepath.Join(ocBase, "commands", "deploy__aipack__pack-a.md")
 	assertHasWriteDst(t, f.Writes, wantWf)
 
-	// Skill → ~/.config/opencode/skills/diagnose
-	wantSkill := filepath.Join(ocBase, "skills", "diagnose")
-	found := false
-	for _, c := range f.Copies {
-		if c.Dst == wantSkill {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected copy to %q; got copies: %v", wantSkill, copyDsts(f.Copies))
-	}
+	// Skill → ~/.config/opencode/skills/diagnose__aipack__pack-a/SKILL.md
+	wantSkill := filepath.Join(ocBase, "skills", "diagnose__aipack__pack-a", domain.SkillEntryFile)
+	assertHasWriteDst(t, f.Writes, wantSkill)
 }
 
 func TestCapture_Project_AgentToolsMapBecomesNeutralList(t *testing.T) {
@@ -714,10 +704,18 @@ func TestPlan_Global_OpencodeJSONRendering(t *testing.T) {
 
 	packARoot := filepath.Join(home, ".config", "aipack", "packs", "pack-a")
 	packBRoot := filepath.Join(home, ".config", "aipack", "packs", "pack-b")
+	packASkillDir := filepath.Join(packARoot, "skills", "deploy")
+	if err := os.MkdirAll(packASkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packASkillDir, domain.SkillEntryFile), []byte("---\nname: deploy\ndescription: Deploy\n---\nBody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := engine.SyncContext{
-		Scope:     domain.ScopeGlobal,
-		TargetDir: home,
+		Scope:      domain.ScopeGlobal,
+		TargetDir:  home,
+		Namespaced: true,
 		Profile: domain.Profile{
 			Packs: []domain.Pack{
 				{
@@ -788,8 +786,8 @@ func TestPlan_Global_OpencodeJSONRendering(t *testing.T) {
 	}
 
 	// Rules must be rendered into ~/.config/opencode/rules/, not left at pack source.
-	assertHasWriteDst(t, f.Writes, filepath.Join(home, ".config", "opencode", "rules", "team.md"))
-	assertHasWriteDst(t, f.Writes, filepath.Join(home, ".config", "opencode", "rules", "style.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(home, ".config", "opencode", "rules", "team__aipack__pack-a.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(home, ".config", "opencode", "rules", "style__aipack__pack-b.md"))
 }
 
 // --- Capture tests ---

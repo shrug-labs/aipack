@@ -58,20 +58,21 @@ type profileMCPCounts struct {
 
 func computeMCPCountsWithProbeCache(packs []app.ProfilePackInfo, cfg config.ProfileConfig, probeCache map[mcpProbeKey]mcpProbeEntry) profileMCPCounts {
 	out := profileMCPCounts{ByServer: map[mcpCountsKey]mcpCounts{}}
+	selections := resolveProfileMCPSelections(packs, cfg.Packs)
+
 	owners := map[string]int{}
 	for pi, p := range packs {
-		pe := findPackEntryByName(cfg.Packs, p.Name)
 		for _, serverName := range p.Manifest.MCP {
-			if isServerEnabled(pe, serverName) {
+			if _, enabled := activeMCPServerConfig(selections[pi], serverName); enabled {
 				owners[serverName] = pi
 			}
 		}
 	}
 	for pi, p := range packs {
-		pe := findPackEntryByName(cfg.Packs, p.Name)
 		for _, serverName := range p.Manifest.MCP {
+			serverCfg, serverEnabled := activeMCPServerConfig(selections[pi], serverName)
 			available := loadMCPAvailableToolsWithProbeCache(p.Root, serverName, probeCache)
-			enabled := countEnabledTools(pe, serverName, available)
+			enabled := countEnabledTools(serverCfg, serverEnabled, available)
 			ownerIdx, hasOwner := owners[serverName]
 			contributes := hasOwner && ownerIdx == pi
 			out.ByServer[mcpCountsKey{PackIdx: pi, Server: serverName}] = mcpCounts{
@@ -116,13 +117,9 @@ func loadMCPAvailableTools(packRoot, serverName string) ([]string, error) {
 	return out, nil
 }
 
-func countEnabledTools(pe *config.PackEntry, serverName string, available []string) int {
-	if !isServerEnabled(pe, serverName) {
+func countEnabledTools(serverCfg config.MCPServerConfig, enabled bool, available []string) int {
+	if !enabled {
 		return 0
-	}
-	var serverCfg config.MCPServerConfig
-	if pe != nil {
-		serverCfg = pe.MCP[serverName]
 	}
 	allowlistsAbsent := serverCfg.AllowedTools == nil && serverCfg.AlwaysAllowedTools == nil
 	disabled := config.ToStringSet(serverCfg.DisabledTools)
@@ -140,15 +137,39 @@ func countEnabledTools(pe *config.PackEntry, serverName string, available []stri
 	return count
 }
 
-func isServerEnabled(pe *config.PackEntry, serverName string) bool {
-	if pe == nil {
-		return true
+func resolveProfileMCPSelections(packs []app.ProfilePackInfo, entries []config.PackEntry) []map[string]config.MCPServerConfig {
+	entriesByName := packEntriesByName(entries)
+	selections := make([]map[string]config.MCPServerConfig, len(packs))
+	for pi, p := range packs {
+		pe := entriesByName[p.Name]
+		if pe != nil && !config.PackEnabled(pe.Enabled) {
+			continue
+		}
+		var profileMCP map[string]config.MCPServerConfig
+		var quiet bool
+		if pe != nil {
+			profileMCP = pe.MCP
+			quiet = pe.Quiet
+		}
+		selections[pi] = config.ResolveProfileMCPSelection(p.Manifest.MCP, profileMCP, quiet)
 	}
-	srvCfg, ok := pe.MCP[serverName]
-	if !ok || srvCfg.Enabled == nil {
-		return true
+	return selections
+}
+
+func activeMCPServerConfig(selection map[string]config.MCPServerConfig, serverName string) (config.MCPServerConfig, bool) {
+	srvCfg, ok := selection[serverName]
+	if !ok || !config.PackEnabled(srvCfg.Enabled) {
+		return config.MCPServerConfig{}, false
 	}
-	return *srvCfg.Enabled
+	return srvCfg, true
+}
+
+func packEntriesByName(packs []config.PackEntry) map[string]*config.PackEntry {
+	out := make(map[string]*config.PackEntry, len(packs))
+	for i := range packs {
+		out[packs[i].Name] = &packs[i]
+	}
+	return out
 }
 
 func findPackEntryByName(packs []config.PackEntry, name string) *config.PackEntry {

@@ -23,8 +23,8 @@ func completionPredictors() map[string]complete.Predictor {
 		"registry-source": complete.PredictFunc(predictRegistrySources),
 		"resource":        complete.PredictFunc(predictResources),
 		"harness":         complete.PredictSet(append(domain.HarnessNames(), "all")...),
-		"kind":            complete.PredictSet("rule", "skill", "workflow", "agent", "prompt", "plugin", "mcp", "pack"),
-		"trace-type":      complete.PredictSet("rule", "agent", "workflow", "skill", "plugin", "mcp"),
+		"kind":            complete.PredictSet("rule", "skill", "workflow", "agent", "hook", "prompt", "plugin", "mcp", "pack"),
+		"trace-type":      complete.PredictSet("rule", "agent", "workflow", "skill", "hook", "plugin", "mcp"),
 		"category":        complete.PredictSet("ops", "dev", "infra", "governance", "meta"),
 	}
 }

@@ -22,7 +22,8 @@ func HarnessSettingsPacksForHarness(packs []ResolvedPack, settingsPacks []string
 		if !ok {
 			continue
 		}
-		if len(p.Manifest.Configs.HarnessSettings[h]) == 0 && len(p.Manifest.Configs.HarnessPlugins[h]) == 0 {
+		if len(p.Manifest.Configs.HarnessSettings[h]) == 0 &&
+			len(p.Manifest.Configs.HarnessPlugins[h]) == 0 {
 			continue
 		}
 		result = append(result, p)

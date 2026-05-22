@@ -41,6 +41,9 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 	if err := validatePackList(packName, capSkills, manifest.Skills); err != nil {
 		return err
 	}
+	if err := validatePackList(packName, capHooks, manifest.Hooks); err != nil {
+		return err
+	}
 	if err := validatePackList(packName, "prompts", manifest.Prompts); err != nil {
 		return err
 	}
@@ -61,12 +64,20 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		{capAgents, manifest.Agents},
 		{capWorkflows, manifest.Workflows},
 		{capSkills, manifest.Skills},
+		{capHooks, manifest.Hooks},
 		{capPlugins, manifest.Plugins},
 	} {
 		for _, id := range label.ids {
 			if strings.ContainsRune(id, '/') {
 				return fmt.Errorf("pack %q %s id %q must not contain `/` (only rules support subdirectory authoring)",
 					packName, label.name, id)
+			}
+			switch label.name {
+			case capAgents, capWorkflows, capSkills, capHooks:
+				if strings.Contains(id, domain.RenderedIdentitySeparator) {
+					return fmt.Errorf("pack %q %s id %q must not contain %q (reserved for rendered content identity)",
+						packName, label.name, id, domain.RenderedIdentitySeparator)
+				}
 			}
 		}
 	}
@@ -81,6 +92,9 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		return err
 	}
 	if err := validateManifestContent(packName, packRoot, manifest, domain.CategorySkills, manifest.Skills); err != nil {
+		return err
+	}
+	if err := validateManifestContent(packName, packRoot, manifest, domain.CategoryHooks, manifest.Hooks); err != nil {
 		return err
 	}
 	for _, id := range manifest.Prompts {
@@ -108,7 +122,6 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 	if err := validateConfigFileMap(packName, "harness_plugins", packRoot, manifest.Configs.HarnessPlugins); err != nil {
 		return err
 	}
-
 	return nil
 }
 

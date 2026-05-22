@@ -27,6 +27,7 @@ var (
 	opWorkflowStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
 	opAgentStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
 	opSkillStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("79"))
+	opHookStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("176"))
 	opSettingsStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	opMCPStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	opStaleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
@@ -113,6 +114,7 @@ func (m *Model) BuildItems() []Item {
 		{app.PlanOpWorkflow, "Workflows", opWorkflowStyle},
 		{app.PlanOpAgent, "Agents", opAgentStyle},
 		{app.PlanOpSkill, "Skills", opSkillStyle},
+		{app.PlanOpHook, "Hooks", opHookStyle},
 		{app.PlanOpSettings, "Settings", opSettingsStyle},
 		{app.PlanOpMCP, "MCP", opMCPStyle},
 		{app.PlanOpStale, "Stale", opStaleStyle},

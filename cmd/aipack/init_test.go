@@ -35,6 +35,9 @@ func TestInit_HappyPath_WritesFiles(t *testing.T) {
 	if sc.Defaults.CollisionStrategy != config.CollisionLastWins {
 		t.Errorf("sync-config defaults.collision_strategy = %q, want %q", sc.Defaults.CollisionStrategy, config.CollisionLastWins)
 	}
+	if sc.Defaults.Namespaced {
+		t.Error("sync-config defaults.namespaced = true, want false")
+	}
 
 	profPath := filepath.Join(configDir, "profiles", "default.yaml")
 	gotProf, err := os.ReadFile(profPath)
@@ -129,6 +132,9 @@ func TestInit_ForceOverwrites(t *testing.T) {
 	}
 	if sc.Defaults.CollisionStrategy != config.CollisionLastWins {
 		t.Errorf("sync-config defaults.collision_strategy = %q, want %q", sc.Defaults.CollisionStrategy, config.CollisionLastWins)
+	}
+	if sc.Defaults.Namespaced {
+		t.Error("sync-config defaults.namespaced = true, want false")
 	}
 
 	gotProf, err := os.ReadFile(profPath)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -102,36 +101,4 @@ func setupTarget(ref app.ProfileRef) string {
 		return ref.Pack
 	}
 	return ref.Location
-}
-
-func shellCommand(args ...string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = shellQuoteArg(arg)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuoteArg(arg string) string {
-	if arg == "" {
-		return "''"
-	}
-	safe := true
-	for _, r := range arg {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case strings.ContainsRune("_@%+=:,./-", r):
-		default:
-			safe = false
-		}
-		if !safe {
-			break
-		}
-	}
-	if safe {
-		return arg
-	}
-	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }

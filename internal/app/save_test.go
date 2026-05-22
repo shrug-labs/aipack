@@ -858,6 +858,233 @@ func TestRunRoundTrip_NestedSkill_WritesToOriginalPath(t *testing.T) {
 	}
 }
 
+func TestRunRoundTrip_NestedSkillAsset_WritesToOriginalPath(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+	writeSaveTestManifest(t, packRoot, "my-pack")
+
+	nestedPackSkillDir := filepath.Join(packRoot, "skills", "group", "alpha")
+	if err := os.MkdirAll(nestedPackSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedPackSkillDir, "SKILL.md"), []byte("---\nname: alpha\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origHelper := []byte("helper\n")
+	packHelper := filepath.Join(nestedPackSkillDir, "helper.md")
+	if err := os.WriteFile(packHelper, origHelper, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	harnessSkillDir := filepath.Join(projectDir, ".agents", "skills", "alpha")
+	if err := os.MkdirAll(harnessSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	harnessHelper := filepath.Join(harnessSkillDir, "helper.md")
+	if err := os.WriteFile(harnessHelper, origHelper, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		harnessHelper: {SourcePack: "my-pack", Digest: domain.SingleFileDigest(origHelper)},
+	})
+
+	modifiedHelper := []byte("updated helper\n")
+	if err := os.WriteFile(harnessHelper, modifiedHelper, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := stubHarness{
+		id: domain.HarnessCodex,
+		capture: harness.CaptureResult{
+			Copies: []domain.CopyAction{{
+				Src: harnessHelper, Dst: "skills/alpha/helper.md", Kind: domain.CopyKindFile,
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	if _, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope: "project", ProjectDir: projectDir,
+			Harnesses: []domain.Harness{domain.HarnessCodex}, Home: home,
+			Namespaced: true,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+	}, reg); err != nil {
+		t.Fatalf("RunRoundTrip: %v", err)
+	}
+
+	got, err := os.ReadFile(packHelper)
+	if err != nil {
+		t.Fatalf("read nested helper: %v", err)
+	}
+	if string(got) != string(modifiedHelper) {
+		t.Errorf("nested helper = %q, want %q", got, modifiedHelper)
+	}
+	flatDup := filepath.Join(packRoot, "skills", "alpha")
+	if _, err := os.Stat(flatDup); err == nil {
+		t.Errorf("save created flat duplicate at %s; nested skill asset save must update original path only", flatDup)
+	}
+}
+
+func TestRunRoundTrip_CodexNamespacedSkillWrite_NoFalseConflict(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+	writeSaveTestManifest(t, packRoot, "my-pack")
+
+	packSkillDir := filepath.Join(packRoot, "skills", "alpha")
+	if err := os.MkdirAll(packSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packOriginal := []byte("---\nname: alpha\ndescription: Alpha\n---\nbody\n")
+	packFile := filepath.Join(packSkillDir, "SKILL.md")
+	if err := os.WriteFile(packFile, packOriginal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	harnessFile := filepath.Join(projectDir, ".agents", "skills", "alpha", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(harnessFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	renderedOriginal, err := harness.RewriteFrontmatterName(packOriginal, "alpha__aipack__my-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(harnessFile, renderedOriginal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex)
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		harnessFile: {SourcePack: "my-pack", Digest: domain.SingleFileDigest(renderedOriginal)},
+	})
+
+	renderedModified := []byte("---\nname: alpha__aipack__my-pack\ndescription: Alpha\n---\nupdated body\n")
+	if err := os.WriteFile(harnessFile, renderedModified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourceModified := []byte("---\ndescription: Alpha\nname: alpha\n---\nupdated body\n")
+
+	stub := stubHarness{
+		id: domain.HarnessCodex,
+		capture: harness.CaptureResult{
+			Writes: []domain.WriteAction{{
+				Src:          harnessFile,
+				Dst:          "skills/alpha/SKILL.md",
+				Content:      sourceModified,
+				IsContent:    true,
+				SourceDigest: domain.SingleFileDigest(renderedModified),
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope: "project", ProjectDir: projectDir,
+			Harnesses: []domain.Harness{domain.HarnessCodex}, Home: home,
+			Namespaced: true,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+	}, reg)
+	if err != nil {
+		t.Fatalf("RunRoundTrip: %v", err)
+	}
+	if len(result.Conflicts) != 0 {
+		t.Fatalf("expected no conflicts, got %v", result.Conflicts)
+	}
+	got, err := os.ReadFile(packFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(sourceModified) {
+		t.Errorf("pack SKILL.md = %q, want %q", got, sourceModified)
+	}
+}
+
+func TestRunRoundTrip_RenderedWorkflowWrite_NoFalseConflict(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	packRoot := filepath.Join(home, "pack")
+	writeSaveTestManifest(t, packRoot, "my-pack")
+
+	packWorkflowDir := filepath.Join(packRoot, "workflows")
+	if err := os.MkdirAll(packWorkflowDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packOriginal := []byte("---\nname: deploy\ndescription: Deploy\n---\nbody\n")
+	packFile := filepath.Join(packWorkflowDir, "deploy.md")
+	if err := os.WriteFile(packFile, packOriginal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	harnessFile := filepath.Join(projectDir, ".claude", "commands", "deploy__aipack__my-pack.md")
+	if err := os.MkdirAll(filepath.Dir(harnessFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	renderedOriginal, err := harness.RewriteFrontmatterName(packOriginal, "deploy__aipack__my-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(harnessFile, renderedOriginal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode)
+	writeLedger(t, ledgerPath, map[string]domain.Entry{
+		harnessFile: {SourcePack: "my-pack", Digest: domain.SingleFileDigest(renderedOriginal)},
+	})
+
+	renderedModified := []byte("---\nname: deploy__aipack__my-pack\ndescription: Deploy\n---\nupdated body\n")
+	if err := os.WriteFile(harnessFile, renderedModified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourceModified := []byte("---\ndescription: Deploy\nname: deploy\n---\nupdated body\n")
+
+	stub := stubHarness{
+		id: domain.HarnessClaudeCode,
+		capture: harness.CaptureResult{
+			Writes: []domain.WriteAction{{
+				Src:          harnessFile,
+				Dst:          "workflows/deploy.md",
+				Content:      sourceModified,
+				IsContent:    true,
+				SourceDigest: domain.SingleFileDigest(renderedModified),
+			}},
+		},
+	}
+	reg := harness.NewRegistry(stub)
+
+	result, err := RunRoundTrip(context.Background(), engine.New(nil, nil), RoundTripRequest{
+		TargetSpec: TargetSpec{
+			Scope: "project", ProjectDir: projectDir,
+			Harnesses: []domain.Harness{domain.HarnessClaudeCode}, Home: home,
+			Namespaced: true,
+		},
+		PackRoots: map[string]string{"my-pack": packRoot},
+	}, reg)
+	if err != nil {
+		t.Fatalf("RunRoundTrip: %v", err)
+	}
+	if len(result.Conflicts) != 0 {
+		t.Fatalf("expected no conflicts, got %v", result.Conflicts)
+	}
+	got, err := os.ReadFile(packFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(sourceModified) {
+		t.Errorf("pack workflow = %q, want %q", got, sourceModified)
+	}
+}
+
 // TestRunRoundTrip_NestedAgent_WritesToOriginalPath pins the save contract
 // for agents authored under organizational subdirectories. Same shape as
 // the nested-skill test above but exercises the per-file CopyAction path

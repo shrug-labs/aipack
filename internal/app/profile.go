@@ -287,3 +287,9 @@ func CycleSyncScope(cfg config.SyncConfig) config.SyncConfig {
 	}
 	return cfg
 }
+
+// ToggleNamespaced returns a new SyncConfig with rendered content namespacing toggled.
+func ToggleNamespaced(cfg config.SyncConfig) config.SyncConfig {
+	cfg.Defaults.Namespaced = !cfg.Defaults.Namespaced
+	return cfg
+}

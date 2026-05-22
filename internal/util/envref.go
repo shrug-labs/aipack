@@ -92,6 +92,15 @@ type EnvRef struct {
 	End        int    // byte offset after '}'
 }
 
+// MissingEnvError reports an unresolved required environment variable.
+type MissingEnvError struct {
+	Name string
+}
+
+func (e MissingEnvError) Error() string {
+	return fmt.Sprintf("env var %s is not set", e.Name)
+}
+
 // WalkEnvRefs finds all {env:VAR} references in s and calls fn for each.
 // Returns an error if a reference is unterminated or has an empty name.
 // If fn returns a non-nil error, iteration stops and that error is returned.
@@ -158,7 +167,7 @@ func ExpandEnvRefsWith(s string, lookup func(string) (string, bool)) (string, er
 			ok = true
 		}
 		if !ok {
-			return "", fmt.Errorf("env var %s is not set", ref.Name)
+			return "", MissingEnvError{Name: ref.Name}
 		}
 		out = out[:ref.Start] + val + out[ref.End:]
 	}

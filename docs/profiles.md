@@ -2,7 +2,7 @@
 
 A profile is a YAML file that defines an agent environment — which packs to draw from, which content is active, which plugins are enabled, which MCP servers connect, and what parameters to expand. It turns a collection of installed packs into a coherent setup.
 
-Each selectable content vector (rules, skills, workflows, agents, plugins, MCP servers) can be filtered per pack. Rules, skills, workflows, agents, and plugins use `include` / `exclude` selectors; MCP servers use per-server entries because they also carry tool permissions. Packs marked `quiet` include nothing by default — content, plugins, MCP servers, and harness settings all activate only when explicitly listed. Parameters expand `{params.*}` placeholders in MCP configs and content, making the same profile portable across environments. Switching profiles changes what's active without reinstalling anything.
+Each selectable content vector (rules, skills, workflows, agents, hooks, plugins, MCP servers) can be filtered per pack. Rules, skills, workflows, agents, hooks, and plugins use `include` / `exclude` selectors; MCP servers use per-server entries because they also carry tool permissions. Packs marked `quiet` include nothing by default — content, plugins, MCP servers, and harness settings all activate only when explicitly listed. Parameters expand `{params.*}` placeholders in MCP configs and content, making the same profile portable across environments. Switching profiles changes what's active without reinstalling anything.
 
 Profiles live in `~/.config/aipack/profiles/` (on Windows: `%APPDATA%\aipack\profiles\`).
 
@@ -49,7 +49,7 @@ packs:
 - **`params`** — key-value pairs expanded into `{params.*}` placeholders throughout pack content and MCP definitions.
 - **`packs`** — ordered list of pack entries. Each entry names an installed pack and optionally filters its content, configures MCP servers, or declares overrides.
 
-Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (normal packs default to `true`; quiet packs default to `false` and need `true` to opt in), vector selectors (`rules`, `skills`, `workflows`, `agents`, `plugins`), `mcp` server config, and `overrides`.
+Pack entries accept `enabled` (true/false/null), `quiet` (true/false), `settings.enabled` (normal packs default to `true`; quiet packs default to `false` and need `true` to opt in), vector selectors (`rules`, `skills`, `workflows`, `agents`, `hooks`, `plugins`), `mcp` server config, and `overrides`.
 
 ## Parameters
 
@@ -93,7 +93,7 @@ aipack profile unset-param oncall old_param
 
 ## Vector selectors
 
-Each profile-selectable vector (`rules`, `skills`, `workflows`, `agents`, `plugins`) can be filtered with `include` or `exclude`. These are mutually exclusive on the same vector — you cannot set both.
+Each profile-selectable vector (`rules`, `skills`, `workflows`, `agents`, `hooks`, `plugins`) can be filtered with `include` or `exclude`. These are mutually exclusive on the same vector — you cannot set both.
 
 | Configuration | Behavior |
 |---------------|----------|
@@ -103,6 +103,8 @@ Each profile-selectable vector (`rules`, `skills`, `workflows`, `agents`, `plugi
 | `exclude: [x, y]` | All content except the listed IDs |
 
 Both `include` and `exclude` support glob patterns: `include: ["team-*"]` matches all IDs starting with `team-`.
+
+For exact-ID changes, use `aipack profile include <id>` and `aipack profile exclude <id>` instead of editing YAML. The CLI searches the target profile's enabled pack entries across rules, agents, workflows, skills, hooks, plugins, and MCP servers, then reports ambiguity when `--kind` or `--pack` is needed. If the only match is in a disabled pack entry, enable the pack first with `aipack pack enable <pack> --profile <profile>`. The CLI writes exact IDs only; keep pattern-based selectors in YAML.
 
 ```yaml
 packs:
@@ -249,9 +251,11 @@ packs:
       workflows: ["deploy"]     # personal's version replaces example-pack's
 ```
 
-Without the `overrides` declaration, duplicate IDs are resolved by the `defaults.collision_strategy` in sync-config.yaml. The default is `last-wins` — the later pack in profile order wins. Set it to `first-wins` for the reverse, or `error` to require explicit overrides for every collision. Explicit `overrides` always take precedence over the strategy.
+Without the `overrides` declaration, duplicate IDs are resolved by the `defaults.collision_strategy` in sync-config.yaml. The default is `last-wins` — the later pack in profile order wins. Set it to `first-wins` for the reverse, or `error` to require explicit overrides for every collision. Explicit `overrides` always take precedence over the strategy. For rule, agent, workflow, skill, and hook collisions that should coexist, set `defaults.namespaced: true` to render names such as `deploy__aipack__team-pack`; MCP servers, plugins, and settings keys still need a single winner.
 
-Packs with harness config files (`configs/` directory in `pack.json`) contribute base settings automatically. Multiple packs' settings are deep-merged in profile order — the first pack wins at leaf value conflicts, and a warning identifies the overlap. Set `settings.enabled: false` on a pack entry to opt it out of settings contribution.
+Packs with harness config files (`configs/` directory in `pack.json`) contribute base settings automatically. Multiple packs' settings are deep-merged in profile order — the first pack wins at leaf value conflicts, and a warning identifies the overlap. Set `settings.enabled: false` on a pack entry to opt it out of config contribution; quiet packs need `settings.enabled: true` to contribute configs.
+
+Hooks are first-class content selectors. Normal packs include their hooks by default; quiet packs include none unless `hooks.include` selects them. Set `hooks.enabled: false` on a pack entry to opt out of executable hooks without disabling the pack's rules, skills, MCP servers, or settings.
 
 ## Bundled profiles
 

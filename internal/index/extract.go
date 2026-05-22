@@ -25,6 +25,9 @@ func ExtractFromPack(pack domain.Pack) (PackInfo, []Resource) {
 	for _, s := range pack.Skills {
 		resources = append(resources, ResourceFromMetadata("skill", s.Name, s.Frontmatter.Description, s.DirPath, s.Frontmatter.Metadata, string(s.Body)))
 	}
+	for _, h := range pack.Hooks {
+		resources = append(resources, ResourceFromMetadata("hook", h.ID, h.Description, h.SourcePath, nil, h.Description))
+	}
 	for _, p := range pack.Plugins {
 		body := p.Source
 		if p.Marketplace != "" {

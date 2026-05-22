@@ -58,7 +58,11 @@ func loadProfileWithSyncConfig(profileFlag, profilePathFlag, configDir string, s
 	}
 	eng := engine.New(nil, nil)
 	prevInventories, _ := loadLockfileInventories(configDir)
-	prof, warnings, err := eng.Resolve(profileCfg, path, configDir, syncCfg.Defaults.CollisionStrategy, prevInventories)
+	prof, warnings, err := eng.ResolveWithOptions(profileCfg, path, configDir, config.ResolveOptions{
+		CollisionStrategy: syncCfg.Defaults.CollisionStrategy,
+		Namespaced:        syncCfg.Defaults.Namespaced,
+		PrevInventories:   prevInventories,
+	})
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail

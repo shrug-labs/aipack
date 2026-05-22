@@ -4,7 +4,7 @@ Version: 0.1 (draft)
 
 ## Abstract
 
-A **pack** is a portable, versioned bundle of AI agent configuration — rules, skills, workflows, agent definitions, MCP server configs, and harness settings — authored once and rendered into any supported coding assistant's native format at sync time. Packs are harness-independent (write once, render per-harness), composable (personal, team, and org packs layer via profiles with explicit conflict resolution), and git-native (installable from any repository with no infrastructure beyond what teams already use).
+A **pack** is a portable, versioned bundle of AI agent configuration — rules, skills, workflows, agent definitions, MCP server configs, portable hook descriptors, and harness settings — authored once and rendered into any supported coding assistant's native format at sync time. Packs are harness-independent (write once, render per-harness), composable (personal, team, and org packs layer via profiles with explicit conflict resolution), and git-native (installable from any repository with no infrastructure beyond what teams already use).
 
 ## 1. Pack Structure
 
@@ -30,9 +30,14 @@ my-pack/
 │   └── linear.json
 ├── mcp/                   # MCP server configurations
 │   └── my-server.json
-├── configs/               # harness settings templates
-│   └── claudecode/
-│       └── settings.local.json
+├── hooks/                 # portable hook descriptors
+│   └── datetime-injector/
+│       └── HOOK.yaml      # hook entry point (required)
+├── configs/               # harness settings and drop-ins
+│   ├── claudecode/
+│   │   └── settings.local.json
+│   └── codex/
+│       └── config.toml
 ├── profiles/              # bundled profiles (curated slices of skills, tools, and knowledge)
 │   └── dev.yaml
 ├── registries/            # bundled registry fragments (optional)
@@ -67,7 +72,7 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | Field | Type | Description |
 |-------|------|-------------|
 | `schema_version` | integer | `2` for current packs (flat `mcp` array). `1` is the pre-v0.23 shape with nested `mcp: { servers: { ... } }` and is still accepted. The shape of `mcp` is strictly tied to the version — a mismatch is rejected at parse time. |
-| `name` | string | Pack identifier (must match directory name) |
+| `name` | string | Pack identifier (must match directory name). `__aipack__` is reserved for rendered content identity and is not allowed in pack names. |
 | `root` | string | Base path for content resolution (typically `"."`) |
 
 ### Optional fields
@@ -77,9 +82,10 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | `version` | string | Pack version (convention: `YYYY.MM.DD` or semver) |
 | `description` | string | Human-readable pack summary |
 | `rules` | string[] | Explicit rule IDs. Auto-discovered from `rules/**/*.md`. Slashed ids allowed (`team-a/style`); literal `__` reserved. |
-| `agents` | string[] | Explicit agent IDs (flat — no slashes). Auto-discovered from `agents/**/*.md`; the file basename is the id, the subdirectory is authoring organization. |
-| `workflows` | string[] | Explicit workflow IDs (flat — no slashes). Auto-discovered from `workflows/**/*.md`; the file basename is the id. |
-| `skills` | string[] | Explicit skill IDs (flat — no slashes). Auto-discovered from `skills/**/SKILL.md`; the immediate parent directory's name is the id. |
+| `agents` | string[] | Explicit agent IDs (flat — no slashes or `__aipack__`). Auto-discovered from `agents/**/*.md`; the file basename is the id, the subdirectory is authoring organization. |
+| `workflows` | string[] | Explicit workflow IDs (flat — no slashes or `__aipack__`). Auto-discovered from `workflows/**/*.md`; the file basename is the id. |
+| `skills` | string[] | Explicit skill IDs (flat — no slashes or `__aipack__`). Auto-discovered from `skills/**/SKILL.md`; the immediate parent directory's name is the id. |
+| `hooks` | string[] | Explicit hook IDs (flat — no slashes or `__aipack__`). Auto-discovered from `hooks/**/HOOK.yaml`; the immediate parent directory's name is the id. See [Section 9](#9-hooks). |
 | `prompts` | string[] | Local prompt library IDs. Not synced to harnesses — used for pack-internal prompt management only. Auto-discovered from `prompts/**/*.md`. |
 | `plugins` | string[] | Harness plugin reference IDs (flat — no slashes). Auto-discovered from `plugins/**/*.json`; the file basename is the id. See [Section 7](#7-plugin-references). |
 | `mcp` | string[] | Explicit MCP server IDs. Auto-discovered from `mcp/**/*.json`. See [Section 6](#6-mcp-servers). |
@@ -94,7 +100,9 @@ When a content vector field is **empty** — omitted, null, or an empty array �
 
 Minimal packs need only a `pack.json` with name and schema version — the directory structure is the inventory.
 
-**Subdirectories are allowed everywhere.** For rules they're part of the id (`rules/team-a/style.md` → `team-a/style`); the harness filename encodes `/` as `__` (`team-a__style.md`). For agents, workflows, skills, and plugins the subdirectory is authoring organization only — the id is always the file basename (or skill directory name). Two same-leaf entries within one pack collide; rename one. Cross-pack same-leaf goes through the existing collision strategy.
+**Subdirectories are allowed everywhere.** For rules they're part of the id (`rules/team-a/style.md` → `team-a/style`); the harness filename encodes `/` as `__` (`team-a__style.md`). For agents, workflows, skills, hooks, and plugins the subdirectory is authoring organization only — the id is always the file basename (or entry directory name). Two same-leaf entries within one pack collide; rename one. Cross-pack same-leaf goes through the configured collision behavior, or through namespaced rendered IDs (`<id>__aipack__<pack>`) when `defaults.namespaced: true`.
+
+The literal `__aipack__` sentinel is reserved for rendered identity. Existing packs that used `__aipack__` in a pack name, agent ID, workflow ID, skill ID, or hook ID must rename those entries before validation or sync. Rule IDs use `/` for authored nesting; their harness filenames may contain generated `__` escapes, but authored rule IDs cannot contain literal `__`.
 
 ## 3. Content Format
 
@@ -454,14 +462,15 @@ configs/
     └── oh-my-opencode.json
 ```
 
-The manifest declares which files are settings (merged with engine-managed keys) and which files are drop-in harness plugins (pure copies):
+The manifest declares which files are settings (merged with engine-managed keys) and drop-in harness plugins (pure copies):
 
 ```json
 {
   "configs": {
     "harness_settings": {
       "claudecode": ["settings.local.json"],
-      "opencode": ["opencode.json"]
+      "opencode": ["opencode.json"],
+      "codex": ["config.toml"]
     },
     "harness_plugins": {
       "opencode": ["oh-my-opencode.json"]
@@ -474,19 +483,85 @@ The manifest declares which files are settings (merged with engine-managed keys)
 
 **Drop-in harness plugins** are pure copies — synced as-is regardless of `--skip-settings`. Template references are not expanded in these files; if you need `{env:*}` or `{pack:root}` substitution, declare the file under `harness_settings` instead. Same-name plugin files from different packs produce an error. This is separate from first-class `plugins/<id>.json` marketplace references.
 
-## 9. Composition
+## 9. Hooks
+
+The `hooks/` directory contains portable AIPack hook descriptors. Each hook is a directory with a required `HOOK.yaml` entry point. Handler scripts and supporting files live beside the descriptor and can be referenced with `{hook:root}`:
+
+```
+hooks/
+└── datetime-injector/
+    └── HOOK.yaml
+```
+
+The top-level `hooks` manifest field declares hook IDs:
+
+```json
+{
+  "hooks": ["datetime-injector"]
+}
+```
+
+When the field is omitted or empty, aipack auto-discovers `hooks/**/HOOK.yaml`. As with skills, the hook ID is the leaf directory name; subdirectories are authoring organization only.
+
+`HOOK.yaml` describes portable lifecycle events, not Codex/Claude/Cline native JSON:
+
+```yaml
+name: datetime-injector
+description: Print the current local time before each prompt is submitted.
+events:
+  - on: prompt.submit
+    handler:
+      type: command
+      command: "printf 'Current local time: '; date '+%Y-%m-%d %H:%M:%S %Z'"
+      timeout: 2s
+```
+
+Handler commands can be inline shell snippets like the example above. Put scripts
+or other assets beside `HOOK.yaml` only when the hook needs more than a simple
+command string.
+
+For example, a hook can carry a small static asset and reference it through
+`{hook:root}`:
+
+```
+hooks/
+└── project-context/
+    ├── HOOK.yaml
+    └── context.md
+```
+
+```yaml
+name: project-context
+description: Print a short project note when a new run starts.
+events:
+  - on: run.start
+    match:
+      source: startup
+    handler:
+      type: command
+      command: "cat {hook:root}/context.md"
+      timeout: 2s
+```
+
+Supported portable events are `run.start`, `prompt.submit`, `tool.before`, and `tool.after`. Codex currently renders those events. Other harness-specific hook events are not portable pack events unless they are documented here.
+
+String values in command handlers may use `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references. aipack expands them at sync time and renders the resulting command into the native harness hook configuration.
+
+For Codex targets, sync renders `.codex/hooks.json` or `~/.codex/hooks.json`, maps portable events onto Codex native hook names, and writes matching `hooks.state.*.trusted_hash` entries into `config.toml` so rendered command hooks work without a manual trust step. Codex still provides its native hook stdin payload to commands; simple hooks can ignore stdin. `--skip-settings` skips base settings files but still writes the managed hook trust state needed for rendered hooks.
+
+## 10. Composition
 
 Packs compose through **profiles** — YAML files that declare which packs to load, how to filter their content, and what parameters to expand. For the full specification including profile structure, vector selectors, layering, overrides, quiet packs, and MCP server configuration, see [Profiles](./profiles.md).
 
-## 10. Distribution
+## 11. Distribution
 
-### 10.1 Installation sources
+### 11.1 Installation sources
 
 Git-backed packs are installed with shallow clone and then extracted into a clean content-only pack directory. Both HTTPS and SSH URLs are supported. Packs can live in a subdirectory of a larger repository (common for team mono-repos).
 
 Archive-backed packs use static zip, tar, tar.gz, or tgz URLs. Archive installs record `method: archive`, can use `path` to select a subdirectory inside the archive, and are full-replaced on update because they do not carry git refs or commit hashes.
 
-### 10.2 Registry
+### 11.2 Registry
 
 A registry maps pack names to source repositories. Format:
 
@@ -510,6 +585,16 @@ packs:
     method: archive
     url: "https://downloads.example.com/aipack/team-archive.zip"
     description: "Static archive distribution"
+collections:
+  team-dev:
+    description: "Team developer starter set"
+    packs:
+      - essentials
+      - name: example-pack
+        ref: "example-pack/v1.2.3"
+        with: [profiles, registries]
+      - name: team-archive
+        with: all
 ```
 
 | Field | Type | Required | Description |
@@ -525,9 +610,17 @@ packs:
 | `quiet` | bool | No | Hint: install with `quiet: true` in the profile entry (omitted selectors include nothing) |
 | `content_paths` | map | No | Content type directory mappings for non-standard repo layouts |
 
-Multiple registry sources can be configured. The merged view resolves pack names with local entries taking highest priority, followed by cached remote sources in configuration order.
+Collections are install recipes for multiple registry packs. A collection entry has a human-readable `description` and a required ordered `packs` list. Each item can be a bare pack name or an object with:
 
-### 9.3 Bundled profiles and registries
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Registry pack name to install |
+| `ref` | string | No | Git ref override for this collection install; invalid for archive packs |
+| `with` | string or string[] | No | Bundled content to accept for this pack: `profiles`, `registries`, `extras`, or `all` |
+
+Multiple registry sources can be configured. The merged cached view resolves pack and collection name conflicts in source order, first source wins. Commands with `--registry <path>` use that one registry file instead of the merged cache.
+
+### 11.3 Bundled profiles and registries
 
 Packs can bundle profiles and registries for distribution. Drop YAML files into the standard directories and they're auto-discovered like any other content vector:
 
@@ -548,15 +641,15 @@ aipack profile set team --install
 aipack sync
 ```
 
-### 9.4 Content path remapping
+### 11.4 Content path remapping
 
 Repositories that aren't structured as standard packs can be consumed via `content_paths` — directory mappings declared in registry entries or as CLI flags at install time. For the full specification and worked examples, see [Installing Packs](./installing-packs.md#installing-from-any-repository).
 
-### 9.5 Quiet packs
+### 11.5 Quiet packs
 
 Pack entries in a profile can be marked `quiet: true`, which changes the default from "include all content" to "include nothing." Content activates only via explicit `include` lists. See [Profiles — Quiet packs](./profiles.md#quiet-packs) for the full specification.
 
-### 9.6 Pinning and git refs
+### 11.6 Pinning and git refs
 
 Pack versioning uses git refs. Pack authors release new versions by tagging commits as `v1.2.3` (or `1.2.3` — the v-prefix is optional), or as `<pack-name>/v1.2.3` in multi-pack monorepos. aipack classifies any ref spec passed at install time by shape — exact semver, partial semver, namespaced semver, commit hash, `latest` sentinel, or literal ref (branch, non-semver tag) — and dispatches the appropriate resolution path. `--ref` is the primary flag; `--version` is a Kong alias kept for historical scripts.
 
@@ -587,7 +680,7 @@ The sync engine guarantees the following for all supported harnesses:
 4. **Conflict detection** — user modifications to managed files are detected via content digest and surfaced as diffs rather than silently overwritten.
 5. **Determinism** — given identical inputs and profile, sync produces byte-identical outputs across runs.
 
-Per-harness rendering details (file paths, config formats, merge behavior) are documented in the [Harness Reference](./harness-reference.md) and are implementation concerns of the sync engine, not part of the pack format specification. Four harnesses are supported: Claude Code, OpenCode, Codex, and Cline.
+Per-harness rendering details (file paths, config formats, merge behavior) are documented in the [Harness Reference](./harness-reference.md). Four harnesses are supported: Claude Code, OpenCode, Codex, and Cline.
 
 ## Appendix A: Complete `pack.json` Example
 
@@ -598,6 +691,7 @@ Per-harness rendering details (file paths, config formats, merge behavior) are d
   "version": "2026.03.12",
   "root": ".",
   "mcp": ["issue-tracker", "deploy-tool"],
+  "hooks": ["datetime-injector"],
   "configs": {
     "harness_settings": {
       "claudecode": ["settings.local.json"],

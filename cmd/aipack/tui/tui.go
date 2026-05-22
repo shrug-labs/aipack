@@ -754,7 +754,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.statusText = common.ErrorStyle.Render(fmt.Sprintf("save error: %v", msg.Err))
 		} else {
-			m.statusText = common.DimStyle.Render("saved")
+			m.statusText = common.DimStyle.Render(m.profileSaveStatus(msg.ProfileName))
 
 			screen := m.profilesScreen().MarkSaved(msg.ProfileName)
 			m = m.setProfilesScreen(screen)
@@ -913,6 +913,12 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, _ = m.syncConfigScreenContext(false)
 		return m, saveSyncConfig(m.cfg.ConfigDir, m.cfg.SyncCfg)
 	}
+	if _, ok := msg.(configscreen.ToggleNamespacedMsg); ok {
+		m.cfg.SyncCfg = app.ToggleNamespaced(m.cfg.SyncCfg)
+		m, _ = m.syncConfigScreenContext(false)
+		m.statusText = common.DimStyle.Render("saved; press s to sync rendered name changes")
+		return m, saveSyncConfig(m.cfg.ConfigDir, m.cfg.SyncCfg)
+	}
 	if msg, ok := msg.(configscreen.EditParamMsg); ok {
 		if profile, ok := m.configProfile(); ok {
 			m = m.setProfilesScreen(m.profilesScreen().ApplyCursorHint(profile.Name))
@@ -945,10 +951,12 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Handle syncConfigSavedMsg: update config, re-run sync check.
 	if msg, ok := msg.(syncConfigSavedMsg); ok {
-		if msg.err == nil {
-			m.cfg.SyncCfg = msg.syncCfg
-			m, _ = m.syncConfigScreenContext(false)
+		if msg.err != nil {
+			m.statusText = common.ErrorStyle.Render(fmt.Sprintf("save sync-config: %v", msg.err))
+			return m, nil
 		}
+		m.cfg.SyncCfg = msg.syncCfg
+		m, _ = m.syncConfigScreenContext(false)
 		return m, m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)
 	}
 	if msg, ok := msg.(envSetMsg); ok {
@@ -3356,6 +3364,17 @@ func (m rootModel) scheduleAutoSyncForActiveProfile(profileName string) (rootMod
 	pending := pendingAutoSyncState{id: m.autoSyncSeq, profileName: profileName}
 	m.pendingAutoSync = &pending
 	return m, scheduleAutoSync(pending)
+}
+
+func (m rootModel) profileSaveStatus(profileName string) string {
+	if m.cfg.SyncCfg.Defaults.AutoSync {
+		return "saved"
+	}
+	active, ok := m.profilesScreen().ActiveProfile()
+	if ok && active.Name == profileName {
+		return "saved; press s to sync"
+	}
+	return "saved"
 }
 
 func scheduleAutoSync(pending pendingAutoSyncState) tea.Cmd {

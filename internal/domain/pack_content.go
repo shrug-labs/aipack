@@ -19,6 +19,10 @@ const SkillEntryFile = "SKILL.md"
 // coupled. Don't relax one without the other.
 const RuleHarnessSeparator = "__"
 
+// RenderedIdentitySeparator separates the source content id from the pack name
+// in harness-visible rendered identities.
+const RenderedIdentitySeparator = "__aipack__"
+
 // HarnessFilename returns the basename (no extension) for an id of this
 // category — encoded for rules, verbatim otherwise.
 func (c PackCategory) HarnessFilename(id string) string {
@@ -73,6 +77,15 @@ func MatchPrimaryContentFile(rel string) (PackCategory, string, bool) {
 			return "", "", false
 		}
 		return CategorySkills, path.Base(dir), true
+	case CategoryHooks:
+		if !strings.HasSuffix(rest, "/"+HookEntryFile) {
+			return "", "", false
+		}
+		dir := strings.TrimSuffix(rest, "/"+HookEntryFile)
+		if dir == "" {
+			return "", "", false
+		}
+		return CategoryHooks, path.Base(dir), true
 	default:
 		return "", "", false
 	}

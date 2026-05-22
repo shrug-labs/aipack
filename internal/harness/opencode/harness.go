@@ -57,7 +57,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
-	if err := harness.PlanStandardContent(&f, ctx.Profile, contentDirsForScope(ctx.Scope, ctx.TargetDir), opencodeAgentTransform); err != nil {
+	if err := harness.PlanStandardContent(&f, ctx.Profile, contentDirsForScope(ctx.Scope, ctx.TargetDir), ctx.Namespaced, opencodeAgentTransform); err != nil {
 		return domain.Fragment{}, err
 	}
 	if err := planSettings(&f, ctx); err != nil {
@@ -206,25 +206,25 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
 
 	dirs := contentDirsForScope(ctx.Scope, baseDir)
-	harness.CaptureContent(&res, dirs, func(raw []byte, name, src string) (domain.Agent, error) {
+	harness.CaptureContent(&res, dirs, ctx.KnownPacks, func(raw []byte, name, src string) (domain.Agent, error) {
 		return ReverseTransformAgent(raw, name+".md")
 	})
 
 	rulesFile := filepath.Join(baseDir, paths.AGENTSFile)
 
-	if util.ExistsFile(rulesFile) && !util.ExistsFile(filepath.Join(dirs.Rules, "AGENTS.md")) {
+	raw, readErr := os.ReadFile(rulesFile)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		res.Warnings = append(res.Warnings, domain.Warning{Path: rulesFile, Message: fmt.Sprintf("reading file: %v", readErr)})
+	}
+	if readErr == nil && !util.ExistsFile(filepath.Join(dirs.Rules, "AGENTS.md")) {
 		res.Copies = append(res.Copies, domain.CopyAction{
 			Src: rulesFile, Dst: filepath.Join("rules", "AGENTS.md"), Kind: domain.CopyKindFile,
 		})
-		if raw, readErr := os.ReadFile(rulesFile); readErr != nil {
-			res.Warnings = append(res.Warnings, domain.Warning{Path: rulesFile, Message: fmt.Sprintf("reading file: %v", readErr)})
+		if r, parseErr := engine.ParseRuleBytes(raw, "AGENTS", ""); parseErr != nil {
+			res.Warnings = append(res.Warnings, domain.Warning{Path: rulesFile, Message: fmt.Sprintf("parse error: %v", parseErr)})
 		} else {
-			if r, parseErr := engine.ParseRuleBytes(raw, "AGENTS", ""); parseErr != nil {
-				res.Warnings = append(res.Warnings, domain.Warning{Path: rulesFile, Message: fmt.Sprintf("parse error: %v", parseErr)})
-			} else {
-				r.SourcePath = rulesFile
-				res.Rules = append(res.Rules, r)
-			}
+			r.SourcePath = rulesFile
+			res.Rules = append(res.Rules, r)
 		}
 	}
 

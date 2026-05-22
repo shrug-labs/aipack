@@ -6,6 +6,22 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.28.0]
+
+### Added
+
+- **Registry collections install groups of packs.** Registries can define `collections:` recipes, and `aipack collection list/show/install` can inspect or install them. `aipack collection install <name> --add -w all` installs the ordered pack set, adds it to the target profile, and applies bundled-content choices across the collection.
+- **`pack install` accepts multiple registry pack names.** Commands such as `aipack pack install essentials aipack-core memory --add -w all` install each named registry pack with shared profile and bundled-content flags. Batch installs are registry-name only; path, URL, archive, and content-path installs remain single-source.
+- **Packs can ship portable hooks.** Hook descriptors live in `hooks/<id>/HOOK.yaml`, participate in profile selection and pack content paths, and can reference `{hook:root}`, `{pack:root}`, `{env:*}`, and `{params.*}` from command handlers. Codex renders supported lifecycle events to `.codex/hooks.json` and syncs the matching trust state in `config.toml`; profiles can disable hook content with `hooks.enabled: false`.
+- **Profiles can include or exclude content by exact ID from the CLI.** `aipack profile include <id>` and `aipack profile exclude <id>` search enabled profile packs across rules, agents, workflows, skills, hooks, plugins, and MCP servers. Use `--kind` or `--pack` to resolve ambiguity; MCP is toggled at server level.
+
+### Changed
+
+- **Profile content selection is consistent across CLI, TUI, and sync.** Quiet packs, disabled packs, glob selectors, hook enablement, and MCP inclusive maps now resolve the same way when shown, synced, or written back.
+- **Namespaced rendering can keep same-ID content from multiple packs active.** Set `defaults.namespaced: true` or run `aipack config defaults set namespaced true` to render harness-visible rules, skills, workflows/commands, agents, and hooks as `<id>__aipack__<pack>`. MCP servers, plugins, and settings still follow the configured collision behavior. Natural source names remain the default; the manage TUI Config tab exposes the toggle, sync reconciles renamed managed files when the setting changes, and save/capture writes back to source IDs.
+- **`__aipack__` is reserved for rendered namespaced identities.** Pack names and agent, workflow, skill, and hook IDs cannot contain the sentinel; rule IDs still reserve literal `__` for nested-rule filename escaping.
+- **Active-profile edits make the next sync step explicit.** When auto-sync is off, profile and pack edits that affect the active profile print or show the `aipack sync` hint after saving.
+
 ## [0.27.7]
 
 ### Changed

@@ -538,6 +538,24 @@ func writeCodexSettingsPack(t *testing.T, configDir, name string, settings []byt
 	}
 }
 
+func writeCodexHookPack(t *testing.T, configDir, name, filename string, content []byte) config.ResolvedPack {
+	t.Helper()
+	root := filepath.Join(configDir, "packs", name)
+	hookID := strings.TrimSuffix(filename, filepath.Ext(filename))
+	if err := os.MkdirAll(filepath.Join(root, "hooks", hookID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hooks", hookID, domain.HookEntryFile), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return config.ResolvedPack{
+		Name:     name,
+		Root:     root,
+		Hooks:    []string{hookID},
+		Manifest: config.PackManifest{Hooks: []string{hookID}},
+	}
+}
+
 func TestLoadHarnessSettings_ExpandsTemplateRefs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("AIPACK_SETTINGS_HOME", home)
@@ -582,6 +600,44 @@ data_dir = "{pack:root}/data"
 	}
 }
 
+func TestParseHooks_ExpandsTemplateRefs(t *testing.T) {
+	t.Setenv("AIPACK_HOOK_ENDPOINT", "http://127.0.0.1:4318")
+	configDir := t.TempDir()
+	pack := writeCodexHookPack(t, configDir, "alpha", "tool-audit.yaml", []byte(`
+name: tool-audit
+events:
+  - on: tool.after
+    match:
+      tool: "*"
+    handler:
+      type: command
+      command: "python3 {hook:root}/bin/hook.py --pack {pack:root} --endpoint {env:AIPACK_HOOK_ENDPOINT} --user {params.user}"
+`))
+
+	eng := New(nil, nil)
+	hooks, warnings, err := eng.parseHooks(pack, map[string]string{"user": "first.last"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	if len(hooks) != 1 {
+		t.Fatalf("hooks = %d, want 1", len(hooks))
+	}
+	content := hooks[0].Events[0].EffectiveHandlers()[0].Command
+	for _, want := range []string{
+		filepath.Join(pack.Root, "hooks", "tool-audit", "bin", "hook.py"),
+		filepath.Clean(pack.Root),
+		"http://127.0.0.1:4318",
+		"first.last",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("hook content missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestLoadHarnessSettings_UnresolvedEnvRefErrors(t *testing.T) {
 	const missingEnv = "AIPACK_SETTINGS_MISSING_VAR_12345"
 	old, hadOld := os.LookupEnv(missingEnv)
@@ -609,7 +665,7 @@ func TestLoadHarnessSettings_UnresolvedEnvRefErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unresolved env ref error")
 	}
-	for _, want := range []string{"config.toml", "alpha", "workdir", missingEnv} {
+	for _, want := range []string{"config.toml", "alpha", "workdir", missingEnv, "aipack config env set " + missingEnv + " <value>"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing %q", err, want)
 		}

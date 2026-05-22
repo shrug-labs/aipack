@@ -43,6 +43,7 @@ type HarnessSelectMsg struct{}
 
 type CycleScopeMsg struct{}
 type CycleCollisionMsg struct{}
+type ToggleNamespacedMsg struct{}
 
 type EditParamMsg struct {
 	Key string
@@ -84,6 +85,14 @@ type Model struct {
 	cursor  int
 	width   int
 	height  int
+}
+
+type syncDefaultRow struct {
+	Label    string
+	Value    string
+	StoredIn string
+	LayerID  string
+	Message  func() tea.Msg
 }
 
 func New(configDir string) Model {
@@ -211,26 +220,13 @@ func (m Model) handleLayerHit(msg common.LayerHitMsg) (common.Screen, tea.Cmd) {
 			m.cursor = idx
 		}
 		return m, func() tea.Msg { return EditEnvMsg{Key: key} }
-	case msg.ID == "config:default-profile":
-		m.section = sectionSyncDefaults
-		m.focus = paneContent
-		m.cursor = 0
-		return m, func() tea.Msg { return ProfileSelectMsg{} }
-	case msg.ID == "config:scope":
-		m.section = sectionSyncDefaults
-		m.focus = paneContent
-		m.cursor = 2
-		return m, func() tea.Msg { return CycleScopeMsg{} }
-	case msg.ID == "config:collision":
-		m.section = sectionSyncDefaults
-		m.focus = paneContent
-		m.cursor = 3
-		return m, func() tea.Msg { return CycleCollisionMsg{} }
-	case msg.ID == "config:harnesses":
-		m.section = sectionSyncDefaults
-		m.focus = paneContent
-		m.cursor = 1
-		return m, func() tea.Msg { return HarnessSelectMsg{} }
+	default:
+		if idx, msgFn, ok := m.syncDefaultActionForLayer(msg.ID); ok {
+			m.section = sectionSyncDefaults
+			m.focus = paneContent
+			m.cursor = idx
+			return m, msgFn
+		}
 	}
 	return m, nil
 }
@@ -266,15 +262,9 @@ func (m Model) activateCurrent() (common.Screen, tea.Cmd) {
 			return m, func() tea.Msg { return EditEnvMsg{Key: key} }
 		}
 	case sectionSyncDefaults:
-		switch m.cursor {
-		case 0:
-			return m, func() tea.Msg { return ProfileSelectMsg{} }
-		case 1:
-			return m, func() tea.Msg { return HarnessSelectMsg{} }
-		case 2:
-			return m, func() tea.Msg { return CycleScopeMsg{} }
-		case 3:
-			return m, func() tea.Msg { return CycleCollisionMsg{} }
+		rows := m.syncDefaultActions()
+		if m.cursor >= 0 && m.cursor < len(rows) {
+			return m, rows[m.cursor].Message
 		}
 	}
 	return m, nil
@@ -679,6 +669,15 @@ func (m Model) syncDefaultRows() [][]string {
 }
 
 func (m Model) computeSyncDefaultRows() [][]string {
+	items := m.syncDefaultActions()
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, []string{item.Label, item.Value, item.StoredIn})
+	}
+	return rows
+}
+
+func (m Model) syncDefaultActions() []syncDefaultRow {
 	profile := m.syncCfg.Defaults.Profile
 	if profile == "" {
 		profile = "default"
@@ -695,12 +694,27 @@ func (m Model) computeSyncDefaultRows() [][]string {
 	if collision == "" {
 		collision = string(config.CollisionLastWins)
 	}
-	return [][]string{
-		{"Default profile", profile, "sync-config.yaml"},
-		{"Harnesses", harnesses, "sync-config.yaml"},
-		{"Write target", scope, "sync-config.yaml"},
-		{"Collisions", collision, "sync-config.yaml"},
+	renderedNames := "natural"
+	if m.syncCfg.Defaults.Namespaced {
+		renderedNames = "provenance-suffixed"
 	}
+	const storedIn = "sync-config.yaml"
+	return []syncDefaultRow{
+		{"Default profile", profile, storedIn, "config:default-profile", func() tea.Msg { return ProfileSelectMsg{} }},
+		{"Harnesses", harnesses, storedIn, "config:harnesses", func() tea.Msg { return HarnessSelectMsg{} }},
+		{"Write target", scope, storedIn, "config:scope", func() tea.Msg { return CycleScopeMsg{} }},
+		{"Collisions", collision, storedIn, "config:collision", func() tea.Msg { return CycleCollisionMsg{} }},
+		{"Rendered names", renderedNames, storedIn, "config:namespaced", func() tea.Msg { return ToggleNamespacedMsg{} }},
+	}
+}
+
+func (m Model) syncDefaultActionForLayer(id string) (int, tea.Cmd, bool) {
+	for i, item := range m.syncDefaultActions() {
+		if item.LayerID == id {
+			return i, item.Message, true
+		}
+	}
+	return 0, nil, false
 }
 
 func defaultFromDisplay(display string) string {
@@ -755,12 +769,9 @@ func (m Model) clickLayers(rows [][]string) []*lipgloss.Layer {
 			layers = append(layers, lipgloss.NewLayer(hitRow(max(m.width-tableX-4, 20))).ID("config:env:"+row[0]).X(tableX).Y(rowY+i).Z(-1))
 		}
 	case sectionSyncDefaults:
-		layers = append(layers,
-			lipgloss.NewLayer(hitRow(max(m.width-tableX-4, 20))).ID("config:default-profile").X(tableX).Y(rowY).Z(-1),
-			lipgloss.NewLayer(hitRow(max(m.width-tableX-4, 20))).ID("config:harnesses").X(tableX).Y(rowY+1).Z(-1),
-			lipgloss.NewLayer(hitRow(max(m.width-tableX-4, 20))).ID("config:scope").X(tableX).Y(rowY+2).Z(-1),
-			lipgloss.NewLayer(hitRow(max(m.width-tableX-4, 20))).ID("config:collision").X(tableX).Y(rowY+3).Z(-1),
-		)
+		for i, item := range m.syncDefaultActions() {
+			layers = append(layers, lipgloss.NewLayer(hitRow(max(m.width-tableX-4, 20))).ID(item.LayerID).X(tableX).Y(rowY+i).Z(-1))
+		}
 	}
 	return layers
 }

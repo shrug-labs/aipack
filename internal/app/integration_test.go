@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -82,12 +83,27 @@ func reducedProfile(t *testing.T, packRoot string) domain.Profile {
 // harness and returns the result. Fails the test on error.
 func syncAndApply(t *testing.T, profile domain.Profile, scope domain.Scope, projectDir, home string, hid domain.Harness, reg *harness.Registry) SyncResult {
 	t.Helper()
+	return syncAndApplyWithOptions(t, profile, scope, projectDir, home, hid, reg, syncAndApplyOptions{})
+}
+
+func syncAndApplyNamespaced(t *testing.T, profile domain.Profile, scope domain.Scope, projectDir, home string, hid domain.Harness, reg *harness.Registry) SyncResult {
+	t.Helper()
+	return syncAndApplyWithOptions(t, profile, scope, projectDir, home, hid, reg, syncAndApplyOptions{Namespaced: true})
+}
+
+type syncAndApplyOptions struct {
+	Namespaced bool
+}
+
+func syncAndApplyWithOptions(t *testing.T, profile domain.Profile, scope domain.Scope, projectDir, home string, hid domain.Harness, reg *harness.Registry, opts syncAndApplyOptions) SyncResult {
+	t.Helper()
 	result, warnings, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      scope,
 			ProjectDir: projectDir,
 			Harnesses:  []domain.Harness{hid},
 			Home:       home,
+			Namespaced: opts.Namespaced,
 		},
 		Force: true,
 		Yes:   true,
@@ -342,10 +358,10 @@ func TestSyncThenCapture_ContentFidelity(t *testing.T) {
 		}
 	}
 
-	// Verify skills round-tripped (as copy actions).
+	// Verify skills round-tripped with rendered names stripped back to source IDs.
 	foundSkill := false
-	for _, c := range captureResult.Copies {
-		if strings.Contains(c.Src, "diagnose") || strings.Contains(c.Dst, "diagnose") {
+	for _, s := range captureResult.Skills {
+		if s.Name == "diagnose" {
 			foundSkill = true
 			break
 		}
@@ -586,6 +602,180 @@ func TestSubtraction_RemovedContentCleaned(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNamespacedToggle_ReconcilesRenderedContent(t *testing.T) {
+	t.Parallel()
+
+	packRoot := t.TempDir()
+	skillDir := filepath.Join(packRoot, "skills", "diagnose")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: diagnose\ndescription: Diagnose\n---\nDiagnose issues.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name:    "test-pack",
+			Version: "1.0.0",
+			Root:    packRoot,
+			Rules: []domain.Rule{
+				{Name: "use-cache", Raw: []byte("Use cache when safe.\n"), SourcePack: "test-pack"},
+			},
+			Workflows: []domain.Workflow{
+				{Name: "deploy", Raw: []byte("---\nname: deploy\n---\nDeploy.\n"), SourcePack: "test-pack"},
+			},
+			Skills: []domain.Skill{
+				{Name: "diagnose", DirPath: skillDir, SourcePack: "test-pack"},
+			},
+		}},
+	}
+
+	reg := testRegistry()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	naturalRule := filepath.Join(projectDir, ".claude", "rules", "use-cache.md")
+	naturalWorkflow := filepath.Join(projectDir, ".claude", "commands", "deploy.md")
+	naturalSkill := filepath.Join(projectDir, ".claude", "skills", "diagnose", "SKILL.md")
+	namespacedRule := filepath.Join(projectDir, ".claude", "rules", "use-cache__aipack__test-pack.md")
+	namespacedWorkflow := filepath.Join(projectDir, ".claude", "commands", "deploy__aipack__test-pack.md")
+	namespacedSkill := filepath.Join(projectDir, ".claude", "skills", "diagnose__aipack__test-pack", "SKILL.md")
+
+	mustExist := func(path string) {
+		t.Helper()
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+	}
+	mustNotExist := func(path string) {
+		t.Helper()
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be absent, stat err=%v", path, err)
+		}
+	}
+
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode, reg)
+	for _, path := range []string{naturalRule, naturalWorkflow, naturalSkill} {
+		mustExist(path)
+	}
+	for _, path := range []string{namespacedRule, namespacedWorkflow, namespacedSkill} {
+		mustNotExist(path)
+	}
+
+	syncAndApplyNamespaced(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode, reg)
+	for _, path := range []string{namespacedRule, namespacedWorkflow, namespacedSkill} {
+		mustExist(path)
+	}
+	for _, path := range []string{naturalRule, naturalWorkflow, naturalSkill} {
+		mustNotExist(path)
+	}
+	content, err := os.ReadFile(namespacedSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "name: diagnose__aipack__test-pack") {
+		t.Fatalf("namespaced skill frontmatter was not rewritten:\n%s", content)
+	}
+
+	syncAndApply(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessClaudeCode, reg)
+	for _, path := range []string{naturalRule, naturalWorkflow, naturalSkill} {
+		mustExist(path)
+	}
+	for _, path := range []string{namespacedRule, namespacedWorkflow, namespacedSkill} {
+		mustNotExist(path)
+	}
+}
+
+func TestNamespacedResolveAndSync_PreservesCrossPackContentCollisions(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	for _, pack := range []string{"pack-a", "pack-b"} {
+		packDir := filepath.Join(configDir, "packs", pack)
+		writePackManifest(t, packDir, pack)
+		writeFile(t, filepath.Join(packDir, "rules", "shared.md"), "---\nname: shared\ndescription: Shared\n---\nrule body\n")
+		writeFile(t, filepath.Join(packDir, "agents", "reviewer.md"), "---\nname: reviewer\ndescription: Reviewer\n---\nagent body\n")
+		writeFile(t, filepath.Join(packDir, "workflows", "deploy.md"), "---\nname: deploy\ndescription: Deploy\n---\nworkflow body\n")
+		writeFile(t, filepath.Join(packDir, "skills", "diagnose", "SKILL.md"), "---\nname: diagnose\ndescription: Diagnose\n---\nskill body\n")
+	}
+
+	syncCfg := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	syncCfg.Defaults.Scope = string(domain.ScopeProject)
+	syncCfg.Defaults.Harnesses = []string{string(domain.HarnessClaudeCode)}
+	syncCfg.Defaults.CollisionStrategy = config.CollisionError
+	syncCfg.Defaults.Namespaced = true
+
+	resolved, warnings, err := ResolveProfile(engine.New(nil, nil), ResolveRequest{
+		ConfigDir:   configDir,
+		ProfilePath: filepath.Join(configDir, "profiles", "default.yaml"),
+		ProfileCfg: config.ProfileConfig{
+			SchemaVersion: config.ProfileSchemaVersion,
+			Packs:         []config.PackEntry{{Name: "pack-a"}, {Name: "pack-b"}},
+		},
+		SyncCfg:    syncCfg,
+		ProjectDir: t.TempDir(),
+		Home:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no collision warnings, got %v", warnings)
+	}
+	if got := len(resolved.Profile.AllRules()); got != 2 {
+		t.Fatalf("resolved rules = %d, want 2", got)
+	}
+	if got := len(resolved.Profile.AllAgents()); got != 2 {
+		t.Fatalf("resolved agents = %d, want 2", got)
+	}
+	if got := len(resolved.Profile.AllWorkflows()); got != 2 {
+		t.Fatalf("resolved workflows = %d, want 2", got)
+	}
+	if got := len(resolved.Profile.AllSkills()); got != 2 {
+		t.Fatalf("resolved skills = %d, want 2", got)
+	}
+
+	result, syncWarnings, err := RunSync(context.Background(), engine.New(nil, nil), resolved.Profile, SyncRequest{
+		TargetSpec: resolved.TargetSpec,
+		Force:      true,
+		Yes:        true,
+		Quiet:      true,
+	}, testRegistry(), nil, nil)
+	if err != nil {
+		t.Fatalf("RunSync: %v", err)
+	}
+	if len(syncWarnings) != 0 {
+		t.Fatalf("expected no sync warnings, got %v", syncWarnings)
+	}
+	if len(result.Plan.Writes)+len(result.Plan.Copies) == 0 {
+		t.Fatal("expected sync to render content")
+	}
+
+	for _, rel := range []string{
+		filepath.Join(".claude", "rules", "shared__aipack__pack-a.md"),
+		filepath.Join(".claude", "rules", "shared__aipack__pack-b.md"),
+		filepath.Join(".claude", "agents", "reviewer__aipack__pack-a.md"),
+		filepath.Join(".claude", "agents", "reviewer__aipack__pack-b.md"),
+		filepath.Join(".claude", "commands", "deploy__aipack__pack-a.md"),
+		filepath.Join(".claude", "commands", "deploy__aipack__pack-b.md"),
+		filepath.Join(".claude", "skills", "diagnose__aipack__pack-a", "SKILL.md"),
+		filepath.Join(".claude", "skills", "diagnose__aipack__pack-b", "SKILL.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(resolved.ProjectDir, rel)); err != nil {
+			t.Fatalf("expected %s to exist: %v", rel, err)
+		}
+	}
+
+	agentContent, err := os.ReadFile(filepath.Join(resolved.ProjectDir, ".claude", "agents", "reviewer__aipack__pack-a.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(agentContent), "name: reviewer__aipack__pack-a") {
+		t.Fatalf("namespaced agent frontmatter was not rewritten:\n%s", agentContent)
 	}
 }
 
@@ -2241,10 +2431,10 @@ func TestCodex_FullRoundTrip_SyncThenCapture(t *testing.T) {
 		t.Error("agent 'reviewer' not captured")
 	}
 
-	// Skills should appear in copies.
+	// Skills should retain their source ID after Codex rendered-name stripping.
 	foundSkill := false
-	for _, c := range captureResult.Copies {
-		if strings.Contains(c.Src, "diagnose") || strings.Contains(c.Dst, "diagnose") {
+	for _, s := range captureResult.Skills {
+		if s.Name == "diagnose" {
 			foundSkill = true
 			break
 		}
@@ -2273,13 +2463,13 @@ func TestCodex_FullRoundTrip_SyncThenCapture(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 32: Promotion collision — skill and workflow with same name
+// Test 32: Promotion collision — same-pack skill and workflow with same source name
 //
 // Story: "My pack has a skill and a workflow with the same name — Codex
-// should detect the collision and return an error."
+// should refuse to sync because namespacing separates packs, not content types."
 // ---------------------------------------------------------------------------
 
-func TestCodex_PromotionCollision_SkillAndWorkflowSameName(t *testing.T) {
+func TestCodex_PromotionCollision_SamePackSkillAndWorkflowSameName(t *testing.T) {
 	t.Parallel()
 
 	packRoot := t.TempDir()
@@ -2312,23 +2502,23 @@ func TestCodex_PromotionCollision_SkillAndWorkflowSameName(t *testing.T) {
 	projectDir := t.TempDir()
 	home := t.TempDir()
 
-	// RunSync directly — expect an error from the collision check.
 	_, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
 			Harnesses:  []domain.Harness{domain.HarnessCodex},
 			Home:       home,
+			Namespaced: true,
 		},
 		Force: true,
 		Yes:   true,
 		Quiet: true,
 	}, reg, nil, nil)
 	if err == nil {
-		t.Fatal("expected error for skill/workflow name collision, got nil")
+		t.Fatal("expected RunSync to fail with a promotion collision")
 	}
-	if !strings.Contains(err.Error(), "collision") {
-		t.Errorf("expected collision error, got: %v", err)
+	if !strings.Contains(err.Error(), `name collision: skill "deploy" and workflow "deploy"`) {
+		t.Fatalf("RunSync error = %q", err.Error())
 	}
 }
 

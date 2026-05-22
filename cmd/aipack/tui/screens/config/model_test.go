@@ -61,6 +61,7 @@ func TestViewUsesStorageAccurateConfigLabels(t *testing.T) {
 		"Env",
 		"AVAILABLE FROM",
 		"Sync Defaults",
+		"Rendered names",
 		"STORED IN",
 		"profiles/work.yaml",
 		"sync-config.yaml",
@@ -209,6 +210,38 @@ func TestLayerHitOnSyncDefaultsEmitsConfigIntent(t *testing.T) {
 	if m.focus != paneContent {
 		t.Fatalf("expected content focus, got %v", m.focus)
 	}
+
+	screen, cmd = m.Update(common.LayerHitMsg{
+		ID:    "config:namespaced",
+		Mouse: tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft}),
+	})
+	if cmd == nil {
+		t.Fatal("expected namespaced click command")
+	}
+	if msg := cmd(); msg != (ToggleNamespacedMsg{}) {
+		t.Fatalf("expected ToggleNamespacedMsg, got %#v", msg)
+	}
+	m = screen.(Model)
+	if m.cursor != 4 {
+		t.Fatalf("expected namespaced cursor row 4, got %d", m.cursor)
+	}
+}
+
+func TestSyncDefaultsNamespacedRowActivates(t *testing.T) {
+	t.Parallel()
+
+	m := New("/tmp/config").SetContext(Profile{Name: "work"}, config.SyncConfig{})
+	m.section = sectionSyncDefaults
+	m.focus = paneContent
+	m.cursor = 4
+
+	_, cmd := m.Update(keyText("enter"))
+	if cmd == nil {
+		t.Fatal("expected namespaced row activation command")
+	}
+	if msg := cmd(); msg != (ToggleNamespacedMsg{}) {
+		t.Fatalf("expected ToggleNamespacedMsg, got %#v", msg)
+	}
 }
 
 func TestViewRegistersFullRowHitLayers(t *testing.T) {
@@ -249,6 +282,9 @@ func TestViewRegistersFullRowHitLayers(t *testing.T) {
 	if comp.GetLayer("config:harnesses") == nil {
 		t.Fatal("expected harness row layer")
 	}
+	if comp.GetLayer("config:namespaced") == nil {
+		t.Fatal("expected namespaced row layer")
+	}
 }
 
 func TestViewHitLayersAlignWithRenderedRows(t *testing.T) {
@@ -287,6 +323,10 @@ func TestViewHitLayersAlignWithRenderedRows(t *testing.T) {
 	x, y = findRenderedText(t, rendered, "Harnesses")
 	if got := comp.Hit(x, y).ID(); got != "config:harnesses" {
 		t.Fatalf("Hit(%d,%d) on Harnesses = %q, want config:harnesses\n%s", x, y, got, strings.Join(rendered, "\n"))
+	}
+	x, y = findRenderedText(t, rendered, "Rendered names")
+	if got := comp.Hit(x, y).ID(); got != "config:namespaced" {
+		t.Fatalf("Hit(%d,%d) on Rendered names = %q, want config:namespaced\n%s", x, y, got, strings.Join(rendered, "\n"))
 	}
 }
 
