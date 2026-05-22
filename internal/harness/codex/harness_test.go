@@ -1052,13 +1052,17 @@ func TestLayout_StripManaged_RemovesOnlyAIPackHookState(t *testing.T) {
 	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
 	hooksPath := filepath.Join(projectDir, ".codex", "hooks.json")
 	otherPath := filepath.Join(projectDir, ".codex", "other-hooks.json")
-	input := []byte(`
-[hooks.state."` + hooksPath + `:post_tool_use:0:0"]
-trusted_hash = "sha256:managed"
-
-[hooks.state."` + otherPath + `:post_tool_use:0:0"]
-trusted_hash = "sha256:user"
-`)
+	input, err := toml.Marshal(map[string]any{
+		"hooks": map[string]any{
+			"state": map[string]any{
+				hooksPath + ":post_tool_use:0:0": map[string]any{"trusted_hash": "sha256:managed"},
+				otherPath + ":post_tool_use:0:0": map[string]any{"trusted_hash": "sha256:user"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
 
 	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
 	if err != nil {

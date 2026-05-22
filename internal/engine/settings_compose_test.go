@@ -626,13 +626,14 @@ events:
 		t.Fatalf("hooks = %d, want 1", len(hooks))
 	}
 	content := hooks[0].Events[0].EffectiveHandlers()[0].Command
+	normalizedContent := filepath.ToSlash(content)
 	for _, want := range []string{
 		filepath.Join(pack.Root, "hooks", "tool-audit", "bin", "hook.py"),
 		filepath.Clean(pack.Root),
 		"http://127.0.0.1:4318",
 		"first.last",
 	} {
-		if !strings.Contains(content, want) {
+		if !strings.Contains(normalizedContent, filepath.ToSlash(want)) {
 			t.Fatalf("hook content missing %q:\n%s", want, content)
 		}
 	}
