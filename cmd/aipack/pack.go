@@ -177,6 +177,15 @@ func parseWithFlag(vals []string) (domain.BundledSet, error) {
 }
 
 type contentPathFlags struct {
+	Rules     string `help:"Use this directory for rules content" name:"rules"`
+	Skills    string `help:"Use this directory for skills content" name:"skills"`
+	Agents    string `help:"Use this directory for agents content" name:"agents"`
+	Workflows string `help:"Use this directory for workflows content" name:"workflows"`
+	Hooks     string `help:"Use this directory for hooks content" name:"hooks"`
+	Prompts   string `help:"Use this directory for prompts content" name:"prompts"`
+}
+
+type localContentPathFlags struct {
 	Rules     string `help:"Use this directory for rules content" name:"rules" type:"path"`
 	Skills    string `help:"Use this directory for skills content" name:"skills" type:"path"`
 	Agents    string `help:"Use this directory for agents content" name:"agents" type:"path"`
@@ -189,19 +198,21 @@ func (f contentPathFlags) HasAny() bool {
 	return f.Rules != "" || f.Skills != "" || f.Agents != "" || f.Workflows != "" || f.Hooks != "" || f.Prompts != ""
 }
 
-// ContentPaths builds a content type map from CLI flag values.
-// Returns nil when all inputs are empty.
-func (f contentPathFlags) ContentPaths() map[domain.PackCategory]string {
+func (f localContentPathFlags) HasAny() bool {
+	return f.Rules != "" || f.Skills != "" || f.Agents != "" || f.Workflows != "" || f.Hooks != "" || f.Prompts != ""
+}
+
+func buildContentPaths(rules, skills, agents, workflows, hooks, prompts string) map[domain.PackCategory]string {
 	pairs := []struct {
 		cat domain.PackCategory
 		val string
 	}{
-		{domain.CategoryRules, f.Rules},
-		{domain.CategorySkills, f.Skills},
-		{domain.CategoryAgents, f.Agents},
-		{domain.CategoryWorkflows, f.Workflows},
-		{domain.CategoryHooks, f.Hooks},
-		{domain.CategoryPrompts, f.Prompts},
+		{domain.CategoryRules, rules},
+		{domain.CategorySkills, skills},
+		{domain.CategoryAgents, agents},
+		{domain.CategoryWorkflows, workflows},
+		{domain.CategoryHooks, hooks},
+		{domain.CategoryPrompts, prompts},
 	}
 	var cp map[domain.PackCategory]string
 	for _, p := range pairs {
@@ -215,12 +226,24 @@ func (f contentPathFlags) ContentPaths() map[domain.PackCategory]string {
 	return cp
 }
 
+// ContentPaths builds a repo-relative content type map from CLI flag values.
+// Returns nil when all inputs are empty.
+func (f contentPathFlags) ContentPaths() map[domain.PackCategory]string {
+	return buildContentPaths(f.Rules, f.Skills, f.Agents, f.Workflows, f.Hooks, f.Prompts)
+}
+
+// ContentPaths builds a local filesystem content type map from CLI flag values.
+// Returns nil when all inputs are empty.
+func (f localContentPathFlags) ContentPaths() map[domain.PackCategory]string {
+	return buildContentPaths(f.Rules, f.Skills, f.Agents, f.Workflows, f.Hooks, f.Prompts)
+}
+
 // --- pack create ---
 
 type PackCreateCmd struct {
 	Name  string `arg:"" help:"Pack name"`
 	Local bool   `help:"Create pack inside the packs directory instead of the current directory" name:"local"`
-	contentPathFlags
+	localContentPathFlags
 }
 
 func (c *PackCreateCmd) Help() string {

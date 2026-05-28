@@ -321,19 +321,24 @@ type RefClassification struct {
 //
 //  1. Empty string → RefEmpty
 //  2. "latest" (case-insensitive) → RefLatest
-//  3. Flat semver / partial semver → RefSemver / RefPartialSemver
-//  4. Namespaced semver / partial (split at last "/") → RefSemver / RefPartialSemver with Prefix set
-//  5. Commit hash (7–40 hex chars) → RefCommit
+//  3. Commit hash (7–40 hex chars) → RefCommit
+//  4. Flat semver / partial semver → RefSemver / RefPartialSemver
+//  5. Namespaced semver / partial (split at last "/") → RefSemver / RefPartialSemver with Prefix set
 //  6. Anything else → RefLiteral (branch, non-semver tag, unrecognized string)
 //
-// Ordering matters: semver checks precede commit-hash detection so numeric
-// version strings aren't misread as short hashes.
+// Ordering matters: commit-hash detection precedes semver so numeric-looking
+// short hashes aren't misread as partial versions. Short numeric partial
+// versions like "1" and "1.2" remain semver because they do not satisfy the
+// 7-character minimum hash length.
 func ClassifyRef(s string) RefClassification {
 	if s == "" {
 		return RefClassification{Kind: RefEmpty}
 	}
 	if strings.EqualFold(s, "latest") {
 		return RefClassification{Kind: RefLatest}
+	}
+	if IsCommitHash(s) {
+		return RefClassification{Kind: RefCommit, Spec: strings.ToLower(s)}
 	}
 	if prefix, tail, ok := splitSemverRef(s); ok {
 		norm := NormalizeVersion(tail)
@@ -342,9 +347,6 @@ func ClassifyRef(s string) RefClassification {
 			kind = RefPartialSemver
 		}
 		return RefClassification{Kind: kind, Prefix: prefix, Spec: norm}
-	}
-	if IsCommitHash(s) {
-		return RefClassification{Kind: RefCommit, Spec: strings.ToLower(s)}
 	}
 	return RefClassification{Kind: RefLiteral, Spec: s}
 }

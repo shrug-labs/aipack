@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.28.1]
+
+### Fixed
+
+- **Repo-relative content-path CLI installs and inspections now stay relative.** `pack install --url ... --skills skills` and `pack inspect --url ... --skills skills` no longer expand content paths against the current working directory before extraction.
+- **Numeric-looking short commit hashes now resolve as commit pins.** Seven-character all-digit short SHAs such as `1366620` are no longer misclassified as partial semver versions.
+
 ## [0.28.0]
 
 ### Added

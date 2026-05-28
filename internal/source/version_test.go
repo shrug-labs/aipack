@@ -293,6 +293,7 @@ func TestClassifyRef(t *testing.T) {
 
 		// Commit hash.
 		{"abc1234", RefClassification{Kind: RefCommit, Spec: "abc1234"}},
+		{"1366620", RefClassification{Kind: RefCommit, Spec: "1366620"}},
 		{"aabbccdd1122334455667788", RefClassification{Kind: RefCommit, Spec: "aabbccdd1122334455667788"}},
 		{"CAFE123", RefClassification{Kind: RefCommit, Spec: "cafe123"}}, // lowercased
 		{"cafe123", RefClassification{Kind: RefCommit, Spec: "cafe123"}},

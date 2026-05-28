@@ -339,6 +339,39 @@ func TestPackInspect_CLIURLArchiveDoesNotRequireInput(t *testing.T) {
 	}
 }
 
+func TestPackInspect_CLIURLArchiveContentPathsKeepRepoRelativeValues(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/skills/triage/SKILL.md": "---\nname: triage\ndescription: Use when triaging test fixtures.\n---\nbody\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := t.TempDir()
+	stdout, stderr, code := runApp(t,
+		"pack", "inspect",
+		"--url", server.URL+"/content.zip",
+		"--archive",
+		"--name", "content-preview",
+		"--skills", "skills",
+		"--config-dir", configDir,
+		"--json",
+	)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack inspect content_paths exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	counts, ok := got["counts"].(map[string]any)
+	if got["name"] != "content-preview" || !ok || counts["skills"].(float64) != 1 {
+		t.Fatalf("unexpected inspect JSON: %v", got)
+	}
+}
+
 func TestShouldTreatPackSourceAsArchiveSkipsGitURLShapes(t *testing.T) {
 	t.Parallel()
 
@@ -431,6 +464,41 @@ func TestPackInstall_InfersRemoteArchiveFromPositionalURL(t *testing.T) {
 	meta := lf.Packs["url-inferred-install"]
 	if meta.Method != config.MethodArchive || meta.Origin != server.URL+"/pack.zip" {
 		t.Fatalf("lockfile meta = %+v", meta)
+	}
+}
+
+func TestPackInstall_CLIURLArchiveContentPathsKeepRepoRelativeValues(t *testing.T) {
+	t.Parallel()
+	archive := buildCLIPackZip(t, map[string]string{
+		"repo/skills/triage/SKILL.md": "---\nname: triage\ndescription: Use when triaging test fixtures.\n---\nbody\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := t.TempDir()
+	_, stderr, code := runApp(t,
+		"pack", "install",
+		"--url", server.URL+"/content.zip",
+		"--archive",
+		"--name", "content-install",
+		"--skills", "skills",
+		"--config-dir", configDir,
+	)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("pack install content_paths exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := lf.Packs["content-install"]
+	if meta.ContentPaths[domain.CategorySkills] != "skills" {
+		t.Fatalf("content_paths.skills = %q, want skills", meta.ContentPaths[domain.CategorySkills])
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "packs", "content-install", "skills", "triage", "SKILL.md")); err != nil {
+		t.Fatalf("installed content-path skill missing: %v", err)
 	}
 }
 
