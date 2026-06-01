@@ -72,13 +72,24 @@ func (e *contractEnv) files() map[string]string {
 	return walkDir(e.t, e.projectDir)
 }
 
-// contentExists returns true if any file's path or content contains marker.
-// This works across both per-file harnesses (match on path) and bundle-file
-// harnesses like Codex (match on flattened content).
+// contentExists reports whether named content was rendered. Path matching is
+// segment-exact so absence assertions do not false-fail on substring collisions;
+// body matching covers harnesses that flatten content into shared files.
 func (e *contractEnv) contentExists(marker string) bool {
 	e.t.Helper()
 	for path, content := range e.files() {
-		if strings.Contains(path, marker) || strings.Contains(content, marker) {
+		if (strings.Contains(path, marker) && pathHasSegment(path, marker)) || strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathHasSegment reports whether marker is a full path segment of p, ignoring a
+// single trailing extension (so "foo" matches ".../foo.md" and ".../foo/x.md").
+func pathHasSegment(p, marker string) bool {
+	for seg := range strings.SplitSeq(filepath.ToSlash(p), "/") {
+		if seg == marker || strings.TrimSuffix(seg, filepath.Ext(seg)) == marker {
 			return true
 		}
 	}

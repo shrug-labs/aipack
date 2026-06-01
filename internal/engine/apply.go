@@ -24,9 +24,9 @@ type ApplyRequest struct {
 	// StripFuncs maps cleaned file paths to functions that strip only the
 	// managed keys from shared config files. When a stale ledger entry
 	// matches a path in this map, the strip function is called instead of
-	// deleting the entire file. This prevents stale reconciliation from
-	// destroying user-owned content in files like .claude.json.
-	StripFuncs map[string]func(content []byte) ([]byte, error)
+	// deleting the entire file. The ledger argument is a pre-reconciliation
+	// snapshot so strip functions can derive any ownership context they need.
+	StripFuncs map[string]func(content []byte, ledger domain.Ledger) ([]byte, error)
 }
 
 // ApplyPlan applies a sync plan to disk.

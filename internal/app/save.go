@@ -26,10 +26,9 @@ func saveFileToPack(src, dst string) error {
 }
 
 func saveContentToPack(content []byte, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	return util.WriteFileAtomic(dst, content)
+	// Pack content uses owner-only perms, matching install (util.CopyDir);
+	// saved files may contain captured settings or MCP material.
+	return util.WriteFileAtomicWithPerms(dst, content, 0o700, 0o600)
 }
 
 func saveDirToPack(src, dst string) error {
@@ -51,7 +50,7 @@ func saveDirToPack(src, dst string) error {
 		}
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			return os.MkdirAll(target, 0o700)
 		}
 		srcFiles[rel] = struct{}{}
 		return saveFileToPack(p, target)
@@ -280,6 +279,7 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 			})
 			continue
 		}
+		mcpIndex := domain.MCPServerNamesByPath(lg.Managed)
 
 		h, err := reg.Lookup(hid)
 		if err != nil {
@@ -569,7 +569,8 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 			} else {
 				// Settings write — either save immediately when forced, or emit
 				// as pending so the caller can decide whether to persist it.
-				stripped, err := layout.StripManaged(w.Content, src)
+				ctx := harness.EditContext{ManagedMCPServers: mcpIndex.ForPath(src)}
+				stripped, err := layout.StripManaged(w.Content, src, ctx)
 				if err != nil {
 					return RoundTripResult{}, fmt.Errorf("stripping managed settings from %s: %w", src, err)
 				}

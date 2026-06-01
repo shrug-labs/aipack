@@ -375,6 +375,43 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 	}
 }
 
+func TestPrintDryRun_CountsSettingsMergeAsFileOp(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	settingsDst := filepath.Join(projectDir, ".claude", "settings.local.json")
+
+	// A pending settings merge against a non-existent file is a real change.
+	// The headline must count it, not print a misleading "0 file ops".
+	plan := domain.Plan{
+		Settings: []domain.SettingsAction{{
+			Dst:       settingsDst,
+			Desired:   []byte(`{"permissions":{"allow":["mcp__x__y"]}}`),
+			Harness:   domain.HarnessClaudeCode,
+			MergeMode: true,
+		}},
+	}
+	reg := harness.NewRegistry(syncStubHarness{
+		id:    domain.HarnessClaudeCode,
+		roots: []string{filepath.Join(projectDir, ".claude")},
+	})
+
+	var buf bytes.Buffer
+	printDryRun(engine.New(nil, nil), plan, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
+			Home:       home,
+		},
+	}, reg, ContentCounts{}, &buf)
+
+	want := "merge: " + settingsDst + "\nplan: 1 file ops from 0 content, 0 identical\n"
+	if got := buf.String(); got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
 func TestProcessEmbeddedRegistries_MergesIntoRegistryCache(t *testing.T) {
 	t.Parallel()
 

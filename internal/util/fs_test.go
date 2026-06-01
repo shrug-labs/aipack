@@ -408,29 +408,66 @@ func TestCopyDirResolvingSymlinks_EmptyBoundaryRejects(t *testing.T) {
 	}
 }
 
-func TestCopyDirResolvingSymlinks_RejectsDirectorySymlink(t *testing.T) {
+func TestCopyDirResolvingSymlinks_ResolvesDirectorySymlink(t *testing.T) {
 	root := t.TempDir()
-	sub := filepath.Join(root, "subdir")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	sharedSkill := filepath.Join(root, "shared", "skill")
+	if err := os.MkdirAll(filepath.Join(sharedSkill, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sub, "file.txt"), []byte("content"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sharedSkill, "SKILL.md"), []byte("skill body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedSkill, "scripts", "run.sh"), []byte("run"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	packDir := filepath.Join(root, "pack")
+	if err := os.MkdirAll(filepath.Join(packDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, sharedSkill, filepath.Join(packDir, "skills", "linked-skill"))
+
+	dst := t.TempDir()
+	err := CopyDirResolvingSymlinks(packDir, dst, root)
+	if err != nil {
+		t.Fatalf("CopyDirResolvingSymlinks failed: %v", err)
+	}
+
+	linkDst := filepath.Join(dst, "skills", "linked-skill")
+	info, err := os.Lstat(linkDst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("expected resolved directory, got symlink")
+	}
+	got, err := os.ReadFile(filepath.Join(linkDst, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("missing resolved SKILL.md: %v", err)
+	}
+	if string(got) != "skill body" {
+		t.Errorf("resolved skill body = %q, want %q", string(got), "skill body")
+	}
+	if _, err := os.Stat(filepath.Join(linkDst, "scripts", "run.sh")); err != nil {
+		t.Fatalf("missing nested script: %v", err)
+	}
+}
+
+func TestCopyDirResolvingSymlinks_RejectsDirectorySymlinkCycle(t *testing.T) {
+	root := t.TempDir()
+	packDir := filepath.Join(root, "pack")
 	if err := os.MkdirAll(packDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	testutil.Symlink(t, sub, filepath.Join(packDir, "linked-dir"))
+	testutil.Symlink(t, packDir, filepath.Join(packDir, "self"))
 
 	dst := t.TempDir()
 	err := CopyDirResolvingSymlinks(packDir, dst, root)
 	if err == nil {
-		t.Fatal("expected error for directory symlink")
+		t.Fatal("expected error for directory symlink cycle")
 	}
-	if !strings.Contains(err.Error(), "directory") {
-		t.Errorf("error %q should mention 'directory'", err)
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error %q should mention 'cycle'", err)
 	}
 }
 

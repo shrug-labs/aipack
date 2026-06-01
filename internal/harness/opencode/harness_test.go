@@ -1114,8 +1114,9 @@ func TestLayout_StripManaged_RemovesMCPAndTools(t *testing.T) {
 	projectDir := t.TempDir()
 	h := Harness{}
 	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
-	input := []byte(`{"mcp": {"foo": {}}, "tools": {"bar": true}, "custom": "keep"}`)
-	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
+	input := []byte(`{"mcp": {"foo": {}, "usermcp": {}}, "tools": {"bar": true}, "custom": "keep"}`)
+	ctx := harness.EditContext{ManagedMCPServers: map[string]struct{}{"foo": {}}}
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path, ctx)
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}
@@ -1124,8 +1125,15 @@ func TestLayout_StripManaged_RemovesMCPAndTools(t *testing.T) {
 	if err := json.Unmarshal(out, &root); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := root["mcp"]; ok {
-		t.Fatal("mcp should be stripped")
+	servers, ok := root["mcp"].(map[string]any)
+	if !ok {
+		t.Fatal("mcp should be preserved when the user has their own servers")
+	}
+	if _, ok := servers["foo"]; ok {
+		t.Fatal("managed server foo should be stripped")
+	}
+	if _, ok := servers["usermcp"]; !ok {
+		t.Fatal("user-added server usermcp should be preserved")
 	}
 	if _, ok := root["tools"]; ok {
 		t.Fatal("tools should be stripped")
@@ -1141,7 +1149,7 @@ func TestLayout_StripManaged_UnmatchedPath_PassThrough(t *testing.T) {
 	h := Harness{}
 	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
 	input := []byte(`{"mcp": {"foo": {}}}`)
-	out, err := layout.StripManaged(input, "/some/other/path.json")
+	out, err := layout.StripManaged(input, "/some/other/path.json", harness.EditContext{})
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}

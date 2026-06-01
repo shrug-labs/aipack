@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -846,10 +847,11 @@ func TestRunSavePipeline_SecretScan(t *testing.T) {
 	os.MkdirAll(projectDir, 0o755)
 	writeSaveTestManifest(t, packRoot, "test-pack")
 
-	// Create harness file with a secret.
+	// Create harness file with credential-shaped content assembled from chunks
+	// so the source tree itself does not contain a realistic-looking key.
 	harnessFile := filepath.Join(home, "rules", "secret.md")
 	os.MkdirAll(filepath.Dir(harnessFile), 0o755)
-	os.WriteFile(harnessFile, []byte("key: AKIAIOSFODNN7EXAMPLE"), 0o644)
+	os.WriteFile(harnessFile, []byte("key: "+strings.Join([]string{"AK", "IA", "IOSFODNN7", "EXAMPLE"}, "")), 0o644)
 
 	stub := pipelineStub{id: "claudecode"}
 	reg := harness.NewRegistry(stub)

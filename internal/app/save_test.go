@@ -17,7 +17,7 @@ import (
 
 func TestScanBytesForSecrets_SSHKey(t *testing.T) {
 	t.Parallel()
-	input := []byte("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAK...")
+	input := []byte(strings.Join([]string{"-----BEGIN RSA", "PRIVATE KEY-----"}, " ") + "\nMIIEowIBAAK...")
 	findings := scanBytesForSecrets(input)
 	if len(findings) == 0 {
 		t.Fatal("expected findings for RSA private key, got none")
@@ -31,7 +31,7 @@ func TestScanBytesForSecrets_SSHKey(t *testing.T) {
 func TestScanBytesForSecrets_AKIA(t *testing.T) {
 	t.Parallel()
 	// AKIA followed by 16 uppercase alphanumeric characters.
-	input := []byte(`config: AKIAIOSFODNN7EXAMPLE`)
+	input := []byte("config: " + strings.Join([]string{"AK", "IA", "IOSFODNN7", "EXAMPLE"}, ""))
 	findings := scanBytesForSecrets(input)
 	if len(findings) == 0 {
 		t.Fatal("expected findings for AWS access key, got none")
@@ -44,7 +44,7 @@ func TestScanBytesForSecrets_AKIA(t *testing.T) {
 
 func TestScanBytesForSecrets_CloudResourceID(t *testing.T) {
 	t.Parallel()
-	input := []byte(`resource = "ocid1.instance.oc1.phx.abc123"`)
+	input := []byte(`resource = "` + strings.Join([]string{"ocid1", "instance", "oc1", "phx", "abc123"}, ".") + `"`)
 	findings := scanBytesForSecrets(input)
 	if len(findings) == 0 {
 		t.Fatal("expected findings for cloud resource ID, got none")

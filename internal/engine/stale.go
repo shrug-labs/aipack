@@ -24,6 +24,8 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 
 	keys := slices.Sorted(maps.Keys(lg.Managed))
 
+	stripLedger := domain.Ledger{Managed: maps.Clone(lg.Managed), UpdatedAt: lg.UpdatedAt}
+
 	var nonInteractiveSkips int
 	cleanup := newEmptyDirCleanup(staleRoots, e.FS)
 	for _, k := range keys {
@@ -71,7 +73,7 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 		}
 
 		if stripFn, isOwned := ar.StripFuncs[filepath.Clean(k)]; isOwned {
-			if err := e.stripOwnedFile(k, stripFn); err != nil {
+			if err := e.stripOwnedFile(k, stripLedger, stripFn); err != nil {
 				warnings = append(warnings, staleWarning(k, "strip managed keys: %v", err))
 			}
 		} else {
@@ -95,12 +97,12 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 // the managed keys, and writes the result back. Used for shared config
 // files (e.g. .claude.json) where aipack manages specific keys but must
 // not delete the entire file.
-func (e *Engine) stripOwnedFile(path string, stripFn func([]byte) ([]byte, error)) error {
+func (e *Engine) stripOwnedFile(path string, ledger domain.Ledger, stripFn func([]byte, domain.Ledger) ([]byte, error)) error {
 	content, err := e.FS.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	stripped, err := stripFn(content)
+	stripped, err := stripFn(content, ledger)
 	if err != nil {
 		return err
 	}

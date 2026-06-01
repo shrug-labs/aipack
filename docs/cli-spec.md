@@ -540,7 +540,7 @@ Versions list contains only tags that parse as valid semver. When the pack has n
 
 ### `aipack pack validate`
 
-Exit code 1 when `ok` is false.
+Validates pack structure and metadata, not authored content bodies. Exit code 1 when `ok` is false.
 
 ```json
 {

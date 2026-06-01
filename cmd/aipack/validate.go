@@ -15,9 +15,10 @@ type ValidateCmd struct {
 
 func (c *ValidateCmd) Help() string {
 	return `Read-only validation command for a single pack source tree. Checks pack
-structure and content policy without installing or syncing anything.
+structure, manifest inventory, frontmatter shape, and cross-references without
+installing or syncing anything.
 
-Exit code 0 if validation passes, 1 if findings are reported.
+Exit code 0 if validation has no error-severity findings, 1 otherwise.
 
 Examples:
   # Validate a local pack source tree

@@ -6,6 +6,20 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.28.2]
+
+### Changed
+
+- **`pack validate` now focuses on pack shape instead of content scanning.** Validation still checks manifests, inventory, frontmatter, extras, and cross-references, but no longer flags authored body text, `.env` files, SSH key text, AWS-looking strings, or OCID-like identifiers as validation findings.
+
+### Fixed
+
+- **Git installs now resolve safe directory symlinks inside pack content.** Subpath packs can expose shared skill directories or declared extra directories via repo-local symlinks; installs copy the resolved contents into the installed pack instead of failing with `symlink to directory not allowed`.
+- **Removing managed MCP servers now preserves user-added servers in shared config files.** Sync, clean, and save strip only ledger-tracked MCP entries instead of clearing the whole MCP server map.
+- **Settings and stale-file handling now preserve user data more reliably.** Three-way merges keep non-string user array entries and emit empty arrays as `[]` instead of `null`.
+- **Dry-run summaries now count settings and MCP merges as file operations.** Settings-only and MCP-only sync plans no longer appear as zero-op dry runs when they would modify files.
+- **`pack validate` now validates nested authored content at its discovered path.** Agents, workflows, and skills organized in subdirectories no longer produce false frontmatter read errors from their canonical leaf paths.
+
 ## [0.28.1]
 
 ### Fixed

@@ -37,7 +37,11 @@ func WriteFileAtomicWithPerms(path string, content []byte, dirPerm os.FileMode, 
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ReplaceDirAtomic moves staging into destDir. If destDir already exists it
@@ -146,28 +150,58 @@ func IsWithinDir(path, dir string) bool {
 	return strings.HasPrefix(cleanPath+string(filepath.Separator), cleanDir+string(filepath.Separator))
 }
 
+func resolveBoundary(boundary string) string {
+	if resolved, err := filepath.EvalSymlinks(boundary); err == nil {
+		return resolved
+	}
+	return boundary
+}
+
+func validateSymlinkTarget(resolvedTarget, boundary string) (os.FileInfo, error) {
+	return validateSymlinkTargetWithinBoundary(resolvedTarget, resolveBoundary(boundary))
+}
+
+func validateSymlinkTargetWithinBoundary(resolvedTarget, boundary string) (os.FileInfo, error) {
+	if !IsWithinDir(resolvedTarget, boundary) {
+		return nil, fmt.Errorf("symlink target escapes boundary: %s is not within %s", resolvedTarget, boundary)
+	}
+	rel, err := filepath.Rel(boundary, resolvedTarget)
+	if err != nil {
+		return nil, fmt.Errorf("computing relative path: %w", err)
+	}
+	if slices.Contains(strings.Split(rel, string(filepath.Separator)), ".git") {
+		return nil, fmt.Errorf("symlink target traverses .git directory: %s", resolvedTarget)
+	}
+	info, err := os.Lstat(resolvedTarget)
+	if err != nil {
+		return nil, fmt.Errorf("symlink target not accessible: %w", err)
+	}
+	return info, nil
+}
+
+func resolveAllowedSymlink(src, boundary string) (string, os.FileInfo, error) {
+	return resolveAllowedSymlinkWithinBoundary(src, resolveBoundary(boundary))
+}
+
+func resolveAllowedSymlinkWithinBoundary(src, boundary string) (string, os.FileInfo, error) {
+	resolved, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving symlink %s: %w", src, err)
+	}
+	info, err := validateSymlinkTargetWithinBoundary(resolved, boundary)
+	if err != nil {
+		return "", nil, err
+	}
+	return resolved, info, nil
+}
+
 // ValidateSymlinkTarget checks that a resolved symlink target is safe for
 // inclusion in pack content. The target must be within boundary, must not
 // traverse a .git directory, and must be a regular file (not a directory).
 func ValidateSymlinkTarget(resolvedTarget, boundary string) error {
-	// Resolve the boundary itself so that platform-level symlinks
-	// (e.g. macOS /var -> /private/var) don't cause false rejections.
-	if resolved, err := filepath.EvalSymlinks(boundary); err == nil {
-		boundary = resolved
-	}
-	if !IsWithinDir(resolvedTarget, boundary) {
-		return fmt.Errorf("symlink target escapes boundary: %s is not within %s", resolvedTarget, boundary)
-	}
-	rel, err := filepath.Rel(boundary, resolvedTarget)
+	info, err := validateSymlinkTarget(resolvedTarget, boundary)
 	if err != nil {
-		return fmt.Errorf("computing relative path: %w", err)
-	}
-	if slices.Contains(strings.Split(rel, string(filepath.Separator)), ".git") {
-		return fmt.Errorf("symlink target traverses .git directory: %s", resolvedTarget)
-	}
-	info, err := os.Lstat(resolvedTarget)
-	if err != nil {
-		return fmt.Errorf("symlink target not accessible: %w", err)
+		return err
 	}
 	if info.IsDir() {
 		return fmt.Errorf("symlink to directory not allowed: %s", resolvedTarget)
@@ -209,12 +243,12 @@ func CopyFileResolvingSymlink(src, dst, boundary string) error {
 		if boundary == "" {
 			return fmt.Errorf("symlink in pack content cannot be resolved (no boundary): %s", src)
 		}
-		resolved, err := filepath.EvalSymlinks(src)
+		resolved, targetInfo, err := resolveAllowedSymlink(src, boundary)
 		if err != nil {
-			return fmt.Errorf("resolving symlink %s: %w", src, err)
-		}
-		if err := ValidateSymlinkTarget(resolved, boundary); err != nil {
 			return fmt.Errorf("symlink not allowed: %s: %w", src, err)
+		}
+		if targetInfo.IsDir() {
+			return fmt.Errorf("symlink to directory not allowed: %s", resolved)
 		}
 		readPath = resolved
 	}
@@ -227,9 +261,35 @@ func CopyFileResolvingSymlink(src, dst, boundary string) error {
 
 // CopyDirResolvingSymlinks recursively copies src to dst, resolving file
 // symlinks whose targets are within boundary. If boundary is empty, symlinks
-// are rejected (same behavior as CopyDir). Directory symlinks are always
-// rejected.
+// are rejected (same behavior as CopyDir). Directory symlinks are copied as
+// real directories when their targets are within boundary.
 func CopyDirResolvingSymlinks(src, dst, boundary string) error {
+	if boundary != "" {
+		boundary = resolveBoundary(boundary)
+	}
+	return copyDirResolvingSymlinks(src, dst, boundary, map[string]bool{})
+}
+
+func copyDirResolvingSymlinks(src, dst, boundary string, visiting map[string]bool) error {
+	if info, err := os.Lstat(src); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		if boundary == "" {
+			return fmt.Errorf("symlink in pack content cannot be resolved (no git repository found above pack directory): %s", src)
+		}
+		resolved, _, err := resolveAllowedSymlinkWithinBoundary(src, boundary)
+		if err != nil {
+			return fmt.Errorf("symlink not allowed in pack content: %s: %w", src, err)
+		}
+		src = resolved
+	}
+
+	if realSrc, err := filepath.EvalSymlinks(src); err == nil {
+		if visiting[realSrc] {
+			return fmt.Errorf("symlink cycle detected while copying directory: %s", realSrc)
+		}
+		visiting[realSrc] = true
+		defer delete(visiting, realSrc)
+	}
+
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -252,12 +312,12 @@ func CopyDirResolvingSymlinks(src, dst, boundary string) error {
 			if boundary == "" {
 				return fmt.Errorf("symlink in pack content cannot be resolved (no git repository found above pack directory): %s", path)
 			}
-			resolved, err := filepath.EvalSymlinks(path)
+			resolved, info, err := resolveAllowedSymlinkWithinBoundary(path, boundary)
 			if err != nil {
-				return fmt.Errorf("resolving symlink %s: %w", path, err)
-			}
-			if err := ValidateSymlinkTarget(resolved, boundary); err != nil {
 				return fmt.Errorf("symlink not allowed in pack content: %s: %w", path, err)
+			}
+			if info.IsDir() {
+				return copyDirResolvingSymlinks(resolved, target, boundary, visiting)
 			}
 			data, err := os.ReadFile(resolved)
 			if err != nil {

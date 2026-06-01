@@ -54,6 +54,19 @@ func TestRunPackValidate_MissingFrontmatterFindingAcrossAuthoredKinds(t *testing
 	}
 }
 
+func TestRunPackValidate_UsesDiscoveredNestedContentPaths(t *testing.T) {
+	t.Parallel()
+	packDir := writePackValidateFixture(t)
+	writeFile(t, filepath.Join(packDir, "agents", "review", "reviewer.md"), "---\nname: reviewer\ndescription: test\n---\nbody\n")
+	writeFile(t, filepath.Join(packDir, "workflows", "release", "ship.md"), "---\nname: ship\ndescription: test\n---\nbody\n")
+	writeFile(t, filepath.Join(packDir, "skills", "ops", "triage", "SKILL.md"), "---\nname: triage\ndescription: Use when testing nested validation paths.\n---\nbody\n")
+
+	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
+	if !rep.OK {
+		t.Fatalf("expected nested content to validate through discovered paths, got %v", rep.Findings)
+	}
+}
+
 func TestRunPackValidate_SkillSupportingFilesDoNotRequireFrontmatter(t *testing.T) {
 	t.Parallel()
 	packDir := writePackValidateFixture(t)
@@ -76,31 +89,6 @@ func TestRunPackValidate_LeadingFrontmatterMarkerCountsAsPresent(t *testing.T) {
 	}
 }
 
-func TestRunPackValidate_DocsAreExcludedFromSecretScan(t *testing.T) {
-	t.Parallel()
-	packDir := writePackValidateFixture(t)
-	writeFile(t, filepath.Join(packDir, "docs", "guide.md"), "ocid1.test.oc1.example.placeholder123\n")
-
-	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
-	if !rep.OK {
-		t.Fatalf("expected docs secret to be exempt, got %v", rep.Findings)
-	}
-}
-
-func TestRunPackValidate_TopLevelMarkdownIsScannedForSecrets(t *testing.T) {
-	t.Parallel()
-	packDir := writePackValidateFixture(t)
-	writeFile(t, filepath.Join(packDir, "notes.md"), "AKIAIOSFODNN7EXAMPLE\n")
-
-	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
-	if rep.OK {
-		t.Fatal("expected invalid pack")
-	}
-	if !findingExists(rep.Findings, "notes.md", "matches secret pattern 'AKIA[0-9A-Z]{16}'") {
-		t.Fatalf("expected top-level markdown secret finding, got %v", rep.Findings)
-	}
-}
-
 func TestRunPackValidate_DoesNotRequireContentDirectoriesWhenManifestVectorsAreEmpty(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
@@ -112,54 +100,14 @@ func TestRunPackValidate_DoesNotRequireContentDirectoriesWhenManifestVectorsAreE
 	}
 }
 
-func TestRunPackValidate_RejectsEnvFiles(t *testing.T) {
+func TestRunPackValidate_DoesNotRejectDotEnvFiles(t *testing.T) {
 	t.Parallel()
 	packDir := writePackValidateFixture(t)
 	writeFile(t, filepath.Join(packDir, ".env.production"), "SECRET=1\n")
 
 	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
-	if rep.OK {
-		t.Fatal("expected invalid pack")
-	}
-	if !findingExists(rep.Findings, ".env.production", "forbidden .env file") {
-		t.Fatalf("expected .env finding, got %v", rep.Findings)
-	}
-}
-
-func TestRunPackValidate_AllowsDotEnvExample(t *testing.T) {
-	t.Parallel()
-	packDir := writePackValidateFixture(t)
-	writeFile(t, filepath.Join(packDir, ".env.example"), "EXAMPLE=1\n")
-
-	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
 	if !rep.OK {
-		t.Fatalf("expected .env.example to be allowed, got %v", rep.Findings)
-	}
-}
-
-func TestRunPackValidate_WarnsOCIDInMarkdownOutsideDocs(t *testing.T) {
-	t.Parallel()
-	packDir := writePackValidateFixture(t)
-	writeFile(t, filepath.Join(packDir, "rules", "has-frontmatter.md"), "---\nname: has-frontmatter\ndescription: test\nmetadata:\n  owner: test\n  last_updated: 2026-03-11\n---\nocid1.instance.oc1.phx.secret\n")
-
-	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
-	// OCID pattern is a warning, not an error — pack remains valid.
-	if !rep.OK {
-		t.Fatal("expected pack to be valid (OCID is warning severity)")
-	}
-	if !findingExists(rep.Findings, "rules/has-frontmatter.md", "matches secret pattern '\\bocid1\\.[a-z0-9.]+'") {
-		t.Fatalf("expected secret finding, got %v", rep.Findings)
-	}
-}
-
-func TestRunPackValidate_RejectsRealSecretsInMarkdown(t *testing.T) {
-	t.Parallel()
-	packDir := writePackValidateFixture(t)
-	writeFile(t, filepath.Join(packDir, "rules", "has-frontmatter.md"), "---\nname: has-frontmatter\ndescription: test\nmetadata:\n  owner: test\n  last_updated: 2026-03-11\n---\nAKIA1234567890ABCDEF\n")
-
-	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
-	if rep.OK {
-		t.Fatal("expected invalid pack (AWS key is error severity)")
+		t.Fatalf("expected validate to ignore non-pack-shape files, got %v", rep.Findings)
 	}
 }
 

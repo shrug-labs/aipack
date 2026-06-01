@@ -125,6 +125,32 @@ func collectFiles(t *testing.T, dir string) map[string]string {
 	return walkDir(t, dir)
 }
 
+func assertNoContentMarker(t *testing.T, dir, marker string) {
+	t.Helper()
+	filesSeen := 0
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		filesSeen++
+		content, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if strings.Contains(string(content), marker) {
+			rel, _ := filepath.Rel(dir, path)
+			t.Errorf("file not recovered: %s still contains the corruption marker", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filesSeen == 0 {
+		t.Fatal("expected files on disk after recovery sync, found none")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test 1: Plan destinations ⊆ Layout.ValidationRoots
 //
@@ -905,8 +931,10 @@ func TestConvergence_CorruptedOwnedFiles(t *testing.T) {
 				Quiet: true,
 			}, reg, nil, nil)
 			if err != nil {
-				t.Errorf("RunSync with corrupted owned files: %v", err)
+				t.Fatalf("RunSync with corrupted owned files: %v", err)
 			}
+
+			assertNoContentMarker(t, projectDir, "CORRUPTED BY TEST")
 		})
 	}
 }
@@ -945,9 +973,11 @@ func TestCrossHarnessIsolation(t *testing.T) {
 		for j := i + 1; j < len(harnesses); j++ {
 			b := harnesses[j]
 			t.Run(string(a)+"_then_"+string(b), func(t *testing.T) {
-				// Compare A's files in the final snapshot against A's
-				// snapshot taken right after A synced.
-				final := snapshots[harnesses[len(harnesses)-1]]
+				// Pairwise isolation: A's files, captured right after A synced,
+				// must be byte-identical in the snapshot taken right after B
+				// synced — i.e. syncing B (and anything between) did not disturb
+				// A's files.
+				afterB := snapshots[b]
 				snapshotA := snapshots[a]
 
 				for path, contentA := range snapshotA {
@@ -955,12 +985,12 @@ func TestCrossHarnessIsolation(t *testing.T) {
 					if !domain.IsUnderAny(abs, layoutA.ValidationRoots) {
 						continue // not A's file
 					}
-					contentFinal, ok := final[path]
+					contentAfterB, ok := afterB[path]
 					if !ok {
 						t.Errorf("harness %s file deleted after syncing %s: %s", a, b, path)
 						continue
 					}
-					if contentA != contentFinal {
+					if contentA != contentAfterB {
 						t.Errorf("harness %s file modified after syncing %s: %s", a, b, path)
 					}
 				}

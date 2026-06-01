@@ -134,63 +134,102 @@ func (e *Engine) ClassifyCopy(src, dst, sourcePack string, lg domain.Ledger) ([]
 func (e *Engine) ComputeSettingsDiffs(settings []domain.SettingsAction, lg domain.Ledger) ([]FileDiff, error) {
 	var out []FileDiff
 	for _, s := range settings {
-		if s.MergeMode {
-			existing, err := e.FS.ReadFile(s.Dst)
-			fileExists := true
-			if err != nil {
-				if !os.IsNotExist(err) {
-					return nil, err
-				}
-				fileExists = false
-			}
-			desired := s.Desired
-			var mergeOps []MergeOp
-			if fileExists && len(existing) > 0 {
-				prevManaged := lg.PrevManagedOverlay(s.Dst)
-				merged, mops, merr := mergeSettingsKeys(existing, prevManaged, s.Desired, s.Harness, s.AdditiveOnly)
-				if merr != nil {
-					return nil, fmt.Errorf("merge %s: %w", s.Label, merr)
-				}
-				desired = merged
-				mergeOps = mops
-			}
-			var fd FileDiff
-			if !fileExists {
-				fd = FileDiff{Dst: filepath.Clean(s.Dst), Desired: desired, Label: s.Label, SourcePack: s.SourcePack, Kind: domain.DiffCreate}
-			} else if len(mergeOps) == 0 {
-				// No managed keys changed — file is identical from our
-				// perspective. Use on-disk content as desired so the
-				// ledger digest matches reality (avoids false dirty
-				// detection when the harness reformats the file).
-				fd = FileDiff{
-					Dst: filepath.Clean(s.Dst), Desired: existing, Label: s.Label,
-					SourcePack: s.SourcePack, Kind: domain.DiffIdentical, OnDisk: existing,
-				}
-			} else {
-				fd = classifyFilePreRead(s.Dst, desired, s.Label, s.SourcePack, lg, existing)
-				if fd.Diff != "" {
-					diffExisting, diffDesired := settingsDiffInputs(existing, desired, s.Harness)
-					fd.Diff = UnifiedDiff(diffExisting, diffDesired, s.Label+" (current)", s.Label+" (after merge)")
-				}
-				// MergeMode: the three-way merge already resolved conflicts
-				// by preserving user content. Reclassify as managed (safe to
-				// update) so apply doesn't require --force.
-				if fd.Kind == domain.DiffConflict {
-					fd.Kind = domain.DiffManaged
-				}
-			}
-			fd.ManagedOverlay = s.Desired
-			fd.MergeOps = mergeOps
-			out = append(out, fd)
-			continue
-		}
-		d, err := e.ClassifyFile(s.Dst, s.Desired, s.Label, s.SourcePack, lg)
+		d, err := e.computeSettingsDiff(s, lg, true)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// ClassifySettingsKind classifies a settings action without constructing a
+// unified diff. Merge-mode actions still perform the merge needed to determine
+// whether aipack-managed keys would change.
+func (e *Engine) ClassifySettingsKind(setting domain.SettingsAction, lg domain.Ledger) (domain.DiffKind, error) {
+	fd, err := e.computeSettingsDiff(setting, lg, false)
+	if err != nil {
+		return "", err
+	}
+	return fd.Kind, nil
+}
+
+func (e *Engine) computeSettingsDiff(s domain.SettingsAction, lg domain.Ledger, withDiff bool) (FileDiff, error) {
+	if !s.MergeMode {
+		if withDiff {
+			return e.ClassifyFile(s.Dst, s.Desired, s.Label, s.SourcePack, lg)
+		}
+		kind, err := e.classifyFileKind(s.Dst, s.Desired, lg)
+		if err != nil {
+			return FileDiff{}, err
+		}
+		return FileDiff{
+			Dst: filepath.Clean(s.Dst), Desired: s.Desired, Label: s.Label,
+			SourcePack: s.SourcePack, Kind: kind,
+		}, nil
+	}
+
+	existing, err := e.FS.ReadFile(s.Dst)
+	fileExists := true
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return FileDiff{}, err
+		}
+		fileExists = false
+	}
+	desired := s.Desired
+	var mergeOps []MergeOp
+	if fileExists && len(existing) > 0 {
+		prevManaged := lg.PrevManagedOverlay(s.Dst)
+		merged, mops, merr := mergeSettingsKeys(existing, prevManaged, s.Desired, s.Harness, s.AdditiveOnly)
+		if merr != nil {
+			return FileDiff{}, fmt.Errorf("merge %s: %w", s.Label, merr)
+		}
+		desired = merged
+		mergeOps = mops
+	}
+
+	var fd FileDiff
+	if !fileExists {
+		fd = FileDiff{Dst: filepath.Clean(s.Dst), Desired: desired, Label: s.Label, SourcePack: s.SourcePack, Kind: domain.DiffCreate}
+	} else if len(mergeOps) == 0 {
+		// No managed keys changed. Keep the on-disk bytes as desired so the
+		// ledger digest follows harness formatting.
+		fd = FileDiff{
+			Dst: filepath.Clean(s.Dst), Desired: existing, Label: s.Label,
+			SourcePack: s.SourcePack, Kind: domain.DiffIdentical, OnDisk: existing,
+		}
+	} else if withDiff {
+		fd = classifyFilePreRead(s.Dst, desired, s.Label, s.SourcePack, lg, existing)
+		if fd.Diff != "" {
+			diffExisting, diffDesired := settingsDiffInputs(existing, desired, s.Harness)
+			fd.Diff = UnifiedDiff(diffExisting, diffDesired, s.Label+" (current)", s.Label+" (after merge)")
+		}
+	} else {
+		fd = FileDiff{
+			Dst: filepath.Clean(s.Dst), Desired: desired, Label: s.Label,
+			SourcePack: s.SourcePack, Kind: classifyFileKindPreRead(s.Dst, desired, lg, existing),
+		}
+	}
+
+	if fd.Kind == domain.DiffConflict {
+		fd.Kind = domain.DiffManaged
+	}
+	fd.ManagedOverlay = s.Desired
+	if withDiff {
+		fd.MergeOps = mergeOps
+	}
+	return fd, nil
+}
+
+func classifyFileKindPreRead(dst string, desired []byte, lg domain.Ledger, onDisk []byte) domain.DiffKind {
+	if bytes.Equal(desired, onDisk) {
+		return domain.DiffIdentical
+	}
+	if prev := lg.PrevDigest(dst); prev != "" && domain.SingleFileDigest(onDisk) == prev {
+		return domain.DiffManaged
+	}
+	return domain.DiffConflict
 }
 
 func settingsDiffInputs(existing, desired []byte, harness domain.Harness) ([]byte, []byte) {

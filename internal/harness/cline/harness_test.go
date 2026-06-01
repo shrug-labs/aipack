@@ -557,8 +557,9 @@ func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
 	if len(layout.OwnedFiles) == 0 {
 		t.Skip("no owned files on this platform")
 	}
-	input := []byte(`{"mcpServers": {"foo": {}}, "otherSetting": "keep"}`)
-	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
+	input := []byte(`{"mcpServers": {"foo": {}, "userKept": {"x": 1}}, "otherSetting": "keep"}`)
+	ctx := harness.EditContext{ManagedMCPServers: map[string]struct{}{"foo": {}}}
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path, ctx)
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}
@@ -567,8 +568,15 @@ func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := got["mcpServers"]; ok {
-		t.Fatal("mcpServers should be stripped")
+	servers, ok := got["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatal("mcpServers should be preserved when the user has their own servers")
+	}
+	if _, ok := servers["foo"]; ok {
+		t.Fatal("managed server foo should be stripped")
+	}
+	if _, ok := servers["userKept"]; !ok {
+		t.Fatal("user-added server userKept should be preserved")
 	}
 	if got["otherSetting"] != "keep" {
 		t.Fatal("otherSetting should be preserved")

@@ -30,3 +30,19 @@ func RetainMapKeys(value any, names map[string]struct{}) (map[string]any, bool) 
 	}
 	return out, len(out) > 0
 }
+
+// PruneMapKeys removes the named entries from root[key], preserving any other
+// (user-added) entries. If pruning empties the child map, the key itself is
+// removed so no empty managed container is left behind. It only touches the
+// file when it actually removes a managed entry, so an empty name set — or a
+// child holding only user entries — leaves the document unchanged. Returns
+// true if anything changed.
+func PruneMapKeys(root map[string]any, key string, names map[string]struct{}) bool {
+	if !DeleteMapKeys(root, key, names) {
+		return false
+	}
+	if child, ok := root[key].(map[string]any); ok && len(child) == 0 {
+		delete(root, key)
+	}
+	return true
+}

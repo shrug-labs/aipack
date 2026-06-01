@@ -211,7 +211,7 @@ The manifest declares which MCP servers exist; profiles decide tool approvals pe
 aipack pack validate /path/to/my-pack
 ```
 
-Validate checks manifest structure, content inventory (declared files exist on disk, MCP server names match filenames), and content policy (frontmatter presence, no secrets, no hardcoded paths). It reports findings without modifying anything. JSON Schemas for `pack.json` and MCP server files are also available for [editor validation](./pack-format.md#appendix-c-json-schemas).
+Validate checks manifest structure, content inventory (declared files exist on disk, MCP server names match filenames), extras shape, frontmatter structure, and cross-references. It does not scan authored content bodies. JSON Schemas for `pack.json` and MCP server files are also available for [editor validation](./pack-format.md#appendix-c-json-schemas).
 
 ## Share your pack
 

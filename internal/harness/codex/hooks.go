@@ -9,8 +9,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/pelletier/go-toml/v2"
-
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -155,69 +153,6 @@ func codexNativeHandler(handler domain.HookHandler) (map[string]any, error) {
 		native["statusMessage"] = handler.StatusMessage
 	}
 	return native, nil
-}
-
-func parseCodexHookConfig(file domain.ConfigFile) (map[string][]any, error) {
-	var root map[string]any
-	switch strings.ToLower(filepath.Ext(file.Filename)) {
-	case ".json":
-		if err := json.Unmarshal(file.Content, &root); err != nil {
-			return nil, fmt.Errorf("parsing codex hook %s from pack %q: %w", file.Filename, file.SourcePack, err)
-		}
-		rawHooks, ok := root["hooks"]
-		if !ok {
-			return nil, fmt.Errorf("codex hook %s from pack %q: missing top-level hooks object", file.Filename, file.SourcePack)
-		}
-		hooks, ok := rawHooks.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("codex hook %s from pack %q: hooks must be an object", file.Filename, file.SourcePack)
-		}
-		return codexHookEventsFromMap(file, hooks)
-	case ".toml":
-		if err := toml.Unmarshal(file.Content, &root); err != nil {
-			return nil, fmt.Errorf("parsing codex hook %s from pack %q: %w", file.Filename, file.SourcePack, err)
-		}
-		normalized, err := normalizeConfigMap(root)
-		if err != nil {
-			return nil, fmt.Errorf("normalizing codex hook %s from pack %q: %w", file.Filename, file.SourcePack, err)
-		}
-		return codexHookEventsFromMap(file, normalized)
-	default:
-		return nil, fmt.Errorf("unsupported codex hook config extension for %q (expected .json or .toml)", file.Filename)
-	}
-}
-
-func normalizeConfigMap(root map[string]any) (map[string]any, error) {
-	b, err := json.Marshal(root)
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func codexHookEventsFromMap(file domain.ConfigFile, root map[string]any) (map[string][]any, error) {
-	for key := range root {
-		if _, ok := codexHookEventByName[key]; !ok {
-			return nil, fmt.Errorf("codex hook %s from pack %q: unsupported hook event %q", file.Filename, file.SourcePack, key)
-		}
-	}
-	out := map[string][]any{}
-	for _, spec := range codexHookEvents {
-		raw, ok := root[spec.name]
-		if !ok {
-			continue
-		}
-		groups, ok := raw.([]any)
-		if !ok {
-			return nil, fmt.Errorf("codex hook %s from pack %q: %s must be an array", file.Filename, file.SourcePack, spec.name)
-		}
-		out[spec.name] = append([]any(nil), groups...)
-	}
-	return out, nil
 }
 
 func buildCodexHookTrustState(events map[string][]any, hooksPath string) (map[string]string, error) {

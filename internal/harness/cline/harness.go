@@ -63,11 +63,13 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 }
 
 func mcpOwnedFile(path string) harness.OwnedFile {
-	strip := func(root map[string]any) { delete(root, "mcpServers") }
+	prune := func(root map[string]any, ctx harness.EditContext) {
+		harness.PruneMapKeys(root, "mcpServers", ctx.ManagedMCPServers)
+	}
 	return harness.OwnedFile{
 		Path: path, Format: harness.FormatJSON,
-		Strip: strip,
-		Reset: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+		Strip: prune,
+		Reset: prune,
 	}
 }
 

@@ -46,27 +46,33 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 	if configPath != "" {
 		l.OwnedFiles = []harness.OwnedFile{{
 			Path: configPath, Format: harness.FormatTOML,
-			Strip: func(root map[string]any) {
-				delete(root, "mcp_servers")
+			Strip: func(root map[string]any, ctx harness.EditContext) {
+				harness.PruneMapKeys(root, "mcp_servers", ctx.ManagedMCPServers)
 				delete(root, "agents")
 				stripManagedHookState(root, hooksPath)
 			},
-			Reset: func(root map[string]any) {
-				delete(root, "mcp_servers")
+			Reset: func(root map[string]any, ctx harness.EditContext) {
+				harness.PruneMapKeys(root, "mcp_servers", ctx.ManagedMCPServers)
 				delete(root, "agents")
 				stripManagedHookState(root, hooksPath)
-				if m, ok := root["mcp"].(map[string]any); ok {
-					delete(m, "servers")
-					if len(m) == 0 {
-						delete(root, "mcp")
-					} else {
-						root["mcp"] = m
-					}
-				}
+				pruneLegacyMCPServers(root, ctx.ManagedMCPServers)
 			},
 		}}
 	}
 	return l
+}
+
+func pruneLegacyMCPServers(root map[string]any, names map[string]struct{}) {
+	m, ok := root["mcp"].(map[string]any)
+	if !ok {
+		return
+	}
+	harness.PruneMapKeys(m, "servers", names)
+	if len(m) == 0 {
+		delete(root, "mcp")
+		return
+	}
+	root["mcp"] = m
 }
 
 // Plan produces a Fragment from typed content.

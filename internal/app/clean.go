@@ -144,7 +144,8 @@ func (o removePathOp) run(ctx context.Context, rctx cleanRunContext) error {
 type editFileOp struct {
 	FilePath string
 	Format   harness.FileFormat
-	Edit     func(root map[string]any)
+	Context  harness.EditContext
+	Edit     func(root map[string]any, ctx harness.EditContext)
 }
 
 func (o editFileOp) path() string { return o.FilePath }
@@ -160,7 +161,7 @@ func (o editFileOp) run(ctx context.Context, rctx cleanRunContext) error {
 		}
 		return err
 	}
-	out, err := harness.ApplyEdit(b, o.Format, o.Edit)
+	out, err := harness.ApplyEdit(b, o.Format, o.Context, o.Edit)
 	if err != nil {
 		return err
 	}
@@ -210,11 +211,25 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 		}
 		layout := h.Layout(scope, baseDir, home)
 
+		ledgerPath := engine.LedgerPath(configDir, scope, projectDir, hid)
+		lg, _, lgErr := t.eng.LoadLedger(ledgerPath)
+
 		// OwnedFiles are partially owned — reset managed keys, not delete.
+		// Bind the file's managed MCP server names so reset prunes only
+		// aipack's servers and preserves any the user added by hand.
 		ownedPaths := map[string]struct{}{}
+		var mcpIndex domain.MCPServerNameIndex
+		if lgErr == nil {
+			mcpIndex = domain.MCPServerNamesByPath(lg.Managed)
+		}
 		for _, of := range layout.OwnedFiles {
 			ownedPaths[filepath.Clean(of.Path)] = struct{}{}
-			ops = append(ops, editFileOp{FilePath: of.Path, Format: of.Format, Edit: of.Reset})
+			ops = append(ops, editFileOp{
+				FilePath: of.Path,
+				Format:   of.Format,
+				Context:  harness.EditContext{ManagedMCPServers: mcpIndex.ForPath(of.Path)},
+				Edit:     of.Reset,
+			})
 		}
 
 		// Explicit fully-owned paths are safe to remove wholesale.
@@ -231,9 +246,7 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 		// plugin/drop-in config files). Remove any ledger-tracked paths inside
 		// validation roots that are not partially-owned files and not already
 		// covered by an explicit RemovePath.
-		ledgerPath := engine.LedgerPath(configDir, scope, projectDir, hid)
-		lg, _, err := t.eng.LoadLedger(ledgerPath)
-		if err != nil {
+		if lgErr != nil {
 			continue
 		}
 		for trackedPath := range lg.Managed {

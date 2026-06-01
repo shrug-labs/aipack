@@ -7,7 +7,7 @@ import (
 
 func TestApplyEdit_EmptyJSON(t *testing.T) {
 	t.Parallel()
-	out, err := ApplyEdit(nil, FormatJSON, func(root map[string]any) {
+	out, err := ApplyEdit(nil, FormatJSON, EditContext{}, func(root map[string]any, _ EditContext) {
 		root["added"] = true
 	})
 	if err != nil {
@@ -24,7 +24,7 @@ func TestApplyEdit_EmptyJSON(t *testing.T) {
 
 func TestApplyEdit_EmptyTOML(t *testing.T) {
 	t.Parallel()
-	out, err := ApplyEdit(nil, FormatTOML, func(root map[string]any) {
+	out, err := ApplyEdit(nil, FormatTOML, EditContext{}, func(root map[string]any, _ EditContext) {
 		delete(root, "nonexistent")
 	})
 	if err != nil {
@@ -40,11 +40,11 @@ func TestStripManaged_NoMatch_PassThrough(t *testing.T) {
 	l := Layout{
 		OwnedFiles: []OwnedFile{{
 			Path: "/a/settings.json", Format: FormatJSON,
-			Strip: func(root map[string]any) { delete(root, "managed") },
+			Strip: func(root map[string]any, _ EditContext) { delete(root, "managed") },
 		}},
 	}
 	input := []byte(`{"managed": true}`)
-	out, err := l.StripManaged(input, "/b/other.json")
+	out, err := l.StripManaged(input, "/b/other.json", EditContext{})
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}

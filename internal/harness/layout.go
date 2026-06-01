@@ -11,11 +11,11 @@ import (
 
 // StripManaged finds the OwnedFile matching path and strips managed keys
 // from content. Returns content unchanged if no OwnedFile matches.
-func (l Layout) StripManaged(content []byte, path string) ([]byte, error) {
+func (l Layout) StripManaged(content []byte, path string, ctx EditContext) ([]byte, error) {
 	path = filepath.Clean(path)
 	for _, of := range l.OwnedFiles {
 		if filepath.Clean(of.Path) == path {
-			return ApplyEdit(content, of.Format, of.Strip)
+			return ApplyEdit(content, of.Format, ctx, of.Strip)
 		}
 	}
 	return content, nil
@@ -23,7 +23,7 @@ func (l Layout) StripManaged(content []byte, path string) ([]byte, error) {
 
 // ApplyEdit parses content according to format, applies edit, and serializes.
 // Empty input is treated as an empty document for both formats.
-func ApplyEdit(content []byte, format FileFormat, edit func(map[string]any)) ([]byte, error) {
+func ApplyEdit(content []byte, format FileFormat, ctx EditContext, edit func(root map[string]any, ctx EditContext)) ([]byte, error) {
 	root := map[string]any{}
 	switch format {
 	case FormatJSON:
@@ -33,7 +33,7 @@ func ApplyEdit(content []byte, format FileFormat, edit func(map[string]any)) ([]
 		if err := json.Unmarshal(content, &root); err != nil {
 			return nil, err
 		}
-		edit(root)
+		edit(root, ctx)
 		out, err := util.MarshalPrettyJSON(root)
 		if err != nil {
 			return nil, err
@@ -43,7 +43,7 @@ func ApplyEdit(content []byte, format FileFormat, edit func(map[string]any)) ([]
 		if err := toml.Unmarshal(content, &root); err != nil {
 			return nil, err
 		}
-		edit(root)
+		edit(root, ctx)
 		out, err := toml.Marshal(root)
 		if err != nil {
 			return nil, err

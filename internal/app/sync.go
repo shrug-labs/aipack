@@ -300,11 +300,9 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		layout := h.Layout(req.Scope, baseDir, req.Home)
 		managedRoots := layout.ValidationRoots
 
-		stripFuncs := make(map[string]func([]byte) ([]byte, error), len(layout.OwnedFiles))
+		stripFuncs := make(map[string]func([]byte, domain.Ledger) ([]byte, error), len(layout.OwnedFiles))
 		for _, of := range layout.OwnedFiles {
-			stripFuncs[filepath.Clean(of.Path)] = func(content []byte) ([]byte, error) {
-				return harness.ApplyEdit(content, of.Format, of.Strip)
-			}
+			stripFuncs[filepath.Clean(of.Path)] = stripFuncForOwnedFile(of)
 		}
 
 		applyReq := engine.ApplyRequest{
@@ -597,8 +595,33 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 			}
 		}
 	}
+	// Merge actions count only when aipack-managed keys would change.
+	for _, group := range [][]domain.SettingsAction{plan.Settings, plan.MCP} {
+		for _, sa := range group {
+			kind, derr := eng.ClassifySettingsKind(sa, ledgerForPath(sa.Dst))
+			if derr != nil {
+				emitOp("merge", sa.Dst)
+				changes++
+				continue
+			}
+			if kind == domain.DiffIdentical {
+				skips++
+				continue
+			}
+			emitOp("merge", sa.Dst)
+			changes++
+		}
+	}
 	if stdout != nil {
 		fmt.Fprintf(stdout, "plan: %d file ops from %s, %d identical\n", changes, counts.String(), skips)
+	}
+}
+
+func stripFuncForOwnedFile(of harness.OwnedFile) func([]byte, domain.Ledger) ([]byte, error) {
+	return func(content []byte, lg domain.Ledger) ([]byte, error) {
+		mcpIndex := domain.MCPServerNamesByPath(lg.Managed)
+		ctx := harness.EditContext{ManagedMCPServers: mcpIndex.ForPath(of.Path)}
+		return harness.ApplyEdit(content, of.Format, ctx, of.Strip)
 	}
 }
 

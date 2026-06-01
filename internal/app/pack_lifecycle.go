@@ -402,7 +402,7 @@ func mcpServerNamesForPackInLedger(lg domain.Ledger, packName string) map[string
 		if entry.SourcePack != packName || !domain.IsMCPLedgerKey(k) {
 			continue
 		}
-		_, serverName, ok := splitMCPLedgerKey(k)
+		_, serverName, ok := domain.SplitMCPLedgerKey(k)
 		if !ok {
 			continue
 		}
@@ -417,23 +417,13 @@ func siblingMCPServerNamesOutsidePackInLedger(lg domain.Ledger, packName string)
 		if entry.SourcePack == packName || !domain.IsMCPLedgerKey(k) {
 			continue
 		}
-		_, serverName, ok := splitMCPLedgerKey(k)
+		_, serverName, ok := domain.SplitMCPLedgerKey(k)
 		if !ok {
 			continue
 		}
 		out[serverName] = struct{}{}
 	}
 	return out
-}
-
-func splitMCPLedgerKey(key string) (configPath string, serverName string, ok bool) {
-	key = filepath.Clean(key)
-	const marker = "#mcp:"
-	idx := strings.LastIndex(key, marker)
-	if idx < 0 || idx+len(marker) >= len(key) {
-		return "", "", false
-	}
-	return filepath.Clean(key[:idx]), key[idx+len(marker):], true
 }
 
 func stripMCPSharedSettings(ctx packDeleteCtx, lg *domain.Ledger, serverNames map[string]struct{}) packDeleteLedgerResult {

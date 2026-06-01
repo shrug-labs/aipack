@@ -31,6 +31,9 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 	settingsPath := filepath.Join(baseDir, paths.SettingsFile)
 	pluginSettingsPath := filepath.Join(baseDir, ".claude", "settings.json")
 	knownMarketplacesPath := filepath.Join(home, ".claude", "plugins", "known_marketplaces.json")
+	pruneMCPServers := func(root map[string]any, ctx harness.EditContext) {
+		harness.PruneMapKeys(root, "mcpServers", ctx.ManagedMCPServers)
+	}
 
 	l := harness.Layout{
 		ValidationRoots: []string{
@@ -52,13 +55,13 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 		OwnedFiles: []harness.OwnedFile{
 			{
 				Path: mcpPath, Format: harness.FormatJSON,
-				Strip: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
-				Reset: func(root map[string]any) { root["mcpServers"] = map[string]any{} },
+				Strip: pruneMCPServers,
+				Reset: pruneMCPServers,
 			},
 			{
 				Path: settingsPath, Format: harness.FormatJSON,
-				Strip: stripManagedPermissions,
-				Reset: func(root map[string]any) { delete(root, "permissions") },
+				Strip: func(root map[string]any, _ harness.EditContext) { stripManagedPermissions(root) },
+				Reset: func(root map[string]any, _ harness.EditContext) { delete(root, "permissions") },
 			},
 			{
 				Path: pluginSettingsPath, Format: harness.FormatJSON,
@@ -75,7 +78,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 	return l
 }
 
-func noopJSONEdit(map[string]any) {}
+func noopJSONEdit(map[string]any, harness.EditContext) {}
 
 // stripManagedPermissions removes mcp__* entries from permissions.allow and
 // permissions.deny, preserving non-MCP permission entries.

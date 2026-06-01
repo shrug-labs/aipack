@@ -372,9 +372,9 @@ aipack pack disable my-pack --profile my-profile
 
 ### pack validate
 
-Read-only validation of a single pack source tree. Checks pack structure, manifest inventory, frontmatter correctness, and content policy (secrets, forbidden paths) without installing or syncing anything. Exit code 0 if clean, 1 if findings are reported.
+Read-only validation of a single pack source tree. Checks pack structure, manifest inventory, frontmatter correctness, extras shape, and cross-reference consistency without installing, syncing, or scanning authored content bodies. Exit code 0 when there are no error-severity findings, 1 otherwise.
 
-Each finding includes a severity (`error` or `warning`), a category (`frontmatter`, `policy`, `consistency`, or `inventory`), the file path, and a message. In human output, findings are printed as `- [severity] path: message`. For the JSON output shape, see the [CLI Specification](./cli-spec.md#aipack-pack-validate).
+Each finding includes a severity (`error` or `warning`), a category (`frontmatter`, `policy`, `consistency`, or `inventory`), the file path, and a message. Warnings are reported but do not make the command fail. In human output, findings are printed as `- [severity] path: message`. For the JSON output shape, see the [CLI Specification](./cli-spec.md#aipack-pack-validate).
 
 ```bash
 aipack pack validate ./my-pack

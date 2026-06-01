@@ -303,7 +303,10 @@ func threeWayMergeArray(disk, prev, next []any) []any {
 	nextSet := toStringSet(next)
 
 	seen := map[string]bool{}
-	var result []any
+	// Non-nil so an empty merge (both arrays empty, or all items cancel out)
+	// marshals to JSON `[]`, not `null` — e.g. `permissions.allow: null` breaks
+	// Claude Code startup.
+	result := []any{}
 
 	// Pass 1: managed items in managed order.
 	for _, v := range next {
@@ -324,6 +327,10 @@ func threeWayMergeArray(disk, prev, next []any) []any {
 	for _, v := range disk {
 		s, ok := v.(string)
 		if !ok {
+			// Non-string disk elements are never part of a managed array
+			// (managed arrays are string sets), so they are user-added —
+			// preserve them rather than dropping them.
+			result = append(result, v)
 			continue
 		}
 		if seen[s] {

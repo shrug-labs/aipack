@@ -1024,8 +1024,21 @@ func TestLayout_StripManaged_RemovesMCPServersAndAgents(t *testing.T) {
 	if len(layout.OwnedFiles) == 0 {
 		t.Fatal("expected at least one owned file")
 	}
-	input := []byte("foo = 'bar'\n\n[mcp_servers.test]\nenabled = true\ncommand = 'echo'\n\n[agents.reviewer]\ndescription = 'Reviews code'\nconfig_file = './agents/reviewer.toml'\n")
-	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
+	input := []byte(`foo = 'bar'
+
+[mcp_servers.test]
+enabled = true
+command = 'echo'
+
+[mcp_servers.usermcp]
+command = 'mine'
+
+[agents.reviewer]
+description = 'Reviews code'
+config_file = './agents/reviewer.toml'
+`)
+	ctx := harness.EditContext{ManagedMCPServers: map[string]struct{}{"test": {}}}
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path, ctx)
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}
@@ -1034,8 +1047,15 @@ func TestLayout_StripManaged_RemovesMCPServersAndAgents(t *testing.T) {
 	if err := toml.Unmarshal(out, &root); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := root["mcp_servers"]; ok {
-		t.Fatal("mcp_servers should be stripped")
+	servers, ok := root["mcp_servers"].(map[string]any)
+	if !ok {
+		t.Fatal("mcp_servers should be preserved when the user has their own servers")
+	}
+	if _, ok := servers["test"]; ok {
+		t.Fatal("managed server test should be stripped")
+	}
+	if _, ok := servers["usermcp"]; !ok {
+		t.Fatal("user-added server usermcp should be preserved")
 	}
 	if _, ok := root["agents"]; ok {
 		t.Fatal("agents should be stripped")
@@ -1064,7 +1084,7 @@ func TestLayout_StripManaged_RemovesOnlyAIPackHookState(t *testing.T) {
 		t.Fatalf("marshal input: %v", err)
 	}
 
-	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path)
+	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path, harness.EditContext{})
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}

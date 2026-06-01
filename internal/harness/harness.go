@@ -85,15 +85,22 @@ type Layout struct {
 	OwnedFiles []OwnedFile
 }
 
+// EditContext carries ledger-derived context for surgical OwnedFile edits.
+type EditContext struct {
+	// ManagedMCPServers are the aipack-managed MCP server names tracked for
+	// this file. Harnesses use this set to preserve user-added MCP servers.
+	ManagedMCPServers map[string]struct{}
+}
+
 // OwnedFile describes a file where the harness manages specific keys.
 // Strip and Reset express different operations on the same ownership:
 // Strip selectively removes managed content (for capture/save),
-// Reset aggressively clears managed sections (for clean).
+// Reset clears managed sections (for clean).
 type OwnedFile struct {
 	Path   string
 	Format FileFormat
-	Strip  func(root map[string]any) // capture: selectively remove managed content
-	Reset  func(root map[string]any) // clean: reset managed sections
+	Strip  func(root map[string]any, ctx EditContext) // capture: selectively remove managed content
+	Reset  func(root map[string]any, ctx EditContext) // clean: reset managed sections
 }
 
 // RenderContext provides typed data for pack rendering.

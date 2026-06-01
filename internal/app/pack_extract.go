@@ -148,11 +148,12 @@ func extractStandardPack(staging, srcRoot, symlinkBoundary string) (string, conf
 		}
 		resolvedSources = append(resolvedSources, resolvedEntry{realPath: realSrc, extras: ext})
 
-		info, err := os.Lstat(src)
+		info, err := os.Lstat(realSrc)
 		if err != nil {
 			return cleanup(fmt.Errorf("stat extras %s: %w", ext, err))
 		}
-		if info.IsDir() {
+		copyAsDir := info.IsDir()
+		if copyAsDir {
 			if err := util.CopyDirResolvingSymlinks(src, dst, symlinkBoundary); err != nil {
 				return cleanup(fmt.Errorf("copying extras dir %s: %w", ext, err))
 			}

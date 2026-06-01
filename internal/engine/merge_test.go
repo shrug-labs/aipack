@@ -140,6 +140,106 @@ func TestMergeSettingsKeys_JSON_ArrayPreservesManagedOrder(t *testing.T) {
 	}
 }
 
+func TestMergeSettingsKeys_JSON_ArrayPreservesNonStringUserElements(t *testing.T) {
+	t.Parallel()
+	// A user adds a non-string element (an object) to a managed array. The
+	// merge must preserve it.
+	existing := []byte(`{"items": ["user_str", {"user_obj": 1}, "old_managed"]}`)
+	prev := []byte(`{"items": ["old_managed"]}`)
+	next := []byte(`{"items": ["new_managed"]}`)
+
+	result, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(result, &m); err != nil {
+		t.Fatal(err)
+	}
+	items := m["items"].([]any)
+	// new_managed (managed) + user_str + the user object; old_managed removed.
+	if len(items) != 3 {
+		t.Fatalf("items = %v, want 3 (managed + user string + user object)", items)
+	}
+	foundObj := false
+	for _, it := range items {
+		if obj, ok := it.(map[string]any); ok && obj["user_obj"] != nil {
+			foundObj = true
+		}
+	}
+	if !foundObj {
+		t.Errorf("user-added object element was dropped from merged array: %v", items)
+	}
+}
+
+func TestMergeSettingsKeys_AdditiveOnly_RetainsManagedKeyAbsentFromNext(t *testing.T) {
+	t.Parallel()
+	// additiveOnly must suppress removal of a managed key that drops out of
+	// next, independent of the plugin-path exemption. Exercise both polarities
+	// on a non-plugin key so the flag's own effect is observed.
+	existing := []byte(`{"managed_key": "v", "user_key": "u"}`)
+	prev := []byte(`{"managed_key": "v"}`)
+	next := []byte(`{}`)
+
+	// additiveOnly=false: the managed key, absent from next, is removed.
+	subtractive, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sm map[string]any
+	if err := json.Unmarshal(subtractive, &sm); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sm["managed_key"]; ok {
+		t.Error("additiveOnly=false: managed_key should be removed when absent from next")
+	}
+
+	// additiveOnly=true: the same managed key is retained.
+	additive, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var am map[string]any
+	if err := json.Unmarshal(additive, &am); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := am["managed_key"]; !ok {
+		t.Error("additiveOnly=true: managed_key should be retained even when absent from next")
+	}
+	if am["user_key"] != "u" {
+		t.Error("user_key should always be preserved")
+	}
+}
+
+func TestMergeSettingsKeys_JSON_EmptyManagedArrayMarshalsToEmptyNotNull(t *testing.T) {
+	t.Parallel()
+	// When a managed array empties out, the merge must yield JSON `[]`, not
+	// `null` because `permissions.allow: null` breaks Claude Code startup.
+	existing := []byte(`{"permissions":{"allow":[]}}`)
+	prev := []byte(`{"permissions":{"allow":[]}}`)
+	next := []byte(`{"permissions":{"allow":[]}}`)
+
+	result, _, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(result), "null") {
+		t.Fatalf("merged output must not contain null: %s", result)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(result, &m); err != nil {
+		t.Fatal(err)
+	}
+	perms, ok := m["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("permissions missing from merged output: %s", result)
+	}
+	if _, ok := perms["allow"].([]any); !ok {
+		t.Errorf("permissions.allow should marshal to an empty array, got %v (%s)", perms["allow"], result)
+	}
+}
+
 func TestMergeSettingsKeys_JSON_DoesNotHTMLEscapeUserValues(t *testing.T) {
 	t.Parallel()
 	existing := []byte(`{"mcpServers":{"user":{"command":"sh","args":["-lc","echo '<ok>' && run 2> >(tee log >&2)"]}}}`)

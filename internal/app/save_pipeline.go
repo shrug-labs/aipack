@@ -408,6 +408,8 @@ func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.R
 				}
 				b, rerr := os.ReadFile(p)
 				if rerr != nil {
+					result.Warnings = append(result.Warnings,
+						warningPathf(p, "secret-scan", "secret scan skipped (unreadable file): %v", rerr))
 					return nil
 				}
 				for _, m := range scanBytesForSecrets(b) {
@@ -419,10 +421,8 @@ func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.R
 				}
 				return nil
 			}); walkErr != nil {
-				result.Warnings = append(result.Warnings, domain.Warning{
-					Path:    src,
-					Message: fmt.Sprintf("secret scan walk: %v", walkErr),
-				})
+				result.Warnings = append(result.Warnings,
+					warningPathf(src, "secret-scan", "secret scan walk: %v", walkErr))
 			}
 			// Update ledger for each child file.
 			if !req.DryRun {

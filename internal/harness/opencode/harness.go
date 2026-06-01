@@ -37,14 +37,14 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 		},
 		OwnedFiles: []harness.OwnedFile{{
 			Path: configPath, Format: harness.FormatJSON,
-			Strip: func(root map[string]any) {
-				delete(root, "mcp")
+			Strip: func(root map[string]any, ctx harness.EditContext) {
+				harness.PruneMapKeys(root, "mcp", ctx.ManagedMCPServers)
 				delete(root, "tools")
 				delete(root, "instructions")
 				delete(root, "skills")
 			},
-			Reset: func(root map[string]any) {
-				root["mcp"] = map[string]any{}
+			Reset: func(root map[string]any, ctx harness.EditContext) {
+				harness.PruneMapKeys(root, "mcp", ctx.ManagedMCPServers)
 				root["tools"] = map[string]any{}
 				delete(root, "instructions")
 				delete(root, "skills")

@@ -710,6 +710,16 @@ func TestPackInstall_URL_SubPath_ResolvesSymlinks(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(sharedDir, "base.md"), []byte("shared rule"), 0o644); err != nil {
 				return err
 			}
+			sharedSkillDir := filepath.Join(dir, "skills", "shared-skill")
+			if err := os.MkdirAll(filepath.Join(sharedSkillDir, "scripts"), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(sharedSkillDir, "SKILL.md"), []byte("shared skill"), 0o644); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(sharedSkillDir, "scripts", "run.sh"), []byte("run"), 0o644); err != nil {
+				return err
+			}
 			// Pack in subdirectory with a symlink to shared content.
 			packDir := filepath.Join(dir, "my-pack")
 			writePackManifest(t, packDir, "my-pack")
@@ -722,6 +732,14 @@ func TestPackInstall_URL_SubPath_ResolvesSymlinks(t *testing.T) {
 			}
 			// Symlink: my-pack/rules/shared.md -> ../../shared/base.md
 			if err := os.Symlink(filepath.Join(sharedDir, "base.md"), filepath.Join(rulesDir, "shared.md")); err != nil {
+				return err
+			}
+			skillsDir := filepath.Join(packDir, "skills")
+			if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+				return err
+			}
+			// Symlink: my-pack/skills/shared-skill -> ../../skills/shared-skill
+			if err := os.Symlink(sharedSkillDir, filepath.Join(skillsDir, "shared-skill")); err != nil {
 				return err
 			}
 		}
@@ -770,6 +788,25 @@ func TestPackInstall_URL_SubPath_ResolvesSymlinks(t *testing.T) {
 		t.Errorf("regular content = %q, want %q", string(got), "local rule")
 	}
 
+	// Symlinked skill directory should also be resolved to regular content.
+	got, err = os.ReadFile(filepath.Join(dest, "skills", "shared-skill", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("reading resolved skill: %v", err)
+	}
+	if string(got) != "shared skill" {
+		t.Errorf("resolved skill content = %q, want %q", string(got), "shared skill")
+	}
+	info, err = os.Lstat(filepath.Join(dest, "skills", "shared-skill"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("expected regular directory at install destination, got symlink")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "skills", "shared-skill", "scripts", "run.sh")); err != nil {
+		t.Fatalf("resolved skill script missing: %v", err)
+	}
+
 	// Shared directory should NOT be in the installed pack.
 	if _, serr := os.Stat(filepath.Join(dest, "shared")); !os.IsNotExist(serr) {
 		t.Error("shared/ directory should not exist in installed pack")
@@ -805,9 +842,7 @@ func TestPackInstall_Path_ResolvesSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Symlink to shared content.
-	if err := os.Symlink(filepath.Join(sharedDir, "common.md"), filepath.Join(rulesDir, "common.md")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, filepath.Join(sharedDir, "common.md"), filepath.Join(rulesDir, "common.md"))
 
 	var out bytes.Buffer
 	err := PackInstall(context.Background(), PackInstallRequest{

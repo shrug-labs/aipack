@@ -10,6 +10,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 func TestExtractPackContent_ContentPaths(t *testing.T) {
@@ -692,7 +693,7 @@ func TestExtractPackContent_StandardPack_SymlinkWithinBoundaryResolved(t *testin
 	os.MkdirAll(filepath.Join(cloneDir, "rules"), 0o755)
 	os.WriteFile(filepath.Join(cloneDir, "rules", "local.md"),
 		[]byte("---\nname: local\n---\nlocal rule\n"), 0o644)
-	os.Symlink(filepath.Join(cloneDir, "shared", "common.md"),
+	testutil.Symlink(t, filepath.Join(cloneDir, "shared", "common.md"),
 		filepath.Join(cloneDir, "rules", "common.md"))
 
 	manifest := config.PackManifest{
@@ -722,6 +723,50 @@ func TestExtractPackContent_StandardPack_SymlinkWithinBoundaryResolved(t *testin
 	data, _ := os.ReadFile(filepath.Join(staging, "rules", "common.md"))
 	if !strings.Contains(string(data), "shared content") {
 		t.Fatalf("common.md content wrong: %q", data)
+	}
+}
+
+func TestExtractPackContent_StandardPack_DirectorySymlinkWithinBoundaryResolved(t *testing.T) {
+	// A subpath pack can expose a skill directory as a symlink to shared
+	// repo-level content. Extraction should resolve it into regular files.
+	t.Parallel()
+	cloneDir := t.TempDir()
+	packDir := filepath.Join(cloneDir, "clao-ai-pack")
+
+	writeFile(t, filepath.Join(cloneDir, "skills", "shared-skill", "SKILL.md"),
+		"---\nname: shared-skill\ndescription: Use when testing directory symlink extraction.\n---\nbody\n")
+	writeFile(t, filepath.Join(cloneDir, "skills", "shared-skill", "scripts", "run.sh"),
+		"#!/bin/sh\ntrue\n")
+	if err := os.MkdirAll(filepath.Join(packDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, filepath.Join(cloneDir, "skills", "shared-skill"),
+		filepath.Join(packDir, "skills", "shared-skill"))
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2, Name: "clao-ai-pack", Version: "1.0.0", Root: ".",
+	}
+	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
+
+	staging, _, err := extractPackContent(t.TempDir(), packDir, nil, "", cloneDir)
+	if err != nil {
+		t.Fatalf("extractPackContent: %v", err)
+	}
+	defer os.RemoveAll(staging)
+
+	skillDir := filepath.Join(staging, "skills", "shared-skill")
+	info, err := os.Lstat(skillDir)
+	if err != nil {
+		t.Fatalf("resolved skill directory missing: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("skill directory is still a symlink")
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md missing from resolved skill directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "scripts", "run.sh")); err != nil {
+		t.Fatalf("nested script missing from resolved skill directory: %v", err)
 	}
 }
 
@@ -963,7 +1008,7 @@ func TestExtractPackContent_StandardPack_ExtrasSymlinkEscapeBlocked(t *testing.T
 	srcDir := t.TempDir()
 	outsideDir := t.TempDir()
 	os.WriteFile(filepath.Join(outsideDir, "secret.sh"), []byte("secret"), 0o644)
-	os.Symlink(filepath.Join(outsideDir, "secret.sh"), filepath.Join(srcDir, "escape.sh"))
+	testutil.Symlink(t, filepath.Join(outsideDir, "secret.sh"), filepath.Join(srcDir, "escape.sh"))
 
 	manifest := config.PackManifest{
 		SchemaVersion: 2, Name: "escape", Version: "1.0.0", Root: ".",
@@ -1044,6 +1089,42 @@ func TestExtractPackContent_StandardPack_ExtrasRepoRelative(t *testing.T) {
 	}
 }
 
+func TestExtractPackContent_StandardPack_ExtrasSymlinkDirectoryResolved(t *testing.T) {
+	// A declared extra can be a repo-local symlink to a shared directory.
+	// Extraction should resolve it into a real directory in the installed pack.
+	t.Parallel()
+	repoDir := t.TempDir()
+	packDir := filepath.Join(repoDir, "packs", "my-pack")
+	os.MkdirAll(packDir, 0o755)
+
+	realDir := filepath.Join(repoDir, "shared-scripts")
+	writeFile(t, filepath.Join(realDir, "run.py"), "print('ok')\n")
+	testutil.Symlink(t, realDir, filepath.Join(packDir, "scripts"))
+
+	manifest := config.PackManifest{
+		SchemaVersion: 2, Name: "extras-symlink-dir", Version: "1.0.0", Root: ".",
+		Extras: []string{"scripts"},
+	}
+	config.SavePackManifest(filepath.Join(packDir, "pack.json"), manifest)
+
+	staging, _, err := extractPackContent(t.TempDir(), packDir, nil, "", repoDir)
+	if err != nil {
+		t.Fatalf("extractPackContent: %v", err)
+	}
+	defer os.RemoveAll(staging)
+
+	info, err := os.Lstat(filepath.Join(staging, "scripts"))
+	if err != nil {
+		t.Fatalf("scripts extra missing: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("scripts extra is still a symlink")
+	}
+	if _, err := os.Stat(filepath.Join(staging, "scripts", "run.py")); err != nil {
+		t.Fatalf("resolved extra file missing: %v", err)
+	}
+}
+
 func TestExtractPackContent_StandardPack_ExtrasRepoEscapeBlocked(t *testing.T) {
 	// Proves: extras with ".." that resolve outside the repo boundary are rejected.
 	t.Parallel()
@@ -1081,7 +1162,7 @@ func TestExtractPackContent_StandardPack_ExtrasSymlinkOverlapBlocked(t *testing.
 	realDir := filepath.Join(repoDir, "real-scripts")
 	os.MkdirAll(realDir, 0o755)
 	os.WriteFile(filepath.Join(realDir, "run.sh"), []byte("run"), 0o644)
-	os.Symlink(realDir, filepath.Join(repoDir, "alias-scripts"))
+	testutil.Symlink(t, realDir, filepath.Join(repoDir, "alias-scripts"))
 
 	manifest := config.PackManifest{
 		SchemaVersion: 2, Name: "sym-overlap", Version: "1.0.0", Root: ".",

@@ -340,7 +340,7 @@ func TestReconcileStaleEntries_OwnedFileStrippedNotDeleted(t *testing.T) {
 	}
 
 	// Provide a strip function that removes only mcpServers.
-	stripFn := func(content []byte) ([]byte, error) {
+	stripFn := func(content []byte, _ domain.Ledger) ([]byte, error) {
 		// Use the same pattern as claudecode harness: parse, strip, re-serialize.
 		var m map[string]any
 		if err := json.Unmarshal(content, &m); err != nil {
@@ -357,7 +357,7 @@ func TestReconcileStaleEntries_OwnedFileStrippedNotDeleted(t *testing.T) {
 	ar2 := ApplyRequest{
 		Yes:   true,
 		Quiet: true,
-		StripFuncs: map[string]func([]byte) ([]byte, error){
+		StripFuncs: map[string]func([]byte, domain.Ledger) ([]byte, error){
 			filepath.Clean(settingsFile): stripFn,
 		},
 	}
@@ -397,6 +397,90 @@ func TestReconcileStaleEntries_OwnedFileStrippedNotDeleted(t *testing.T) {
 	}
 }
 
+func TestReconcileStaleEntries_OwnedFile_PrunesOnlyManagedMCPServers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	settingsFile := filepath.Join(dir, ".claude.json")
+	ledgerPath := filepath.Join(dir, ".aipack", "ledger.json")
+
+	initial := []byte(`{"mcpServers":{"foo":{},"bar":{}}}`)
+	plan := domain.Plan{
+		Desired: map[string]struct{}{filepath.Clean(settingsFile): {}},
+		Ledger:  ledgerPath,
+		Settings: []domain.SettingsAction{{
+			Dst: settingsFile, Desired: initial, Harness: domain.HarnessClaudeCode,
+			Label: ".claude.json", MergeMode: true,
+		}},
+		MCPServers: []domain.MCPAction{
+			{Name: "foo", ConfigPath: settingsFile, Content: []byte(`{}`), Harness: domain.HarnessClaudeCode},
+			{Name: "bar", ConfigPath: settingsFile, Content: []byte(`{}`), Harness: domain.HarnessClaudeCode},
+		},
+	}
+	if _, err := eng.ApplyPlan(context.Background(), plan, ApplyRequest{Quiet: true}, []string{dir, settingsFile}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dropping managed MCP entries must preserve user-added servers.
+	userEdited := []byte(`{"mcpServers":{"foo":{},"bar":{},"mine":{"command":"x"}}}`)
+	if err := os.WriteFile(settingsFile, userEdited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan2 := domain.Plan{Desired: map[string]struct{}{}, Ledger: ledgerPath}
+
+	stripFn := func(content []byte, lg domain.Ledger) ([]byte, error) {
+		names := domain.MCPServerNamesForPath(lg.Managed, settingsFile)
+		var m map[string]any
+		if err := json.Unmarshal(content, &m); err != nil {
+			return nil, err
+		}
+		if servers, ok := m["mcpServers"].(map[string]any); ok {
+			for n := range names {
+				delete(servers, n)
+			}
+		}
+		out, err := json.MarshalIndent(m, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return append(out, '\n'), nil
+	}
+	ar2 := ApplyRequest{
+		Yes:   true,
+		Quiet: true,
+		StripFuncs: map[string]func([]byte, domain.Ledger) ([]byte, error){
+			filepath.Clean(settingsFile): stripFn,
+		},
+	}
+	if _, err := eng.ApplyPlan(context.Background(), plan2, ar2, []string{dir, settingsFile}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(settingsFile)
+	if err != nil {
+		t.Fatalf("owned file should NOT be deleted: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(got, &result); err != nil {
+		t.Fatalf("invalid JSON after strip: %v", err)
+	}
+	servers, ok := result["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers should be preserved for the user's server, got %v", result)
+	}
+	if _, ok := servers["foo"]; ok {
+		t.Error("managed server foo should be pruned")
+	}
+	if _, ok := servers["bar"]; ok {
+		t.Error("managed server bar should be pruned")
+	}
+	if _, ok := servers["mine"]; !ok {
+		t.Error("user-added server mine MUST be preserved (regression: the blunt strip wiped it)")
+	}
+}
+
 func TestReconcileStaleEntries_OwnedFileStripError_WarnsNotDeletes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -424,8 +508,8 @@ func TestReconcileStaleEntries_OwnedFileStripError_WarnsNotDeletes(t *testing.T)
 	ar2 := ApplyRequest{
 		Yes:   true,
 		Quiet: true,
-		StripFuncs: map[string]func([]byte) ([]byte, error){
-			filepath.Clean(settingsFile): func([]byte) ([]byte, error) {
+		StripFuncs: map[string]func([]byte, domain.Ledger) ([]byte, error){
+			filepath.Clean(settingsFile): func([]byte, domain.Ledger) ([]byte, error) {
 				return nil, fmt.Errorf("simulated strip error")
 			},
 		},

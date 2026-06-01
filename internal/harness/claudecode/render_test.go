@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/harness"
 )
 
 func TestRenderMCPBytesFromTyped_Basic(t *testing.T) {
@@ -278,7 +279,7 @@ func TestLayout_StripManaged_AllowOnly(t *testing.T) {
 	h := Harness{}
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
-	out, err := layout.StripManaged(input, settingsPath)
+	out, err := layout.StripManaged(input, settingsPath, harness.EditContext{})
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}
@@ -316,7 +317,7 @@ func TestLayout_StripManaged_StripsDenyEntries(t *testing.T) {
 	h := Harness{}
 	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
 	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
-	out, err := layout.StripManaged(input, settingsPath)
+	out, err := layout.StripManaged(input, settingsPath, harness.EditContext{})
 	if err != nil {
 		t.Fatalf("StripManaged: %v", err)
 	}

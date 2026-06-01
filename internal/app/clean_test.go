@@ -65,7 +65,7 @@ func TestEditFileOp_EmptyTOMLFile(t *testing.T) {
 	op := editFileOp{
 		FilePath: path,
 		Format:   harness.FormatTOML,
-		Edit: func(root map[string]any) {
+		Edit: func(root map[string]any, _ harness.EditContext) {
 			delete(root, "mcp_servers")
 		},
 	}
