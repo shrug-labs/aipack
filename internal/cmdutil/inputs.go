@@ -177,12 +177,9 @@ func PrintWarnings(w io.Writer, warnings []domain.Warning) {
 // WriteJSON marshals v as indented JSON and writes it to w.
 // Intended for CLI --json output paths.
 func WriteJSON(w io.Writer, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	_, _ = w.Write(append(b, '\n'))
-	return nil
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 // IsRegistryName returns true if arg looks like a registry pack name rather

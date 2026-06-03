@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.29.1]
+
+### Fixed
+
+- **JSON output now preserves string content through the streaming encoder.** Machine-readable CLI output keeps the same indented shape while escaping indexed search text and other string values as data.
+
 ## [0.29.0]
 
 ### Added

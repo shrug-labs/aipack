@@ -1,6 +1,8 @@
 package cmdutil
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -43,5 +45,43 @@ func TestResolveHarnesses_UsesEnvHarness(t *testing.T) {
 	}
 	if len(hs) != 1 || string(hs[0]) != "opencode" {
 		t.Fatalf("ResolveHarnesses = %#v, want [opencode]", hs)
+	}
+}
+
+func TestWriteJSONEscapesStringContent(t *testing.T) {
+	t.Parallel()
+
+	type searchLikeResult struct {
+		Name    string `json:"name"`
+		Snippet string `json:"snippet"`
+	}
+
+	input := searchLikeResult{
+		Name:    `"}], "injected": true, "x":"`,
+		Snippet: "line one\n</script>&\"'}]",
+	}
+
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, input); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+	if !strings.HasSuffix(buf.String(), "\n") {
+		t.Fatalf("WriteJSON output should end with newline, got %q", buf.String())
+	}
+
+	var decoded searchLikeResult
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("WriteJSON output is invalid JSON: %v\n%s", err, buf.String())
+	}
+	if decoded != input {
+		t.Fatalf("decoded payload = %#v, want %#v", decoded, input)
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &object); err != nil {
+		t.Fatalf("unmarshal object: %v", err)
+	}
+	if _, ok := object["injected"]; ok {
+		t.Fatalf("string content escaped into JSON structure: %s", buf.String())
 	}
 }
