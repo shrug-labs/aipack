@@ -110,7 +110,7 @@ Multiple packs can contribute harness settings via `configs/harness_settings` in
 
 Plugin files (`configs/harness_plugins`) are pure copies. Same-filename plugins from different packs produce an error (collision detection).
 
-Hooks are first-class pack content under `hooks/<id>/HOOK.yaml`. Harness adapters render native hook configuration from typed hook descriptors. Codex writes `.codex/hooks.json` and matching `hooks.state` trust hashes into `config.toml`.
+Hooks are first-class pack content under `hooks/<id>/HOOK.yaml`. Harness adapters render native hook configuration from typed hook descriptors. Claude Code merges native hook groups into `settings.local.json`, OpenCode writes a generated `plugins/aipack-hooks.js` server plugin, Codex writes `.codex/hooks.json` plus `hooks.state` trust hashes in `config.toml`, and Cline writes generated wrappers in its hooks directory.
 
 ## Vector rendering per harness
 
@@ -122,7 +122,7 @@ Hooks are first-class pack content under `hooks/<id>/HOOK.yaml`. Harness adapter
 | Skills | `.claude/skills/` | `.opencode/skills/` | `.agents/skills/` | `.agents/skills/` (shared with Codex) |
 | MCP | `.mcp.json` | `opencode.json` | `config.toml` | Global VS Code storage |
 | Settings | `settings.local.json` | `opencode.json` | `config.toml` | N/A |
-| Hooks | N/A | N/A | `.codex/hooks.json` + `config.toml` trust state | N/A |
+| Hooks | `settings.local.json` native `hooks` | `plugins/aipack-hooks.js` | `.codex/hooks.json` + `config.toml` trust state | Generated wrappers in hooks dir |
 
 Full per-harness details including merge behavior and tool permissions: `docs/aipack.md` Per-harness reference.
 

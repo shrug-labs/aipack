@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -191,6 +192,112 @@ func TestPlan_Project_EmptyContent(t *testing.T) {
 	}
 	if len(f.Writes) != 0 || len(f.Copies) != 0 {
 		t.Errorf("expected no writes/copies for empty content, got %d writes %d copies", len(f.Writes), len(f.Copies))
+	}
+}
+
+func TestPlan_Project_HookOnlySkipSettingsEmitsManagedSettings(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := engine.SyncContext{
+		Scope:        domain.ScopeProject,
+		TargetDir:    dir,
+		SkipSettings: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "hooks-pack",
+				Hooks: []domain.Hook{{
+					ID:         "audit-bash",
+					SourcePack: "hooks-pack",
+					Events: []domain.HookEvent{{
+						On:    domain.HookEventToolBefore,
+						Match: domain.HookMatch{Tool: "Bash"},
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo audit",
+							Timeout: "5s",
+						},
+					}},
+				}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(f.Settings) != 0 {
+		t.Fatalf("settings = %d, want 0 with SkipSettings", len(f.Settings))
+	}
+	if len(f.MCP) != 1 {
+		t.Fatalf("managed settings actions = %d, want 1", len(f.MCP))
+	}
+	var root map[string]any
+	if err := json.Unmarshal(f.MCP[0].Desired, &root); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	groups := hooks["PreToolUse"].([]any)
+	group := groups[0].(map[string]any)
+	if group["matcher"] != "Bash" {
+		t.Fatalf("matcher = %v, want Bash", group["matcher"])
+	}
+	handlers := group["hooks"].([]any)
+	handler := handlers[0].(map[string]any)
+	if handler["command"] != "echo audit" {
+		t.Fatalf("command = %v, want echo audit", handler["command"])
+	}
+	if handler["timeout"].(float64) != 5 {
+		t.Fatalf("timeout = %v, want 5", handler["timeout"])
+	}
+}
+
+func TestRenderHooks_CommandWindowsOnlySkippedOnNonWindows(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("command_windows-only hook emits the windows command on Windows")
+	}
+	events, _, err := RenderHooks([]domain.Hook{{
+		ID:         "win-scan",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventToolBefore,
+			Match: domain.HookMatch{Tool: "Bash"},
+			Handler: domain.HookHandler{
+				Type:           domain.HookHandlerTypeCommand,
+				CommandWindows: "powershell ./scan.ps1",
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHooks: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("command_windows-only hook should be skipped on non-Windows, got events: %v", events)
+	}
+}
+
+func TestRenderHooks_WildcardMatcherOmitted(t *testing.T) {
+	t.Parallel()
+	events, _, err := RenderHooks([]domain.Hook{{
+		ID:         "all-tools",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventToolBefore,
+			Match: domain.HookMatch{Tool: "*"},
+			Handler: domain.HookHandler{
+				Type:    domain.HookHandlerTypeCommand,
+				Command: "echo audit",
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHooks: %v", err)
+	}
+	group := events["PreToolUse"][0].(map[string]any)
+	if _, ok := group["matcher"]; ok {
+		t.Fatalf("wildcard matcher should be omitted, got group: %v", group)
 	}
 }
 

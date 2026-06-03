@@ -22,8 +22,8 @@ type Harness struct{}
 func (Harness) ID() domain.Harness { return domain.HarnessOpenCode }
 
 // Layout describes OpenCode's filesystem footprint for a given scope.
-func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
-	paths := PathsForScope(scope)
+func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
+	paths := PathsForScope(scope, layoutTargetConfigDir(scope, baseDir, home))
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
 	return harness.Layout{
 		ValidationRoots: []string{
@@ -53,14 +53,23 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 	}
 }
 
+func layoutTargetConfigDir(scope domain.Scope, baseDir, home string) bool {
+	return scope == domain.ScopeGlobal &&
+		strings.TrimSpace(home) != "" &&
+		filepath.Clean(baseDir) != filepath.Clean(home)
+}
+
 // Plan produces a Fragment from typed content.
 func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
-	if err := harness.PlanStandardContent(&f, ctx.Profile, contentDirsForScope(ctx.Scope, ctx.TargetDir), ctx.Namespaced, opencodeAgentTransform); err != nil {
+	if err := harness.PlanStandardContent(&f, ctx.Profile, contentDirsForScope(ctx.Scope, ctx.TargetDir, ctx.TargetConfigDir), ctx.Namespaced, opencodeAgentTransform); err != nil {
 		return domain.Fragment{}, err
 	}
 	if err := planSettings(&f, ctx); err != nil {
+		return domain.Fragment{}, err
+	}
+	if err := planHooks(&f, ctx); err != nil {
 		return domain.Fragment{}, err
 	}
 
@@ -77,8 +86,8 @@ func opencodeAgentTransform(a domain.Agent) (domain.Agent, error) {
 	return a, nil
 }
 
-func contentDirsForScope(scope domain.Scope, targetDir string) harness.ContentDirs {
-	paths := PathsForScope(scope)
+func contentDirsForScope(scope domain.Scope, targetDir string, targetConfigDir bool) harness.ContentDirs {
+	paths := PathsForScope(scope, targetConfigDir)
 	return harness.ContentDirs{
 		Rules:     filepath.Join(targetDir, paths.RulesDir),
 		Agents:    filepath.Join(targetDir, paths.AgentsDir),
@@ -90,7 +99,7 @@ func contentDirsForScope(scope domain.Scope, targetDir string) harness.ContentDi
 func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	sp := ctx.Profile.SettingsPackName(domain.HarnessOpenCode)
 
-	paths := PathsForScope(ctx.Scope)
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
 	configPath := filepath.Join(ctx.TargetDir, paths.SettingsFile)
 	configBase := filepath.Join(ctx.TargetDir, paths.ConfigBase)
 
@@ -168,6 +177,29 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	return nil
 }
 
+func planHooks(f *domain.Fragment, ctx engine.SyncContext) error {
+	hooks := ctx.Profile.AllHooks()
+	out, sourcePack, warnings, err := RenderHooksPlugin(hooks)
+	if err != nil {
+		return fmt.Errorf("render opencode hooks: %w", err)
+	}
+	f.Warnings = append(f.Warnings, warnings...)
+	if len(out) == 0 {
+		return nil
+	}
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
+	dst := filepath.Join(ctx.TargetDir, paths.PluginsDir, HooksPluginFile)
+	f.Writes = append(f.Writes, domain.WriteAction{
+		Dst:        dst,
+		Content:    out,
+		SourcePack: sourcePack,
+		Category:   domain.CategoryHooks,
+		TraceRefs:  domain.TraceRefsForHooks(hooks),
+	})
+	f.Desired = append(f.Desired, filepath.Clean(dst))
+	return nil
+}
+
 // Render produces a Fragment for pack rendering.
 func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
@@ -187,6 +219,23 @@ func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Frag
 		f.Writes = append(f.Writes, domain.WriteAction{Dst: p, Content: df.Content})
 		f.Desired = append(f.Desired, p)
 	}
+	profileHooks := ctx.Profile.AllHooks()
+	hooks, sourcePack, warnings, err := RenderHooksPlugin(profileHooks)
+	if err != nil {
+		return domain.Fragment{}, err
+	}
+	f.Warnings = append(f.Warnings, warnings...)
+	if len(hooks) > 0 {
+		p := filepath.Join(ctx.OutDir, "opencode", "plugins", HooksPluginFile)
+		f.Writes = append(f.Writes, domain.WriteAction{
+			Dst:        p,
+			Content:    hooks,
+			SourcePack: sourcePack,
+			Category:   domain.CategoryHooks,
+			TraceRefs:  domain.TraceRefsForHooks(profileHooks),
+		})
+		f.Desired = append(f.Desired, p)
+	}
 	return f, nil
 }
 
@@ -196,16 +245,11 @@ func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Frag
 func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
-	paths := PathsForScope(ctx.Scope)
-	var baseDir string
-	if ctx.Scope == domain.ScopeProject {
-		baseDir = ctx.ProjectDir
-	} else {
-		baseDir = ctx.Home
-	}
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
+	baseDir := ctx.TargetBaseDir()
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
 
-	dirs := contentDirsForScope(ctx.Scope, baseDir)
+	dirs := contentDirsForScope(ctx.Scope, baseDir, ctx.TargetConfigDir)
 	harness.CaptureContent(&res, dirs, ctx.KnownPacks, func(raw []byte, name, src string) (domain.Agent, error) {
 		return ReverseTransformAgent(raw, name+".md")
 	})

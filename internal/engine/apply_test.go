@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -72,6 +73,69 @@ func TestApplyPlan_CreateFiles(t *testing.T) {
 	}
 	if _, ok := lg.Managed[fileB]; !ok {
 		t.Errorf("ledger missing %s", fileB)
+	}
+}
+
+func TestApplyPlan_CreateFileWithDesiredMode(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	file := filepath.Join(dir, "hooks", "PreToolUse")
+	plan := buildPlan(dir, []domain.WriteAction{{
+		Dst:         file,
+		Content:     []byte("#!/bin/sh\nexit 0\n"),
+		SourcePack:  "pack1",
+		DesiredMode: 0o755,
+	}})
+
+	if _, err := eng.ApplyPlan(context.Background(), plan, ApplyRequest{Quiet: true}, []string{dir}); err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("mode = %o, want 755", got)
+	}
+}
+
+func TestApplyPlan_RepairsDesiredModeDrift(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	file := filepath.Join(dir, "hooks", "PreToolUse")
+	content := []byte("#!/bin/sh\nexit 0\n")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := buildPlan(dir, []domain.WriteAction{{
+		Dst:         file,
+		Content:     content,
+		SourcePack:  "pack1",
+		DesiredMode: 0o755,
+	}})
+
+	if _, err := eng.ApplyPlan(context.Background(), plan, ApplyRequest{Quiet: true}, []string{dir}); err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("mode = %o, want 755", got)
 	}
 }
 

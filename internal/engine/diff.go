@@ -15,10 +15,13 @@ import (
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
+const defaultWriteMode os.FileMode = 0o644
+
 // FileDiff classifies a single managed file against on-disk state and the ledger.
 type FileDiff struct {
 	Dst            string          // target file path
 	Desired        []byte          // content to write
+	DesiredMode    os.FileMode     // permission bits to use when writing
 	Label          string          // human-readable label
 	SourcePack     string          // pack provenance
 	Kind           domain.DiffKind // classification
@@ -51,6 +54,80 @@ func (e *Engine) classifyFileKind(dst string, desired []byte, lg domain.Ledger) 
 	return domain.DiffConflict, nil
 }
 
+// ClassifyWriteKind classifies a generated write without computing a diff.
+func (e *Engine) ClassifyWriteKind(w domain.WriteAction, lg domain.Ledger) (domain.DiffKind, error) {
+	fd, err := e.classifyWrite(w, filepath.Base(w.Dst), lg, false)
+	if err != nil {
+		return "", err
+	}
+	return fd.Kind, nil
+}
+
+// ClassifyWrite classifies a generated write, including optional desired mode.
+func (e *Engine) ClassifyWrite(w domain.WriteAction, label string, lg domain.Ledger) (FileDiff, error) {
+	return e.classifyWrite(w, label, lg, true)
+}
+
+func (e *Engine) classifyWrite(w domain.WriteAction, label string, lg domain.Ledger, withDiff bool) (FileDiff, error) {
+	dst := filepath.Clean(w.Dst)
+	desiredMode := w.EffectiveMode(defaultWriteMode)
+	onDisk, err := e.FS.ReadFile(dst)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return FileDiff{
+				Dst: dst, Desired: w.Content, DesiredMode: desiredMode, Label: label,
+				SourcePack: w.SourcePack, Kind: domain.DiffCreate,
+			}, nil
+		}
+		return FileDiff{}, err
+	}
+	modeOK, onDiskMode, err := e.writeModeMatches(dst, w)
+	if err != nil {
+		return FileDiff{}, err
+	}
+	contentMatches := bytes.Equal(onDisk, w.Content)
+	if !contentMatches {
+		contentMatches = domain.SingleFileDigest(onDisk) == w.EffectiveDigest()
+	}
+	if contentMatches {
+		fd := FileDiff{
+			Dst: dst, Desired: w.Content, DesiredMode: desiredMode, Label: label,
+			SourcePack: w.SourcePack, OnDisk: onDisk,
+		}
+		if modeOK {
+			fd.Kind = domain.DiffIdentical
+		} else {
+			fd.Kind = domain.DiffManaged
+			// Content matches; only file mode drifted. Populate a Diff line
+			// so apply prints something more informative than a bare "update:".
+			fd.Diff = fmt.Sprintf("mode: %#o → %#o (content unchanged)\n", onDiskMode.Perm(), desiredMode.Perm())
+		}
+		return fd, nil
+	}
+	if !withDiff {
+		return FileDiff{
+			Dst: dst, Desired: w.Content, DesiredMode: desiredMode, Label: label,
+			SourcePack: w.SourcePack, OnDisk: onDisk,
+			Kind: classifyFileKindPreRead(dst, w.Content, lg, onDisk),
+		}, nil
+	}
+	fd := classifyFilePreRead(dst, w.Content, label, w.SourcePack, lg, onDisk)
+	fd.DesiredMode = desiredMode
+	return fd, nil
+}
+
+func (e *Engine) writeModeMatches(dst string, w domain.WriteAction) (bool, os.FileMode, error) {
+	if w.DesiredMode == 0 {
+		return true, 0, nil
+	}
+	info, err := e.FS.Stat(dst)
+	if err != nil {
+		return false, 0, err
+	}
+	mode := info.Mode().Perm()
+	return mode == w.DesiredMode.Perm(), mode, nil
+}
+
 // ClassifyFile classifies a single file against on-disk state and the ledger.
 func (e *Engine) ClassifyFile(dst string, desired []byte, label, sourcePack string, lg domain.Ledger) (FileDiff, error) {
 	dst = filepath.Clean(dst)
@@ -58,7 +135,7 @@ func (e *Engine) ClassifyFile(dst string, desired []byte, label, sourcePack stri
 	onDisk, err := e.FS.ReadFile(dst)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return FileDiff{Dst: dst, Desired: desired, Label: label, SourcePack: sourcePack, Kind: domain.DiffCreate}, nil
+			return FileDiff{Dst: dst, Desired: desired, DesiredMode: defaultWriteMode, Label: label, SourcePack: sourcePack, Kind: domain.DiffCreate}, nil
 		}
 		return FileDiff{}, err
 	}
@@ -68,7 +145,7 @@ func (e *Engine) ClassifyFile(dst string, desired []byte, label, sourcePack stri
 
 // classifyFilePreRead classifies a file when the on-disk content is already known.
 func classifyFilePreRead(dst string, desired []byte, label, sourcePack string, lg domain.Ledger, onDisk []byte) FileDiff {
-	base := FileDiff{Dst: filepath.Clean(dst), Desired: desired, Label: label, SourcePack: sourcePack}
+	base := FileDiff{Dst: filepath.Clean(dst), Desired: desired, DesiredMode: defaultWriteMode, Label: label, SourcePack: sourcePack}
 
 	if bytes.Equal(desired, onDisk) {
 		base.Kind = domain.DiffIdentical
@@ -192,7 +269,7 @@ func (e *Engine) computeSettingsDiff(s domain.SettingsAction, lg domain.Ledger, 
 	var fd FileDiff
 	if !fileExists {
 		fd = FileDiff{Dst: filepath.Clean(s.Dst), Desired: desired, Label: s.Label, SourcePack: s.SourcePack, Kind: domain.DiffCreate}
-	} else if len(mergeOps) == 0 {
+	} else if len(mergeOps) == 0 && settingsBytesEqual(existing, desired, s.Harness) {
 		// No managed keys changed. Keep the on-disk bytes as desired so the
 		// ledger digest follows harness formatting.
 		fd = FileDiff{
@@ -220,6 +297,18 @@ func (e *Engine) computeSettingsDiff(s domain.SettingsAction, lg domain.Ledger, 
 		fd.MergeOps = mergeOps
 	}
 	return fd, nil
+}
+
+func settingsBytesEqual(a, b []byte, harness domain.Harness) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
+	normalizedA, errA := normalizeSettingsBytes(a, harness)
+	normalizedB, errB := normalizeSettingsBytes(b, harness)
+	if errA != nil || errB != nil {
+		return bytes.Equal(a, b)
+	}
+	return bytes.Equal(normalizedA, normalizedB)
 }
 
 func classifyFileKindPreRead(dst string, desired []byte, lg domain.Ledger, onDisk []byte) domain.DiffKind {

@@ -173,6 +173,73 @@ func TestMergeSettingsKeys_JSON_ArrayPreservesNonStringUserElements(t *testing.T
 	}
 }
 
+func TestMergeSettingsKeys_ClaudeHookObjectArraysReplaceManagedPreserveUser(t *testing.T) {
+	t.Parallel()
+	existing := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "old-managed"}]},
+      {"matcher": "Edit", "hooks": [{"type": "command", "command": "user-hook"}]},
+      {"matcher": "Read", "hooks": [{"type": "command", "command": "old-managed-user-edited"}]}
+    ]
+  }
+}`)
+	prev := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "old-managed"}]},
+      {"matcher": "Read", "hooks": [{"type": "command", "command": "old-managed"}]}
+    ]
+  }
+}`)
+	next := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "new-managed"}]}
+    ]
+  }
+}`)
+
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(result, &root); err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	groups := hooks["PreToolUse"].([]any)
+	got := hookGroupCommands(groups)
+	want := []string{"new-managed", "user-hook", "old-managed-user-edited"}
+	if len(got) != len(want) {
+		t.Fatalf("commands = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("commands = %v, want %v", got, want)
+		}
+	}
+	assertOp(t, ops, "hooks.PreToolUse", MergeUpdate)
+}
+
+func hookGroupCommands(groups []any) []string {
+	var out []string
+	for _, rawGroup := range groups {
+		group, _ := rawGroup.(map[string]any)
+		rawHooks, _ := group["hooks"].([]any)
+		if len(rawHooks) == 0 {
+			out = append(out, "")
+			continue
+		}
+		hook, _ := rawHooks[0].(map[string]any)
+		cmd, _ := hook["command"].(string)
+		out = append(out, cmd)
+	}
+	return out
+}
+
 func TestMergeSettingsKeys_AdditiveOnly_RetainsManagedKeyAbsentFromNext(t *testing.T) {
 	t.Parallel()
 	// additiveOnly must suppress removal of a managed key that drops out of
@@ -285,6 +352,58 @@ func TestMergeSettingsKeys_FirstSync(t *testing.T) {
 	assertOp(t, ops, "managed_key", MergeAdd)
 }
 
+func TestMergeSettingsKeys_FirstSyncPreservesScalarCollision(t *testing.T) {
+	t.Parallel()
+	existing := []byte(`{"profile": "local-profile", "user_key": "user_val"}`)
+	var prev []byte // nil = first sync
+	next := []byte(`{"profile": "pack-profile", "sandbox_mode": "workspace-write"}`)
+
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(result, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["profile"] != "local-profile" {
+		t.Fatalf("first sync should preserve existing scalar collision, got profile=%v", m["profile"])
+	}
+	if m["sandbox_mode"] != "workspace-write" {
+		t.Fatalf("first sync should add non-conflicting managed scalar, got sandbox_mode=%v", m["sandbox_mode"])
+	}
+	assertNoOp(t, ops, "profile", MergeUpdate)
+	assertOp(t, ops, "profile", MergeConflict)
+	assertOp(t, ops, "sandbox_mode", MergeAdd)
+}
+
+func TestMergeSettingsKeys_PreservesLocallyEditedManagedScalar(t *testing.T) {
+	t.Parallel()
+	existing := []byte(`{"managed_key": "local-edit", "unchanged_key": "old"}`)
+	prev := []byte(`{"managed_key": "old", "unchanged_key": "old"}`)
+	next := []byte(`{"managed_key": "new", "unchanged_key": "new"}`)
+
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessClaudeCode, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(result, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["managed_key"] != "local-edit" {
+		t.Fatalf("locally edited scalar should be preserved, got managed_key=%v", m["managed_key"])
+	}
+	if m["unchanged_key"] != "new" {
+		t.Fatalf("unchanged managed scalar should update, got unchanged_key=%v", m["unchanged_key"])
+	}
+	assertNoOp(t, ops, "managed_key", MergeUpdate)
+	assertOp(t, ops, "managed_key", MergeConflict)
+	assertOp(t, ops, "unchanged_key", MergeUpdate)
+}
+
 func TestMergeSettingsKeys_TOML(t *testing.T) {
 	t.Parallel()
 	existing := []byte("user_key = \"user_val\"\n")
@@ -299,6 +418,53 @@ func TestMergeSettingsKeys_TOML(t *testing.T) {
 		t.Error("result should be non-empty")
 	}
 	assertOp(t, ops, "managed_key", MergeAdd)
+}
+
+func TestMergeSettingsKeys_TOML_FirstSyncPreservesCodexProfile(t *testing.T) {
+	t.Parallel()
+	existing := []byte(`
+profile = "local-profile"
+
+[profiles.local-profile]
+model_provider = "local-provider"
+`)
+	var prev []byte // nil = first sync
+	next := []byte(`
+profile = "pack-profile"
+sandbox_mode = "workspace-write"
+
+[profiles.pack-profile]
+model_provider = "pack-provider"
+`)
+
+	result, ops, err := mergeSettingsKeys(existing, prev, next, domain.HarnessCodex, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := parseTOMLMap(result)
+	if err != nil {
+		t.Fatalf("parse merged TOML: %v\n%s", err, result)
+	}
+	if m["profile"] != "local-profile" {
+		t.Fatalf("Codex profile should preserve existing value, got %v", m["profile"])
+	}
+	if m["sandbox_mode"] != "workspace-write" {
+		t.Fatalf("sandbox_mode should be added from managed settings, got %v", m["sandbox_mode"])
+	}
+	profiles, ok := m["profiles"].(map[string]any)
+	if !ok {
+		t.Fatalf("profiles table missing from merged TOML:\n%s", result)
+	}
+	if _, ok := profiles["local-profile"]; !ok {
+		t.Fatalf("existing profile table should be preserved:\n%s", result)
+	}
+	if _, ok := profiles["pack-profile"]; !ok {
+		t.Fatalf("managed profile table should be added:\n%s", result)
+	}
+	assertNoOp(t, ops, "profile", MergeUpdate)
+	assertOp(t, ops, "profile", MergeConflict)
+	assertOp(t, ops, "sandbox_mode", MergeAdd)
 }
 
 func TestMergeSettingsKeys_TOML_RemovesCodexMCPServerWithRuntimeToolApproval(t *testing.T) {
@@ -414,4 +580,13 @@ func assertOp(t *testing.T, ops []MergeOp, key string, action MergeAction) {
 		}
 	}
 	t.Errorf("expected merge op {Key: %q, Action: %q} not found in %v", key, action, ops)
+}
+
+func assertNoOp(t *testing.T, ops []MergeOp, key string, action MergeAction) {
+	t.Helper()
+	for _, op := range ops {
+		if op.Key == key && op.Action == action {
+			t.Fatalf("unexpected merge op {Key: %q, Action: %q} found in %v", key, action, ops)
+		}
+	}
 }

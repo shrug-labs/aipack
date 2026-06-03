@@ -16,10 +16,11 @@ import (
 type MergeAction string
 
 const (
-	MergeAdd    MergeAction = "add"
-	MergeUpdate MergeAction = "update"
-	MergeRemove MergeAction = "remove"
-	MergeReset  MergeAction = "reset" // on-disk file was corrupted; replaced with managed state
+	MergeAdd      MergeAction = "add"
+	MergeUpdate   MergeAction = "update"
+	MergeRemove   MergeAction = "remove"
+	MergeReset    MergeAction = "reset"    // on-disk file was corrupted; replaced with managed state
+	MergeConflict MergeAction = "conflict" // managed scalar dropped — user value preserved
 )
 
 // MergeOp records a single merge decision at a specific key path.
@@ -40,7 +41,9 @@ type MergeOp struct {
 //   - Arrays of strings: managed items appear first in managed order. Items
 //     removed from the managed set are deleted. User-only items from disk are
 //     appended. Duplicates are removed.
-//   - Scalars / other values: managed value wins.
+//   - Scalars / other values: managed value updates only when disk still
+//     matches the previous managed value. User-owned/user-edited scalar
+//     values are preserved.
 //   - First sync (prevManaged is nil): all on-disk items are treated as user-added
 //     and preserved. All managed items are added. Equivalent to additive deep merge.
 //
@@ -48,7 +51,9 @@ type MergeOp struct {
 // SettingsFormat() interface method — acceptable complexity for 4 harnesses.
 func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.Harness, additiveOnly bool) ([]byte, []MergeOp, error) {
 	switch harness {
-	case domain.HarnessOpenCode, domain.HarnessCline, domain.HarnessClaudeCode:
+	case domain.HarnessClaudeCode:
+		return threeWayMergeClaudeJSON(existing, prevManaged, newManaged, additiveOnly)
+	case domain.HarnessOpenCode, domain.HarnessCline:
 		return threeWayMergeJSON(existing, prevManaged, newManaged, additiveOnly)
 	case domain.HarnessCodex:
 		return threeWayMergeTOML(existing, prevManaged, newManaged, additiveOnly)
@@ -58,6 +63,30 @@ func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.
 }
 
 func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte, additiveOnly bool) ([]byte, []MergeOp, error) {
+	return threeWayMergeJSONWithOptions(onDisk, prevManaged, newManaged, additiveOnly, mergeOptions{})
+}
+
+func threeWayMergeClaudeJSON(onDisk, prevManaged, newManaged []byte, additiveOnly bool) ([]byte, []MergeOp, error) {
+	return threeWayMergeJSONWithOptions(onDisk, prevManaged, newManaged, additiveOnly, mergeOptions{
+		ObjectArrayPath: isClaudeHookEventArrayPath,
+	})
+}
+
+type mergeOptions struct {
+	ObjectArrayPath func(path string) bool
+}
+
+func (o mergeOptions) isObjectArrayPath(path string) bool {
+	return o.ObjectArrayPath != nil && o.ObjectArrayPath(path)
+}
+
+type mergeContext struct {
+	additiveOnly bool
+	options      mergeOptions
+	ops          *[]MergeOp
+}
+
+func threeWayMergeJSONWithOptions(onDisk, prevManaged, newManaged []byte, additiveOnly bool, opts mergeOptions) ([]byte, []MergeOp, error) {
 	var ops []MergeOp
 	disk, err := parseJSONMap(onDisk)
 	if err != nil {
@@ -74,7 +103,7 @@ func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte, additiveOnly bool
 		return nil, nil, fmt.Errorf("parse new-managed JSON: %w", err)
 	}
 
-	threeWayMergeMap(disk, prev, next, "", additiveOnly, &ops)
+	threeWayMergeMap(disk, prev, next, "", mergeContext{additiveOnly: additiveOnly, options: opts, ops: &ops})
 
 	out, err := marshalJSON(disk)
 	if err != nil {
@@ -101,7 +130,7 @@ func threeWayMergeTOML(onDisk, prevManaged, newManaged []byte, additiveOnly bool
 	}
 
 	pruneRemovedCodexMCPServerTables(disk, prev, next, &ops)
-	threeWayMergeMap(disk, prev, next, "", additiveOnly, &ops)
+	threeWayMergeMap(disk, prev, next, "", mergeContext{additiveOnly: additiveOnly, ops: &ops})
 
 	out, err := marshalTOML(disk)
 	if err != nil {
@@ -145,22 +174,22 @@ func pruneRemovedCodexMCPServerTables(disk, prev, next map[string]any, ops *[]Me
 // threeWayMergeMap recursively merges next (new managed) into disk, using prev
 // (old managed) to distinguish user-added keys from stale managed keys.
 // Merge operations are appended to ops with dot-separated key paths.
-func threeWayMergeMap(disk, prev, next map[string]any, prefix string, additiveOnly bool, ops *[]MergeOp) {
+func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ctx mergeContext) {
 	// Keys removed from managed: delete from disk.
 	for k := range prev {
 		if _, inNext := next[k]; !inNext {
-			removeManagedValue(disk, k, prev[k], prefix+k, additiveOnly, ops)
+			removeManagedValue(disk, k, prev[k], prefix+k, ctx)
 		}
 	}
 
 	// Keys in new managed: add or update in disk.
 	for k, nextVal := range next {
 		diskVal, inDisk := disk[k]
-		prevVal := prev[k]
+		prevVal, inPrev := prev[k]
 
 		if !inDisk {
 			disk[k] = nextVal
-			*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeAdd})
+			*ctx.ops = append(*ctx.ops, MergeOp{Key: prefix + k, Action: MergeAdd})
 			continue
 		}
 
@@ -171,7 +200,7 @@ func threeWayMergeMap(disk, prev, next map[string]any, prefix string, additiveOn
 				prevMap = map[string]any{}
 			}
 			if diskMap, ok := diskVal.(map[string]any); ok {
-				threeWayMergeMap(diskMap, prevMap, nextMap, prefix+k+".", additiveOnly, ops)
+				threeWayMergeMap(diskMap, prevMap, nextMap, prefix+k+".", ctx)
 				continue
 			}
 		}
@@ -180,31 +209,58 @@ func threeWayMergeMap(disk, prev, next map[string]any, prefix string, additiveOn
 		if nextArr, ok := nextVal.([]any); ok {
 			prevArr, _ := prevVal.([]any)
 			if diskArr, ok := diskVal.([]any); ok {
-				merged := threeWayMergeArray(diskArr, prevArr, nextArr)
+				path := prefix + k
+				keyer := arrayKeyerForPath(ctx.options, path)
+				merged := threeWayMergeArrayByKey(diskArr, prevArr, nextArr, keyer)
 				disk[k] = merged
-				if !sameStringSet(prevArr, nextArr) {
-					*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeUpdate})
+				// Suppress the MergeUpdate signal when the managed set is
+				// unchanged and the only difference between the on-disk array
+				// and the merged result is ordering — without this guard every
+				// sync emits a phantom "update" each time the user reorders a
+				// set-like array (e.g. permissions.allow). The rewrite itself
+				// still happens (positional arrays like command args need
+				// managed-order-first), but the noise on the log is gone.
+				if !sameElementSetByKey(diskArr, merged, keyer) {
+					*ctx.ops = append(*ctx.ops, MergeOp{Key: path, Action: MergeUpdate})
 				}
 				continue
 			}
 		}
 
-		// Scalar or type change: managed value wins unconditionally.
-		// This means user edits to managed scalars are overwritten on next sync.
-		// This is intentional — scalars don't have set-merge semantics, so the
-		// managed value is the only authoritative source. Users who need custom
-		// scalar values should add them as new keys (which are preserved).
-		disk[k] = nextVal
-		if !reflect.DeepEqual(diskVal, nextVal) {
-			*ops = append(*ops, MergeOp{Key: prefix + k, Action: MergeUpdate})
+		// Scalar or type change: apply the managed value only when disk still
+		// has the previous managed value. If there was no previous managed value,
+		// the on-disk scalar is user-owned and must be preserved. If the user has
+		// edited the managed scalar since the last sync, preserve that edit too.
+		if !inPrev {
+			// First-time collision: a managed value is being introduced for a
+			// key the user already has. Preserve the user's value but emit a
+			// MergeConflict op so the surrounding UI surfaces the rejection
+			// rather than silently dropping the pack's intent.
+			if !reflect.DeepEqual(diskVal, nextVal) {
+				*ctx.ops = append(*ctx.ops, MergeOp{Key: prefix + k, Action: MergeConflict})
+			}
+			continue
 		}
+		if !reflect.DeepEqual(diskVal, prevVal) {
+			// User edited a previously-managed scalar; preserve their edit but
+			// surface that the pack's new value did not land.
+			if !reflect.DeepEqual(diskVal, nextVal) {
+				*ctx.ops = append(*ctx.ops, MergeOp{Key: prefix + k, Action: MergeConflict})
+			}
+			continue
+		}
+		if reflect.DeepEqual(diskVal, nextVal) {
+			continue
+		}
+		disk[k] = nextVal
+		*ctx.ops = append(*ctx.ops, MergeOp{Key: prefix + k, Action: MergeUpdate})
 	}
 
 	// Keys only on disk (not in prev or next): user-added, preserved automatically.
 }
 
-func removeManagedValue(disk map[string]any, key string, prevVal any, path string, additiveOnly bool, ops *[]MergeOp) {
-	if additiveOnly || isPluginAdditivePath(path) {
+func removeManagedValue(disk map[string]any, key string, prevVal any, path string, ctx mergeContext) {
+	if ctx.additiveOnly || isPluginAdditivePath(path) {
 		return
 	}
 	diskVal, inDisk := disk[key]
@@ -215,11 +271,11 @@ func removeManagedValue(disk map[string]any, key string, prevVal any, path strin
 	if prevMap, ok := prevVal.(map[string]any); ok {
 		if diskMap, ok := diskVal.(map[string]any); ok {
 			for child, childPrev := range prevMap {
-				removeManagedValue(diskMap, child, childPrev, path+"."+child, additiveOnly, ops)
+				removeManagedValue(diskMap, child, childPrev, path+"."+child, ctx)
 			}
 			if len(diskMap) == 0 {
 				delete(disk, key)
-				*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+				*ctx.ops = append(*ctx.ops, MergeOp{Key: path, Action: MergeRemove})
 			}
 			return
 		}
@@ -227,20 +283,20 @@ func removeManagedValue(disk map[string]any, key string, prevVal any, path strin
 
 	if prevArr, ok := prevVal.([]any); ok {
 		if diskArr, ok := diskVal.([]any); ok {
-			filtered, changed := removeManagedArrayValues(diskArr, prevArr)
+			filtered, changed := removeManagedArrayValuesByKey(diskArr, prevArr, arrayKeyerForPath(ctx.options, path))
 			if !changed {
 				if reflect.DeepEqual(diskVal, prevVal) {
 					delete(disk, key)
-					*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+					*ctx.ops = append(*ctx.ops, MergeOp{Key: path, Action: MergeRemove})
 				}
 				return
 			}
 			if len(filtered) == 0 {
 				delete(disk, key)
-				*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+				*ctx.ops = append(*ctx.ops, MergeOp{Key: path, Action: MergeRemove})
 			} else {
 				disk[key] = filtered
-				*ops = append(*ops, MergeOp{Key: path, Action: MergeUpdate})
+				*ctx.ops = append(*ctx.ops, MergeOp{Key: path, Action: MergeUpdate})
 			}
 			return
 		}
@@ -248,20 +304,38 @@ func removeManagedValue(disk map[string]any, key string, prevVal any, path strin
 
 	if reflect.DeepEqual(diskVal, prevVal) {
 		delete(disk, key)
-		*ops = append(*ops, MergeOp{Key: path, Action: MergeRemove})
+		*ctx.ops = append(*ctx.ops, MergeOp{Key: path, Action: MergeRemove})
 	}
 }
 
-func removeManagedArrayValues(disk, prev []any) ([]any, bool) {
-	prevSet := toStringSet(prev)
+type arrayElementKeyer func(any) (string, bool)
+
+func arrayKeyerForPath(opts mergeOptions, path string) arrayElementKeyer {
+	if opts.isObjectArrayPath(path) {
+		return canonicalArrayElementKey
+	}
+	return stringArrayElementKey
+}
+
+func stringArrayElementKey(v any) (string, bool) {
+	s, ok := v.(string)
+	return s, ok
+}
+
+func canonicalArrayElementKey(v any) (string, bool) {
+	return canonicalJSONKey(v)
+}
+
+func removeManagedArrayValuesByKey(disk, prev []any, keyer arrayElementKeyer) ([]any, bool) {
+	prevSet := arrayElementSet(prev, keyer)
 	if len(prevSet) == 0 {
 		return disk, false
 	}
 	out := make([]any, 0, len(disk))
 	changed := false
 	for _, v := range disk {
-		s, ok := v.(string)
-		if ok && prevSet[s] {
+		key, ok := keyer(v)
+		if ok && prevSet[key] {
 			changed = true
 			continue
 		}
@@ -277,31 +351,13 @@ func isPluginAdditivePath(path string) bool {
 		path == "extraKnownMarketplaces" || strings.HasPrefix(path, "extraKnownMarketplaces.")
 }
 
-// sameStringSet checks whether two arrays contain the same set of string items.
-func sameStringSet(a, b []any) bool {
-	sa := toStringSet(a)
-	sb := toStringSet(b)
-	if len(sa) != len(sb) {
-		return false
-	}
-	for k := range sa {
-		if !sb[k] {
-			return false
-		}
-	}
-	return true
-}
-
-// threeWayMergeArray merges managed string arrays with managed-order-first
+// threeWayMergeArrayByKey merges managed arrays with managed-order-first
 // semantics. Managed items appear first in the managed (next) order; user-only
-// items from disk are appended afterward. This ensures positional arrays like
-// command args always reflect the managed order, while still preserving
-// user-added items. For set-like arrays (e.g. enabled_tools) the reorder is
-// harmless because item order has no semantic meaning.
-func threeWayMergeArray(disk, prev, next []any) []any {
-	prevSet := toStringSet(prev)
-	nextSet := toStringSet(next)
-
+// items from disk are appended afterward. Elements that the keyer cannot
+// identify are treated as user-owned values and preserved.
+func threeWayMergeArrayByKey(disk, prev, next []any, keyer arrayElementKeyer) []any {
+	prevSet := arrayElementSet(prev, keyer)
+	nextSet := arrayElementSet(next, keyer)
 	seen := map[string]bool{}
 	// Non-nil so an empty merge (both arrays empty, or all items cancel out)
 	// marshals to JSON `[]`, not `null` — e.g. `permissions.allow: null` breaks
@@ -310,50 +366,96 @@ func threeWayMergeArray(disk, prev, next []any) []any {
 
 	// Pass 1: managed items in managed order.
 	for _, v := range next {
-		s, ok := v.(string)
+		key, ok := keyer(v)
 		if !ok {
 			result = append(result, v)
 			continue
 		}
-		if seen[s] {
+		if seen[key] {
 			continue
 		}
-		seen[s] = true
+		seen[key] = true
 		result = append(result, v)
 	}
 
 	// Pass 2: user-only items from disk (not in prev or next), preserving
 	// their relative disk order.
 	for _, v := range disk {
-		s, ok := v.(string)
+		key, ok := keyer(v)
 		if !ok {
-			// Non-string disk elements are never part of a managed array
-			// (managed arrays are string sets), so they are user-added —
-			// preserve them rather than dropping them.
 			result = append(result, v)
 			continue
 		}
-		if seen[s] {
+		if seen[key] {
 			continue
 		}
-		if prevSet[s] && !nextSet[s] {
+		if prevSet[key] && !nextSet[key] {
 			continue // removed from managed set
 		}
-		seen[s] = true
+		seen[key] = true
 		result = append(result, v)
 	}
 
 	return result
 }
 
-func toStringSet(arr []any) map[string]bool {
+// sameElementSet reports whether two arrays contain the same multiset of
+// elements regardless of order.
+func sameElementSetByKey(a, b []any, keyer arrayElementKeyer) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := map[string]int{}
+	for _, v := range a {
+		k, ok := keyer(v)
+		if !ok {
+			return false
+		}
+		counts[k]++
+	}
+	for _, v := range b {
+		k, ok := keyer(v)
+		if !ok {
+			return false
+		}
+		counts[k]--
+		if counts[k] < 0 {
+			return false
+		}
+	}
+	for _, c := range counts {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func arrayElementSet(arr []any, keyer arrayElementKeyer) map[string]bool {
 	m := map[string]bool{}
 	for _, v := range arr {
-		if s, ok := v.(string); ok {
-			m[s] = true
+		key, ok := keyer(v)
+		if ok {
+			m[key] = true
 		}
 	}
 	return m
+}
+
+func canonicalJSONKey(v any) (string, bool) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+func isClaudeHookEventArrayPath(path string) bool {
+	path = strings.TrimSuffix(path, ".")
+	if !strings.HasPrefix(path, "hooks.") {
+		return false
+	}
+	return !strings.Contains(strings.TrimPrefix(path, "hooks."), ".")
 }
 
 func parseJSONMap(b []byte) (map[string]any, error) {

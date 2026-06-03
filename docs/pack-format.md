@@ -520,6 +520,15 @@ Handler commands can be inline shell snippets like the example above. Put script
 or other assets beside `HOOK.yaml` only when the hook needs more than a simple
 command string.
 
+A command handler may provide `command` (used on every platform) and/or
+`command_windows` (used on Windows); at least one is required. On Windows,
+`command_windows` takes precedence when present; on other platforms `command` is
+used. A handler with only `command_windows` is a Windows-only hook — it runs on
+Windows and is a no-op elsewhere. Claude Code and Codex bake one command into
+their native config at sync time and omit Windows-only handlers when synced on a
+non-Windows host; the OpenCode plugin and Cline wrappers carry both commands and
+pick the right one at runtime.
+
 For example, a hook can carry a small static asset and reference it through
 `{hook:root}`:
 
@@ -543,11 +552,23 @@ events:
       timeout: 2s
 ```
 
-Supported portable events are `run.start`, `prompt.submit`, `tool.before`, and `tool.after`. Codex currently renders those events. Other harness-specific hook events are not portable pack events unless they are documented here.
+Supported portable events are `run.start`, `prompt.submit`, `tool.before`, `tool.after`, and `compact.before`. Other harness-specific hook events are not portable pack events unless they are documented here.
+
+`match.tool` and `match.source` are **regular expressions**, matching Claude Code's native matcher semantics. They are matched unanchored against the tool name (case-insensitively) and the run/compact source (case-sensitively); an omitted matcher and `*` both match everything. Use regex alternation for multiple tools, e.g. `match.tool: "Edit|Write"`, and `mcp__` to match any MCP tool. Claude Code and Codex receive the matcher verbatim in their native config; the OpenCode plugin and Cline wrappers evaluate it with the same regex semantics. An invalid pattern is logged and treated as non-matching at runtime.
 
 String values in command handlers may use `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references. aipack expands them at sync time and renders the resulting command into the native harness hook configuration.
 
-For Codex targets, sync renders `.codex/hooks.json` or `~/.codex/hooks.json`, maps portable events onto Codex native hook names, and writes matching `hooks.state.*.trusted_hash` entries into `config.toml` so rendered command hooks work without a manual trust step. Codex still provides its native hook stdin payload to commands; simple hooks can ignore stdin. `--skip-settings` skips base settings files but still writes the managed hook trust state needed for rendered hooks.
+Hook commands receive a JSON payload on stdin. The payload is harness-specific; simple side-effect hooks can ignore stdin.
+
+For Claude Code targets, sync merges portable hooks into `settings.local.json` under Claude Code's native `hooks` object. Managed hook groups are merged with user-authored hook groups and are stripped by exact managed overlay during save/clean.
+
+For OpenCode targets, sync writes a generated server plugin at `.opencode/plugins/aipack-hooks.js` or `~/.config/opencode/plugins/aipack-hooks.js`. OpenCode auto-discovers files under `plugin/` and `plugins/`. The generated plugin maps `tool.before`, `tool.after`, and `compact.before` to native plugin hooks; `prompt.submit` maps through `chat.message`; `run.start` maps through the generic `event` hook when `event.type == "session.created"`. Portable `match.tool` and `match.source` fields are evaluated by the generated plugin.
+
+For Codex targets, sync renders `.codex/hooks.json` or `~/.codex/hooks.json`, maps portable events onto Codex native hook names, and writes matching `hooks.state.*.trusted_hash` entries into `config.toml` so rendered command hooks work without a manual trust step.
+
+For Cline targets, sync writes one generated wrapper per native event in `.clinerules/hooks/` or `~/Documents/Cline/Hooks/`. Unix wrappers are executable files; Windows wrappers use `.ps1`. The wrappers aggregate all matching AIPack handlers for that native event, match tool hooks internally, and always print valid Cline hook JSON.
+
+`--skip-settings` skips base settings files but still writes the managed hook state or generated hook artifacts needed for rendered hooks.
 
 ## 10. Composition
 

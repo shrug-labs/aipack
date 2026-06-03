@@ -43,12 +43,14 @@ func (OSFS) WriteFile(path string, data []byte, perm os.FileMode) error {
 type MemFS struct {
 	mu    sync.RWMutex
 	files map[string][]byte
+	modes map[string]os.FileMode
 	dirs  map[string]bool
 }
 
 func NewMemFS() *MemFS {
 	return &MemFS{
 		files: map[string][]byte{},
+		modes: map[string]os.FileMode{},
 		dirs:  map[string]bool{"/": true},
 	}
 }
@@ -63,7 +65,7 @@ func (m *MemFS) ReadFile(path string) ([]byte, error) {
 	return slices.Clone(data), nil
 }
 
-func (m *MemFS) WriteFile(path string, data []byte, _ os.FileMode) error {
+func (m *MemFS) WriteFile(path string, data []byte, perm os.FileMode) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	path = filepath.Clean(path)
@@ -71,7 +73,11 @@ func (m *MemFS) WriteFile(path string, data []byte, _ os.FileMode) error {
 	if !m.dirExists(dir) {
 		return &os.PathError{Op: "write", Path: path, Err: os.ErrNotExist}
 	}
+	if perm == 0 {
+		perm = defaultWriteMode
+	}
 	m.files[path] = slices.Clone(data)
+	m.modes[path] = perm.Perm()
 	return nil
 }
 
@@ -80,7 +86,7 @@ func (m *MemFS) Stat(path string) (os.FileInfo, error) {
 	defer m.mu.RUnlock()
 	path = filepath.Clean(path)
 	if _, ok := m.files[path]; ok {
-		return memFileInfo{name: filepath.Base(path), size: int64(len(m.files[path]))}, nil
+		return memFileInfo{name: filepath.Base(path), size: int64(len(m.files[path])), mode: m.fileMode(path)}, nil
 	}
 	if m.dirExists(path) {
 		return memFileInfo{name: filepath.Base(path), dir: true}, nil
@@ -94,6 +100,7 @@ func (m *MemFS) Remove(path string) error {
 	path = filepath.Clean(path)
 	if _, ok := m.files[path]; ok {
 		delete(m.files, path)
+		delete(m.modes, path)
 		return nil
 	}
 	if m.dirs[path] {
@@ -143,7 +150,7 @@ func (m *MemFS) ReadDir(path string) ([]os.DirEntry, error) {
 		if strings.Contains(rest, string(filepath.Separator)) {
 			entries = append(entries, memDirEntry{name: name, dir: true})
 		} else {
-			entries = append(entries, memDirEntry{name: name, size: int64(len(m.files[k]))})
+			entries = append(entries, memDirEntry{name: name, size: int64(len(m.files[k])), mode: m.fileMode(k)})
 		}
 	}
 	// Also add explicitly created dirs that are direct children.
@@ -167,7 +174,7 @@ func (m *MemFS) WalkDir(root string, fn fs.WalkDirFunc) error {
 
 	if !m.dirExists(root) {
 		if _, ok := m.files[root]; ok {
-			return fn(root, memDirEntry{name: filepath.Base(root)}, nil)
+			return fn(root, memDirEntry{name: filepath.Base(root), mode: m.fileMode(root)}, nil)
 		}
 		return &os.PathError{Op: "walk", Path: root, Err: os.ErrNotExist}
 	}
@@ -225,6 +232,7 @@ func (m *MemFS) WalkDir(root string, fn fs.WalkDirFunc) error {
 		entry := memDirEntry{name: filepath.Base(p), dir: isDir}
 		if !isDir {
 			entry.size = int64(len(m.files[p]))
+			entry.mode = m.fileMode(p)
 		}
 		if err := fn(p, entry, nil); err != nil {
 			if err == filepath.SkipDir {
@@ -237,6 +245,13 @@ func (m *MemFS) WalkDir(root string, fn fs.WalkDirFunc) error {
 		}
 	}
 	return nil
+}
+
+func (m *MemFS) fileMode(path string) os.FileMode {
+	if mode := m.modes[filepath.Clean(path)]; mode != 0 {
+		return mode.Perm()
+	}
+	return defaultWriteMode
 }
 
 func (m *MemFS) dirExists(path string) bool {
@@ -257,6 +272,7 @@ type memFileInfo struct {
 	name string
 	size int64
 	dir  bool
+	mode os.FileMode
 }
 
 func (f memFileInfo) Name() string { return f.name }
@@ -265,7 +281,10 @@ func (f memFileInfo) Mode() os.FileMode {
 	if f.dir {
 		return os.ModeDir | 0o755
 	}
-	return 0o644
+	if f.mode != 0 {
+		return f.mode.Perm()
+	}
+	return defaultWriteMode
 }
 func (f memFileInfo) ModTime() time.Time { return time.Time{} }
 func (f memFileInfo) IsDir() bool        { return f.dir }
@@ -276,6 +295,7 @@ type memDirEntry struct {
 	name string
 	dir  bool
 	size int64
+	mode os.FileMode
 }
 
 func (e memDirEntry) Name() string { return e.name }
@@ -287,5 +307,5 @@ func (e memDirEntry) Type() os.FileMode {
 	return 0
 }
 func (e memDirEntry) Info() (os.FileInfo, error) {
-	return memFileInfo{name: e.name, size: e.size, dir: e.dir}, nil
+	return memFileInfo{name: e.name, size: e.size, dir: e.dir, mode: e.mode}, nil
 }

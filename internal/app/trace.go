@@ -76,14 +76,7 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 		if err != nil {
 			continue
 		}
-		planReq := engine.PlanRequest{
-			ConfigDir:  req.ConfigDir,
-			Scope:      req.Scope,
-			Harnesses:  []domain.Harness{hid},
-			ProjectDir: req.ProjectDir,
-			Home:       req.Home,
-			Namespaced: req.Namespaced,
-		}
+		planReq := planRequestForTarget(req.TargetSpec, req.ConfigDir, false, hid)
 		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
 			continue
@@ -98,12 +91,7 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 		if err != nil {
 			continue
 		}
-		captured, err := h.Capture(ctx, harness.CaptureContext{
-			Scope:      req.Scope,
-			ProjectDir: req.ProjectDir,
-			Home:       req.Home,
-			KnownPacks: knownPacks,
-		})
+		captured, err := h.Capture(ctx, captureContextForHarness(req.TargetSpec, hid, knownPacks))
 		if err != nil {
 			continue
 		}
@@ -247,12 +235,30 @@ func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource
 			}
 		}
 	case domain.CategoryHooks:
-		for _, wr := range plan.Writes {
-			if filepath.Base(wr.Dst) != "hooks.json" {
+		for _, action := range append(plan.Settings, plan.MCP...) {
+			if !matchesTraceRefs(action.TraceRefs, source, resName) {
 				continue
 			}
-			if wr.SourcePack != source.Pack && wr.SourcePack != "(composite)" {
-				continue
+			dest := TraceDestination{
+				Harness:  string(action.Harness),
+				Path:     action.Dst,
+				Embedded: true,
+			}
+			dest.State, dest.DiffKind = classifySettingsState(eng, action, lg)
+			dests = append(dests, dest)
+		}
+		for _, wr := range plan.Writes {
+			if len(wr.TraceRefs) > 0 {
+				if !matchesTraceRefs(wr.TraceRefs, source, resName) {
+					continue
+				}
+			} else {
+				if wr.Category != domain.CategoryHooks && !isHookDestinationFallback(wr.Dst) {
+					continue
+				}
+				if wr.SourcePack != source.Pack && wr.SourcePack != "(composite)" {
+					continue
+				}
 			}
 			dest := TraceDestination{
 				Harness:  string(hid),
@@ -281,6 +287,22 @@ func matchDestinations(eng *engine.Engine, plan domain.Plan, source *TraceSource
 	return dests
 }
 
+func matchesTraceRefs(refs []domain.TraceRef, source *TraceSource, resName string) bool {
+	for _, ref := range refs {
+		if ref.Category != sourceCategory(source) {
+			continue
+		}
+		if ref.Name != resName {
+			continue
+		}
+		if ref.SourcePack != "" && source != nil && ref.SourcePack != source.Pack {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func classifySettingsState(eng *engine.Engine, action domain.SettingsAction, lg domain.Ledger) (string, domain.DiffKind) {
 	fd, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{action}, lg)
 	if err != nil || len(fd) == 0 {
@@ -297,6 +319,9 @@ func matchesWrite(wr domain.WriteAction, source *TraceSource, resName string) (b
 	if source.SourcePath != "" && wr.Src == source.SourcePath {
 		return true, false
 	}
+	if wr.Category != "" && wr.Category != domain.CategorySettings && wr.Category != sourceCategory(source) {
+		return false, false
+	}
 	// Match by destination filename (for harnesses that use individual files).
 	base := filepath.Base(wr.Dst)
 	name := strings.TrimSuffix(base, ".md")
@@ -311,6 +336,33 @@ func matchesWrite(wr domain.WriteAction, source *TraceSource, resName string) (b
 		return true, true
 	}
 	return false, false
+}
+
+func sourceCategory(source *TraceSource) domain.PackCategory {
+	if source == nil {
+		return ""
+	}
+	return domain.PackCategory(source.Category)
+}
+
+func isHookDestinationFallback(dst string) bool {
+	if filepath.Base(dst) == "hooks.json" {
+		return true
+	}
+	// Walk parents using fixed-point detection: filepath.Dir is idempotent at
+	// the root of any volume ("/" on Unix, "C:\\" on Windows), so compare
+	// against the previous value rather than against any specific sentinel.
+	dir := filepath.Dir(dst)
+	for {
+		if strings.EqualFold(filepath.Base(dir), "hooks") {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // isCompositeFile returns true for files known to aggregate multiple resources.

@@ -2,9 +2,13 @@ package cline
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -190,6 +194,194 @@ func TestPlan_Global_Content(t *testing.T) {
 	// Skill → ~/.agents/skills/diagnose__aipack__pack-a/SKILL.md
 	wantSkill := filepath.Join(home, ".agents", "skills", "diagnose__aipack__pack-a", domain.SkillEntryFile)
 	assertHasWriteDst(t, f.Writes, wantSkill)
+}
+
+func TestPlan_Global_UsesCLINEDIRAndCLINE_DATA_DIR(t *testing.T) {
+	home := t.TempDir()
+	clineDir := filepath.Join(t.TempDir(), ".cline")
+	dataDir := filepath.Join(t.TempDir(), "cline-data")
+	t.Setenv("CLINE_DIR", clineDir)
+	t.Setenv("CLINE_DATA_DIR", dataDir)
+
+	skillDir := testutil.SkillDir(t, "diagnose")
+	ctx := engine.SyncContext{
+		Scope:      domain.ScopeGlobal,
+		TargetDir:  home,
+		Namespaced: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Rules: []domain.Rule{
+					{Name: "global-rule", Raw: []byte("# Global"), SourcePack: "pack-a"},
+				},
+				Agents: []domain.Agent{
+					{Name: "planner", Body: []byte("Plan the work"), SourcePack: "pack-a"},
+				},
+				Workflows: []domain.Workflow{
+					{Name: "deploy", Raw: []byte("# Deploy"), SourcePack: "pack-a"},
+				},
+				Skills: []domain.Skill{
+					{Name: "diagnose", DirPath: skillDir, SourcePack: "pack-a"},
+				},
+			}},
+			MCPServers: []domain.MCPServer{
+				{Name: "foo", Command: []string{"echo", "hi"}, Env: map[string]string{}},
+			},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	assertHasWriteDst(t, f.Writes, filepath.Join(clineDir, "rules", "global-rule__aipack__pack-a.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(clineDir, "skills", "planner__aipack__pack-a", domain.SkillEntryFile))
+	assertHasWriteDst(t, f.Writes, filepath.Join(dataDir, "workflows", "deploy__aipack__pack-a.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(clineDir, "skills", "diagnose__aipack__pack-a", domain.SkillEntryFile))
+
+	if len(f.MCP) != 1 {
+		t.Fatalf("MCP action count = %d, want 1", len(f.MCP))
+	}
+	if f.MCP[0].Dst != filepath.Join(dataDir, "settings", "cline_mcp_settings.json") {
+		t.Fatalf("MCP dst = %q, want %q", f.MCP[0].Dst, filepath.Join(dataDir, "settings", "cline_mcp_settings.json"))
+	}
+}
+
+func TestPlan_Project_HooksWrappers(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Home:      t.TempDir(),
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "hooks-pack",
+				Hooks: []domain.Hook{{
+					ID:         "audit-bash",
+					SourcePack: "hooks-pack",
+					Events: []domain.HookEvent{{
+						On:    domain.HookEventToolBefore,
+						Match: domain.HookMatch{Tool: "Bash"},
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo audit",
+							Timeout: "5s",
+						},
+					}},
+				}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	want := filepath.Join(projectDir, ".clinerules", "hooks", clineHookWrapperFile("PreToolUse"))
+	write := mustFindWrite(t, f.Writes, want)
+	if write.Category != domain.CategoryHooks {
+		t.Fatalf("hook wrapper category = %q, want %q", write.Category, domain.CategoryHooks)
+	}
+	if write.SourcePack != "hooks-pack" {
+		t.Fatalf("hook wrapper SourcePack = %q, want hooks-pack", write.SourcePack)
+	}
+	if runtime.GOOS != "windows" && write.DesiredMode != 0o755 {
+		t.Fatalf("hook wrapper mode = %o, want 755", write.DesiredMode)
+	}
+	content := string(write.Content)
+	// Wrapper content is platform-specific: Node.js source on Unix, a
+	// PowerShell script with the handler JSON base64-encoded on Windows.
+	var needles []string
+	if runtime.GOOS == "windows" {
+		needles = []string{
+			`$ErrorActionPreference = "Continue"`,
+			`ConvertFrom-AipackHookOutput`,
+			`Merge-AipackHookOutputs`,
+		}
+	} else {
+		needles = []string{
+			`#!/usr/bin/env node`,
+			`"tool": "Bash"`,
+			`"command": "echo audit"`,
+			`"timeoutSeconds": 5`,
+			`JSON.stringify({ cancel: false })`,
+			`preToolUse?.toolName`,
+		}
+	}
+	for _, needle := range needles {
+		if !strings.Contains(content, needle) {
+			t.Fatalf("hook wrapper missing %q:\n%s", needle, content)
+		}
+	}
+}
+
+func TestPlan_Global_HooksUseDocumentsPathEvenWithCLINEDIR(t *testing.T) {
+	home := t.TempDir()
+	clineDir := filepath.Join(t.TempDir(), ".cline")
+	dataDir := filepath.Join(t.TempDir(), "cline-data")
+	t.Setenv("CLINE_DIR", clineDir)
+	t.Setenv("CLINE_DATA_DIR", dataDir)
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeGlobal,
+		TargetDir: home,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "hooks-pack",
+				Hooks: []domain.Hook{{
+					ID:         "session",
+					SourcePack: "hooks-pack",
+					Events: []domain.HookEvent{{
+						On: domain.HookEventRunStart,
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo start",
+						},
+					}},
+				}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	want := filepath.Join(documentsDir(home), "Cline", "Hooks", clineHookWrapperFile("TaskStart"))
+	assertHasWriteDst(t, f.Writes, want)
+	unwanted := filepath.Join(clineDir, "hooks", clineHookWrapperFile("TaskStart"))
+	if hasWriteDst(f.Writes, unwanted) {
+		t.Fatalf("hooks should not follow CLINE_DIR override; found unexpected %q", unwanted)
+	}
+}
+
+func TestRender_HookOnlyIncludesWrapper(t *testing.T) {
+	t.Parallel()
+	outDir := t.TempDir()
+	f, err := Harness{}.Render(context.Background(), harness.RenderContext{
+		OutDir: outDir,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "hooks-pack",
+				Hooks: []domain.Hook{{
+					ID:         "compact",
+					SourcePack: "hooks-pack",
+					Events: []domain.HookEvent{{
+						On: domain.HookEventCompactBefore,
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo compact",
+						},
+					}},
+				}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	assertHasWriteDst(t, f.Writes, filepath.Join(outDir, "cline", "hooks", clineHookWrapperFile("PreCompact")))
 }
 
 func TestPlan_Global_MCP(t *testing.T) {
@@ -878,6 +1070,249 @@ func TestCapture_Global_Agents(t *testing.T) {
 
 // --- Layout tests ---
 
+func TestLayout_IncludesHooksValidationButDoesNotRemoveHooks(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	layout := Harness{}.Layout(domain.ScopeProject, projectDir, t.TempDir())
+	hooksDir := filepath.Join(projectDir, ".clinerules", "hooks")
+	if !containsString(layout.ValidationRoots, hooksDir) {
+		t.Fatalf("validation roots should include hooks dir %q: %v", hooksDir, layout.ValidationRoots)
+	}
+	if containsString(layout.RemovePaths, hooksDir) {
+		t.Fatalf("hooks dir %q must not be a RemovePath: %v", hooksDir, layout.RemovePaths)
+	}
+}
+
+func TestRenderHookWrappers_SourceMatcherDoesNotWarn(t *testing.T) {
+	t.Parallel()
+	wrappers, _, warnings, err := RenderHookWrappers([]domain.Hook{{
+		ID:         "session",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventRunStart,
+			Match: domain.HookMatch{Source: "startup"},
+			Handler: domain.HookHandler{
+				Type:    domain.HookHandlerTypeCommand,
+				Command: "echo start",
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHookWrappers: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v, want none", warnings)
+	}
+	content := string(wrappers[clineHookWrapperFile("TaskStart")])
+	searchContent := clineWrapperSearchContent(t, content)
+	for _, needle := range clineSourceMatcherNeedles() {
+		if !strings.Contains(searchContent, needle) {
+			t.Fatalf("wrapper missing %q:\n%s", needle, content)
+		}
+	}
+}
+
+func TestRenderHookWrappers_NodeWrapperMergesHandlerJSONOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("node wrapper is not used on Windows")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+
+	wrappers, _, _, err := RenderHookWrappers([]domain.Hook{{
+		ID:         "audit",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventToolBefore,
+			Match: domain.HookMatch{Tool: "Bash"},
+			Handlers: []domain.HookHandler{
+				{
+					Type:    domain.HookHandlerTypeCommand,
+					Command: "printf '%s' '{\"cancel\":true,\"contextModification\":\"ctx1\"}'",
+				},
+				{
+					Type:    domain.HookHandlerTypeCommand,
+					Command: "printf '%s\n%s' 'debug' '{\"cancel\":false,\"contextModification\":\"ctx2\",\"errorMessage\":\"err\"}'",
+				},
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHookWrappers: %v", err)
+	}
+
+	wrapperPath := filepath.Join(t.TempDir(), clineHookWrapperFile("PreToolUse"))
+	if err := os.WriteFile(wrapperPath, wrappers[clineHookWrapperFile("PreToolUse")], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(node, wrapperPath)
+	cmd.Stdin = strings.NewReader(`{"preToolUse":{"toolName":"Bash"}}`)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("wrapper execution failed: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("wrapper output is not JSON: %v\n%s", err, out)
+	}
+	if result["cancel"] != true {
+		t.Fatalf("cancel = %v, want true; output=%s", result["cancel"], out)
+	}
+	if result["contextModification"] != "ctx1\n\nctx2" {
+		t.Fatalf("contextModification = %q, want merged context; output=%s", result["contextModification"], out)
+	}
+	if result["errorMessage"] != "err" {
+		t.Fatalf("errorMessage = %q, want err; output=%s", result["errorMessage"], out)
+	}
+}
+
+func TestRenderClinePowerShellWrapperMergesHandlerJSONOutput(t *testing.T) {
+	t.Parallel()
+	content := renderClinePowerShellWrapper([]byte(`[{"command":"echo ok","label":"hooks-pack/audit"}]`))
+	for _, needle := range []string{
+		"ConvertFrom-AipackHookOutput",
+		"Merge-AipackHookOutputs",
+		"RedirectStandardOutput = $true",
+		"ConvertTo-Json -Compress",
+	} {
+		if !strings.Contains(content, needle) {
+			t.Fatalf("PowerShell wrapper missing %q:\n%s", needle, content)
+		}
+	}
+}
+
+func TestRenderHookWrappers_CommandWindowsOnlyAccepted(t *testing.T) {
+	t.Parallel()
+	wrappers, _, _, err := RenderHookWrappers([]domain.Hook{{
+		ID:         "win-scan",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventToolBefore,
+			Match: domain.HookMatch{Tool: "Bash"},
+			Handler: domain.HookHandler{
+				Type:           domain.HookHandlerTypeCommand,
+				CommandWindows: "powershell ./scan.ps1",
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHookWrappers: %v", err)
+	}
+	content := string(wrappers[clineHookWrapperFile("PreToolUse")])
+	if !strings.Contains(clineWrapperSearchContent(t, content), "powershell ./scan.ps1") {
+		t.Fatalf("wrapper missing command_windows payload:\n%s", content)
+	}
+}
+
+func clineWrapperSearchContent(t *testing.T, content string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return content
+	}
+	return content + "\n" + decodeClinePowerShellHandlers(t, content)
+}
+
+func decodeClinePowerShellHandlers(t *testing.T, content string) string {
+	t.Helper()
+	const prefix = `[System.Convert]::FromBase64String("`
+	start := strings.Index(content, prefix)
+	if start < 0 {
+		t.Fatalf("PowerShell wrapper missing handler JSON base64:\n%s", content)
+	}
+	start += len(prefix)
+	end := strings.Index(content[start:], `")`)
+	if end < 0 {
+		t.Fatalf("PowerShell wrapper has unterminated handler JSON base64:\n%s", content)
+	}
+	raw, err := base64.StdEncoding.DecodeString(content[start : start+end])
+	if err != nil {
+		t.Fatalf("decode PowerShell handler JSON: %v", err)
+	}
+	return string(raw)
+}
+
+func clineSourceMatcherNeedles() []string {
+	if runtime.GOOS == "windows" {
+		return []string{`"source": "startup"`, "Get-SourceName $payload $handler.event", "Test-MatcherMatch"}
+	}
+	return []string{`"source": "startup"`, "sourceName(payload, handler.event)", "caseInsensitive: true"}
+}
+
+func TestClineWrapperMatchersUseRegex(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(clineNodeWrapperRuntime, "function matcherMatches(") {
+		t.Fatalf("node wrapper missing matcherMatches helper:\n%s", clineNodeWrapperRuntime)
+	}
+	if !strings.Contains(clineNodeWrapperRuntime, "new RegExp(pattern,") {
+		t.Fatalf("node wrapper matcher is not regex-based:\n%s", clineNodeWrapperRuntime)
+	}
+	if strings.Contains(clineNodeWrapperRuntime, `replace(/\*/g`) {
+		t.Fatalf("node wrapper still contains glob-escape logic:\n%s", clineNodeWrapperRuntime)
+	}
+	if !strings.Contains(clinePowerShellWrapperRuntime, "function Test-MatcherMatch(") {
+		t.Fatalf("powershell wrapper missing Test-MatcherMatch helper:\n%s", clinePowerShellWrapperRuntime)
+	}
+	if !strings.Contains(clinePowerShellWrapperRuntime, "-match $pattern") {
+		t.Fatalf("powershell wrapper matcher is not regex-based:\n%s", clinePowerShellWrapperRuntime)
+	}
+}
+
+func TestRenderHookWrappers_NodeWrapperRegexToolMatcher(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("node wrapper is not used on Windows")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+
+	wrappers, _, _, err := RenderHookWrappers([]domain.Hook{{
+		ID:         "audit",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventToolBefore,
+			Match: domain.HookMatch{Tool: "Edit|Write"},
+			Handler: domain.HookHandler{
+				Type:    domain.HookHandlerTypeCommand,
+				Command: `printf '%s' '{"cancel":true}'`,
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHookWrappers: %v", err)
+	}
+	wrapperPath := filepath.Join(t.TempDir(), clineHookWrapperFile("PreToolUse"))
+	if err := os.WriteFile(wrapperPath, wrappers[clineHookWrapperFile("PreToolUse")], 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(toolName string) map[string]any {
+		t.Helper()
+		cmd := exec.Command(node, wrapperPath)
+		cmd.Stdin = strings.NewReader(`{"preToolUse":{"toolName":"` + toolName + `"}}`)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("wrapper execution failed for %q: %v", toolName, err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(out, &result); err != nil {
+			t.Fatalf("wrapper output is not JSON: %v\n%s", err, out)
+		}
+		return result
+	}
+
+	// Regex alternation must match "Write"; the old glob escaped "|" and matched
+	// neither branch.
+	if got := run("Write"); got["cancel"] != true {
+		t.Fatalf("tool=Write: cancel = %v, want true (regex alternation should match)", got["cancel"])
+	}
+	if got := run("Read"); got["cancel"] == true {
+		t.Fatalf("tool=Read: cancel = true, want false (Read must not match Edit|Write)")
+	}
+}
+
 // --- Helpers ---
 
 func assertHasWriteDst(t *testing.T, writes []domain.WriteAction, dst string) {
@@ -892,4 +1327,32 @@ func assertHasWriteDst(t *testing.T, writes []domain.WriteAction, dst string) {
 		dsts = append(dsts, w.Dst)
 	}
 	t.Fatalf("expected write to %q; got writes: %v", dst, dsts)
+}
+
+func mustFindWrite(t *testing.T, writes []domain.WriteAction, dst string) domain.WriteAction {
+	t.Helper()
+	for _, w := range writes {
+		if w.Dst == dst {
+			return w
+		}
+	}
+	var dsts []string
+	for _, w := range writes {
+		dsts = append(dsts, w.Dst)
+	}
+	t.Fatalf("expected write to %q; got writes: %v", dst, dsts)
+	return domain.WriteAction{}
+}
+
+func hasWriteDst(writes []domain.WriteAction, dst string) bool {
+	for _, w := range writes {
+		if w.Dst == dst {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(items []string, want string) bool {
+	return slices.Contains(items, want)
 }

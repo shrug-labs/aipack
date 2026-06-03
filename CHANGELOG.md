@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.29.0]
+
+### Added
+
+- **Portable hooks now render across all supported harnesses.** Claude Code merges hook groups into `settings.local.json`, OpenCode emits an auto-discovered `plugins/aipack-hooks.js` server plugin, Codex writes `.codex/hooks.json` plus trust state, and Cline emits generated wrappers in its hooks directory. `compact.before` is now part of the portable hook event set; hook matchers are regular expressions; handlers can provide `command_windows` for Windows-specific commands.
+
+### Fixed
+
+- **Global sync now respects harness config-root environment variables.** Codex global sync honors `CODEX_HOME`, OpenCode honors `OPENCODE_CONFIG_DIR`, and Cline honors `CLINE_DIR` / `CLINE_DATA_DIR` instead of always writing to the default home-based locations. Cline global hook wrappers remain rooted in `~/Documents/Cline/Hooks/`, matching Cline's native hook discovery.
+- **Settings sync now preserves local scalar values on collision.** When a pack ships scalar settings such as a Codex `profile`, sync updates the value only if the local file still contains the previous managed value; first-time collisions and local edits stay under local control and are reported as conflicts.
+- **Git URL installs with explicit content paths no longer require a root `pack.json`.** Commands such as `aipack pack install --url https://github.com/org/repo --skills path/to/skills --name team-skills` now clone and extract the requested content path directly instead of probing `HEAD/pack.json` first.
+
 ## [0.28.2]
 
 ### Changed

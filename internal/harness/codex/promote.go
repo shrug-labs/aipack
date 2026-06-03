@@ -107,6 +107,7 @@ func addNativeAgents(
 			Content:    tomlBytes,
 			SourcePack: a.SourcePack,
 			Src:        a.SourcePath,
+			Category:   domain.CategoryAgents,
 		})
 		f.Desired = append(f.Desired, dst)
 

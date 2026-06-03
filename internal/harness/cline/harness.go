@@ -34,6 +34,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 		resolve(paths.RulesDir),
 		resolve(paths.WorkflowsDir),
 		resolve(paths.SkillsDir),
+		resolve(paths.HooksDir),
 	}
 	if scope == domain.ScopeProject {
 		// Project: RulesDir (.clinerules) is the parent of workflows; don't remove it.
@@ -114,6 +115,9 @@ func planProject(f *domain.Fragment, ctx engine.SyncContext) error {
 	if err := addPromotedAgents(f, skillsDir, ctx.Namespaced, agents, skills); err != nil {
 		return err
 	}
+	if err := planHooks(f, filepath.Join(pd, paths.HooksDir), ctx.Profile.AllHooks()); err != nil {
+		return err
+	}
 
 	// Cline MCP settings are always global — sync them even in project scope.
 	return planGlobalMCP(f, ctx)
@@ -139,8 +143,42 @@ func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 	if err := addPromotedAgents(f, paths.SkillsDir, ctx.Namespaced, agents, skills); err != nil {
 		return err
 	}
+	if err := planHooks(f, paths.HooksDir, ctx.Profile.AllHooks()); err != nil {
+		return err
+	}
 
 	return planGlobalMCP(f, ctx)
+}
+
+func planHooks(f *domain.Fragment, hooksDir string, hooks []domain.Hook) error {
+	wrappers, sourcePack, warnings, err := RenderHookWrappers(hooks)
+	if err != nil {
+		return fmt.Errorf("cline hooks: %w", err)
+	}
+	f.Warnings = append(f.Warnings, warnings...)
+	if len(wrappers) == 0 {
+		return nil
+	}
+	mode := clineHookWrapperMode()
+	traceRefs := clineHookTraceRefsByEvent(hooks)
+	for _, spec := range clineHookEvents {
+		filename := clineHookWrapperFile(spec.native)
+		content, ok := wrappers[filename]
+		if !ok {
+			continue
+		}
+		dst := filepath.Join(hooksDir, filename)
+		f.Writes = append(f.Writes, domain.WriteAction{
+			Dst:         dst,
+			Content:     content,
+			SourcePack:  sourcePack,
+			Category:    domain.CategoryHooks,
+			DesiredMode: mode,
+			TraceRefs:   traceRefs[spec.native],
+		})
+		f.Desired = append(f.Desired, filepath.Clean(dst))
+	}
+	return nil
 }
 
 // planGlobalMCP syncs Cline MCP settings to the global location.
@@ -192,18 +230,20 @@ func planGlobalMCP(f *domain.Fragment, ctx engine.SyncContext) error {
 
 // Render produces a Fragment for pack rendering.
 func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
-	if len(ctx.Profile.MCPServers) == 0 {
-		return domain.Fragment{}, nil
+	var f domain.Fragment
+	if len(ctx.Profile.MCPServers) > 0 {
+		out, _, err := RenderBytes(nil, ctx.Profile.MCPServers)
+		if err != nil {
+			return domain.Fragment{}, err
+		}
+		dst := filepath.Join(ctx.OutDir, "cline", "cline_mcp_settings.json")
+		f.Writes = append(f.Writes, domain.WriteAction{Dst: dst, Content: out})
+		f.Desired = append(f.Desired, dst)
 	}
-	out, _, err := RenderBytes(nil, ctx.Profile.MCPServers)
-	if err != nil {
+	if err := planHooks(&f, filepath.Join(ctx.OutDir, "cline", "hooks"), ctx.Profile.AllHooks()); err != nil {
 		return domain.Fragment{}, err
 	}
-	dst := filepath.Join(ctx.OutDir, "cline", "cline_mcp_settings.json")
-	return domain.Fragment{
-		Writes:  []domain.WriteAction{{Dst: dst, Content: out}},
-		Desired: []string{dst},
-	}, nil
+	return f, nil
 }
 
 // Capture extracts Cline content for round-trip save.
@@ -213,7 +253,7 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 	if ctx.Scope == domain.ScopeProject {
 		return captureProject(ctx.ProjectDir, ctx.Home, ctx.KnownPacks, res)
 	}
-	return captureGlobal(ctx.Home, ctx.KnownPacks, res)
+	return captureGlobal(ctx.TargetBaseDir(), ctx.KnownPacks, res)
 }
 
 func captureProject(projectDir string, home string, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
@@ -304,7 +344,7 @@ func captureMCP(home string, res *harness.CaptureResult) error {
 	res.Writes = append(res.Writes, domain.WriteAction{
 		Dst: filepath.Join("configs", "cline", "cline_mcp_settings.json"), Content: b, Src: sourcePath,
 	})
-	res.Warnings = append(res.Warnings, parseClineSettings(res.MCPServers, res.AllowedTools, b)...)
+	res.Warnings = append(res.Warnings, parseClineSettings(res.MCPServers, res.AlwaysAllowedTools, b)...)
 
 	for _, p := range mcpSettingsPaths(home) {
 		if filepath.Clean(p) == filepath.Clean(sourcePath) {
@@ -386,7 +426,13 @@ type clineCapturedServer struct {
 	AlwaysAllow []string          `json:"alwaysAllow"`
 }
 
-func parseClineSettings(servers map[string]domain.MCPServer, allowed map[string][]string, b []byte) []domain.Warning {
+// parseClineSettings populates servers + always-allow tools from a Cline MCP
+// settings JSON blob. Cline's wire format only carries one auto-approve list
+// (`alwaysAllow`), semantically equivalent to AlwaysAllowedTools — so the
+// captured tools land there, not under AllowedTools. (cline/render.go unions
+// both fields back into alwaysAllow on render, so the round trip is stable.)
+// alwaysAllowed may be nil for callers that only need the parsed servers.
+func parseClineSettings(servers map[string]domain.MCPServer, alwaysAllowed map[string][]string, b []byte) []domain.Warning {
 	var cfg clineSettingsCapture
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return []domain.Warning{{Message: fmt.Sprintf("failed to parse Cline MCP settings: %v", err)}}
@@ -418,8 +464,8 @@ func parseClineSettings(servers map[string]domain.MCPServer, allowed map[string]
 			continue
 		}
 		servers[name] = srv
-		if len(entry.AlwaysAllow) > 0 {
-			allowed[name] = append([]string{}, entry.AlwaysAllow...)
+		if alwaysAllowed != nil && len(entry.AlwaysAllow) > 0 {
+			alwaysAllowed[name] = append([]string{}, entry.AlwaysAllow...)
 		}
 	}
 	return nil

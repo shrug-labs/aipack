@@ -122,6 +122,66 @@ func TestClassifyFile_Create(t *testing.T) {
 	}
 }
 
+func TestClassifyWrite_ModeDriftIsManaged(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "hook")
+	content := []byte("#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(dst, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+
+	fd, err := eng.ClassifyWrite(domain.WriteAction{
+		Dst:         dst,
+		Content:     content,
+		SourcePack:  "pack1",
+		DesiredMode: 0o755,
+	}, "hook", lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fd.Kind != domain.DiffManaged {
+		t.Fatalf("Kind = %q, want %q", fd.Kind, domain.DiffManaged)
+	}
+	if fd.DesiredMode != 0o755 {
+		t.Fatalf("DesiredMode = %o, want 755", fd.DesiredMode)
+	}
+}
+
+func TestMemFS_ReportsWrittenFileMode(t *testing.T) {
+	t.Parallel()
+	fs := NewMemFS()
+	dir := "/hooks"
+	path := filepath.Join(dir, "PreToolUse")
+	if err := fs.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := fs.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("Stat mode = %o, want 755", got)
+	}
+	entries, err := fs.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryInfo, err := entries[0].Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entryInfo.Mode().Perm(); got != 0o755 {
+		t.Fatalf("DirEntry mode = %o, want 755", got)
+	}
+}
+
 func TestClassifyFile_Identical(t *testing.T) {
 	t.Parallel()
 	eng := New(nil, nil)
@@ -429,6 +489,117 @@ func TestComputeSettingsDiffs_MergeMode_ReformattedFileIsIdentical(t *testing.T)
 	// managed keys are unchanged, so this should be identical.
 	if diffs[0].Kind != domain.DiffIdentical {
 		t.Errorf("Kind = %q, want %q — harness reformatting should not trigger update", diffs[0].Kind, domain.DiffIdentical)
+	}
+}
+
+func TestComputeSettingsDiffs_MergeMode_RestoresDeletedManagedStringArrayItem(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "settings.json")
+
+	prevOnDisk := []byte(`{
+  "permissions": {
+    "allow": ["Bash(echo:*)", "Read(*)", "user-added"]
+  }
+}
+`)
+	onDisk := []byte(`{
+  "permissions": {
+    "allow": ["Bash(echo:*)", "user-added"]
+  }
+}
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	managed := []byte(`{
+  "permissions": {
+    "allow": ["Bash(echo:*)", "Read(*)"]
+  }
+}
+`)
+	lg := domain.NewLedger()
+	lg.Record(dst, prevOnDisk, "permissions-pack", managed, time.Now())
+
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{
+		{Dst: dst, Desired: managed, Harness: domain.HarnessClaudeCode, Label: "settings.json", MergeMode: true},
+	}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	if diffs[0].Kind == domain.DiffIdentical {
+		t.Fatalf("Kind = %q, want managed repair for deleted managed permission", diffs[0].Kind)
+	}
+	got := string(diffs[0].Desired)
+	if !strings.Contains(got, `"Read(*)"`) {
+		t.Fatalf("deleted managed permission should be restored, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"user-added"`) {
+		t.Fatalf("user-added permission should be preserved, got:\n%s", got)
+	}
+}
+
+func TestComputeSettingsDiffs_MergeMode_RestoresDeletedManagedClaudeHookGroup(t *testing.T) {
+	t.Parallel()
+	eng := New(nil, nil)
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "settings.local.json")
+
+	prevOnDisk := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed"}]},
+      {"matcher": "Edit", "hooks": [{"type": "command", "command": "user"}]}
+    ]
+  }
+}
+`)
+	onDisk := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Edit", "hooks": [{"type": "command", "command": "user"}]}
+    ]
+  }
+}
+`)
+	if err := os.WriteFile(dst, onDisk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	managed := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed"}]}
+    ]
+  }
+}
+`)
+	lg := domain.NewLedger()
+	lg.Record(dst, prevOnDisk, "hooks-pack", managed, time.Now())
+
+	diffs, err := eng.ComputeSettingsDiffs([]domain.SettingsAction{
+		{Dst: dst, Desired: managed, Harness: domain.HarnessClaudeCode, Label: "settings.local.json", MergeMode: true},
+	}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	if diffs[0].Kind == domain.DiffIdentical {
+		t.Fatalf("Kind = %q, want managed repair for deleted managed hook", diffs[0].Kind)
+	}
+	got := string(diffs[0].Desired)
+	if !strings.Contains(got, `"command": "managed"`) {
+		t.Fatalf("deleted managed hook group should be restored, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"command": "user"`) {
+		t.Fatalf("user hook group should be preserved, got:\n%s", got)
 	}
 }
 

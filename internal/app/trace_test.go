@@ -178,6 +178,27 @@ func TestMatchesWrite(t *testing.T) {
 		}
 	})
 
+	t.Run("match promoted content by source path before category filter", func(t *testing.T) {
+		source := &TraceSource{
+			Pack:       "core",
+			SourcePath: "/packs/core/agents/reviewer.md",
+			Category:   "agents",
+		}
+		wr := domain.WriteAction{
+			Dst:        "/home/user/.agents/skills/reviewer/SKILL.md",
+			Src:        "/packs/core/agents/reviewer.md",
+			SourcePack: "core",
+			Category:   domain.CategorySkills,
+		}
+		matched, embedded := matchesWrite(wr, source, "reviewer")
+		if !matched {
+			t.Error("expected promoted write to match by exact source path")
+		}
+		if embedded {
+			t.Error("expected promoted write not to be embedded")
+		}
+	})
+
 	t.Run("no match different source", func(t *testing.T) {
 		wr := domain.WriteAction{
 			Dst:        "/home/user/.claude/rules/other.md",
@@ -239,6 +260,133 @@ func TestRootsIndex_Identify(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("Identify(%q) = %q, want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestRunTrace_HookFindsClaudeSettingsDestination(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name: "hooks-pack",
+			Hooks: []domain.Hook{{
+				ID:          "audit-bash",
+				SourcePack:  "hooks-pack",
+				SourcePath:  filepath.Join(home, "packs", "hooks-pack", "hooks", "audit-bash", domain.HookEntryFile),
+				Description: "Audit Bash usage",
+				Events: []domain.HookEvent{{
+					On:    domain.HookEventToolBefore,
+					Match: domain.HookMatch{Tool: "Bash"},
+					Handler: domain.HookHandler{
+						Type:    domain.HookHandlerTypeCommand,
+						Command: "echo audit",
+					},
+				}},
+			}},
+		}},
+	}
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), profile, TraceRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
+			Home:       home,
+		},
+		ResourceType: "hook",
+		ResourceName: "audit-bash",
+	}, testRegistry())
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+	if len(result.Destinations) != 1 {
+		t.Fatalf("destinations = %d, want 1: %+v", len(result.Destinations), result.Destinations)
+	}
+	dest := result.Destinations[0]
+	if dest.Harness != string(domain.HarnessClaudeCode) {
+		t.Fatalf("harness = %q, want %q", dest.Harness, domain.HarnessClaudeCode)
+	}
+	if dest.Path != filepath.Join(projectDir, ".claude", "settings.local.json") {
+		t.Fatalf("path = %q, want Claude settings.local.json", dest.Path)
+	}
+	if !dest.Embedded {
+		t.Fatal("Claude hook destination should be marked embedded")
+	}
+}
+
+func TestRunTrace_HookClineWrapperMatchesSpecificHook(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "project")
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name: "hooks-pack",
+			Hooks: []domain.Hook{
+				{
+					ID:         "audit-tools",
+					SourcePack: "hooks-pack",
+					SourcePath: filepath.Join(home, "packs", "hooks-pack", "hooks", "audit-tools", domain.HookEntryFile),
+					Events: []domain.HookEvent{
+						{
+							On: domain.HookEventPromptSubmit,
+							Handler: domain.HookHandler{
+								Type:    domain.HookHandlerTypeCommand,
+								Command: "echo prompt",
+							},
+						},
+						{
+							On: domain.HookEventToolBefore,
+							Handler: domain.HookHandler{
+								Type:    domain.HookHandlerTypeCommand,
+								Command: "echo before",
+							},
+						},
+					},
+				},
+				{
+					ID:         "audit-prompts",
+					SourcePack: "hooks-pack",
+					SourcePath: filepath.Join(home, "packs", "hooks-pack", "hooks", "audit-prompts", domain.HookEntryFile),
+					Events: []domain.HookEvent{{
+						On: domain.HookEventPromptSubmit,
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo prompt",
+						},
+					}},
+				},
+			},
+		}},
+	}
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), profile, TraceRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessCline},
+			Home:       home,
+		},
+		ResourceType: "hook",
+		ResourceName: "audit-tools",
+	}, testRegistry())
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+	if len(result.Destinations) != 2 {
+		t.Fatalf("destinations = %d, want 2: %+v", len(result.Destinations), result.Destinations)
+	}
+	wrappers := map[string]bool{}
+	for _, dest := range result.Destinations {
+		wrappers[filepath.Base(dest.Path)] = true
+	}
+	if !wrappers["PreToolUse"] && !wrappers["PreToolUse.ps1"] {
+		t.Fatalf("destinations missing PreToolUse wrapper: %+v", result.Destinations)
+	}
+	if !wrappers["UserPromptSubmit"] && !wrappers["UserPromptSubmit.ps1"] {
+		t.Fatalf("destinations missing UserPromptSubmit wrapper: %+v", result.Destinations)
 	}
 }
 

@@ -60,8 +60,14 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 			},
 			{
 				Path: settingsPath, Format: harness.FormatJSON,
-				Strip: func(root map[string]any, _ harness.EditContext) { stripManagedPermissions(root) },
-				Reset: func(root map[string]any, _ harness.EditContext) { delete(root, "permissions") },
+				Strip: func(root map[string]any, ctx harness.EditContext) {
+					stripManagedPermissions(root)
+					stripManagedHooks(root, ctx)
+				},
+				Reset: func(root map[string]any, ctx harness.EditContext) {
+					delete(root, "permissions")
+					stripManagedHooks(root, ctx)
+				},
 			},
 			{
 				Path: pluginSettingsPath, Format: harness.FormatJSON,
@@ -173,27 +179,37 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessClaudeCode, "settings.local.json")
 	hasMCP := len(ctx.Profile.MCPServers) > 0
-	hasManagedKeys := hasMCP // claudecode has no agent registrations or other managed-content sources
+	hooks := ctx.Profile.AllHooks()
+	renderedHooks, hookSourcePack, err := RenderHooks(hooks)
+	if err != nil {
+		return fmt.Errorf("render Claude hooks: %w", err)
+	}
+	hasHooks := len(renderedHooks) > 0
+	if sp == "" && hasHooks {
+		sp = hookSourcePack
+	}
+	hookTraceRefs := domain.TraceRefsForHooks(hooks)
+	hasManagedKeys := hasMCP || hasHooks
 	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
 	if decision.EmitSettings {
-		out, err := RenderSettingsBytes(base, ctx.Profile.MCPServers)
+		out, err := RenderSettingsBytesWithRenderedHooks(base, ctx.Profile.MCPServers, renderedHooks)
 		if err != nil {
 			return fmt.Errorf("render settings bytes: %w", err)
 		}
 		f.Settings = append(f.Settings, domain.SettingsAction{
 			Dst: settingsPath, Desired: out, Harness: domain.HarnessClaudeCode,
-			Label: "settings.local.json", SourcePack: sp, MergeMode: true,
+			Label: "settings.local.json", SourcePack: sp, MergeMode: true, TraceRefs: hookTraceRefs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
 		// Skip base template, render only managed keys (MCP permissions).
-		out, err := RenderSettingsBytes(nil, ctx.Profile.MCPServers)
+		out, err := RenderSettingsBytesWithRenderedHooks(nil, ctx.Profile.MCPServers, renderedHooks)
 		if err != nil {
 			return fmt.Errorf("render managed settings bytes: %w", err)
 		}
 		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst: settingsPath, Desired: out, Harness: domain.HarnessClaudeCode,
-			Label: "settings.local.json (managed keys)", SourcePack: sp, MergeMode: true,
+			Label: "settings.local.json (managed keys)", SourcePack: sp, MergeMode: true, TraceRefs: hookTraceRefs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	}
@@ -259,7 +275,7 @@ func compositePluginSourcePack(plugins []domain.Plugin) string {
 // Render produces a Fragment for pack rendering.
 func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Fragment, error) {
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessClaudeCode, "settings.local.json")
-	out, err := RenderSettingsBytes(base, ctx.Profile.MCPServers)
+	out, err := RenderSettingsBytesWithHooks(base, ctx.Profile.MCPServers, ctx.Profile.AllHooks())
 	if err != nil {
 		return domain.Fragment{}, err
 	}

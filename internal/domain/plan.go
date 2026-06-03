@@ -62,6 +62,7 @@ func (f *Fragment) addContentWrites(baseDir, subDir string, cat PackCategory, it
 			Content:    item.writeRaw(),
 			SourcePack: item.writeSourcePack(),
 			Src:        item.writeSourcePath(),
+			Category:   cat,
 		})
 		f.Desired = append(f.Desired, dst)
 	}

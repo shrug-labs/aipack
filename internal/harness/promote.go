@@ -116,6 +116,7 @@ func AddPromotedSkillWrite(f *domain.Fragment, skillsDir, name string, content [
 		Content:    content,
 		SourcePack: sourcePack,
 		Src:        sourcePath,
+		Category:   domain.CategorySkills,
 	})
 	f.Desired = append(f.Desired, skillDir, dst)
 }
@@ -198,6 +199,7 @@ func CaptureAsAgent(res *CaptureResult, fm PromotedFrontmatter, body []byte, nam
 		Dst:          filepath.Join("agents", name+".md"),
 		Content:      rendered,
 		Src:          src,
+		Category:     domain.CategoryAgents,
 		IsContent:    true,
 		SourceDigest: domain.SingleFileDigest(rawSkill),
 	})
@@ -237,6 +239,7 @@ func CaptureAsWorkflow(res *CaptureResult, fm PromotedFrontmatter, body []byte, 
 		Dst:          filepath.Join("workflows", name+".md"),
 		Content:      rendered,
 		Src:          src,
+		Category:     domain.CategoryWorkflows,
 		IsContent:    true,
 		SourceDigest: domain.SingleFileDigest(rawSkill),
 	})

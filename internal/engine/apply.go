@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -91,7 +92,7 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, skipSettings bool, lg doma
 	var diffs []FileDiff
 
 	for _, w := range plan.Writes {
-		fd, err := e.ClassifyFile(w.Dst, w.Content, filepath.Base(w.Dst), w.SourcePack, lg)
+		fd, err := e.ClassifyWrite(w, filepath.Base(w.Dst), lg)
 		if err != nil {
 			return nil, err
 		}
@@ -210,6 +211,15 @@ func (e *Engine) StaleCandidatesWithLedger(plan domain.Plan, managedRoots []stri
 func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 	switch d.Kind {
 	case domain.DiffIdentical:
+		// MergeConflict ops can be attached to an otherwise-identical settings
+		// file (first-sync scalar collision: the pack tried to set a key the
+		// user already has). The disk content is unchanged, but the conflict
+		// still needs to be surfaced so pack authors and users see that the
+		// managed value was rejected rather than silently applied.
+		if !ar.Quiet && ar.Stdout != nil && hasMergeConflict(d.MergeOps) {
+			fmt.Fprintf(ar.Stdout, "  unchanged: %s\n", d.Label)
+			emitMergeOpsSummary(ar.Stdout, d.MergeOps)
+		}
 		return false, nil
 
 	case domain.DiffCreate:
@@ -223,12 +233,13 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		if err := e.FS.MkdirAll(filepath.Dir(d.Dst), 0o755); err != nil {
 			return false, err
 		}
-		return true, e.FS.WriteFile(d.Dst, d.Desired, 0o644)
+		return true, e.FS.WriteFile(d.Dst, d.Desired, fileDiffMode(d))
 
 	case domain.DiffManaged:
 		if !ar.Quiet && ar.Stdout != nil {
 			fmt.Fprintf(ar.Stdout, "  update: %s\n", d.Label)
 			emitMergeOpsSummary(ar.Stdout, d.MergeOps)
+			emitManagedDiffSummary(ar.Stdout, d)
 		}
 		if ar.DryRun {
 			return false, nil
@@ -236,7 +247,7 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		if err := e.FS.MkdirAll(filepath.Dir(d.Dst), 0o755); err != nil {
 			return false, err
 		}
-		return true, e.FS.WriteFile(d.Dst, d.Desired, 0o644)
+		return true, e.FS.WriteFile(d.Dst, d.Desired, fileDiffMode(d))
 
 	case domain.DiffConflict:
 		if !ar.Quiet && ar.Stdout != nil {
@@ -255,7 +266,7 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 			if err := e.FS.MkdirAll(filepath.Dir(d.Dst), 0o755); err != nil {
 				return false, err
 			}
-			return true, e.FS.WriteFile(d.Dst, d.Desired, 0o644)
+			return true, e.FS.WriteFile(d.Dst, d.Desired, fileDiffMode(d))
 		}
 		if !ar.Quiet && ar.Stdout != nil {
 			fmt.Fprintf(ar.Stdout, "  skip (conflict, use --force to apply): %s\n", d.Label)
@@ -265,11 +276,44 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 	return false, fmt.Errorf("unhandled diff kind %q for %s", d.Kind, d.Label)
 }
 
+func fileDiffMode(d FileDiff) os.FileMode {
+	if d.DesiredMode != 0 {
+		return d.DesiredMode.Perm()
+	}
+	return defaultWriteMode
+}
+
 func emitFileDiff(w io.Writer, d FileDiff) {
 	if w == nil || d.Diff == "" {
 		return
 	}
 	fmt.Fprintf(w, "\n--- Diff: %s ---\n%s\n", d.Label, d.Diff)
+}
+
+func hasMergeConflict(ops []MergeOp) bool {
+	for _, op := range ops {
+		if op.Action == MergeConflict {
+			return true
+		}
+	}
+	return false
+}
+
+// emitManagedDiffSummary prints a one-line reason for a managed update when
+// the FileDiff lacks MergeOps but carries a short Diff explanation (e.g. the
+// mode-only-drift path in classifyWrite). For full unified-diff content the
+// caller can already use emitFileDiff in a verbose/dry-run flow.
+func emitManagedDiffSummary(w io.Writer, d FileDiff) {
+	if w == nil || d.Diff == "" || len(d.MergeOps) > 0 {
+		return
+	}
+	// Short single-line diff (e.g. "mode: 0o644 → 0o755 ..."): print inline.
+	if !strings.Contains(strings.TrimSuffix(d.Diff, "\n"), "\n") {
+		fmt.Fprintf(w, "    %s", d.Diff)
+		if !strings.HasSuffix(d.Diff, "\n") {
+			fmt.Fprintln(w)
+		}
+	}
 }
 
 func validatePlanDestinations(plan domain.Plan, allowed []string) error {
@@ -321,6 +365,7 @@ func emitMergeOpsSummary(w io.Writer, ops []MergeOp) {
 		return
 	}
 	var adds, updates, removes, resets int
+	var conflicts []string
 	for _, op := range ops {
 		switch op.Action {
 		case MergeAdd:
@@ -331,6 +376,8 @@ func emitMergeOpsSummary(w io.Writer, ops []MergeOp) {
 			removes++
 		case MergeReset:
 			resets++
+		case MergeConflict:
+			conflicts = append(conflicts, op.Key)
 		}
 	}
 	var parts []string
@@ -346,5 +393,13 @@ func emitMergeOpsSummary(w io.Writer, ops []MergeOp) {
 	if removes > 0 {
 		parts = append(parts, fmt.Sprintf("%d removed", removes))
 	}
-	fmt.Fprintf(w, "    merge: %s\n", strings.Join(parts, ", "))
+	if len(conflicts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d kept user value", len(conflicts)))
+	}
+	if len(parts) > 0 {
+		fmt.Fprintf(w, "    merge: %s\n", strings.Join(parts, ", "))
+	}
+	for _, key := range conflicts {
+		fmt.Fprintf(w, "      conflict: %s (pack value rejected; on-disk user value preserved)\n", key)
+	}
 }

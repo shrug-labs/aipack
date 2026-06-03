@@ -337,6 +337,47 @@ func TestLayout_StripManaged_StripsDenyEntries(t *testing.T) {
 	}
 }
 
+func TestLayout_StripManaged_RemovesOnlyManagedHookGroups(t *testing.T) {
+	t.Parallel()
+	input := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed"}]},
+      {"matcher": "Edit", "hooks": [{"type": "command", "command": "user"}]}
+    ]
+  }
+}`)
+	prev := []byte(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed"}]}
+    ]
+  }
+}`)
+
+	h := Harness{}
+	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
+	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
+	out, err := layout.StripManaged(input, settingsPath, harness.EditContext{PreviousManagedOverlay: prev})
+	if err != nil {
+		t.Fatalf("StripManaged: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks := got["hooks"].(map[string]any)
+	groups := hooks["PreToolUse"].([]any)
+	if len(groups) != 1 {
+		t.Fatalf("groups = %v, want one user group", groups)
+	}
+	group := groups[0].(map[string]any)
+	if group["matcher"] != "Edit" {
+		t.Fatalf("remaining matcher = %v, want Edit", group["matcher"])
+	}
+}
+
 func TestRenderMCPBytesFromTyped_SSEServer(t *testing.T) {
 	t.Parallel()
 	servers := []domain.MCPServer{

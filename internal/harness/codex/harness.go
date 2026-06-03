@@ -23,8 +23,8 @@ type Harness struct{}
 func (Harness) ID() domain.Harness { return domain.HarnessCodex }
 
 // Layout describes Codex's filesystem footprint for a given scope.
-func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
-	paths := PathsForScope(scope)
+func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
+	paths := PathsForScope(scope, layoutTargetConfigDir(scope, baseDir, home))
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
 	hooksPath := filepath.Join(baseDir, paths.HooksFile)
 	agentsDir := filepath.Join(baseDir, paths.AgentsDir)
@@ -60,6 +60,12 @@ func (Harness) Layout(scope domain.Scope, baseDir, _ string) harness.Layout {
 		}}
 	}
 	return l
+}
+
+func layoutTargetConfigDir(scope domain.Scope, baseDir, home string) bool {
+	return scope == domain.ScopeGlobal &&
+		strings.TrimSpace(home) != "" &&
+		filepath.Clean(baseDir) != filepath.Clean(home)
 }
 
 func pruneLegacyMCPServers(root map[string]any, names map[string]struct{}) {
@@ -99,7 +105,7 @@ func planProject(f *domain.Fragment, ctx engine.SyncContext) error {
 }
 
 func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
-	paths := GlobalPaths
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
 	overrideBase := filepath.Dir(filepath.Join(ctx.TargetDir, paths.OverrideFile))
 	return planCodex(f, ctx, overrideBase, ctx.TargetDir, filepath.Join(ctx.TargetDir, paths.SettingsFile))
 }
@@ -107,7 +113,8 @@ func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 // planCodex is the shared implementation for both project and global scope.
 // overrideBase is where AGENTS.override.md lives; skillsBase is where .agents/skills/ lives.
 func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsBase, settingsPath string) error {
-	skillsSubDir := filepath.Join(".agents", "skills")
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
+	skillsSubDir := paths.SkillsDir
 
 	if rules := ctx.Profile.AllRules(); len(rules) > 0 {
 		baseAgents := filepath.Join(overrideBase, "AGENTS.md")
@@ -124,7 +131,8 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		f.Writes = append(f.Writes, domain.WriteAction{
 			Dst:        dst,
 			Content:    []byte(override),
-			SourcePack: compositeSourcePack(rules, func(r domain.Rule) string { return r.SourcePack }),
+			SourcePack: harness.CompositeSourcePack(rules, func(r domain.Rule) string { return r.SourcePack }),
+			Category:   domain.CategoryRules,
 		})
 		f.Desired = append(f.Desired, dst)
 	}
@@ -140,7 +148,6 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	addPromotedWorkflows(f, skillsBase, skillsSubDir, ctx.Namespaced, workflows)
 
 	// Render agents as native Codex TOML files and collect registration entries.
-	paths := PathsForScope(ctx.Scope)
 	agentsDir := filepath.Join(skillsBase, paths.AgentsDir)
 	agentRegs, agentWarnings := addNativeAgents(f, agents, nativeAgentRenderContext{
 		AgentsDir:     agentsDir,
@@ -158,15 +165,19 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	plugins := ctx.Profile.AllPlugins()
 	hasPlugins := len(plugins) > 0
 	hooksPath := filepath.Join(skillsBase, paths.HooksFile)
-	renderedHooks, err := RenderHooksJSON(ctx.Profile.AllHooks(), hooksPath)
+	hooks := ctx.Profile.AllHooks()
+	renderedHooks, err := RenderHooksJSON(hooks, hooksPath)
 	if err != nil {
 		return err
 	}
+	hookTraceRefs := domain.TraceRefsForHooks(hooks)
 	if len(renderedHooks.JSON) > 0 {
 		f.Writes = append(f.Writes, domain.WriteAction{
 			Dst:        hooksPath,
 			Content:    renderedHooks.JSON,
 			SourcePack: renderedHooks.SourcePack,
+			Category:   domain.CategoryHooks,
+			TraceRefs:  hookTraceRefs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(hooksPath))
 	}
@@ -193,7 +204,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		mcpRendered = out
 		f.Settings = append(f.Settings, domain.SettingsAction{
 			Dst: settingsPath, Desired: out, Harness: domain.HarnessCodex,
-			Label: "config.toml", SourcePack: sp, MergeMode: true,
+			Label: "config.toml", SourcePack: sp, MergeMode: true, TraceRefs: hookTraceRefs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
@@ -204,7 +215,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		mcpRendered = managed
 		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst: settingsPath, Desired: managed, Harness: domain.HarnessCodex,
-			Label: "config.toml (managed keys)", SourcePack: sp, MergeMode: decision.MergeMode,
+			Label: "config.toml (managed keys)", SourcePack: sp, MergeMode: decision.MergeMode, TraceRefs: hookTraceRefs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	}
@@ -224,22 +235,6 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	}
 
 	return nil
-}
-
-// compositeSourcePack returns the SourcePack for a composite file built from
-// multiple items. If all items share the same pack, that name is returned;
-// otherwise "(composite)" signals multi-pack provenance.
-func compositeSourcePack[T any](items []T, sourcePack func(T) string) string {
-	if len(items) == 0 {
-		return ""
-	}
-	first := sourcePack(items[0])
-	for _, item := range items[1:] {
-		if sourcePack(item) != first {
-			return "(composite)"
-		}
-	}
-	return first
 }
 
 func buildAgentsOverride(rules []domain.Rule, existingAgents string, namespaced bool) (string, error) {
@@ -276,7 +271,8 @@ func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Frag
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessCodex, "config.toml")
 	configPath := filepath.Join(ctx.OutDir, "codex", "config.toml")
 	hooksPath := filepath.Join(ctx.OutDir, "codex", "hooks.json")
-	renderedHooks, err := RenderHooksJSON(ctx.Profile.AllHooks(), hooksPath)
+	hooks := ctx.Profile.AllHooks()
+	renderedHooks, err := RenderHooksJSON(hooks, hooksPath)
 	if err != nil {
 		return domain.Fragment{}, err
 	}
@@ -293,7 +289,7 @@ func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Frag
 		Desired: []string{configPath},
 	}
 	if len(renderedHooks.JSON) > 0 {
-		f.Writes = append(f.Writes, domain.WriteAction{Dst: hooksPath, Content: renderedHooks.JSON, SourcePack: renderedHooks.SourcePack})
+		f.Writes = append(f.Writes, domain.WriteAction{Dst: hooksPath, Content: renderedHooks.JSON, SourcePack: renderedHooks.SourcePack, Category: domain.CategoryHooks})
 		f.Desired = append(f.Desired, hooksPath)
 	}
 	return f, nil
@@ -306,7 +302,7 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 	if ctx.Scope == domain.ScopeProject {
 		return captureProject(ctx.ProjectDir, ctx.KnownPacks, res)
 	}
-	return captureGlobal(ctx.Home, ctx.KnownPacks, res)
+	return captureGlobal(ctx.TargetBaseDir(), ctx.TargetConfigDir, ctx.KnownPacks, res)
 }
 
 func captureProject(projectDir string, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
@@ -336,8 +332,8 @@ func captureProject(projectDir string, knownPacks map[string]struct{}, res harne
 	return res, nil
 }
 
-func captureGlobal(home string, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
-	paths := GlobalPaths
+func captureGlobal(home string, targetConfigDir bool, knownPacks map[string]struct{}, res harness.CaptureResult) (harness.CaptureResult, error) {
+	paths := PathsForScope(domain.ScopeGlobal, targetConfigDir)
 	harness.CapturePromotedContent(
 		filepath.Join(home, paths.SkillsDir),
 		knownPacks,

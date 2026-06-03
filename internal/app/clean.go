@@ -77,6 +77,7 @@ func RunClean(ctx context.Context, eng *engine.Engine, req CleanRequest, reg *ha
 		eng: eng, configDir: req.ConfigDir, scope: req.Scope,
 		home: home, projectDir: req.ProjectDir, harnesses: hs,
 		wipeLedger: req.WipeLedger, wipeCache: req.WipeCache, reg: reg,
+		env: req.TargetSpec.Env,
 	}
 
 	if req.DryRun {
@@ -188,6 +189,7 @@ type cleanTarget struct {
 	wipeLedger bool
 	wipeCache  bool
 	reg        *harness.Registry
+	env        map[string]string // optional caller-provided env overrides
 }
 
 func buildCleanOps(t cleanTarget) []cleanOp {
@@ -199,17 +201,13 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 	var ops []cleanOp
 	seenRemovePaths := map[string]struct{}{}
 
-	baseDir := projectDir
-	if scope == domain.ScopeGlobal {
-		baseDir = home
-	}
-
 	for _, hid := range hs {
 		h, err := t.reg.Lookup(hid)
 		if err != nil {
 			continue
 		}
-		layout := h.Layout(scope, baseDir, home)
+		spec := TargetSpec{Scope: scope, ProjectDir: projectDir, Home: home, Env: t.env}
+		layout := h.Layout(scope, targetDirForHarness(spec, hid), home)
 
 		ledgerPath := engine.LedgerPath(configDir, scope, projectDir, hid)
 		lg, _, lgErr := t.eng.LoadLedger(ledgerPath)
@@ -227,8 +225,11 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 			ops = append(ops, editFileOp{
 				FilePath: of.Path,
 				Format:   of.Format,
-				Context:  harness.EditContext{ManagedMCPServers: mcpIndex.ForPath(of.Path)},
-				Edit:     of.Reset,
+				Context: harness.EditContext{
+					ManagedMCPServers:      mcpIndex.ForPath(of.Path),
+					PreviousManagedOverlay: lg.PrevManagedOverlay(of.Path),
+				},
+				Edit: of.Reset,
 			})
 		}
 

@@ -12,13 +12,15 @@ import (
 
 // mockPlanner is a test double for Planner that returns a fixed Fragment or error.
 type mockPlanner struct {
-	id   domain.Harness
-	frag domain.Fragment
-	err  error
+	id        domain.Harness
+	frag      domain.Fragment
+	err       error
+	targetDir string
 }
 
 func (m *mockPlanner) ID() domain.Harness { return m.id }
-func (m *mockPlanner) Plan(_ context.Context, _ SyncContext) (domain.Fragment, error) {
+func (m *mockPlanner) Plan(_ context.Context, ctx SyncContext) (domain.Fragment, error) {
+	m.targetDir = ctx.TargetDir
 	return m.frag, m.err
 }
 
@@ -153,6 +155,26 @@ func TestPlanSync_GlobalRequiresHome(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HOME") {
 		t.Errorf("error %q should contain %q", err, "HOME")
+	}
+}
+
+func TestPlanSync_UsesTargetDirOverride(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	target := t.TempDir()
+	planner := &mockPlanner{id: domain.HarnessCodex}
+	req := PlanRequest{
+		Scope:     domain.ScopeGlobal,
+		Harnesses: []domain.Harness{domain.HarnessCodex},
+		Home:      home,
+		TargetDir: target,
+	}
+
+	if _, err := PlanSync(context.Background(), domain.NewProfile(), req, []Planner{planner}); err != nil {
+		t.Fatalf("PlanSync: %v", err)
+	}
+	if planner.targetDir != target {
+		t.Fatalf("planner TargetDir = %q, want %q", planner.targetDir, target)
 	}
 }
 

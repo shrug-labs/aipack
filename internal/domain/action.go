@@ -1,11 +1,19 @@
 package domain
 
+import "os"
+
 // WriteAction represents a file to be written with in-memory content.
 type WriteAction struct {
 	Dst        string // target file path
 	Content    []byte // full content to write
 	SourcePack string // pack that produced this write
 	Src        string // set by Capture (abs path read from); empty for Plan writes
+	Category   PackCategory
+	TraceRefs  []TraceRef // embedded resources represented by this generated file
+
+	// DesiredMode optionally sets the generated file's permission bits.
+	// Zero preserves the engine default for ordinary generated files.
+	DesiredMode os.FileMode
 
 	// IsContent marks this write as pack content (agents, workflows) rather
 	// than a settings file. Content writes are saved directly without
@@ -29,6 +37,14 @@ func (w WriteAction) EffectiveDigest() string {
 	return SingleFileDigest(w.Content)
 }
 
+// EffectiveMode returns the mode to use when writing this action.
+func (w WriteAction) EffectiveMode(defaultMode os.FileMode) os.FileMode {
+	if w.DesiredMode != 0 {
+		return w.DesiredMode.Perm()
+	}
+	return defaultMode
+}
+
 // CopyAction represents a file or directory to be copied from source to destination.
 type CopyAction struct {
 	Src        string   // source path (pack file or directory)
@@ -49,6 +65,34 @@ type SettingsAction struct {
 	SourcePack     string  // harness settings source pack name
 	MergeMode      bool    // when true, merge managed keys into existing file
 	AdditiveOnly   bool    // when true, merge adds/updates managed keys but never removes absent keys
+	TraceRefs      []TraceRef
+}
+
+// TraceRef identifies one pack resource embedded in a generated write or
+// settings action.
+type TraceRef struct {
+	Category   PackCategory
+	Name       string
+	SourcePack string
+}
+
+// TraceRefsForHooks returns exact trace references for hook descriptors.
+func TraceRefsForHooks(hooks []Hook) []TraceRef {
+	refs := make([]TraceRef, 0, len(hooks))
+	seen := map[string]bool{}
+	for _, hook := range hooks {
+		key := hook.SourcePack + "\x00" + hook.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		refs = append(refs, TraceRef{
+			Category:   CategoryHooks,
+			Name:       hook.ID,
+			SourcePack: hook.SourcePack,
+		})
+	}
+	return refs
 }
 
 // MCPAction represents a single MCP server as a first-class sync unit.

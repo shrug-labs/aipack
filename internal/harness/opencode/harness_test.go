@@ -177,6 +177,219 @@ func TestPlan_Global_ContentPaths(t *testing.T) {
 	assertHasWriteDst(t, f.Writes, wantSkill)
 }
 
+func TestPlan_Global_UsesOPENCODE_CONFIG_DIRAsRoot(t *testing.T) {
+	opencodeDir := t.TempDir()
+
+	skillDir := testutil.SkillDir(t, "diagnose")
+	ctx := engine.SyncContext{
+		Scope:           domain.ScopeGlobal,
+		TargetDir:       opencodeDir,
+		TargetConfigDir: true,
+		Namespaced:      true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Rules: []domain.Rule{
+					{Name: "global-rule", Raw: []byte("# Global"), SourcePack: "pack-a"},
+				},
+				Agents: []domain.Agent{
+					{Name: "planner", Raw: []byte("# Planner"), SourcePack: "pack-a"},
+				},
+				Workflows: []domain.Workflow{
+					{Name: "deploy", Raw: []byte("# Deploy"), SourcePack: "pack-a"},
+				},
+				Skills: []domain.Skill{
+					{Name: "diagnose", DirPath: skillDir, SourcePack: "pack-a"},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	assertHasWriteDst(t, f.Writes, filepath.Join(opencodeDir, "rules", "global-rule__aipack__pack-a.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(opencodeDir, "agents", "planner__aipack__pack-a.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(opencodeDir, "commands", "deploy__aipack__pack-a.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(opencodeDir, "skills", "diagnose__aipack__pack-a", domain.SkillEntryFile))
+	if len(f.Settings) != 1 {
+		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
+	}
+	if f.Settings[0].Dst != filepath.Join(opencodeDir, BaseSettingsFile) {
+		t.Fatalf("settings dst = %q, want %q", f.Settings[0].Dst, filepath.Join(opencodeDir, BaseSettingsFile))
+	}
+}
+
+func TestPlan_Project_HooksPlugin(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeProject,
+		TargetDir: projectDir,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "hooks-pack",
+				Hooks: []domain.Hook{{
+					ID:         "audit-bash",
+					SourcePack: "hooks-pack",
+					Events: []domain.HookEvent{{
+						On:    domain.HookEventToolBefore,
+						Match: domain.HookMatch{Tool: "Bash"},
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo audit",
+							Timeout: "5s",
+						},
+					}},
+				}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	want := filepath.Join(projectDir, ".opencode", "plugins", HooksPluginFile)
+	write := mustFindWrite(t, f.Writes, want)
+	if write.Category != domain.CategoryHooks {
+		t.Fatalf("hook plugin category = %q, want %q", write.Category, domain.CategoryHooks)
+	}
+	if write.SourcePack != "hooks-pack" {
+		t.Fatalf("hook plugin SourcePack = %q, want hooks-pack", write.SourcePack)
+	}
+	content := string(write.Content)
+	for _, needle := range []string{
+		`export default { id: "aipack-hooks", server };`,
+		`"tool.execute.before"`,
+		`"tool.before"`,
+		`"tool": "Bash"`,
+		`"command": "echo audit"`,
+		`"timeoutSeconds": 5`,
+	} {
+		if !strings.Contains(content, needle) {
+			t.Fatalf("hook plugin missing %q:\n%s", needle, content)
+		}
+	}
+}
+
+func TestPlan_Global_HooksPluginUsesOPENCODE_CONFIG_DIR(t *testing.T) {
+	opencodeDir := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:           domain.ScopeGlobal,
+		TargetDir:       opencodeDir,
+		TargetConfigDir: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "hooks-pack",
+				Hooks: []domain.Hook{{
+					ID:         "audit-tools",
+					SourcePack: "hooks-pack",
+					Events: []domain.HookEvent{{
+						On: domain.HookEventToolAfter,
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo after",
+						},
+					}},
+				}},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	assertHasWriteDst(t, f.Writes, filepath.Join(opencodeDir, "plugins", HooksPluginFile))
+}
+
+func TestLayout_DoesNotRemovePluginsDir(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	layout := Harness{}.Layout(domain.ScopeProject, projectDir, t.TempDir())
+	pluginsDir := filepath.Join(projectDir, ".opencode", "plugins")
+	if slices.Contains(layout.RemovePaths, pluginsDir) {
+		t.Fatalf("plugins dir %q must not be a RemovePath: %v", pluginsDir, layout.RemovePaths)
+	}
+	if !slices.Contains(layout.ValidationRoots, filepath.Join(projectDir, ".opencode")) {
+		t.Fatalf("validation roots should include .opencode config base: %v", layout.ValidationRoots)
+	}
+}
+
+func TestRenderHooksPlugin_SourceMatcherDoesNotWarn(t *testing.T) {
+	t.Parallel()
+	content, _, warnings, err := RenderHooksPlugin([]domain.Hook{{
+		ID:         "session",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{
+			{
+				On:    domain.HookEventRunStart,
+				Match: domain.HookMatch{Source: "startup"},
+				Handler: domain.HookHandler{
+					Type:    domain.HookHandlerTypeCommand,
+					Command: "echo start",
+				},
+			},
+			{
+				On: domain.HookEventPromptSubmit,
+				Handler: domain.HookHandler{
+					Type:    domain.HookHandlerTypeCommand,
+					Command: "echo prompt",
+				},
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHooksPlugin: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v, want none", warnings)
+	}
+	for _, needle := range []string{`"source": "startup"`, "sourceName(eventName, input)", "caseInsensitive: true"} {
+		if !strings.Contains(string(content), needle) {
+			t.Fatalf("hook plugin missing %q:\n%s", needle, content)
+		}
+	}
+}
+
+func TestRenderHooksPlugin_CommandWindowsOnlyAccepted(t *testing.T) {
+	t.Parallel()
+	content, _, _, err := RenderHooksPlugin([]domain.Hook{{
+		ID:         "win-scan",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventToolBefore,
+			Match: domain.HookMatch{Tool: "Bash"},
+			Handler: domain.HookHandler{
+				Type:           domain.HookHandlerTypeCommand,
+				CommandWindows: "powershell ./scan.ps1",
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("RenderHooksPlugin: %v", err)
+	}
+	if !strings.Contains(string(content), "powershell ./scan.ps1") {
+		t.Fatalf("plugin missing command_windows payload:\n%s", content)
+	}
+}
+
+func TestOpenCodePluginMatchersUseRegex(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(openCodeHooksRuntime, "function matcherMatches(") {
+		t.Fatalf("plugin missing matcherMatches helper:\n%s", openCodeHooksRuntime)
+	}
+	if !strings.Contains(openCodeHooksRuntime, "new RegExp(pattern,") {
+		t.Fatalf("plugin matcher is not regex-based:\n%s", openCodeHooksRuntime)
+	}
+	if strings.Contains(openCodeHooksRuntime, `replace(/\*/g`) {
+		t.Fatalf("plugin still contains glob-escape logic:\n%s", openCodeHooksRuntime)
+	}
+}
+
 func TestCapture_Project_AgentToolsMapBecomesNeutralList(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
@@ -1189,4 +1402,15 @@ func assertHasWriteDst(t *testing.T, writes []domain.WriteAction, dst string) {
 		}
 	}
 	t.Fatalf("expected write to %q; got writes: %v", dst, writeDsts(writes))
+}
+
+func mustFindWrite(t *testing.T, writes []domain.WriteAction, dst string) domain.WriteAction {
+	t.Helper()
+	for _, w := range writes {
+		if w.Dst == dst {
+			return w
+		}
+	}
+	t.Fatalf("expected write to %q; got writes: %v", dst, writeDsts(writes))
+	return domain.WriteAction{}
 }

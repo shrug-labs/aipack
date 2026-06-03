@@ -116,6 +116,17 @@ type HookMatch struct {
 	Source string `yaml:"source,omitempty"`
 }
 
+// NormalizeHookMatcher returns the matcher value harness-native renderers
+// should emit. Empty and "*" both mean match everything in the portable
+// contract, so native regex matchers can omit them.
+func NormalizeHookMatcher(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "*" {
+		return ""
+	}
+	return v
+}
+
 // HookHandlerType identifies the portable hook handler backend.
 type HookHandlerType string
 

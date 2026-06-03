@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -187,6 +188,45 @@ func TestPlan_Project_AgentsOverride_NoExistingAgents(t *testing.T) {
 	}
 }
 
+func TestPlan_Global_UsesCODEXHOMEAsRoot(t *testing.T) {
+	codexHome := t.TempDir()
+
+	skillDir := testutil.SkillDir(t, "diagnose")
+	ctx := engine.SyncContext{
+		Scope:           domain.ScopeGlobal,
+		TargetDir:       codexHome,
+		TargetConfigDir: true,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Rules: []domain.Rule{
+					{Name: "global-rule", Raw: []byte("Global rule content.\n"), SourcePack: "pack-a"},
+				},
+				Agents: []domain.Agent{
+					{Name: "reviewer", Body: []byte("Reviews code"), Frontmatter: domain.AgentFrontmatter{Name: "reviewer", Description: "Reviews code"}, Raw: []byte("Reviews code"), SourcePack: "pack-a"},
+				},
+				Skills: []domain.Skill{
+					{Name: "diagnose", DirPath: skillDir, SourcePack: "pack-a"},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	assertHasWriteDst(t, f.Writes, filepath.Join(codexHome, "AGENTS.override.md"))
+	assertHasWriteDst(t, f.Writes, filepath.Join(codexHome, "agents", "reviewer.toml"))
+	assertHasCopyDst(t, f.Copies, filepath.Join(codexHome, "skills", "diagnose"))
+	if len(f.Settings) != 1 {
+		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
+	}
+	if f.Settings[0].Dst != filepath.Join(codexHome, "config.toml") {
+		t.Fatalf("settings dst = %q, want %q", f.Settings[0].Dst, filepath.Join(codexHome, "config.toml"))
+	}
+}
+
 func TestPlan_Project_PluginsConfig(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
@@ -321,6 +361,9 @@ func TestPlan_Project_CodexHooksJSONAndTrustState(t *testing.T) {
 	}
 	postGroups := hooksRoot["hooks"].(map[string]any)["PostToolUse"].([]any)
 	postGroup := postGroups[0].(map[string]any)
+	if _, ok := postGroup["matcher"]; ok {
+		t.Fatalf("wildcard matcher should be omitted, got group: %v", postGroup)
+	}
 	handlers := postGroup["hooks"].([]any)
 	handler := handlers[0].(map[string]any)
 	if command := handler["command"].(string); command != "python3 /tmp/post.py" {
@@ -330,13 +373,44 @@ func TestPlan_Project_CodexHooksJSONAndTrustState(t *testing.T) {
 		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
 	}
 	state := codexHookStateFromTOML(t, f.Settings[0].Desired)
-	key := hooksPath + ":post_tool_use:0:0"
-	entry, ok := state[key].(map[string]any)
+	// Trust-state keys are content-derived (hooksPath:event:contentHash) so
+	// they remain stable across reordering. Look up by prefix rather than an
+	// exact positional match.
+	prefix := hooksPath + ":post_tool_use:"
+	entry, ok := codexHookStateEntryByPrefix(state, prefix)
 	if !ok {
-		t.Fatalf("hook state %q missing in %v", key, state)
+		t.Fatalf("hook state with prefix %q missing in %v", prefix, state)
 	}
 	if got, _ := entry["trusted_hash"].(string); !strings.HasPrefix(got, "sha256:") {
 		t.Fatalf("trusted_hash = %v, want sha256", entry["trusted_hash"])
+	}
+}
+
+func TestRenderHooksJSON_CommandWindowsOnlySkippedOnNonWindows(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("command_windows-only hook emits the windows command on Windows")
+	}
+	rendered, err := RenderHooksJSON([]domain.Hook{{
+		ID:         "win-scan",
+		SourcePack: "hooks-pack",
+		Events: []domain.HookEvent{{
+			On:    domain.HookEventToolBefore,
+			Match: domain.HookMatch{Tool: "Bash"},
+			Handler: domain.HookHandler{
+				Type:           domain.HookHandlerTypeCommand,
+				CommandWindows: "powershell ./scan.ps1",
+			},
+		}},
+	}}, filepath.Join(t.TempDir(), "hooks.json"))
+	if err != nil {
+		t.Fatalf("RenderHooksJSON: %v", err)
+	}
+	if len(rendered.JSON) != 0 {
+		t.Fatalf("command_windows-only hook should be skipped on non-Windows, got: %s", rendered.JSON)
+	}
+	if len(rendered.TrustState) != 0 {
+		t.Fatalf("command_windows-only hook should produce no trust state, got: %v", rendered.TrustState)
 	}
 }
 
@@ -377,9 +451,9 @@ func TestPlan_Project_CodexHooksIgnoreSkipSettings(t *testing.T) {
 		t.Fatalf("managed config actions = %d, want 1", len(f.MCP))
 	}
 	state := codexHookStateFromTOML(t, f.MCP[0].Desired)
-	key := filepath.Join(projectDir, ".codex", "hooks.json") + ":post_tool_use:0:0"
-	if _, ok := state[key]; !ok {
-		t.Fatalf("hook state %q missing in %v", key, state)
+	prefix := filepath.Join(projectDir, ".codex", "hooks.json") + ":post_tool_use:"
+	if _, ok := codexHookStateEntryByPrefix(state, prefix); !ok {
+		t.Fatalf("hook state with prefix %q missing in %v", prefix, state)
 	}
 }
 
@@ -2218,10 +2292,45 @@ func codexHookStateFromTOML(t *testing.T, content []byte) map[string]any {
 	return state
 }
 
+func codexHookStateEntryByPrefix(state map[string]any, prefix string) (map[string]any, bool) {
+	for key, raw := range state {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, ok := raw.(map[string]any)
+		if ok {
+			return entry, true
+		}
+	}
+	return nil, false
+}
+
 func writeDsts(writes []domain.WriteAction) []string {
 	var out []string
 	for _, w := range writes {
 		out = append(out, w.Dst)
 	}
 	return out
+}
+
+func assertHasWriteDst(t *testing.T, writes []domain.WriteAction, dst string) {
+	t.Helper()
+	for _, w := range writes {
+		if w.Dst == dst {
+			return
+		}
+	}
+	t.Fatalf("expected write to %q; got writes: %v", dst, writeDsts(writes))
+}
+
+func assertHasCopyDst(t *testing.T, copies []domain.CopyAction, dst string) {
+	t.Helper()
+	var got []string
+	for _, c := range copies {
+		got = append(got, c.Dst)
+		if c.Dst == dst {
+			return
+		}
+	}
+	t.Fatalf("expected copy to %q; got copies: %v", dst, got)
 }

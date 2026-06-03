@@ -46,7 +46,7 @@ func TestDetectHarnessesWithContent(t *testing.T) {
 	stub2 := pipelineStub{id: "opencode", roots: []string{filepath.Join(tmp, "nonexistent")}}
 	reg := harness.NewRegistry(stub1, stub2)
 
-	result := DetectHarnessesWithContent(domain.ScopeProject, tmp, tmp, reg)
+	result := DetectHarnessesWithContent(domain.ScopeProject, tmp, tmp, nil, reg)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 harness with content, got %d", len(result))
 	}
@@ -62,7 +62,7 @@ func TestDetectHarnessesWithContent_None(t *testing.T) {
 	stub := pipelineStub{id: "claudecode", roots: []string{filepath.Join(tmp, "nope")}}
 	reg := harness.NewRegistry(stub)
 
-	result := DetectHarnessesWithContent(domain.ScopeProject, tmp, tmp, reg)
+	result := DetectHarnessesWithContent(domain.ScopeProject, tmp, tmp, nil, reg)
 	if len(result) != 0 {
 		t.Fatalf("expected no harnesses, got %d", len(result))
 	}
@@ -87,7 +87,7 @@ func TestDiscoverContentVectors(t *testing.T) {
 	}
 	reg := harness.NewRegistry(stub)
 
-	vectors, err := DiscoverContentVectors(context.Background(), "claudecode", domain.ScopeProject, tmp, tmp, reg)
+	vectors, err := DiscoverContentVectors(context.Background(), "claudecode", domain.ScopeProject, tmp, tmp, nil, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestDiscoverContentVectors_IncludesPromotedContentCategories(t *testing.T) 
 	}
 	reg := harness.NewRegistry(stub)
 
-	vectors, err := DiscoverContentVectors(context.Background(), "codex", domain.ScopeProject, tmp, tmp, reg)
+	vectors, err := DiscoverContentVectors(context.Background(), "codex", domain.ScopeProject, tmp, tmp, nil, reg)
 	if err != nil {
 		t.Fatal(err)
 	}

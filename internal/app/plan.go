@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -82,10 +81,6 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 	var summary PlanSummary
 	knownPacks := knownPacksFromRoots(resolvePackRoots(profile))
 
-	baseDir := req.ProjectDir
-	if req.Scope == domain.ScopeGlobal {
-		baseDir = req.Home
-	}
 	for _, hid := range req.Harnesses {
 		planners, err := reg.AsPlanners([]domain.Harness{hid})
 		if err != nil {
@@ -96,27 +91,14 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 			return PlanSummary{}, err
 		}
 
-		planReq := engine.PlanRequest{
-			ConfigDir:    req.ConfigDir,
-			Scope:        req.Scope,
-			Harnesses:    []domain.Harness{hid},
-			ProjectDir:   req.ProjectDir,
-			Home:         req.Home,
-			SkipSettings: req.SkipSettings,
-			Namespaced:   req.Namespaced,
-		}
+		planReq := planRequestForHarness(req, hid)
 
 		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
 			return PlanSummary{}, err
 		}
 
-		captured, err := h.Capture(ctx, harness.CaptureContext{
-			Scope:      req.Scope,
-			ProjectDir: req.ProjectDir,
-			Home:       req.Home,
-			KnownPacks: knownPacks,
-		})
+		captured, err := h.Capture(ctx, captureContextForHarness(req.TargetSpec, hid, knownPacks))
 		if err != nil {
 			return PlanSummary{}, err
 		}
@@ -143,13 +125,13 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 			if diffKind == domain.DiffIdentical {
 				continue
 			}
-			fd, werr := eng.ClassifyFile(w.Dst, w.Content, filepath.Base(w.Dst), w.SourcePack, lg)
+			fd, werr := eng.ClassifyWrite(w, filepath.Base(w.Dst), lg)
 			if werr != nil && diffKind != domain.DiffCreate {
 				summary.Warnings = append(summary.Warnings, domain.Warning{
 					Path: w.Dst, Message: fmt.Sprintf("classify diff: %v", werr),
 				})
 			}
-			opKind := inferContentKind(w.Dst)
+			opKind := planOpKindForWrite(w)
 			incrContentCount(&summary, opKind)
 			summary.Ops = append(summary.Ops, PlanOp{
 				Kind:       opKind,
@@ -217,7 +199,7 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 		summary.Ops = append(summary.Ops, mcpCfgOps...)
 
 		// Detect stale files per harness.
-		managedRoots := h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
+		managedRoots := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home).ValidationRoots
 		if candidates, perr := eng.StaleCandidatesWithLedger(plan, managedRoots, lg); perr == nil {
 			for _, p := range candidates {
 				summary.NumStale++
@@ -258,6 +240,34 @@ func appendPlanOpFromFileDiff(summary *PlanSummary, fd engine.FileDiff, kind Pla
 		Diff:       fd.Diff,
 		MergeOps:   fd.MergeOps,
 	})
+}
+
+func planOpKindForWrite(w domain.WriteAction) PlanOpKind {
+	if kind, ok := planOpKindForCategory(w.Category); ok {
+		return kind
+	}
+	return inferContentKind(w.Dst)
+}
+
+func planOpKindForCategory(cat domain.PackCategory) (PlanOpKind, bool) {
+	switch cat {
+	case domain.CategoryRules:
+		return PlanOpRule, true
+	case domain.CategoryWorkflows:
+		return PlanOpWorkflow, true
+	case domain.CategoryAgents:
+		return PlanOpAgent, true
+	case domain.CategorySkills:
+		return PlanOpSkill, true
+	case domain.CategoryHooks:
+		return PlanOpHook, true
+	case domain.CategorySettings:
+		return PlanOpSettings, true
+	case domain.CategoryMCP:
+		return PlanOpMCP, true
+	default:
+		return "", false
+	}
 }
 
 // inferContentKind determines the content type from a destination path by
@@ -304,23 +314,7 @@ func incrContentCount(s *PlanSummary, kind PlanOpKind) {
 }
 
 func classifyWriteKind(eng *engine.Engine, w domain.WriteAction, lg domain.Ledger) (domain.DiffKind, error) {
-	dst := filepath.Clean(w.Dst)
-	onDisk, err := eng.FS.ReadFile(dst)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return domain.DiffCreate, nil
-		}
-		return "", err
-	}
-	diskDigest := domain.SingleFileDigest(onDisk)
-	if diskDigest == w.EffectiveDigest() {
-		return domain.DiffIdentical, nil
-	}
-	prev := lg.PrevDigest(dst)
-	if prev != "" && diskDigest == prev {
-		return domain.DiffManaged, nil
-	}
-	return domain.DiffConflict, nil
+	return eng.ClassifyWriteKind(w, lg)
 }
 
 func classifyWriteDiffText(fd engine.FileDiff, diffKind domain.DiffKind) string {

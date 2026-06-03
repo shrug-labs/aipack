@@ -494,14 +494,15 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 		}
 	}
 
-	// Resolve URL info: for SSH/git URLs or when SubPath/Ref/partial version
-	// is pre-set, skip the HTTP probe (ProbePackURL) and go directly to git
-	// operations. Partial semver is treated like an explicit ref for probe
-	// purposes — the user declared git intent and the URL is assumed to be
-	// a clone-able repo, not a GitHub blob URL that needs normalization.
+	// Resolve URL info: for SSH/git URLs or when SubPath/Ref/content paths/
+	// partial version is pre-set, skip the HTTP probe (ProbePackURL) and go
+	// directly to git operations. Partial semver is treated like an explicit
+	// ref for probe purposes — the user declared git intent and the URL is
+	// assumed to be a clone-able repo, not a GitHub blob URL that needs
+	// normalization.
 	label := installEventLabel(req)
 	var info source.PackURLInfo
-	if req.SubPath != "" || req.Ref != "" || refClass.Kind == source.RefPartialSemver || config.IsGitURL(req.URL, "") {
+	if req.SubPath != "" || req.Ref != "" || len(req.ContentPaths) > 0 || refClass.Kind == source.RefPartialSemver || config.IsGitURL(req.URL, "") {
 		info = source.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
 	} else {
 		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Phase: PackInstallPhaseProbing})

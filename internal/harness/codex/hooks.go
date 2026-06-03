@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/harness"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -78,7 +79,7 @@ func RenderHooksJSON(hooks []domain.Hook, hooksPath string) (RenderedHooks, erro
 	return RenderedHooks{
 		JSON:       out,
 		TrustState: state,
-		SourcePack: compositeHookSourcePack(hooks),
+		SourcePack: harness.CompositeSourcePack(hooks, func(h domain.Hook) string { return h.SourcePack }),
 	}, nil
 }
 
@@ -99,6 +100,9 @@ func renderCodexHook(hook domain.Hook) (map[string][]any, error) {
 			if err != nil {
 				return nil, fmt.Errorf("hook %s/%s events[%d].handlers[%d]: %w", hook.SourcePack, hook.ID, eventIndex, handlerIndex, err)
 			}
+			if nativeHandler == nil {
+				continue
+			}
 			handlers = append(handlers, nativeHandler)
 		}
 		if len(handlers) == 0 {
@@ -113,23 +117,23 @@ func renderCodexHook(hook domain.Hook) (map[string][]any, error) {
 func codexNativeEvent(event domain.HookEvent) (codexHookEventSpec, string, error) {
 	switch event.On {
 	case domain.HookEventRunStart:
-		return codexHookEventByName["SessionStart"], strings.TrimSpace(event.Match.Source), nil
+		return codexHookEventByName["SessionStart"], domain.NormalizeHookMatcher(event.Match.Source), nil
 	case domain.HookEventPromptSubmit:
 		return codexHookEventByName["UserPromptSubmit"], "", nil
 	case domain.HookEventToolBefore:
-		return codexHookEventByName["PreToolUse"], strings.TrimSpace(event.Match.Tool), nil
+		return codexHookEventByName["PreToolUse"], domain.NormalizeHookMatcher(event.Match.Tool), nil
 	case domain.HookEventToolAfter:
-		return codexHookEventByName["PostToolUse"], strings.TrimSpace(event.Match.Tool), nil
+		return codexHookEventByName["PostToolUse"], domain.NormalizeHookMatcher(event.Match.Tool), nil
 	case domain.HookEventCompactBefore:
-		return codexHookEventSpec{}, "", fmt.Errorf("%s is not supported by the Codex renderer yet", domain.HookEventCompactBefore)
+		return codexHookEventByName["PreCompact"], domain.NormalizeHookMatcher(event.Match.Source), nil
 	default:
-		return codexHookEventSpec{}, "", fmt.Errorf("unsupported hook event %q", event.On)
+		return codexHookEventSpec{}, "", fmt.Errorf("invalid hook event %q", event.On)
 	}
 }
 
 func codexNativeHandler(handler domain.HookHandler) (map[string]any, error) {
 	if handler.Type != "" && handler.Type != domain.HookHandlerTypeCommand {
-		return nil, fmt.Errorf("handler type %q is not supported", handler.Type)
+		return nil, fmt.Errorf("handler type %q must be %q", handler.Type, domain.HookHandlerTypeCommand)
 	}
 	timeoutSeconds, err := domain.HookTimeoutSeconds(handler.Timeout)
 	if err != nil {
@@ -140,6 +144,11 @@ func codexNativeHandler(handler domain.HookHandler) (map[string]any, error) {
 		command = handler.CommandWindows
 	}
 	if strings.TrimSpace(command) == "" {
+		if strings.TrimSpace(handler.CommandWindows) != "" {
+			// command_windows-only hook on a non-Windows host: no command applies
+			// here, so skip it rather than failing the whole sync.
+			return nil, nil
+		}
 		return nil, fmt.Errorf("command is required")
 	}
 	native := map[string]any{
@@ -216,8 +225,13 @@ func codexHookTrustedEntry(keySource string, spec codexHookEventSpec, groupIndex
 	if matcher != nil {
 		identity["matcher"] = *matcher
 	}
-	key := fmt.Sprintf("%s:%s:%d:%d", keySource, spec.stateLabel, groupIndex, handlerIndex)
-	return key, codexHookHash(identity), true, nil
+	hash := codexHookHash(identity)
+	// Key off the content hash rather than the positional (groupIndex, handlerIndex)
+	// pair so reordering events in HOOK.yaml — or composing earlier-pack hooks
+	// that share an event — doesn't shift every later key and leave orphaned
+	// trust entries in config.toml. Identical hooks always map to the same key.
+	key := fmt.Sprintf("%s:%s:%s", keySource, spec.stateLabel, hash)
+	return key, hash, true, nil
 }
 
 func matcherForCodexHook(spec codexHookEventSpec, group map[string]any) (*string, error) {
@@ -386,10 +400,6 @@ func stripManagedHookState(root map[string]any, hooksPath string) {
 	} else {
 		root["hooks"] = hooks
 	}
-}
-
-func compositeHookSourcePack(hooks []domain.Hook) string {
-	return compositeSourcePack(hooks, func(h domain.Hook) string { return h.SourcePack })
 }
 
 func buildCodexHookEventMap() map[string]codexHookEventSpec {

@@ -90,6 +90,11 @@ type EditContext struct {
 	// ManagedMCPServers are the aipack-managed MCP server names tracked for
 	// this file. Harnesses use this set to preserve user-added MCP servers.
 	ManagedMCPServers map[string]struct{}
+
+	// PreviousManagedOverlay is the managed overlay recorded for this file on
+	// the prior sync. Shared settings that contain object arrays can use this
+	// to remove only aipack-managed objects during save and clean.
+	PreviousManagedOverlay []byte
 }
 
 // OwnedFile describes a file where the harness manages specific keys.
@@ -111,12 +116,27 @@ type RenderContext struct {
 
 // CaptureContext provides context for reverse capture (save).
 type CaptureContext struct {
-	Scope      domain.Scope
-	ProjectDir string
-	Home       string
+	Scope           domain.Scope
+	ProjectDir      string
+	Home            string
+	TargetDir       string
+	TargetConfigDir bool
 	// KnownPacks is the installed/profile pack-name set. Capture only strips
 	// rendered <id>__aipack__<pack> identities when the pack is present here.
 	KnownPacks map[string]struct{}
+}
+
+// TargetBaseDir returns the base directory a harness should capture from.
+// Project scope is always project-local. Global scope defaults to Home unless
+// the caller supplied a harness-specific TargetDir override.
+func (c CaptureContext) TargetBaseDir() string {
+	if c.Scope == domain.ScopeProject {
+		return c.ProjectDir
+	}
+	if c.TargetDir != "" {
+		return c.TargetDir
+	}
+	return c.Home
 }
 
 // CaptureResult holds captured content from a harness.
@@ -451,8 +471,21 @@ type rootEntry struct {
 
 // BuildRootsIndex pre-computes ValidationRoots for all harnesses in the registry.
 func BuildRootsIndex(reg *Registry, scope domain.Scope, baseDir, home string) RootsIndex {
+	return BuildRootsIndexWithBaseDir(reg, scope, home, func(domain.Harness) string {
+		return baseDir
+	})
+}
+
+// BuildRootsIndexWithBaseDir pre-computes ValidationRoots with a per-harness
+// base directory resolver. Use this when global harnesses target different
+// runtime config roots.
+func BuildRootsIndexWithBaseDir(reg *Registry, scope domain.Scope, home string, baseDirFor func(domain.Harness) string) RootsIndex {
 	var entries []rootEntry
 	for _, h := range reg.All() {
+		baseDir := ""
+		if baseDirFor != nil {
+			baseDir = baseDirFor(h.ID())
+		}
 		for _, root := range h.Layout(scope, baseDir, home).ValidationRoots {
 			entries = append(entries, rootEntry{root: filepath.Clean(root), id: h.ID()})
 		}

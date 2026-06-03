@@ -104,6 +104,7 @@ func syncAndApplyWithOptions(t *testing.T, profile domain.Profile, scope domain.
 			Harnesses:  []domain.Harness{hid},
 			Home:       home,
 			Namespaced: opts.Namespaced,
+			Env:        map[string]string{},
 		},
 		Force: true,
 		Yes:   true,

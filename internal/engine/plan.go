@@ -10,13 +10,15 @@ import (
 
 // PlanRequest describes what to sync.
 type PlanRequest struct {
-	ConfigDir    string
-	Scope        domain.Scope
-	Harnesses    []domain.Harness
-	ProjectDir   string
-	Home         string // $HOME — threaded explicitly for testability
-	SkipSettings bool
-	Namespaced   bool
+	ConfigDir       string
+	Scope           domain.Scope
+	Harnesses       []domain.Harness
+	ProjectDir      string
+	Home            string // $HOME — threaded explicitly for testability
+	TargetDir       string // optional resolved target dir; defaults to project dir or $HOME
+	TargetConfigDir bool
+	SkipSettings    bool
+	Namespaced      bool
 }
 
 // Planner is the interface harness adapters implement for plan contribution.
@@ -30,13 +32,14 @@ type Planner interface {
 // Profile carries all resolved content (rules, agents, workflows, skills,
 // MCP servers, settings, plugins) — replacing the former 4 separate fields.
 type SyncContext struct {
-	ConfigDir    string
-	Scope        domain.Scope
-	TargetDir    string         // project dir or $HOME
-	Home         string         // $HOME — always set, even in project scope (needed by Cline)
-	Profile      domain.Profile // fully-resolved profile with typed content
-	SkipSettings bool
-	Namespaced   bool
+	ConfigDir       string
+	Scope           domain.Scope
+	TargetDir       string         // project dir or $HOME
+	TargetConfigDir bool           // global TargetDir is the harness-native config directory
+	Home            string         // $HOME — always set, even in project scope (needed by Cline)
+	Profile         domain.Profile // fully-resolved profile with typed content
+	SkipSettings    bool
+	Namespaced      bool
 }
 
 // PlanSync produces a sync Plan by asking each harness planner to contribute a Fragment.
@@ -53,17 +56,21 @@ func PlanSync(ctx context.Context, profile domain.Profile, req PlanRequest, harn
 	if req.Scope == domain.ScopeGlobal {
 		targetDir = req.Home
 	}
+	if req.TargetDir != "" {
+		targetDir = req.TargetDir
+	}
 
 	// Each harness contributes a Fragment.
 	for _, h := range harnesses {
 		sctx := SyncContext{
-			ConfigDir:    req.ConfigDir,
-			Scope:        req.Scope,
-			TargetDir:    targetDir,
-			Home:         req.Home,
-			Profile:      profile,
-			SkipSettings: req.SkipSettings,
-			Namespaced:   req.Namespaced,
+			ConfigDir:       req.ConfigDir,
+			Scope:           req.Scope,
+			TargetDir:       targetDir,
+			TargetConfigDir: req.TargetConfigDir,
+			Home:            req.Home,
+			Profile:         profile,
+			SkipSettings:    req.SkipSettings,
+			Namespaced:      req.Namespaced,
 		}
 		frag, err := h.Plan(ctx, sctx)
 		if err != nil {

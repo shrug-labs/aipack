@@ -2117,6 +2117,7 @@ func TestPackInstall_URL_ContentPathsRecordedInSyncConfig(t *testing.T) {
 	}
 
 	var out bytes.Buffer
+	urlChecks := 0
 	err := PackInstall(context.Background(), PackInstallRequest{
 		URL:          "https://github.com/example/ext-repo",
 		ConfigDir:    configDir,
@@ -2124,11 +2125,17 @@ func TestPackInstall_URL_ContentPathsRecordedInSyncConfig(t *testing.T) {
 		Name:         "ext-repo",
 		ContentPaths: paths,
 		RunGitFn:     cloneFn,
-		URLOKFn:      func(context.Context, string) (bool, error) { return true, nil },
-		NowFn:        func() time.Time { return fixedNow },
+		URLOKFn: func(context.Context, string) (bool, error) {
+			urlChecks++
+			return false, nil
+		},
+		NowFn: func() time.Time { return fixedNow },
 	}, &out)
 	if err != nil {
 		t.Fatalf("PackInstall: %v", err)
+	}
+	if urlChecks != 0 {
+		t.Fatalf("URLOKFn called %d times, want 0 for content-path URL installs", urlChecks)
 	}
 
 	lf, err := config.LoadLockfile(config.LockfilePath(configDir))

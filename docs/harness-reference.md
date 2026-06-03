@@ -13,6 +13,7 @@ For the CLI commands that trigger sync, see the [aipack reference](./aipack.md).
 | Workflows | Individual files in `.claude/commands/` | Individual files in `.opencode/commands/` | Promoted to skill dirs in `.agents/skills/` for round-trip capture | Individual files in `.clinerules/workflows/` |
 | Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.agents/skills/` | Per-skill dirs in `.agents/skills/` |
 | Plugins | `enabledPlugins` in `.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` | Not supported by first-class plugin references | `[plugins."<id>@<marketplace>"] enabled = true` in `config.toml` | Not supported |
+| Hooks | Native hook groups in `settings.local.json` | Generated server plugin in `plugins/aipack-hooks.js` | `.codex/hooks.json` + trust state in `config.toml` | Generated wrappers in `hooks/` |
 
 ## Rendered content identity
 
@@ -71,11 +72,13 @@ Each harness controls MCP tool access differently. Some harnesses store permissi
 | Harness | Settings file | Other config files | Format | Merge behavior |
 |---------|--------------|-------------|--------|----------------|
 | Claude Code | `.claude/settings.local.json`; `.claude/settings.json` for first-class plugins | `.mcp.json` | JSON | **Always three-way merge** — user permissions preserved, only `mcp__*` entries managed. Plugin enablement is additive-only. |
-| OpenCode | `.opencode/opencode.json` | `.opencode/oh-my-opencode.json` | JSON | Template + managed keys overlay. With `--skip-settings`: MergeMode (managed keys only) |
-| Codex | `.codex/config.toml` | `.codex/hooks.json` | TOML settings + rendered JSON hooks | Template + MCP/plugin/hook trust-state merge. With `--skip-settings`: MergeMode (`mcp_servers`, agents, plugins, hooks.state managed keys only). Plugin enablement is additive-only. |
-| Cline | None | `cline_mcp_settings.json` (written to VS Code + standalone Cline global paths) | JSON | Generated from inventory (no base template). Always synced |
+| OpenCode | `.opencode/opencode.json` | `.opencode/oh-my-opencode.json`; `.opencode/plugins/aipack-hooks.js` | JSON settings + generated JS hooks | Template + managed keys three-way merge. With `--skip-settings`: managed keys only. |
+| Codex | `.codex/config.toml` | `.codex/hooks.json` | TOML settings + rendered JSON hooks | Template + MCP/plugin/hook trust-state three-way merge. With `--skip-settings`: `mcp_servers`, agents, plugins, and `hooks.state` managed keys only. Plugin enablement is additive-only. |
+| Cline | None | `cline_mcp_settings.json` (written to VS Code + standalone Cline global paths); generated hook wrappers | JSON MCP + generated hook scripts | Generated from inventory (no base template). Always synced |
 
-`--skip-settings` skips settings files but MCP configs, drop-in plugins, and first-class plugin references always sync regardless.
+`--skip-settings` skips base settings files but MCP configs, drop-in plugins, first-class plugin references, and rendered hook artifacts always sync regardless.
+
+Three-way settings merge preserves user-only keys. Scalar collisions update only when the on-disk value still matches the previous managed value, so first-sync collisions and local scalar edits stay under local control.
 
 ## Environment variable expansion
 
@@ -94,10 +97,13 @@ Pack content uses `{env:VAR}` and `{env:VAR:-default}` placeholders. All harness
 | MCP servers | `.mcp.json` | `~/.claude.json` |
 | Settings | `.claude/settings.local.json` | `~/.claude/settings.local.json` |
 | Plugins | `.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` | `~/.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` |
+| Hooks | `.claude/settings.local.json` | `~/.claude/settings.local.json` |
 
 Claude Code remote MCP transport rendering follows Claude's current config vocabulary: aipack `streamable-http` servers render as `type: "http"`, while `sse` servers render as `type: "sse"`.
 
 **OpenCode** (project + global)
+
+At global scope, `OPENCODE_CONFIG_DIR` overrides the default `~/.config/opencode` root. When it is set, paths below are rooted directly under that directory.
 
 | What | Project path | Global path |
 |------|-------------|------------|
@@ -107,8 +113,11 @@ Claude Code remote MCP transport rendering follows Claude's current config vocab
 | Skills | `.opencode/skills/<dirname>/` | `~/.config/opencode/skills/<dirname>/` |
 | Settings | `.opencode/opencode.json` | `~/.config/opencode/opencode.json` |
 | Plugin | `.opencode/oh-my-opencode.json` | `~/.config/opencode/oh-my-opencode.json` |
+| Hooks | `.opencode/plugins/aipack-hooks.js` | `~/.config/opencode/plugins/aipack-hooks.js` |
 
 **Codex** (project + global)
+
+At global scope, `CODEX_HOME` overrides the default `~/.codex` root. When it is set, Codex-owned paths below are rooted directly under that directory; promoted workflows and skills use `$CODEX_HOME/skills/`.
 
 | What | Project path | Global path |
 |------|-------------|------------|
@@ -122,6 +131,8 @@ Claude Code remote MCP transport rendering follows Claude's current config vocab
 
 **Cline** (content: project + global; MCP: global only)
 
+At global scope, `CLINE_DIR` selects Cline's global config root for rules and promoted skills. `CLINE_DATA_DIR` selects the data directory for MCP settings and, when `CLINE_DIR` is set, workflows. When either Cline env var is set, MCP sync writes only the custom Cline settings path.
+
 | What | Project path | Global path |
 |------|-------------|------------|
 | Rules | `.clinerules/<file>.md` | `~/Documents/Cline/Rules/<file>.md` |
@@ -129,6 +140,7 @@ Claude Code remote MCP transport rendering follows Claude's current config vocab
 | Workflows | `.clinerules/workflows/<file>.md` | `~/Documents/Cline/Workflows/<file>.md` |
 | Skills | `.agents/skills/<dirname>/` | `~/.agents/skills/<dirname>/` |
 | MCP | N/A | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS VS Code) + `~/.cline/data/settings/cline_mcp_settings.json` |
+| Hooks | `.clinerules/hooks/<event>` | `~/Documents/Cline/Hooks/<event>` |
 
 ## Managed keys
 
@@ -136,7 +148,7 @@ Keys stripped on save round-trip:
 
 | Harness | Keys stripped |
 |---------|-------------|
-| Claude Code | `mcp__*` entries in `permissions.allow` and `permissions.deny` |
+| Claude Code | `mcp__*` entries in `permissions.allow` and `permissions.deny`; AIPack-owned native hook groups |
 | OpenCode | `mcp`, `tools`, `instructions`, `skills` |
 | Codex | `mcp_servers`, `agents`, AIPack-owned `hooks.state` entries for `.codex/hooks.json` |
 | Cline | `mcpServers` |
@@ -154,37 +166,42 @@ First-class plugin references are additive-only. Save and clean do not remove pl
 - Save/capture normalizes Claude Code's native `type: "http"` MCP entries back to aipack `streamable-http`.
 - `settings.local.json` always uses three-way merge, even without `--skip-settings`. User-controlled permissions (non-`mcp__` prefix) are always preserved in both `allow` and `deny` arrays.
 - Plugin references write `enabledPlugins` in `.claude/settings.json`. Source-prefixed marketplaces such as `github:owner/marketplace` are registered in `~/.claude/plugins/known_marketplaces.json`.
+- Pack hooks merge into `settings.local.json` under Claude Code's native `hooks` object. AIPack removes only prior managed hook groups, preserving user-authored groups and user-edited former managed groups. Portable `match.tool`/`match.source` pass through verbatim — Claude Code matches them as regular expressions. A handler with only `command_windows` is omitted when synced on a non-Windows host.
 - `permissions.deny` blocks tools entirely (deny > ask > allow precedence). Unlike OpenCode's `server_*: false` wildcard, Claude Code cannot use wildcard deny patterns because deny always takes precedence over allow regardless of specificity. Only explicit per-tool deny entries are rendered from `disabled_tools` in the profile config.
 
 **OpenCode**
 - Rules are both copied as individual files AND referenced via `instructions` globs in `opencode.json`. Skills are both copied AND referenced via `skills.paths`. These JSON references are only managed when the respective vector has `Manage: true` in the profile. Rule, agent, workflow, and skill path leaves and frontmatter names include rendered content identity.
 - `oh-my-opencode.json` is a plugin (pure copy from pack), always synced regardless of `--skip-settings`.
 - `tools` key (MCP tool boolean map) is distinct from `permission` key (OpenCode's native harness tool access). Do not conflate them.
+- Pack hooks render as a generated server plugin at `plugins/aipack-hooks.js`. OpenCode auto-discovers that file, so no `opencode.json` plugin entry is written. `prompt.submit` maps through `chat.message`, and `run.start` maps through the generic `event` hook for `session.created`. Portable `match.tool`/`match.source` are evaluated by the generated plugin as regular expressions (`match.tool` case-insensitively). Handlers carry both `command` and `command_windows`; the plugin selects the right one at runtime.
+- Global scope honors `OPENCODE_CONFIG_DIR`; if set, aipack writes `opencode.json`, rules, agents, commands, skills, and drop-in plugins directly under that directory.
 
 **Codex**
 - Rules are flattened into a single `AGENTS.override.md`. If an existing `AGENTS.md` exists, its content is preserved below a separator.
 - Agents are rendered as native Codex TOML files in `.codex/agents/<name>.toml`, each containing `name`, `description`, `developer_instructions` (from the agent body), and any `harness.codex` overrides as top-level TOML keys. A registration entry (`[agents.<name>]` with `description` and an absolute `config_file`) is merged into `config.toml`. Referenced MCP servers are resolved from the profile and embedded in the agent TOML. Referenced skills become `skills.config` entries with paths to the rendered skill directories. The `harness` frontmatter block is stripped — it does not appear in the rendered TOML.
 - Workflows are promoted to `.agents/skills/<name>/SKILL.md` for round-trip capture. Workflow and skill directory names and frontmatter names include rendered content identity. Codex flattened rules are generated into one `AGENTS.override.md`; their source comments and frontmatter names use the rendered identity when namespacing is enabled.
 - Plugin references merge `[plugins."<id>@<marketplace>"] enabled = true` into `config.toml`. The default marketplace is `openai-curated`.
-- Pack hooks declared under `hooks/<id>/HOOK.yaml` are rendered into one `.codex/hooks.json` file in profile order. aipack maps portable lifecycle events to Codex native hook events, renders the pack-authored command directly, writes trust-state hashes for rendered command hooks into `config.toml` under `hooks.state`, and removes only those AIPack-owned state entries during save/clean.
+- Pack hooks declared under `hooks/<id>/HOOK.yaml` are rendered into one `.codex/hooks.json` file in profile order. aipack maps portable lifecycle events to Codex native hook events, renders the pack-authored command directly, writes trust-state hashes for rendered command hooks into `config.toml` under `hooks.state`, and removes only those AIPack-owned state entries during save/clean. Matchers pass through verbatim as regular expressions; a handler with only `command_windows` is omitted when synced on a non-Windows host.
 - Capture reads `.codex/agents/*.toml` to reconstruct pack agents: `developer_instructions` becomes the agent body, known Codex fields (`model`, `model_reasoning_effort`, etc.) populate `harness.codex` in frontmatter, and embedded MCP server names are extracted to `mcp_servers`.
-- Global config path is always `~/.codex/`.
+- Global scope honors `CODEX_HOME`; if set, aipack writes Codex config, hooks, agents, `AGENTS.override.md`, promoted workflows, and skills directly under that directory.
 
 **Cline**
 - MCP is global-only — there is no project-level MCP settings path.
-- Sync writes Cline MCP settings to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`).
+- Sync writes Cline MCP settings to both the VS Code global-storage path and the standalone Cline path (`~/.cline/data/settings/cline_mcp_settings.json`). If `CLINE_DIR` or `CLINE_DATA_DIR` is set, sync writes only the custom standalone Cline settings path.
 - Cline remote transport names are adapter-specific: aipack `streamable-http` renders as `type: "streamableHttp"` in `cline_mcp_settings.json`, while `sse` remains `type: "sse"`.
 - Save/capture prefers the canonical VS Code path, falls back to the standalone path when the canonical file is missing, and warns when another discovered file differs from the capture source.
 - Agents (but not workflows) are promoted to skill directories in `.agents/skills/` (project) or `~/.agents/skills/` (global), since Cline natively reads both `.clinerules/` and `.agents/`. Rule, promoted agent, workflow, and skill path leaves and frontmatter names include rendered content identity. Codex no longer shares this promotion path — Codex agents render as native TOML files in `.codex/agents/`.
+- With `CLINE_DIR` set, global Cline rules and promoted skills are written under `$CLINE_DIR/{rules,skills}/`; workflows use `$CLINE_DATA_DIR/workflows/` when `CLINE_DATA_DIR` is also set, otherwise `$CLINE_DIR/data/workflows/`.
+- Pack hooks render as generated wrappers under `.clinerules/hooks/` for project scope and `~/Documents/Cline/Hooks/` for global scope. Global hook wrappers do not follow `CLINE_DIR` or `CLINE_DATA_DIR`. Unix wrappers are executable Node.js scripts; Windows wrappers are `.ps1`. Wrappers carry both `command` and `command_windows` and select per-platform at runtime, evaluate `match.tool`/`match.source` as regular expressions (`match.tool` case-insensitively), and always print valid Cline hook JSON even when a pack command exits nonzero.
 - The MCP settings file is generated fresh from inventory on every sync (no base template concept). Existing user-defined `mcpServers` entries are preserved during merge.
 - `alwaysAllow` is allow-only — there is no mechanism to deny specific tools.
 
 ## Implementation references
 
-- Claude Code: `internal/harness/claudecode/harness.go`, `internal/harness/claudecode/render.go`
-- OpenCode: `internal/harness/opencode/harness.go`, `internal/harness/opencode/render.go`
+- Claude Code: `internal/harness/claudecode/harness.go`, `internal/harness/claudecode/render.go`, `internal/harness/claudecode/hooks.go`
+- OpenCode: `internal/harness/opencode/harness.go`, `internal/harness/opencode/render.go`, `internal/harness/opencode/hooks.go`
 - Codex: `internal/harness/codex/harness.go`, `internal/harness/codex/render.go`, `internal/harness/codex/hooks.go`, `internal/harness/codex/agent_render.go`
-- Cline: `internal/harness/cline/harness.go`, `internal/harness/cline/render.go`
+- Cline: `internal/harness/cline/harness.go`, `internal/harness/cline/render.go`, `internal/harness/cline/hooks.go`
 - Sync engine: `internal/engine/`
 - Config resolution: `internal/config/profile_resolve.go`
 

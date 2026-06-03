@@ -194,6 +194,7 @@ type TargetSpec struct {
 	Harnesses  []domain.Harness
 	Home       string // $HOME — threaded explicitly for testability
 	Namespaced bool   // render pack-authored content with pack provenance suffixes
+	Env        map[string]string
 }
 
 // SyncRequest holds the parameters for a sync operation.
@@ -220,10 +221,6 @@ type SyncResult struct {
 func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
 	var warnings []domain.Warning
 	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
-	baseDir := req.ProjectDir
-	if req.Scope == domain.ScopeGlobal {
-		baseDir = req.Home
-	}
 
 	// Build new pack inventories and diff against the previous lockfile
 	// state. Printed before the harness loop so the user sees drift in
@@ -255,7 +252,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		managedRootsMap := map[domain.Harness][]string{}
 		for _, hid := range req.Harnesses {
 			if h, lerr := reg.Lookup(hid); lerr == nil {
-				managedRootsMap[hid] = h.Layout(req.Scope, baseDir, req.Home).ValidationRoots
+				managedRootsMap[hid] = h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home).ValidationRoots
 			}
 		}
 		if n, merr := eng.MigrateOldLedgers(req.ConfigDir, req.Scope, req.ProjectDir, req.Harnesses, managedRootsMap); merr != nil {
@@ -275,15 +272,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 			return SyncResult{}, warnings, wrapFatalSync("lookup harness planners", err)
 		}
 
-		planReq := engine.PlanRequest{
-			ConfigDir:    req.ConfigDir,
-			Scope:        req.Scope,
-			Harnesses:    []domain.Harness{hid},
-			ProjectDir:   req.ProjectDir,
-			Home:         req.Home,
-			SkipSettings: req.SkipSettings,
-			Namespaced:   req.Namespaced,
-		}
+		planReq := planRequestForHarness(req, hid)
 
 		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
 		if err != nil {
@@ -297,7 +286,7 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 		}
 
 		h, _ := reg.Lookup(hid)
-		layout := h.Layout(req.Scope, baseDir, req.Home)
+		layout := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home)
 		managedRoots := layout.ValidationRoots
 
 		stripFuncs := make(map[string]func([]byte, domain.Ledger) ([]byte, error), len(layout.OwnedFiles))
@@ -458,11 +447,7 @@ func reconcileMCPLedger(ctx context.Context, eng *engine.Engine, plan domain.Pla
 		return nil
 	}
 
-	res, err := h.Capture(ctx, harness.CaptureContext{
-		Scope:      req.Scope,
-		ProjectDir: req.ProjectDir,
-		Home:       req.Home,
-	})
+	res, err := h.Capture(ctx, captureContextForHarness(req.TargetSpec, h.ID(), nil))
 	if err != nil {
 		return []domain.Warning{warningf("mcp-reconcile", "re-capture failed: %v", err)}
 	}
@@ -508,10 +493,6 @@ func reconcileMCPLedger(ctx context.Context, eng *engine.Engine, plan domain.Pla
 
 func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, stdout io.Writer) {
 	cfgDir := config.FallbackConfigDir(req.ConfigDir, req.Home)
-	baseDir := req.ProjectDir
-	if req.Scope == domain.ScopeGlobal {
-		baseDir = req.Home
-	}
 
 	ledgers := map[domain.Harness]domain.Ledger{}
 	for _, hid := range req.Harnesses {
@@ -521,7 +502,9 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 		}
 	}
 
-	rootsIdx := harness.BuildRootsIndex(reg, req.Scope, baseDir, req.Home)
+	rootsIdx := harness.BuildRootsIndexWithBaseDir(reg, req.Scope, req.Home, func(hid domain.Harness) string {
+		return targetDirForHarness(req.TargetSpec, hid)
+	})
 	ledgerForPath := func(path string) domain.Ledger {
 		hid := rootsIdx.Identify(path)
 		if lg, ok := ledgers[hid]; ok {
@@ -620,7 +603,10 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 func stripFuncForOwnedFile(of harness.OwnedFile) func([]byte, domain.Ledger) ([]byte, error) {
 	return func(content []byte, lg domain.Ledger) ([]byte, error) {
 		mcpIndex := domain.MCPServerNamesByPath(lg.Managed)
-		ctx := harness.EditContext{ManagedMCPServers: mcpIndex.ForPath(of.Path)}
+		ctx := harness.EditContext{
+			ManagedMCPServers:      mcpIndex.ForPath(of.Path),
+			PreviousManagedOverlay: lg.PrevManagedOverlay(of.Path),
+		}
 		return harness.ApplyEdit(content, of.Format, ctx, of.Strip)
 	}
 }

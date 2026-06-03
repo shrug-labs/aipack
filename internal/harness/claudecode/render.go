@@ -146,6 +146,20 @@ type marketplaceSource struct {
 // are merged into it (base non-MCP permissions are preserved, MCP entries
 // replaced with fresh values). Non-permission keys from base are preserved.
 func RenderSettingsBytes(base []byte, servers []domain.MCPServer) ([]byte, error) {
+	return RenderSettingsBytesWithHooks(base, servers, nil)
+}
+
+// RenderSettingsBytesWithHooks renders managed settings.local.json content,
+// including optional native Claude hook groups.
+func RenderSettingsBytesWithHooks(base []byte, servers []domain.MCPServer, hooks []domain.Hook) ([]byte, error) {
+	renderedHooks, _, err := RenderHooks(hooks)
+	if err != nil {
+		return nil, err
+	}
+	return RenderSettingsBytesWithRenderedHooks(base, servers, renderedHooks)
+}
+
+func RenderSettingsBytesWithRenderedHooks(base []byte, servers []domain.MCPServer, renderedHooks map[string][]any) ([]byte, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
 		if err := json.Unmarshal(base, &root); err != nil {
@@ -185,11 +199,48 @@ func RenderSettingsBytes(base []byte, servers []domain.MCPServer) ([]byte, error
 
 	root["permissions"] = perms
 
+	if len(renderedHooks) > 0 {
+		mergeClaudeHooks(root, renderedHooks)
+	}
+
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 	return append(out, '\n'), nil
+}
+
+func mergeClaudeHooks(root map[string]any, rendered map[string][]any) {
+	hooks, _ := root["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	for event, groups := range rendered {
+		existing, _ := hooks[event].([]any)
+		// Dedup managed groups against anything already present in the base
+		// hooks (often the pack's BaseSettings). Without this, a pack that
+		// declares the same hook in both configs/harness_settings/.../settings.local.json
+		// and a HOOK.yaml would render duplicate entries and Claude Code would
+		// fire the hook twice.
+		seen := map[string]struct{}{}
+		for _, g := range existing {
+			if key, ok := canonicalHookGroupKey(g); ok {
+				seen[key] = struct{}{}
+			}
+		}
+		merged := existing
+		for _, g := range groups {
+			if key, ok := canonicalHookGroupKey(g); ok {
+				if _, dup := seen[key]; dup {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			merged = append(merged, g)
+		}
+		hooks[event] = merged
+	}
+	root["hooks"] = hooks
 }
 
 // RenderPluginSettingsBytes renders Claude Code enabledPlugins entries.

@@ -25,7 +25,7 @@ func DetectHarnesses(reg *harness.Registry) tea.Cmd {
 
 func DiscoverVectors(ctx context.Context, harnessID domain.Harness, projectDir, home string, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
-		vectors, err := app.DiscoverContentVectorsAllScopes(ctx, harnessID, projectDir, home, reg)
+		vectors, err := app.DiscoverContentVectorsAllScopes(ctx, harnessID, projectDir, home, nil, reg)
 		return VectorsDiscoveredMsg{Vectors: vectors, Err: err}
 	}
 }

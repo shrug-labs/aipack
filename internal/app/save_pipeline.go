@@ -56,10 +56,15 @@ type SavePipelineResult struct {
 // DetectHarnessesWithContent returns harnesses that have content on disk
 // for the given scope. Checks ValidationRoots for each harness and returns
 // only those where at least one managed path exists.
-func DetectHarnessesWithContent(scope domain.Scope, projectDir, home string, reg *harness.Registry) []domain.Harness {
+//
+// env is an optional per-key override for environment-driven config-dir
+// resolution (CODEX_HOME, OPENCODE_CONFIG_DIR, …). Pass nil to fall through
+// to the process environment.
+func DetectHarnessesWithContent(scope domain.Scope, projectDir, home string, env map[string]string, reg *harness.Registry) []domain.Harness {
 	var result []domain.Harness
 	for _, h := range reg.All() {
-		roots := h.Layout(scope, projectDir, home).ValidationRoots
+		spec := TargetSpec{Scope: scope, ProjectDir: projectDir, Home: home, Env: env}
+		roots := h.Layout(scope, targetDirForHarness(spec, h.ID()), home).ValidationRoots
 		for _, r := range roots {
 			if _, err := os.Stat(r); err == nil {
 				result = append(result, h.ID())
@@ -71,13 +76,15 @@ func DetectHarnessesWithContent(scope domain.Scope, projectDir, home string, reg
 }
 
 // DiscoverContentVectors runs Capture on one harness and returns which
-// PackCategories have at least one file on disk.
-func DiscoverContentVectors(ctx context.Context, harnessID domain.Harness, scope domain.Scope, projectDir, home string, reg *harness.Registry) ([]domain.PackCategory, error) {
+// PackCategories have at least one file on disk. env follows the same rules
+// as in DetectHarnessesWithContent.
+func DiscoverContentVectors(ctx context.Context, harnessID domain.Harness, scope domain.Scope, projectDir, home string, env map[string]string, reg *harness.Registry) ([]domain.PackCategory, error) {
 	h, err := reg.Lookup(harnessID)
 	if err != nil {
 		return nil, err
 	}
-	cctx := harness.CaptureContext{Scope: scope, ProjectDir: projectDir, Home: home}
+	spec := TargetSpec{Scope: scope, ProjectDir: projectDir, Home: home, Env: env}
+	cctx := captureContextForHarness(spec, harnessID, nil)
 	res, err := h.Capture(ctx, cctx)
 	if err != nil {
 		return nil, err
@@ -204,13 +211,14 @@ func DiscoverSaveFilesAllScopes(ctx context.Context, eng *engine.Engine, req Dis
 }
 
 // DiscoverContentVectorsAllScopes merges content vectors from both scopes.
-func DiscoverContentVectorsAllScopes(ctx context.Context, harnessID domain.Harness, projectDir, home string, reg *harness.Registry) ([]domain.PackCategory, error) {
+// env follows the same rules as in DetectHarnessesWithContent.
+func DiscoverContentVectorsAllScopes(ctx context.Context, harnessID domain.Harness, projectDir, home string, env map[string]string, reg *harness.Registry) ([]domain.PackCategory, error) {
 	found := map[domain.PackCategory]bool{}
 	for _, scope := range []domain.Scope{domain.ScopeProject, domain.ScopeGlobal} {
 		if scope == domain.ScopeProject && (projectDir == "" || projectDir == home) {
 			continue
 		}
-		vectors, err := DiscoverContentVectors(ctx, harnessID, scope, projectDir, home, reg)
+		vectors, err := DiscoverContentVectors(ctx, harnessID, scope, projectDir, home, env, reg)
 		if err != nil {
 			continue
 		}

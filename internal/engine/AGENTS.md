@@ -67,7 +67,7 @@ Dispatched per format in `mergeSettingsKeys` (`merge.go`) — JSON for Claude Co
 **Objects (recursive):**
 - Keys in `prev` but NOT in `next` → deleted from `disk` (aipack removing a key it used to manage).
 - Keys in `next` but NOT in `disk` → added.
-- Keys in both → recurse for objects, three-way merge for arrays, managed-value-wins for scalars.
+- Keys in both → recurse for objects, three-way merge for arrays, update scalars only when `disk` still equals `prev`.
 - Keys only in `disk` (not prev, not next) → preserved (user-added).
 
 **String arrays:**
@@ -76,7 +76,7 @@ Dispatched per format in `mergeSettingsKeys` (`merge.go`) — JSON for Claude Co
 3. Items in `prev` but not in `next` → dropped (this is the migration mechanism).
 4. Items in `next` are always present regardless of whether they were in `disk`.
 
-**Scalars:** managed value wins unconditionally. User edits to managed scalars are overwritten on next sync — intentional.
+**Scalars:** managed value updates only when the on-disk value still equals the previous managed value. First-sync scalar collisions and locally edited managed scalars are preserved as user-owned values.
 
 ### Implication: legacy-entry migration is free
 

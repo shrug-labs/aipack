@@ -20,7 +20,7 @@ type renderedMarkdownWrite struct {
 	sourcePath   string
 }
 
-func addRenderedMarkdownWrites[T any](f *domain.Fragment, baseDir, subDir string, items []T, render func(T) (renderedMarkdownWrite, error)) error {
+func addRenderedMarkdownWrites[T any](f *domain.Fragment, baseDir, subDir string, cat domain.PackCategory, items []T, render func(T) (renderedMarkdownWrite, error)) error {
 	for _, item := range items {
 		rendered, err := render(item)
 		if err != nil {
@@ -32,6 +32,7 @@ func addRenderedMarkdownWrites[T any](f *domain.Fragment, baseDir, subDir string
 			Content:    rendered.content,
 			SourcePack: rendered.sourcePack,
 			Src:        rendered.sourcePath,
+			Category:   cat,
 		})
 		f.Desired = append(f.Desired, dst)
 	}
@@ -43,7 +44,7 @@ func AddRenderedRuleWrites(f *domain.Fragment, baseDir, subDir string, namespace
 		f.AddRuleWrites(baseDir, subDir, rules)
 		return nil
 	}
-	return addRenderedMarkdownWrites(f, baseDir, subDir, rules, func(r domain.Rule) (renderedMarkdownWrite, error) {
+	return addRenderedMarkdownWrites(f, baseDir, subDir, domain.CategoryRules, rules, func(r domain.Rule) (renderedMarkdownWrite, error) {
 		sourceName := ruleSourceID(r)
 		_, renderedName, raw, err := RenderedRuleForHarness(r, namespaced)
 		if err != nil {
@@ -103,7 +104,7 @@ func AddRenderedWorkflowWrites(f *domain.Fragment, baseDir, subDir string, names
 		f.AddWorkflowWrites(baseDir, subDir, workflows)
 		return nil
 	}
-	return addRenderedMarkdownWrites(f, baseDir, subDir, workflows, func(w domain.Workflow) (renderedMarkdownWrite, error) {
+	return addRenderedMarkdownWrites(f, baseDir, subDir, domain.CategoryWorkflows, workflows, func(w domain.Workflow) (renderedMarkdownWrite, error) {
 		name := workflowSourceID(w)
 		_, renderedName, raw, err := renderedWorkflowForHarness(w, namespaced)
 		if err != nil {
@@ -157,7 +158,7 @@ func AddRenderedAgentWrites(f *domain.Fragment, baseDir, subDir string, namespac
 		return nil
 	}
 	skillRefs := NewSkillRefResolver(skills, namespaced)
-	return addRenderedMarkdownWrites(f, baseDir, subDir, agents, func(a domain.Agent) (renderedMarkdownWrite, error) {
+	return addRenderedMarkdownWrites(f, baseDir, subDir, domain.CategoryAgents, agents, func(a domain.Agent) (renderedMarkdownWrite, error) {
 		name := agentSourceID(a)
 		_, renderedName, raw, err := renderedAgentForHarness(a, namespaced, skillRefs)
 		if err != nil {
@@ -230,6 +231,7 @@ func AddRenderedSkillCopies(f *domain.Fragment, baseDir, subDir string, namespac
 			Content:    rendered,
 			SourcePack: s.SourcePack,
 			Src:        entryPath,
+			Category:   domain.CategorySkills,
 		})
 		f.Desired = append(f.Desired, dstEntry)
 		addSkillAssetCopies(f, s, dstDir)
@@ -315,6 +317,7 @@ func CaptureRenderedPlainSkill(entry CapturedSkillEntry, knownPacks map[string]s
 		Dst:          filepath.Join("skills", name, domain.SkillEntryFile),
 		Content:      content,
 		Src:          entry.SkillFile,
+		Category:     domain.CategorySkills,
 		IsContent:    true,
 		SourceDigest: domain.SingleFileDigest(entry.Raw),
 	})
@@ -535,6 +538,7 @@ func (c renderedMarkdownCaptureContext) captureFile(e os.DirEntry) renderedMarkd
 			Src:          src,
 			Dst:          dst,
 			Content:      content,
+			Category:     c.cat,
 			IsContent:    true,
 			SourceDigest: domain.SingleFileDigest(raw),
 		})

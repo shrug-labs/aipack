@@ -8,7 +8,7 @@ Sync is how pack content reaches your harness. It resolves the active profile, r
 aipack sync
 ```
 
-This resolves the active profile, determines which rules, skills, workflows, agents, plugins, and MCP servers should be active, and writes them to the target harness locations. The same content renders differently per harness — rules become individual files for Claude Code but a single `AGENTS.override.md` for Codex. See the [Harness Reference](./harness-reference.md) for rendering details.
+This resolves the active profile, determines which rules, skills, workflows, agents, hooks, plugins, and MCP servers should be active, and writes them to the target harness locations. The same content renders differently per harness — rules become individual files for Claude Code but a single `AGENTS.override.md` for Codex. See the [Harness Reference](./harness-reference.md) for rendering details.
 
 ### Resolution order
 
@@ -53,7 +53,7 @@ Auto sync is intentionally active-profile only. Commands that mutate an inactive
 | `--dry-run` | Preview planned changes without writing |
 | `--verbose` / `-v` | Show content diffs for changed files |
 | `--force` | Override file conflicts (see below) |
-| `--skip-settings` | Skip harness settings files; still syncs MCP configs and plugin references |
+| `--skip-settings` | Skip base harness settings files; still syncs MCP configs, plugin references, and rendered hooks |
 | `--watch` | Re-sync automatically when pack sources or config files change |
 | `--json` | Machine-readable output |
 | `--yes` | Auto-confirm deletions and overwrites |
@@ -71,7 +71,9 @@ All managed files — content and config — go through unified diff classificat
 
 `--force` controls conflict resolution. Stale managed files (no longer in the profile) are always removed — sync converges to the profile's desired state. User-modified stale files prompt for confirmation (or require `--yes`).
 
-Config files are computed from pack base configs. String values in harness settings expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. Hook descriptor command strings expand `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references before native hook rendering. `--skip-settings` skips harness settings files but first-class plugin references, drop-in plugin files (e.g., `oh-my-opencode.json`), rendered hooks (e.g., Codex `.codex/hooks.json` plus managed trust state), and generated MCP configs (e.g., Cline) still sync.
+Config files are computed from pack base configs. String values in harness settings expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. Settings merge preserves user-only keys. For scalar key collisions, aipack updates the value only when the on-disk value still matches the previous managed value; first-sync collisions and locally edited scalars are preserved. Hook descriptor command strings expand `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references before native hook rendering. `--skip-settings` skips base harness settings files but first-class plugin references, drop-in plugin files (e.g., `oh-my-opencode.json`), rendered hooks (Claude Code native hooks, OpenCode generated plugin, Codex `.codex/hooks.json` plus managed trust state, and Cline generated wrappers), and generated MCP configs (e.g., Cline) still sync.
+
+For global-scope sync, aipack honors harness-native config-root environment variables where the harness defines them: `CODEX_HOME` for Codex, `OPENCODE_CONFIG_DIR` for OpenCode, and `CLINE_DIR` / `CLINE_DATA_DIR` for Cline. Cline global hook wrappers are an exception: they use `~/Documents/Cline/Hooks/`, not the Cline env-var roots.
 
 Plugin references are additive-only in v1. Sync writes the enablement entries required by supported harnesses, but removing a plugin from a profile or pack does not disable or uninstall it from the harness.
 

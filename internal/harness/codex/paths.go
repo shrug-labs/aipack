@@ -1,6 +1,8 @@
 package codex
 
-import "github.com/shrug-labs/aipack/internal/domain"
+import (
+	"github.com/shrug-labs/aipack/internal/domain"
+)
 
 // Paths describes the filesystem locations Codex uses for a given scope.
 // All paths are relative to the scope's base directory (project dir or $HOME).
@@ -32,10 +34,24 @@ var GlobalPaths = Paths{
 	HooksFile:    ".codex/hooks.json",
 }
 
+// GlobalCodexHomePaths defines Codex's global-scope paths when CODEX_HOME is
+// set. CODEX_HOME points at the Codex config directory itself, not a home
+// directory that should receive an extra .codex suffix.
+var GlobalCodexHomePaths = Paths{
+	SkillsDir:    "skills",
+	AgentsDir:    "agents",
+	OverrideFile: "AGENTS.override.md",
+	SettingsFile: "config.toml",
+	HooksFile:    "hooks.json",
+}
+
 // PathsForScope returns the Paths for the given scope.
-func PathsForScope(scope domain.Scope) Paths {
+func PathsForScope(scope domain.Scope, targetConfigDir bool) Paths {
 	if scope == domain.ScopeProject {
 		return ProjectPaths
+	}
+	if targetConfigDir {
+		return GlobalCodexHomePaths
 	}
 	return GlobalPaths
 }

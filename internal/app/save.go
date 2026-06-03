@@ -262,8 +262,8 @@ type PendingSettingsChange struct {
 func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest, reg *harness.Registry) (RoundTripResult, error) {
 	home := req.Home
 	configDir := config.FallbackConfigDir(req.ConfigDir, home)
-	cctx := harness.CaptureContext{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home, KnownPacks: knownPacksFromRoots(req.PackRoots)}
 	var result RoundTripResult
+	knownPacks := knownPacksFromRoots(req.PackRoots)
 
 	for _, hid := range req.Harnesses {
 		ledgerPath := engine.LedgerPath(configDir, req.Scope, req.ProjectDir, hid)
@@ -285,12 +285,9 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 		if err != nil {
 			return RoundTripResult{}, err
 		}
-		saveBaseDir := req.ProjectDir
-		if req.Scope == domain.ScopeGlobal {
-			saveBaseDir = home
-		}
-		layout := h.Layout(req.Scope, saveBaseDir, home)
-		res, err := h.Capture(ctx, cctx)
+		spec := TargetSpec{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home, Env: req.TargetSpec.Env}
+		layout := h.Layout(req.Scope, targetDirForHarness(spec, hid), home)
+		res, err := h.Capture(ctx, captureContextForHarness(spec, hid, knownPacks))
 		if err != nil {
 			return RoundTripResult{}, err
 		}
@@ -569,7 +566,10 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 			} else {
 				// Settings write — either save immediately when forced, or emit
 				// as pending so the caller can decide whether to persist it.
-				ctx := harness.EditContext{ManagedMCPServers: mcpIndex.ForPath(src)}
+				ctx := harness.EditContext{
+					ManagedMCPServers:      mcpIndex.ForPath(src),
+					PreviousManagedOverlay: lg.PrevManagedOverlay(src),
+				}
 				stripped, err := layout.StripManaged(w.Content, src, ctx)
 				if err != nil {
 					return RoundTripResult{}, fmt.Errorf("stripping managed settings from %s: %w", src, err)
