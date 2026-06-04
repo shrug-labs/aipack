@@ -453,6 +453,18 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 func appendMissingDefaultRegistrySources(sources, defaults []config.RegistrySourceEntry) []config.RegistrySourceEntry {
 	result := slices.Clone(sources)
 	for i, def := range defaults {
+		if i < len(defaults)-1 {
+			if idx := registrySourceNameIndex(result, def.Name); idx >= 0 {
+				insertAt := defaultRegistryInsertIndex(result, defaults[i+1:], idx)
+				result = slices.Delete(result, idx, idx+1)
+				if idx < insertAt {
+					insertAt--
+				}
+				result = slices.Insert(result, insertAt, def)
+				result = removeDuplicateRegistryCoordinates(result, insertAt, def)
+				continue
+			}
+		}
 		if registrySourceIndex(result, def) >= 0 {
 			continue
 		}
@@ -469,6 +481,39 @@ func appendMissingDefaultRegistrySources(sources, defaults []config.RegistrySour
 		result = slices.Insert(result, insertAt, sourceToAdd)
 	}
 	return result
+}
+
+func defaultRegistryInsertIndex(sources, laterDefaults []config.RegistrySourceEntry, fallback int) int {
+	insertAt := fallback
+	for _, laterDefault := range laterDefaults {
+		if idx := registrySourceIndex(sources, laterDefault); idx >= 0 && idx < insertAt {
+			insertAt = idx
+			continue
+		}
+		if idx := registrySourceNameIndex(sources, laterDefault.Name); idx >= 0 && idx < insertAt {
+			insertAt = idx
+		}
+	}
+	return insertAt
+}
+
+func removeDuplicateRegistryCoordinates(sources []config.RegistrySourceEntry, keep int, needle config.RegistrySourceEntry) []config.RegistrySourceEntry {
+	for i := len(sources) - 1; i >= 0; i-- {
+		if i == keep || !sameRegistryCoordinates(sources[i], needle) {
+			continue
+		}
+		sources = slices.Delete(sources, i, i+1)
+		if i < keep {
+			keep--
+		}
+	}
+	return sources
+}
+
+func registrySourceNameIndex(sources []config.RegistrySourceEntry, name string) int {
+	return slices.IndexFunc(sources, func(src config.RegistrySourceEntry) bool {
+		return src.Name == name
+	})
 }
 
 func registrySourceIndex(sources []config.RegistrySourceEntry, needle config.RegistrySourceEntry) int {

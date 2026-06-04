@@ -174,6 +174,15 @@ func classifyFilePreRead(dst string, desired []byte, label, sourcePack string, l
 // ClassifyCopy walks a source directory and classifies each file against on-disk state.
 func (e *Engine) ClassifyCopy(src, dst, sourcePack string, lg domain.Ledger) ([]FileDiff, error) {
 	var out []FileDiff
+	src = filepath.Clean(src)
+	if resolver, ok := e.FS.(symlinkEvaluator); ok {
+		resolved, err := resolver.EvalSymlinks(src)
+		if err == nil && resolved != src {
+			if info, statErr := e.FS.Stat(resolved); statErr == nil && info.IsDir() {
+				src = resolved
+			}
+		}
+	}
 	err := e.FS.WalkDir(src, func(p string, d os.DirEntry, werr error) error {
 		if werr != nil {
 			return werr

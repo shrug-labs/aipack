@@ -52,7 +52,7 @@ Examples:
 
 ## Tag and publish
 
-1. Create the release commit.
+1. Create the release commit with subject `release vX.Y.Z: <concise summary>`, matching prior release commits.
 2. Create and push the git tag.
 3. GitHub Actions will:
     - run formatting, test, and vet checks

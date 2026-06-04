@@ -26,6 +26,10 @@ type FS interface {
 	WalkDir(root string, fn fs.WalkDirFunc) error
 }
 
+type symlinkEvaluator interface {
+	EvalSymlinks(path string) (string, error)
+}
+
 // OSFS delegates to the real filesystem with atomic writes.
 type OSFS struct{}
 
@@ -35,6 +39,7 @@ func (OSFS) Remove(path string) error                     { return os.Remove(pat
 func (OSFS) MkdirAll(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
 func (OSFS) ReadDir(path string) ([]os.DirEntry, error)   { return os.ReadDir(path) }
 func (OSFS) WalkDir(root string, fn fs.WalkDirFunc) error { return filepath.WalkDir(root, fn) }
+func (OSFS) EvalSymlinks(path string) (string, error)     { return filepath.EvalSymlinks(path) }
 func (OSFS) WriteFile(path string, data []byte, perm os.FileMode) error {
 	return util.WriteFileAtomicWithPerms(path, data, 0o700, perm)
 }

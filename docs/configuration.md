@@ -138,7 +138,7 @@ Each entry is a remote registry that `registry fetch` retrieves and caches.
 | `ref` | string | Git ref (branch or tag). Empty = git's default branch. |
 | `path` | string | File path within the repo (default: `registry.yaml`) |
 
-Sources are added automatically by `registry fetch <url>` and deleted by `registry delete`. `registry fetch` (bare) refreshes all configured sources plus compiled-in defaults. Public builds include the `shrug-labs/packs` registry by default. Distributors can prepend one additional default source by setting `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryName` and `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryURL` with Go ldflags.
+Sources are added automatically by `registry fetch <url>` and deleted by `registry delete`. `registry fetch` (bare) refreshes all configured sources plus compiled-in defaults. Public builds include the `shrug-labs/packs` registry by default. Distributors can prepend one additional default source by setting `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryName` and `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryURL` with Go ldflags. If a later distributor build changes that additional default's URL or path but keeps the same source name, bare `registry fetch` replaces the old configured source with the new compiled default.
 
 When `ref` is empty (the default for `registry add` and `registry fetch` without `--ref`), the registry repo is cloned at its default branch. Repositories using `master`, `trunk`, or any other default branch work without configuration.
 

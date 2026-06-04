@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -289,6 +290,53 @@ func TestClassifyCopy_Dir(t *testing.T) {
 	for _, d := range diffs {
 		if d.Kind != domain.DiffCreate {
 			t.Errorf("diff %q Kind = %q, want %q", d.Dst, d.Kind, domain.DiffCreate)
+		}
+	}
+}
+
+func TestClassifyCopy_RootDirectorySymlink(t *testing.T) {
+	t.Parallel()
+	testutil.SkipWithoutSymlinks(t)
+
+	eng := New(nil, nil)
+	root := t.TempDir()
+	realSkill := filepath.Join(root, "skills", "linked-skill")
+	if err := os.MkdirAll(filepath.Join(realSkill, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realSkill, "SKILL.md"), []byte("skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realSkill, "scripts", "run.sh"), []byte("run"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packSkills := filepath.Join(root, "pack", "skills")
+	if err := os.MkdirAll(packSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(packSkills, "linked-skill")
+	testutil.Symlink(t, "../../skills/linked-skill", link)
+
+	dst := filepath.Join(t.TempDir(), ".agents", "skills", "linked-skill")
+	diffs, err := eng.ClassifyCopy(link, dst, "pack1", domain.NewLedger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]bool{}
+	for _, d := range diffs {
+		if d.Kind != domain.DiffCreate {
+			t.Errorf("diff %q Kind = %q, want %q", d.Dst, d.Kind, domain.DiffCreate)
+		}
+		got[filepath.ToSlash(d.Dst)] = true
+	}
+	for _, want := range []string{
+		filepath.ToSlash(filepath.Join(dst, "SKILL.md")),
+		filepath.ToSlash(filepath.Join(dst, "scripts", "run.sh")),
+	} {
+		if !got[want] {
+			t.Fatalf("missing diff for %s; got %v", want, got)
 		}
 	}
 }

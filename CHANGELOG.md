@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.29.2]
+
+### Fixed
+
+- **Compiled additional default registry sources now replace stale configured sources with the same name.** Distributor builds that move their extra default registry to a new URL or path no longer leave the old source ahead of the current default after bare `aipack registry fetch`.
+- **Symlinked content roots now sync correctly.** When the content path being rendered is itself a directory symlink, aipack resolves the root and walks the target directory so nested files are planned and written normally.
+
 ## [0.29.1]
 
 ### Fixed

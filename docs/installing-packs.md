@@ -382,6 +382,34 @@ aipack pack update my-pack --ref main     # switch to tracking a branch
 
 For standard packs (no `content_paths`), the same re-clone-and-extract process applies. Installed packs always contain only content — no `.git/` directories, no non-pack files.
 
+## Troubleshooting remote installs
+
+Most remote-install failures are either registry lookup problems or Git access problems. Start by separating those two cases.
+
+If install by name fails with `registry lookup for "<pack>": pack "<pack>" not found in registry`, aipack did not find that pack in the merged registry cache. Refresh the configured registry sources, then inspect what aipack knows:
+
+```bash
+aipack registry fetch
+aipack registry sources
+aipack registry list
+```
+
+If `registry fetch` warns that a source could not be fetched, fix or delete that source before retrying the install. A warning like `file registry.yaml not found in tarball` means the source was fetched, but the configured registry file path does not exist in that repository or archive. Re-add the source with the right `--path`, or remove the stale source with `aipack registry delete <source-name>`.
+
+If a direct URL or registry-backed install reaches Git and then fails with `Permission denied (publickey)`, `could not read Username`, `authentication failed`, `401`, or `403`, the pack was found but Git could not authenticate to the source repository. Use the exact repository URL from the error and verify Git outside aipack:
+
+```bash
+git ls-remote <repo-url>
+```
+
+For SSH URLs, load or configure the SSH key that has repository access. For HTTPS URLs, use a credential helper or switch the registry entry to an SSH URL. aipack runs Git non-interactively, so terminal prompts, browser sign-in prompts, and passphrase prompts are treated as failures.
+
+If an HTTPS content-path install on an older aipack binary fails before cloning with `pack.json not found at .../HEAD/pack.json`, upgrade aipack and retry. Current releases clone directly when content path flags such as `--skills`, `--rules`, or `--workflows` are present; older binaries probed for a root `pack.json` first. As a temporary workaround on old binaries, add an explicit ref:
+
+```bash
+aipack pack install --url https://github.com/org/repo --ref main --skills path/to/skills --name team-skills --add
+```
+
 ## Removing a pack
 
 `aipack pack delete <name>` removes the pack source, lockfile entry, profile entries, and pack ledger entries. It removes only clean rendered harness files whose ledger digest still matches on-disk content and whose path is a known harness-rendered location. Modified files and unknown ledger paths are preserved on disk and made unmanaged. Shared settings files are not deleted; aipack strips only the pack-managed keys and preserves user settings.

@@ -846,6 +846,136 @@ func TestRegistryFetch_AdditionalDefaultGitIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRegistryFetch_ReplacesStaleAdditionalDefaultSourceByName(t *testing.T) {
+	oldName := config.AdditionalDefaultRegistryName
+	oldURL := config.AdditionalDefaultRegistryURL
+	config.AdditionalDefaultRegistryName = "team-packs"
+	config.AdditionalDefaultRegistryURL = "https://registry.example.com/team/latest/registry.yaml"
+	t.Cleanup(func() {
+		config.AdditionalDefaultRegistryName = oldName
+		config.AdditionalDefaultRegistryURL = oldURL
+	})
+
+	dir := t.TempDir()
+	sc := config.SyncConfig{SchemaVersion: 1}
+	sc.RegistrySources = []config.RegistrySourceEntry{
+		{
+			Name: config.DeriveSourceName(config.DefaultRegistryRepo, config.DefaultRegistryPath),
+			URL:  config.DefaultRegistryRepo,
+			Path: config.DefaultRegistryPath,
+		},
+		{
+			Name: "team-packs",
+			URL:  "ssh://git@example.com/old/team-packs.git",
+			Ref:  "main",
+			Path: config.DefaultRegistryPath,
+		},
+	}
+	if err := config.SaveSyncConfig(config.SyncConfigPath(dir), sc); err != nil {
+		t.Fatalf("saving sync-config: %v", err)
+	}
+
+	var fetchOrder []string
+	var buf bytes.Buffer
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir: dir,
+		FetchFn: func(url string) ([]byte, error) {
+			fetchOrder = append(fetchOrder, url)
+			return []byte(testRemoteRegistryYAML), nil
+		},
+		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
+			fetchOrder = append(fetchOrder, repo)
+			return []byte(testRemoteRegistryYAML), nil
+		},
+	}, &buf)
+	if err != nil {
+		t.Fatalf("registry fetch: %v", err)
+	}
+
+	if len(fetchOrder) < 2 || fetchOrder[0] != config.AdditionalDefaultRegistryURL {
+		t.Fatalf("fetch order = %v, want additional default first", fetchOrder)
+	}
+	for _, gotURL := range fetchOrder {
+		if strings.Contains(gotURL, "old/team-packs") {
+			t.Fatalf("stale source should not be fetched after name replacement: %v", fetchOrder)
+		}
+	}
+
+	got, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("loading sync-config: %v", err)
+	}
+	if got.RegistrySources[0].Name != "team-packs" || got.RegistrySources[0].URL != config.AdditionalDefaultRegistryURL {
+		t.Fatalf("first source = %+v, want team-packs at additional default URL", got.RegistrySources[0])
+	}
+	if len(got.RegistrySources) != 2 {
+		t.Fatalf("registry sources = %+v, want replacement plus public default", got.RegistrySources)
+	}
+}
+
+func TestRegistryFetch_PublicDefaultDoesNotReplaceSameNameCustomSource(t *testing.T) {
+	oldName := config.AdditionalDefaultRegistryName
+	oldURL := config.AdditionalDefaultRegistryURL
+	config.AdditionalDefaultRegistryName = ""
+	config.AdditionalDefaultRegistryURL = ""
+	t.Cleanup(func() {
+		config.AdditionalDefaultRegistryName = oldName
+		config.AdditionalDefaultRegistryURL = oldURL
+	})
+
+	dir := t.TempDir()
+	defaultName := config.DeriveSourceName(config.DefaultRegistryRepo, config.DefaultRegistryPath)
+	sc := config.SyncConfig{SchemaVersion: 1}
+	sc.RegistrySources = []config.RegistrySourceEntry{{
+		Name: defaultName,
+		URL:  "https://example.com/custom/registry.yaml",
+	}}
+	if err := config.SaveSyncConfig(config.SyncConfigPath(dir), sc); err != nil {
+		t.Fatalf("saving sync-config: %v", err)
+	}
+
+	var fetchOrder []string
+	var buf bytes.Buffer
+	err := RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir: dir,
+		FetchFn: func(url string) ([]byte, error) {
+			fetchOrder = append(fetchOrder, url)
+			return []byte(testRemoteRegistryYAML), nil
+		},
+		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
+			fetchOrder = append(fetchOrder, repo)
+			return []byte(testRemoteRegistryYAML), nil
+		},
+	}, &buf)
+	if err != nil {
+		t.Fatalf("registry fetch: %v", err)
+	}
+
+	wantOrder := []string{"https://example.com/custom/registry.yaml", config.DefaultRegistryRepo}
+	if len(fetchOrder) != len(wantOrder) {
+		t.Fatalf("fetch order = %v, want %v", fetchOrder, wantOrder)
+	}
+	for i := range wantOrder {
+		if fetchOrder[i] != wantOrder[i] {
+			t.Fatalf("fetch order = %v, want %v", fetchOrder, wantOrder)
+		}
+	}
+
+	got, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+	if err != nil {
+		t.Fatalf("loading sync-config: %v", err)
+	}
+	if len(got.RegistrySources) != 2 {
+		t.Fatalf("registry sources = %+v, want custom plus public default", got.RegistrySources)
+	}
+	if got.RegistrySources[0].URL != "https://example.com/custom/registry.yaml" {
+		t.Fatalf("first source = %+v, want custom source preserved", got.RegistrySources[0])
+	}
+	if got.RegistrySources[1].URL != config.DefaultRegistryRepo {
+		t.Fatalf("second source = %+v, want public default appended", got.RegistrySources[1])
+	}
+}
+
 func TestRegistryFetch_InsertsAdditionalDefaultBeforeExistingPublic(t *testing.T) {
 	oldName := config.AdditionalDefaultRegistryName
 	oldURL := config.AdditionalDefaultRegistryURL
