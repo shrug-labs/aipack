@@ -93,31 +93,39 @@ Fields marked `omitempty` are absent from the output when empty/zero. All other 
 
 ### `aipack sync`
 
+Sync emits a JSON **array** with one self-contained object per target harness, in the order the harnesses were resolved. Each harness syncs independently, so each object is a complete result. A single-harness sync emits a one-element array.
+
 ```json
-{
-  "dry_run":   false,
-  "rules":     12,
-  "workflows": 8,
-  "agents":    3,
-  "skills":    6,
-  "plugins":   2,
-  "settings":  2,
-  "mcp":       5,
-  "warnings":  [{"message": "stale ledger migrated", "field": "ledger"}]
-}
+[
+  {
+    "harness":   "claudecode",
+    "dry_run":   false,
+    "rules":     12,
+    "workflows": 8,
+    "agents":    3,
+    "skills":    6,
+    "plugins":   2,
+    "settings":  2,
+    "mcp":       5,
+    "warnings":  [{"message": "stale ledger migrated", "field": "ledger"}]
+  }
+]
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `harness` | string | The harness this result describes |
 | `dry_run` | bool | Whether this was a dry run |
 | `rules` | int | Number of rules in the resolved profile |
 | `workflows` | int | Number of workflows in the resolved profile |
 | `agents` | int | Number of agents in the resolved profile |
 | `skills` | int | Number of skills in the resolved profile |
 | `plugins` | int | Number of plugin references in the resolved profile |
-| `settings` | int | Number of settings file actions in the plan |
+| `settings` | int | Number of settings file actions in this harness's plan |
 | `mcp` | int | Number of MCP servers in the resolved profile |
-| `warnings` | array | Non-fatal issues encountered during sync. Each entry has `message` (string, always present), `path` (string, optional), and `field` (string, optional). Empty array when no warnings. |
+| `warnings` | array | Non-fatal issues encountered during this harness's sync. Each entry has `message` (string, always present), `path` (string, optional), and `field` (string, optional). Empty array when no warnings. Profile-resolution warnings are attached to the first harness's result. |
+
+Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are profile-level and identical across harnesses; `settings` and `warnings` are per-harness.
 
 ### `aipack restore`
 
@@ -872,6 +880,8 @@ Several flags follow a common resolution chain across commands:
 | `--scope` | `--scope` → `sync-config defaults.scope` → `"global"` |
 | `--harness` | `--harness` → `sync-config defaults.harnesses` → `$AIPACK_DEFAULT_HARNESS` |
 | `--config-dir` | `--config-dir` → `~/.config/aipack` (`%APPDATA%\aipack` on Windows) |
+
+Commands may apply different cardinality rules after this resolution chain. `sync` accepts one or more resolved harnesses (including `all`) and syncs each independently, emitting one result object per harness; commands such as `trace`, `clean`, `save`, and `restore` may accept multiple harnesses when their command contract allows it.
 
 ## Environment variables
 

@@ -36,10 +36,6 @@ func targetDirForHarness(spec TargetSpec, hid domain.Harness) string {
 	return targetForHarness(spec, hid).Dir
 }
 
-func targetIsConfigDirForHarness(spec TargetSpec, hid domain.Harness) bool {
-	return targetForHarness(spec, hid).IsConfigDir
-}
-
 // envPathFromSpec resolves an environment variable by name, preferring an
 // explicit override in spec.Env over the process environment. A nil or
 // partial spec.Env is fine — keys not present in spec.Env fall through to

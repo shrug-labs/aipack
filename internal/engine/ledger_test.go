@@ -263,6 +263,17 @@ func TestMigrateOldLedgers_CombinedToPerHarness(t *testing.T) {
 	if len(oc.Managed) != 1 {
 		t.Errorf("opencode entries = %d, want 1", len(oc.Managed))
 	}
+	if _, err := os.Stat(filepath.Join(ledgerDir, "claudecode+opencode.json")); !os.IsNotExist(err) {
+		t.Fatalf("combined ledger should be removed after full migration; stat err=%v", err)
+	}
+
+	n, err = eng.MigrateOldLedgers(cfgDir, domain.ScopeGlobal, "", []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode}, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("second migration = %d, want 0", n)
+	}
 }
 
 func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
@@ -298,6 +309,94 @@ func TestMigrateOldLedgers_ProjectLocal(t *testing.T) {
 	cc, _, _ := eng.LoadLedger(LedgerPath(cfgDir, domain.ScopeProject, projectDir, domain.HarnessClaudeCode))
 	if len(cc.Managed) != 1 {
 		t.Errorf("claudecode entries = %d, want 1", len(cc.Managed))
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old project ledger should be removed after full migration; stat err=%v", err)
+	}
+}
+
+func TestMigrateOldLedgers_PreservesUnmatchedEntries(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	eng := New(nil, nil)
+	cfgDir, _ := config.DefaultConfigDir(home)
+	ledgerDir := filepath.Join(cfgDir, "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	matched := filepath.Join(home, ".claude", "rules", "a.md")
+	unmatched := filepath.Join(home, ".unknown", "rules", "b.md")
+	combined := domain.NewLedger()
+	combined.Managed[matched] = domain.Entry{Digest: "aaa", SourcePack: "p1"}
+	combined.Managed[unmatched] = domain.Entry{Digest: "bbb", SourcePack: "p1"}
+	oldPath := filepath.Join(ledgerDir, "claudecode+opencode.json")
+	if err := eng.SaveLedger(oldPath, combined, false); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := map[domain.Harness][]string{
+		domain.HarnessClaudeCode: {filepath.Join(home, ".claude")},
+	}
+	n, err := eng.MigrateOldLedgers(cfgDir, domain.ScopeGlobal, "", []domain.Harness{domain.HarnessClaudeCode}, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("migrated = %d, want 1", n)
+	}
+	old, _, err := eng.LoadLedger(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old.Managed) != 1 {
+		t.Fatalf("old ledger entries = %d, want 1 unmatched entry", len(old.Managed))
+	}
+	if _, ok := old.Managed[unmatched]; !ok {
+		t.Fatalf("old ledger should preserve unmatched entry %s", unmatched)
+	}
+	if _, ok := old.Managed[matched]; ok {
+		t.Fatalf("old ledger should prune matched entry %s", matched)
+	}
+}
+
+func TestMigrateOldLedgers_PrunesAlreadyMigratedEntries(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	eng := New(nil, nil)
+	cfgDir, _ := config.DefaultConfigDir(home)
+	ledgerDir := filepath.Join(cfgDir, "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(home, ".claude", "rules", "a.md")
+	entry := domain.Entry{Digest: "aaa", SourcePack: "p1"}
+	old := domain.NewLedger()
+	old.Managed[path] = entry
+	oldPath := filepath.Join(ledgerDir, "claudecode+opencode.json")
+	if err := eng.SaveLedger(oldPath, old, false); err != nil {
+		t.Fatal(err)
+	}
+
+	current := domain.NewLedger()
+	current.Managed[path] = entry
+	if err := eng.SaveLedger(LedgerPath(cfgDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode), current, false); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := map[domain.Harness][]string{
+		domain.HarnessClaudeCode: {filepath.Join(home, ".claude")},
+	}
+	n, err := eng.MigrateOldLedgers(cfgDir, domain.ScopeGlobal, "", []domain.Harness{domain.HarnessClaudeCode}, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("migrated = %d, want 0 for already-present entry", n)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old ledger should be removed after pruning already-present entry; stat err=%v", err)
 	}
 }
 

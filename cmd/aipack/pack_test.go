@@ -135,7 +135,7 @@ func TestPackAdd_AutoSyncsActiveProfileWhenEnabled(t *testing.T) {
 	if !strings.Contains(stdout, `auto-sync: syncing active profile "default"`) {
 		t.Fatalf("stdout missing auto-sync line:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "sync OK:") {
+	if !strings.Contains(stdout, "sync OK [") {
 		t.Fatalf("stdout missing sync success:\n%s", stdout)
 	}
 	if _, err := os.Stat(filepath.Join(projectDir, ".claude", "rules", "demo-rule.md")); err != nil {
@@ -153,7 +153,7 @@ func TestPackAdd_DoesNotAutoSyncInactiveProfile(t *testing.T) {
 	if code != cmdutil.ExitOK {
 		t.Fatalf("pack add exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
-	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK:") {
+	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK [") {
 		t.Fatalf("inactive profile should not auto-sync, got:\n%s", stdout)
 	}
 	for _, rel := range []string{
@@ -176,7 +176,7 @@ func TestPackAdd_DoesNotAutoSyncWhenDisabled(t *testing.T) {
 	if code != cmdutil.ExitOK {
 		t.Fatalf("pack add exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
-	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK:") {
+	if strings.Contains(stdout, "auto-sync:") || strings.Contains(stdout, "sync OK [") {
 		t.Fatalf("auto_sync disabled should not sync, got:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "Next: run 'aipack sync'") {

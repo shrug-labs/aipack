@@ -1522,7 +1522,7 @@ func TestCodex_WorkflowPromotedToSkillDir(t *testing.T) {
 
 	files := collectFiles(t, projectDir)
 
-	skillPath := filepath.Join(".agents", "skills", "deploy", "SKILL.md")
+	skillPath := filepath.Join(".codex", "skills", "deploy", "SKILL.md")
 	content, ok := files[skillPath]
 	if !ok {
 		t.Fatalf("expected %s to exist", skillPath)

@@ -228,6 +228,101 @@ Smoke body.
 	}
 }
 
+func TestPackDelete_RestoresRegistryIndexStatus(t *testing.T) {
+	t.Parallel()
+
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(packDir, "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), []byte(`{
+  "schema_version": 2,
+  "name": "registered-pack",
+  "version": "1.0.0",
+  "root": ".",
+  "rules": ["delete-smoke"]
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "rules", "delete-smoke.md"), []byte(`---
+name: delete-smoke
+description: installed registry delete smoke
+metadata:
+  owner: test
+  last_updated: 2026-06-05
+---
+
+Installed registry delete smoke body.
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	sc.RegistrySources = []config.RegistrySourceEntry{{Name: "test", URL: "https://example.com/registry.yaml"}}
+	if err := config.SaveSyncConfig(config.SyncConfigPath(configDir), sc); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(config.RegistriesCacheDir(configDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.SourceCachePath(configDir, "test"), []byte(`schema_version: 1
+packs:
+  registered-pack:
+    repo: https://example.com/registered-pack.git
+    description: Registered delete smoke pack
+    owner: Test Team
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := config.LoadMergedRegistry(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := indexRegistryEntries(reg, configDir); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		PackPath:  packDir,
+		ConfigDir: configDir,
+		Link:      true,
+		NowFn:     func() time.Time { return fixedNow },
+	}, &out); err != nil {
+		t.Fatalf("PackInstall: %v", err)
+	}
+
+	installed, err := RunIndexSearch(IndexSearchRequest{
+		ConfigDir: configDir,
+		Terms:     "registry delete smoke",
+		Status:    "installed",
+	})
+	if err != nil {
+		t.Fatalf("RunIndexSearch installed: %v", err)
+	}
+	if len(installed) == 0 || installed[0].Pack != "registered-pack" {
+		t.Fatalf("expected installed search result before delete, got %+v", installed)
+	}
+
+	out.Reset()
+	if _, err := PackDelete(configDir, "registered-pack", &out); err != nil {
+		t.Fatalf("PackDelete: %v", err)
+	}
+
+	registered, err := RunIndexSearch(IndexSearchRequest{
+		ConfigDir: configDir,
+		Terms:     "Registered delete smoke",
+		Status:    "registered",
+	})
+	if err != nil {
+		t.Fatalf("RunIndexSearch registered: %v", err)
+	}
+	if len(registered) != 1 || registered[0].Pack != "registered-pack" || registered[0].Status != "registered" {
+		t.Fatalf("expected registered search result after delete, got %+v", registered)
+	}
+}
+
 func TestPackDelete_RemovesTrackingAndRenderedFilesByDefault(t *testing.T) {
 	t.Parallel()
 	packDir := t.TempDir()
@@ -329,6 +424,86 @@ func TestPackDelete_RemovesTrackingAndRenderedFilesByDefault(t *testing.T) {
 	}
 	if _, ok := reloaded.Managed[filepath.Clean(rendered)]; ok {
 		t.Fatalf("deleted pack ledger entry should be cleared, got %v", reloaded.Managed)
+	}
+}
+
+func TestPackDelete_RemovesCodexSkillRenderedFilesByDefault(t *testing.T) {
+	cases := []struct {
+		name         string
+		renderedPath func(*testing.T) string
+		body         []byte
+		wantMessage  string
+	}{
+		{
+			name: "ledger path",
+			renderedPath: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), ".codex", "skills", "deploy", "SKILL.md")
+			},
+			body:        []byte("rendered codex skill"),
+			wantMessage: "codex rendered skill should be removed by default",
+		},
+		{
+			name: "CODEX_HOME path",
+			renderedPath: func(t *testing.T) string {
+				codexHome := t.TempDir()
+				t.Setenv("CODEX_HOME", codexHome)
+				return filepath.Join(codexHome, "skills", "deploy", "SKILL.md")
+			},
+			body:        []byte("rendered codex home skill"),
+			wantMessage: "CODEX_HOME rendered skill should be removed by default",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			packDir := t.TempDir()
+			configDir := t.TempDir()
+			writePackManifest(t, packDir, "deletable")
+			writeEmptyProfile(t, configDir, "default")
+			writeTestSyncConfig(t, configDir)
+
+			var out bytes.Buffer
+			if err := PackInstall(context.Background(), PackInstallRequest{
+				PackPath: packDir, ConfigDir: configDir, Link: true,
+				Add: true, Profile: "default",
+				NowFn: func() time.Time { return fixedNow },
+			}, &out); err != nil {
+				t.Fatalf("PackInstall: %v", err)
+			}
+
+			eng := engine.New(nil, nil)
+			ledgerPath := engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessCodex)
+			if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			rendered := tc.renderedPath(t)
+			if err := os.MkdirAll(filepath.Dir(rendered), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rendered, tc.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			lg := domain.NewLedger()
+			lg.Record(rendered, tc.body, "deletable", nil, fixedNow)
+			if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+				t.Fatalf("SaveLedger: %v", err)
+			}
+
+			out.Reset()
+			result, err := PackDeleteWithOptions(eng, PackDeleteRequest{ConfigDir: configDir, Name: "deletable"}, &out)
+			if err != nil {
+				t.Fatalf("PackDeleteWithOptions: %v", err)
+			}
+			if result.RenderedRemoved != 1 {
+				t.Fatalf("expected 1 rendered file removed, got %d", result.RenderedRemoved)
+			}
+			if result.LedgerCleared != 1 {
+				t.Fatalf("expected 1 ledger entry cleared, got %d", result.LedgerCleared)
+			}
+			if _, err := os.Stat(rendered); !os.IsNotExist(err) {
+				t.Fatal(tc.wantMessage)
+			}
+		})
 	}
 }
 

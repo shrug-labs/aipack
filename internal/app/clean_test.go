@@ -248,6 +248,36 @@ func TestBuildCleanOps_OpenCodeRemovesLedgerTrackedDropInFile(t *testing.T) {
 	}
 }
 
+func TestBuildCleanOps_CodexLegacyStaleRootPreservesClineOwnedLeaf(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	eng := engine.New(nil, nil)
+
+	orphanDst := filepath.Join(projectDir, ".agents", "skills", "orphan", "SKILL.md")
+	clineDst := filepath.Join(projectDir, ".agents", "skills", "deploy", "SKILL.md")
+
+	writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex), map[string]domain.Entry{
+		orphanDst: {Digest: "abc", SourcePack: "core"},
+		clineDst:  {Digest: "def", SourcePack: "core"},
+	})
+	writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCline), map[string]domain.Entry{
+		clineDst: {Digest: "def", SourcePack: "core"},
+	})
+
+	ops := buildCleanOps(cleanTarget{eng: eng, scope: domain.ScopeProject, home: home, projectDir: projectDir, harnesses: []domain.Harness{domain.HarnessCodex}, reg: testRegistry()})
+	paths := map[string]bool{}
+	for _, op := range ops {
+		paths[op.path()] = true
+	}
+	if !paths[orphanDst] {
+		t.Fatalf("expected remove op for orphaned legacy codex path %q", orphanDst)
+	}
+	if paths[clineDst] {
+		t.Fatalf("did not expect remove op for cline-owned path %q", clineDst)
+	}
+}
+
 func TestBuildCleanOps_ProjectLedgerWipeIncludesLegacyAndPerHarnessLedgers(t *testing.T) {
 	t.Parallel()
 

@@ -18,7 +18,7 @@ type Paths struct {
 
 // ProjectPaths defines Codex's project-scope paths (relative to project dir).
 var ProjectPaths = Paths{
-	SkillsDir:    ".agents/skills",
+	SkillsDir:    ".codex/skills",
 	AgentsDir:    ".codex/agents",
 	OverrideFile: "AGENTS.override.md",
 	SettingsFile: ".codex/config.toml",
@@ -27,7 +27,7 @@ var ProjectPaths = Paths{
 
 // GlobalPaths defines Codex's global-scope paths (relative to $HOME).
 var GlobalPaths = Paths{
-	SkillsDir:    ".agents/skills",
+	SkillsDir:    ".codex/skills",
 	AgentsDir:    ".codex/agents",
 	OverrideFile: ".codex/AGENTS.override.md",
 	SettingsFile: ".codex/config.toml",
@@ -55,3 +55,7 @@ func PathsForScope(scope domain.Scope, targetConfigDir bool) Paths {
 	}
 	return GlobalPaths
 }
+
+// LegacySkillsDir is the old Codex shared skill root. It is kept only for
+// stale cleanup of ledger-managed files; current Codex renders use .codex/skills.
+const LegacySkillsDir = ".agents/skills"

@@ -20,7 +20,8 @@ type Harness interface {
 
 ```go
 type Layout struct {
-    ValidationRoots []string    // destinations this harness may write under
+    ValidationRoots []string    // current destinations this harness may write under
+    StaleRoots      []string    // legacy cleanup-only roots, not current write roots
     RemovePaths     []string    // fully-owned paths safe to delete wholesale
     OwnedFiles      []OwnedFile // files with partial key ownership
 }
@@ -28,13 +29,14 @@ type Layout struct {
 
 `OwnedFile` carries two closures: `Strip` (selectively remove managed content for capture/save) and `Reset` (aggressively clear managed sections for clean). Both operate on `map[string]any`. The `Format` field (JSON or TOML) drives parse/serialize in the `StripManaged` helper.
 
-`ValidationRoots`, `RemovePaths`, and `OwnedFiles` are intentionally different:
+`ValidationRoots`, `StaleRoots`, `RemovePaths`, and `OwnedFiles` are intentionally different:
 
-- `ValidationRoots`: path allowlist for sync destinations, stale-file scoping, and ledger routing.
+- `ValidationRoots`: path allowlist for current sync destinations, current stale-file scoping, and ledger routing.
+- `StaleRoots`: legacy cleanup-only roots scanned for ledger-managed stale entries; never current write destinations or ownership claims.
 - `RemovePaths`: whole directories/files aipack owns and may remove outright during `clean`.
 - `OwnedFiles`: partially-managed files that must be edited surgically, never deleted wholesale.
 
-Clean is derived from Layout: `RemovePaths` are deleted wholesale, `OwnedFiles` are reset via `OwnedFile.Reset`, and ledger-tracked leaf files inside `ValidationRoots` are removed when they are not an `OwnedFile` and not already covered by `RemovePaths`. This is how mixed containers such as `.opencode/` can keep a partially-owned `opencode.json` while still cleaning fully-owned drop-ins like `oh-my-opencode.json`.
+Clean is derived from Layout: `RemovePaths` are deleted wholesale, `OwnedFiles` are reset via `OwnedFile.Reset`, and ledger-tracked leaf files inside `ValidationRoots` or `StaleRoots` are removed when they are not an `OwnedFile`, not protected by another harness's current ownership, and not already covered by `RemovePaths`. This is how mixed containers such as `.opencode/` can keep a partially-owned `opencode.json` while still cleaning fully-owned drop-ins like `oh-my-opencode.json`.
 
 ## Fragment pattern
 
@@ -117,9 +119,9 @@ Hooks are first-class pack content under `hooks/<id>/HOOK.yaml`. Harness adapter
 | Vector | Claude Code | OpenCode | Codex | Cline |
 |--------|-------------|----------|-------|-------|
 | Rules | `.claude/rules/` | `.opencode/rules/` + `instructions` ref | Flattened `AGENTS.override.md` | `.clinerules/` |
-| Agents | `.claude/agents/` | `.opencode/agents/` | Native TOML in `codex.toml` | Promoted to `.agents/skills/` |
-| Workflows | `.claude/commands/` | `.opencode/commands/` | Promoted to `.agents/skills/` | `.clinerules/workflows/` |
-| Skills | `.claude/skills/` | `.opencode/skills/` | `.agents/skills/` | `.agents/skills/` (shared with Codex) |
+| Agents | `.claude/agents/` | `.opencode/agents/` | Native TOML in `.codex/agents/` + `config.toml` | Promoted to `.agents/skills/` |
+| Workflows | `.claude/commands/` | `.opencode/commands/` | Promoted to `.codex/skills/` | `.clinerules/workflows/` |
+| Skills | `.claude/skills/` | `.opencode/skills/` | `.codex/skills/` | `.agents/skills/` |
 | MCP | `.mcp.json` | `opencode.json` | `config.toml` | Global VS Code storage |
 | Settings | `settings.local.json` | `opencode.json` | `config.toml` | N/A |
 | Hooks | `settings.local.json` native `hooks` | `plugins/aipack-hooks.js` | `.codex/hooks.json` + `config.toml` trust state | Generated wrappers in hooks dir |

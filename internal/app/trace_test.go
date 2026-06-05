@@ -185,7 +185,7 @@ func TestMatchesWrite(t *testing.T) {
 			Category:   "agents",
 		}
 		wr := domain.WriteAction{
-			Dst:        "/home/user/.agents/skills/reviewer/SKILL.md",
+			Dst:        "/home/user/.codex/skills/reviewer/SKILL.md",
 			Src:        "/packs/core/agents/reviewer.md",
 			SourcePack: "core",
 			Category:   domain.CategorySkills,
@@ -250,8 +250,8 @@ func TestRootsIndex_Identify(t *testing.T) {
 		{"/home/user/project/.claude/rules/test.md", domain.HarnessClaudeCode},
 		{"/home/user/project/.opencode/rules/test.md", domain.HarnessOpenCode},
 		{"/home/user/project/.clinerules/test.md", domain.HarnessCline},
-		// .agents/skills/ is shared by Cline and Codex; Cline is first in canonical order.
 		{"/home/user/project/.agents/skills/foo/SKILL.md", domain.HarnessCline},
+		{"/home/user/project/.codex/skills/foo/SKILL.md", domain.HarnessCodex},
 		{"/home/user/project/AGENTS.override.md", domain.HarnessCodex},
 		{"/some/unknown/path.md", ""},
 	}

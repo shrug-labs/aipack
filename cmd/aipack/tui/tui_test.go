@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -129,6 +130,39 @@ func TestInstallPack_RegistryArchiveUsesContentPathsAndQuiet(t *testing.T) {
 	}
 	if meta.ContentPaths[domain.CategoryPrompts] != "material/prompts" {
 		t.Fatalf("content_paths.prompts = %q", meta.ContentPaths[domain.CategoryPrompts])
+	}
+}
+
+func TestInstallPack_RegistryLookupReportsReadyBeforeResult(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msg := installPack(ctx, configDir, "missing-pack", "", nil)()
+	ready, ok := msg.(packInstallReadyMsg)
+	if !ok {
+		t.Fatalf("expected packInstallReadyMsg before registry lookup result, got %T: %+v", msg, msg)
+	}
+
+	for {
+		select {
+		case _, ok := <-ready.EventCh:
+			if ok {
+				continue
+			}
+			select {
+			case terminal := <-ready.ResultCh:
+				if terminal.Err == nil {
+					t.Fatal("expected cancelled registry lookup to fail")
+				}
+				return
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for install result")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for install event stream to close")
+		}
 	}
 }
 
@@ -1101,6 +1135,76 @@ func TestRootModel_PackCreateMsgError(t *testing.T) {
 	}
 }
 
+func TestRootModel_PackUpdateInvalidatesActiveSyncSnapshot(t *testing.T) {
+	t.Parallel()
+
+	m := newRootModel(context.Background(), RunConfig{ConfigDir: t.TempDir()})
+	m = seedProfiles(m, profilescreen.Seed{
+		Name:       "work",
+		IsActive:   true,
+		SyncStatus: common.SyncStatusSynced,
+		Config: config.ProfileConfig{
+			Packs: []config.PackEntry{{Name: "core"}},
+		},
+	})
+
+	result, cmd := m.update(packUpdatedMsg{
+		Results: []app.PackUpdateResult{{
+			Name:    "core",
+			Status:  app.StatusUpdated,
+			Message: "abc1234",
+		}},
+	})
+	rm := result.(rootModel)
+	if cmd == nil {
+		t.Fatal("expected refresh command after pack update")
+	}
+	if got := rm.activeSyncSnapshot().Status; got != common.SyncStatusLoading {
+		t.Fatalf("expected active sync status loading after pack update, got %d", got)
+	}
+}
+
+func TestRootModel_PackUpdateDuringSyncLoadingQueuesFreshSyncCheck(t *testing.T) {
+	t.Parallel()
+
+	m := newRootModel(context.Background(), RunConfig{ConfigDir: t.TempDir()})
+	m = seedProfiles(m, profilescreen.Seed{
+		Name:       "work",
+		IsActive:   true,
+		SyncStatus: common.SyncStatusLoading,
+		Config: config.ProfileConfig{
+			Packs: []config.PackEntry{{Name: "core"}},
+		},
+	})
+
+	result, _ := m.update(packUpdatedMsg{
+		Results: []app.PackUpdateResult{{
+			Name:    "core",
+			Status:  app.StatusUpdated,
+			Message: "abc1234",
+		}},
+	})
+	rm := result.(rootModel)
+	if rm.pendingSyncRecheck != "work" {
+		t.Fatalf("expected pending sync recheck for work, got %q", rm.pendingSyncRecheck)
+	}
+
+	result, cmd := rm.update(profilescreen.SyncStatusMsg{
+		ProfileName: "work",
+		Synced:      true,
+	})
+	rm = result.(rootModel)
+	if cmd == nil {
+		t.Fatal("expected queued sync recheck command after stale sync result")
+	}
+	if rm.pendingSyncRecheck != "" {
+		t.Fatalf("expected pending sync recheck cleared, got %q", rm.pendingSyncRecheck)
+	}
+	if got := rm.activeSyncSnapshot().Status; got != common.SyncStatusLoading {
+		t.Fatalf("expected active sync status loading after queued recheck, got %d", got)
+	}
+}
+
 func TestRootModel_DialogResultNotSwallowed(t *testing.T) {
 	t.Parallel()
 	m := newRootModel(context.Background(), RunConfig{})
@@ -1219,6 +1323,13 @@ func TestRootModel_ProfileActivatedSchedulesAutoSyncForActiveProfile(t *testing.
 	}
 	if rm.pendingAutoSync.profileName != "team" {
 		t.Fatalf("pending profile = %q, want team", rm.pendingAutoSync.profileName)
+	}
+	active, ok := rm.profilesScreen().ActiveProfile()
+	if !ok {
+		t.Fatal("expected active profile after activation")
+	}
+	if active.SyncStatus == common.SyncStatusLoading {
+		t.Fatal("activation auto-sync debounce should not mark sync status loading without a sync-check command")
 	}
 	if cmd == nil {
 		t.Fatal("expected debounce command to be scheduled")
@@ -1880,6 +1991,33 @@ func TestPromptSync_UnsyncedProfileShowsPendingCount(t *testing.T) {
 	// Title should mention pending changes.
 	if !strings.Contains(rm.dialog.Title, "3 pending") {
 		t.Fatalf("expected title to mention pending changes, got %q", rm.dialog.Title)
+	}
+}
+
+func TestPromptSync_MultiHarnessDefaultTargetsAllConfiguredHarnesses(t *testing.T) {
+	t.Parallel()
+	m := newRootModel(context.Background(), RunConfig{})
+	m = seedProfiles(m, profilescreen.Seed{
+		Name:       "default",
+		SyncStatus: common.SyncStatusUnsynced,
+		SyncTarget: common.SyncTarget{
+			PlanSummary: app.PlanSummary{NumRules: 1},
+			Harnesses:   []string{string(domain.HarnessCline), string(domain.HarnessOpenCode)},
+			Scope:       domain.ScopeProject,
+		},
+	})
+
+	result, _ := m.promptSync()
+	rm := result.(rootModel)
+	if rm.dialog == nil || len(rm.dialog.ListItems) == 0 {
+		t.Fatal("expected sync dialog with options")
+	}
+	// The default sync targets all configured harnesses, so the label lists them.
+	first := rm.dialog.ListItems[0]
+	for _, want := range []string{"cline", "opencode"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("expected default sync option to list all configured harnesses, missing %q: got %q", want, first)
+		}
 	}
 }
 
@@ -2721,6 +2859,32 @@ func TestStatusLine_ShowsActiveProfile(t *testing.T) {
 	}
 	if !strings.Contains(line, "2 packs") {
 		t.Fatalf("expected status line to show pack count, got %q", line)
+	}
+}
+
+func TestStatusLine_ShowsActiveInstallWhenStatusTextCleared(t *testing.T) {
+	t.Parallel()
+	eventCh := make(chan app.PackInstallEvent)
+	resultCh := make(chan packInstallResult, 1)
+	m := newRootModel(context.Background(), RunConfig{})
+	m.activeTab = tabPacks
+	m.width = 120
+
+	result, _ := m.Update(packInstallReadyMsg{
+		EventCh:  eventCh,
+		ResultCh: resultCh,
+		Cancel:   func() {},
+		PackName: "demo-pack",
+	})
+	rm := result.(rootModel)
+	rm.statusText = ""
+
+	line := tuiTestSGRPattern.ReplaceAllString(rm.statusLine(), "")
+	if !strings.Contains(line, "installing demo-pack") {
+		t.Fatalf("expected active install status after transient text cleared, got %q", line)
+	}
+	if !strings.Contains(line, "Esc to cancel") {
+		t.Fatalf("expected cancel hint in active install status, got %q", line)
 	}
 }
 

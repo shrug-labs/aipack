@@ -1310,6 +1310,9 @@ func (m Model) viewListPanel(width, height int) string {
 		// hit per row); rendered dim so it doesn't fight the pack name.
 		row := cursor + nameStyle.Render(li.name)
 		var updateSuffix string
+		if installSuffix := m.installRowSuffix(li.name); installSuffix != "" {
+			updateSuffix = installSuffix
+		}
 		if li.installed {
 			if idx, ok := m.installedMap[li.name]; ok {
 				if pin := m.items[idx].entry.PinLabel(); pin != "" {
@@ -1318,7 +1321,9 @@ func (m Model) viewListPanel(width, height int) string {
 				// Update-streaming decoration: spinner while in flight,
 				// ✓/✗ glyph when terminal, blank when idle. Lives after
 				// the pin so users read name → pin → drift → status.
-				updateSuffix = formatRowSuffix(m.items[idx], m.spinner)
+				if updateSuffix == "" {
+					updateSuffix = formatRowSuffix(m.items[idx], m.spinner)
+				}
 			}
 		} else if li.status != "" {
 			row += "  " + common.DimStyle.Render(li.status)
@@ -1346,6 +1351,13 @@ func (m Model) viewListPanel(width, height int) string {
 	return renderPackPanel(width, height, m.focus == packPanelList, sb.String())
 }
 
+func (m Model) installRowSuffix(name string) string {
+	if m.activeInstall == nil || m.activeInstall.packName != name {
+		return ""
+	}
+	return m.spinner.View() + " " + common.DimStyle.Render(installPhaseLabel(m.activeInstall.phase))
+}
+
 // viewPackInfoPanel renders the right column when the packs list is focused:
 // pack details followed by a registry block separated by a rule.
 func (m Model) viewPackInfoPanel(width, height int) string {
@@ -1364,6 +1376,9 @@ func (m Model) viewPackInfoPanel(width, height int) string {
 	var sb strings.Builder
 	sb.WriteString(renderPanelHeader("Details", false) + "\n")
 	sb.WriteString(common.SelectedStyle.Render(li.name) + "\n")
+	if m.activeInstall != nil && m.activeInstall.packName == li.name {
+		sb.WriteString(m.spinner.View() + " " + common.DimStyle.Render(packsInstallStatus(m)) + "\n")
+	}
 
 	if item := m.currentItem(); item != nil {
 		if item.entry.Version != "" {
@@ -1606,16 +1621,13 @@ func (m Model) recoveryHintForCurrent() string {
 }
 
 // sourceForMethod returns the Source value for the details pane.
-// link/copy show the origin path; clone/archive show the installed path on disk.
+// Installed packs should show where they came from; the installed directory is
+// only a fallback for old metadata that lacks an origin.
 func sourceForMethod(method, origin, installPath string) string {
 	switch method {
-	case config.MethodLink, config.MethodCopy, config.MethodLocal:
+	case config.MethodLink, config.MethodCopy, config.MethodLocal, config.MethodClone, config.MethodArchive, config.MethodHTTPTarball:
 		if origin != "" {
 			return tuiutil.ShortPath(origin)
-		}
-	case config.MethodClone, config.MethodArchive:
-		if installPath != "" {
-			return tuiutil.ShortPath(installPath)
 		}
 	}
 	if installPath != "" {

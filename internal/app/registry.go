@@ -739,22 +739,37 @@ func indexRegistryEntries(reg config.Registry, configDir string) error {
 	installed := lockfileInstalledPackRoots(configDir)
 	packs := make([]index.PackInfo, 0, len(reg.Packs))
 	for name, entry := range reg.Packs {
-		repo := entry.Repo
-		if entry.Method == config.MethodArchive {
-			repo = entry.URL
-		}
-		packs = append(packs, index.PackInfo{
-			Name:        name,
-			Description: entry.Description,
-			Repo:        repo,
-			Ref:         entry.Ref,
-			Path:        entry.Path,
-			Owner:       entry.Owner,
-			Contact:     entry.Contact,
-			Installed:   installed[name] != "",
-		})
+		packs = append(packs, registryPackInfo(name, entry, installed))
 	}
 	return db.UpdateRegistryPacks(packs)
+}
+
+func indexRegistryEntry(name string, entry config.RegistryEntry, configDir string) error {
+	db, err := openIndexDB(configDir, "")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.UpdateRegistryPacks([]index.PackInfo{
+		registryPackInfo(name, entry, lockfileInstalledPackRoots(configDir)),
+	})
+}
+
+func registryPackInfo(name string, entry config.RegistryEntry, installed map[string]string) index.PackInfo {
+	repo := entry.Repo
+	if entry.Method == config.MethodArchive {
+		repo = entry.URL
+	}
+	return index.PackInfo{
+		Name:        name,
+		Description: entry.Description,
+		Repo:        repo,
+		Ref:         entry.Ref,
+		Path:        entry.Path,
+		Owner:       entry.Owner,
+		Contact:     entry.Contact,
+		Installed:   installed[name] != "",
+	}
 }
 
 // pruneIndexEntries removes packs from the search index that belong to a registry.

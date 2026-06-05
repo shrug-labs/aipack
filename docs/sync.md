@@ -18,20 +18,25 @@ When multiple sources could determine the profile, scope, or harness, sync resol
 - **Scope**: `--scope` → sync-config `defaults.scope` → `global`
 - **Harness**: `--harness` → sync-config `defaults.harnesses` → `AIPACK_DEFAULT_HARNESS`
 
+Sync runs each resolved harness independently — its own plan, apply, and ledger, with no cross-harness aggregation. `--harness all` and multi-entry `defaults.harnesses` sync every resolved harness one after another, in resolution order. The first harness that fails stops the run; harnesses already synced keep their changes. Human-readable output prints one self-contained block per harness, and `--json` emits one result object per harness.
+
 ### Common commands
 
 ```bash
-# Preview what would change without writing
+# Preview what would change and where without writing
 aipack sync --dry-run
 
-# Preview with content diffs
+# Preview with source packs and content diffs
 aipack sync --dry-run --verbose
 
 # Sync to project-level config (current directory)
 aipack sync --scope project
 
-# Sync only one harness
+# Sync a specific harness
 aipack sync --harness claudecode
+
+# Sync every supported harness, each independently
+aipack sync --harness all
 
 # Force-sync, overriding conflicts
 aipack sync --force
@@ -42,7 +47,7 @@ aipack sync --watch
 
 ### Auto sync
 
-Set `defaults.auto_sync: true` in `sync-config.yaml`, or run `aipack config defaults set auto_sync true`, to run a normal sync after successful pack or profile commands that affect the active profile. The automatic sync uses the same active profile, scope, and harness defaults as `aipack sync`.
+Set `defaults.auto_sync: true` in `sync-config.yaml`, or run `aipack config defaults set auto_sync true`, to run a normal sync after successful pack or profile commands that affect the active profile. The automatic sync uses the same active profile, scope, and harness defaults as `aipack sync`, syncing each resolved harness independently.
 
 Auto sync is intentionally active-profile only. Commands that mutate an inactive profile, dry runs, failed operations, and pack updates for packs that are not enabled in the active profile do not trigger it. In the manage TUI, active-profile edits are still saved immediately; syncing waits for a seven-second idle debounce, and manual sync cancels the pending automatic sync and runs immediately.
 
@@ -50,13 +55,15 @@ Auto sync is intentionally active-profile only. Commands that mutate an inactive
 
 | Flag | Effect |
 |------|--------|
-| `--dry-run` | Preview planned changes without writing |
-| `--verbose` / `-v` | Show content diffs for changed files |
+| `--dry-run` | Preview planned destination changes without writing |
+| `--verbose` / `-v` | With `--dry-run`, show source packs and content diffs for changed files |
 | `--force` | Override file conflicts (see below) |
 | `--skip-settings` | Skip base harness settings files; still syncs MCP configs, plugin references, and rendered hooks |
 | `--watch` | Re-sync automatically when pack sources or config files change |
 | `--json` | Machine-readable output |
 | `--yes` | Auto-confirm deletions and overwrites |
+
+Human-readable sync output labels destination changes as `[harness] /full/path` so it is clear which harness owns the target file and which exact file changed. For example, Codex skill writes appear as `[codex] /path/to/project/.codex/skills/<name>/SKILL.md`.
 
 ### Sync contract
 
@@ -69,7 +76,7 @@ All managed files — content and config — go through unified diff classificat
 - **Managed**: on-disk matches ledger digest (unmodified since last sync) → updated silently.
 - **Conflict**: on-disk modified by user since last sync → unified diff shown, skipped without `--force`.
 
-`--force` controls conflict resolution. Stale managed files (no longer in the profile) are always removed — sync converges to the profile's desired state. User-modified stale files prompt for confirmation (or require `--yes`).
+`--force` controls conflict resolution. Stale managed files (no longer in the profile) are removed from the current harness's owned roots and from cleanup-only stale roots declared by that harness. Stale roots exist for migrations, not current write ownership. When a stale root overlaps another active harness's current root, that active harness's ledger entries are protected; inactive ledger-managed entries under the stale root may be pruned so migrations converge without manual cleanup. User-modified stale files prompt for confirmation (or require `--yes`).
 
 Config files are computed from pack base configs. String values in harness settings expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. Settings merge preserves user-only keys. For scalar key collisions, aipack updates the value only when the on-disk value still matches the previous managed value; first-sync collisions and locally edited scalars are preserved. Hook descriptor command strings expand `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references before native hook rendering. `--skip-settings` skips base harness settings files but first-class plugin references, drop-in plugin files (e.g., `oh-my-opencode.json`), rendered hooks (Claude Code native hooks, OpenCode generated plugin, Codex `.codex/hooks.json` plus managed trust state, and Cline generated wrappers), and generated MCP configs (e.g., Cline) still sync.
 

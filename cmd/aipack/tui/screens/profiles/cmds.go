@@ -111,8 +111,9 @@ func CheckSyncStatus(ctx context.Context, eng *engine.Engine, configDir, profile
 		if err != nil {
 			return SyncStatusMsg{ProfileName: profileName, Warnings: warnings, Err: err}
 		}
-
-		summary, err := app.PlanWithDiffs(ctx, eng, resolved.Profile, app.SyncRequest{
+		// Preview the default sync, which targets all configured harnesses,
+		// each synced independently. Counts and operations aggregate across them.
+		summary, err := app.PlanWithDiffsEach(ctx, eng, resolved.Profile, app.SyncRequest{
 			TargetSpec: resolved.TargetSpec,
 		}, reg)
 		if err != nil {

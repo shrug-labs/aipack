@@ -73,8 +73,13 @@ const (
 // express distinct ownership semantics and must not be conflated.
 type Layout struct {
 	// ValidationRoots are paths this harness is allowed to write under.
-	// Used for destination validation, stale-file scoping, and path ownership.
+	// Used for destination validation, current stale-file scoping, and path ownership.
 	ValidationRoots []string
+
+	// StaleRoots are legacy roots scanned only for ledger-managed stale entries.
+	// They are not valid current write destinations and are not path-ownership
+	// claims for capture or trace.
+	StaleRoots []string
 
 	// RemovePaths are fully-owned paths safe to delete wholesale during clean.
 	// These may be directories or leaf files.

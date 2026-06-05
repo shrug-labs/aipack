@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestRunSync_DryRunVerboseDoesNotAppendZeroSummary(t *testing.T) {
@@ -41,15 +42,22 @@ func TestRunSync_DryRunJSONIsValidJSONOnly(t *testing.T) {
 		t.Fatalf("sync exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
 
-	var got map[string]any
+	// Sync emits one result object per harness; the fixture targets a single harness.
+	var got []map[string]any
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("stdout is not valid JSON: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
 	}
-	if got["rules"] != float64(1) {
-		t.Fatalf("rules = %#v, want 1", got["rules"])
+	if len(got) != 1 {
+		t.Fatalf("got %d harness results, want 1\nstdout=%s", len(got), stdout)
 	}
-	if got["mcp"] != float64(0) {
-		t.Fatalf("mcp = %#v, want 0", got["mcp"])
+	if got[0]["harness"] != string(domain.HarnessClaudeCode) {
+		t.Fatalf("harness = %#v, want claudecode", got[0]["harness"])
+	}
+	if got[0]["rules"] != float64(1) {
+		t.Fatalf("rules = %#v, want 1", got[0]["rules"])
+	}
+	if got[0]["mcp"] != float64(0) {
+		t.Fatalf("mcp = %#v, want 0", got[0]["mcp"])
 	}
 }
 
@@ -102,6 +110,25 @@ func TestRunSync_DryRunDoesNotMutateProfile(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Fatalf("sync --dry-run mutated profile:\n--- original\n%s\n--- after\n%s", original, got)
+	}
+}
+
+func TestRunSync_HarnessAllSyncsEachHarness(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+
+	t.Setenv("HOME", home)
+	t.Setenv("AIPACK_NO_UPDATE_CHECK", "1")
+	t.Chdir(projectDir)
+
+	stdout, stderr, code := runApp(t, "sync", "--config-dir", configDir, "--yes", "--harness", "all")
+	if code != cmdutil.ExitOK {
+		t.Fatalf("sync --harness all exit=%d, want %d; stdout=%s stderr=%s", code, cmdutil.ExitOK, stdout, stderr)
+	}
+	// Each harness syncs independently and reports its own OK line.
+	for _, want := range []string{"sync OK [claudecode]", "sync OK [codex]"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout missing per-harness sync line %q:\n%s", want, stdout)
+		}
 	}
 }
 

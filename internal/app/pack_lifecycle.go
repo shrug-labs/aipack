@@ -141,6 +141,9 @@ func PackDeleteWithOptions(eng *engine.Engine, req PackDeleteRequest, stdout io.
 	if err := clearDeletedPackFromIndex(req.ConfigDir, name); err != nil {
 		fmt.Fprintf(stdout, "Warning: failed to clear search index for pack %q: %v\n", name, err)
 	}
+	if err := restoreRegistryIndexEntryIfPresent(req.ConfigDir, name); err != nil {
+		fmt.Fprintf(stdout, "Warning: failed to refresh registry search index for deleted pack %q: %v\n", name, err)
+	}
 	if req.KeepRendered {
 		fmt.Fprintf(stdout, "Deleted pack %q and kept rendered files unmanaged.\n", name)
 	} else {
@@ -151,6 +154,25 @@ func PackDeleteWithOptions(eng *engine.Engine, req PackDeleteRequest, stdout io.
 		fmt.Fprintf(stdout, "Deleted pack %q and removed %d rendered path%s.\n", name, result.RenderedRemoved, suffix)
 	}
 	return result, nil
+}
+
+func restoreRegistryIndexEntryIfPresent(configDir, name string) error {
+	dbPath := filepath.Join(configDir, "index.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	reg, err := loadRegistryForRequest(RegistryListRequest{ConfigDir: configDir})
+	if err != nil {
+		return err
+	}
+	entry, ok := reg.Packs[name]
+	if !ok {
+		return nil
+	}
+	return indexRegistryEntry(name, entry, configDir)
 }
 
 func clearDeletedPackFromIndex(configDir, name string) error {
@@ -362,7 +384,7 @@ func cleanOrClearPackInLedger(req packDeleteLedgerCleanRequest) (packDeleteLedge
 					result.RenderedPreserved++
 				}
 			default:
-				removed, preserved, removeErr := removeRenderedPathForPackDelete(ctx.eng, k, entry, ctx.dryRun)
+				removed, preserved, removeErr := removeRenderedPathForPackDelete(ctx.eng, ctx.hid, k, entry, ctx.dryRun)
 				if removeErr != nil {
 					preserved = true
 					fmt.Fprintf(ctx.stdout, "Warning: preserved rendered path %q unmanaged: %v\n", k, removeErr)
@@ -529,7 +551,7 @@ func stripSharedSettings(ctx packDeleteCtx, lg domain.Ledger, path string, entry
 	return stripped, preserved, err
 }
 
-func removeRenderedPathForPackDelete(eng *engine.Engine, path string, entry domain.Entry, dryRun bool) (removed bool, preserved bool, err error) {
+func removeRenderedPathForPackDelete(eng *engine.Engine, hid domain.Harness, path string, entry domain.Entry, dryRun bool) (removed bool, preserved bool, err error) {
 	st, err := eng.FS.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -540,7 +562,7 @@ func removeRenderedPathForPackDelete(eng *engine.Engine, path string, entry doma
 	if entry.Digest == "" {
 		return false, true, nil
 	}
-	if !isPackRenderedRemovalPath(path) {
+	if !isPackRenderedRemovalPath(path, hid) {
 		return false, true, nil
 	}
 	digest, err := eng.PathDigest(path)
@@ -567,7 +589,7 @@ func removeRenderedPathForPackDelete(eng *engine.Engine, path string, entry doma
 	return true, false, nil
 }
 
-func isPackRenderedRemovalPath(path string) bool {
+func isPackRenderedRemovalPath(path string, hid domain.Harness) bool {
 	p := filepath.ToSlash(filepath.Clean(path))
 	dirMarkers := []string{
 		"/.claude/rules/",
@@ -583,6 +605,7 @@ func isPackRenderedRemovalPath(path string) bool {
 		"/.config/opencode/commands/",
 		"/.config/opencode/skills/",
 		"/.agents/skills/",
+		"/.codex/skills/",
 		"/.codex/agents/",
 		"/.clinerules/",
 		"/Cline/Rules/",
@@ -593,8 +616,41 @@ func isPackRenderedRemovalPath(path string) bool {
 			return true
 		}
 	}
+	if isCustomConfigRenderedRemovalPath(path, hid) {
+		return true
+	}
 	return strings.HasSuffix(p, "/AGENTS.override.md") ||
 		strings.HasSuffix(p, "/.codex/AGENTS.override.md")
+}
+
+func isCustomConfigRenderedRemovalPath(path string, hid domain.Harness) bool {
+	switch hid {
+	case domain.HarnessCodex:
+		return isUnderEnvRoot(path, "CODEX_HOME", []string{"skills", "agents"}, []string{"AGENTS.override.md", "hooks.json"})
+	case domain.HarnessOpenCode:
+		return isUnderEnvRoot(path, "OPENCODE_CONFIG_DIR", []string{"rules", "agents", "commands", "skills", "plugins"}, []string{"AGENTS.md"})
+	default:
+		return false
+	}
+}
+
+func isUnderEnvRoot(path, envName string, dirs, files []string) bool {
+	root := envPath(envName)
+	if root == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	for _, dir := range dirs {
+		if domain.IsUnderAny(cleanPath, []string{filepath.Join(root, dir)}) {
+			return true
+		}
+	}
+	for _, file := range files {
+		if cleanPath == filepath.Clean(filepath.Join(root, file)) {
+			return true
+		}
+	}
+	return false
 }
 
 // countOrRemovePackFromAllProfiles iterates every profile YAML in configDir/profiles/

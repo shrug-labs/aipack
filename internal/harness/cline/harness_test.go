@@ -789,7 +789,7 @@ func TestCapture_Project(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a promoted agent in skills dir (.agents/skills, shared with Codex).
+	// Create a promoted agent in Cline's skills dir (.agents/skills).
 	agentSkillDir := filepath.Join(projectDir, ".agents", "skills", "reviewer")
 	if err := os.MkdirAll(agentSkillDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1036,7 +1036,7 @@ func TestCapture_Global_Agents(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 
-	// Create a promoted agent in the global skills directory (.agents/skills, shared with Codex).
+	// Create a promoted agent in Cline's global skills directory (.agents/skills).
 	agentSkillDir := filepath.Join(home, ".agents", "skills", "planner")
 	if err := os.MkdirAll(agentSkillDir, 0o755); err != nil {
 		t.Fatal(err)

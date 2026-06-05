@@ -96,8 +96,8 @@ func TestRenderAgentTOML_WithSkills(t *testing.T) {
 		Body: []byte("You review code."),
 	}
 	skillPaths := map[string]string{
-		"deep-research": "~/.codex/.agents/skills/deep-research",
-		"unrelated":     "~/.codex/.agents/skills/unrelated",
+		"deep-research": "~/.codex/skills/deep-research",
+		"unrelated":     "~/.codex/skills/unrelated",
 	}
 
 	out, _, err := RenderAgentTOML(agent, nil, skillPaths, agent.Frontmatter.Description)
@@ -346,7 +346,7 @@ func TestAddNativeAgents_EmptyBody_Skipped(t *testing.T) {
 	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
 		AgentsDir:    "/agents",
 		SkillsBase:   "/project",
-		SkillsSubDir: ".agents/skills",
+		SkillsSubDir: ".codex/skills",
 	})
 
 	if len(f.Writes) != 0 {
@@ -378,7 +378,7 @@ func TestAddNativeAgents_MultipleAgents(t *testing.T) {
 	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
 		AgentsDir:    "/project/.codex/agents",
 		SkillsBase:   "/project",
-		SkillsSubDir: ".agents/skills",
+		SkillsSubDir: ".codex/skills",
 	})
 
 	if len(f.Writes) != 2 {

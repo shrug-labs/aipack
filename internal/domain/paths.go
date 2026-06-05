@@ -24,3 +24,8 @@ func IsUnderAny(path string, prefixes []string) bool {
 	}
 	return false
 }
+
+// DisplayPath returns a stable slash-separated path label for human output.
+func DisplayPath(path string) string {
+	return filepath.ToSlash(filepath.Clean(path))
+}

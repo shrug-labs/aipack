@@ -55,9 +55,11 @@ func runSync(ctx context.Context, eng *engine.Engine, configDir, profileName, pr
 			}
 		}
 		if harnessFlag != "" {
-			if h, ok := domain.ParseHarness(harnessFlag); ok {
-				resolved.Harnesses = []domain.Harness{h}
+			h, herr := app.ResolveSingleSyncHarness([]string{harnessFlag})
+			if herr != nil {
+				return syncDoneMsg{profileName: profileName, warnings: warnings, err: herr}
 			}
+			resolved.Harnesses = []domain.Harness{h}
 		}
 
 		projectDir := resolved.ProjectDir
@@ -68,7 +70,7 @@ func runSync(ctx context.Context, eng *engine.Engine, configDir, profileName, pr
 		ts := resolved.TargetSpec
 		ts.ProjectDir = projectDir
 
-		result, syncWarnings, err := app.RunSync(ctx, eng, resolved.Profile, app.SyncRequest{
+		results, syncWarnings, err := app.RunSyncEach(ctx, eng, resolved.Profile, app.SyncRequest{
 			TargetSpec: ts,
 			Force:      true,
 			Yes:        true,
@@ -79,7 +81,10 @@ func runSync(ctx context.Context, eng *engine.Engine, configDir, profileName, pr
 			return syncDoneMsg{profileName: profileName, warnings: warnings, err: err}
 		}
 
-		total := len(result.Plan.Writes) + len(result.Plan.Copies) + len(result.Plan.Settings)
+		total := 0
+		for _, result := range results {
+			total += len(result.Plan.Writes) + len(result.Plan.Copies) + len(result.Plan.Settings)
+		}
 		return syncDoneMsg{profileName: profileName, filesWritten: total, warnings: warnings}
 	}
 }

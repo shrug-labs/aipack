@@ -22,6 +22,20 @@ type ApplyRequest struct {
 	Stdout io.Writer // progress diagnostics (create/update/conflict/diff/merge); nil suppresses output
 	Req    PlanRequest
 
+	// LabelForPath returns the human-readable label for diagnostics.
+	// When nil, paths are displayed as stable slash-separated absolute paths.
+	LabelForPath func(string) string
+
+	// StaleRoots are legacy cleanup-only roots in addition to managedRoots.
+	// Plan destinations are not allowed here; only ledger-managed stale entries
+	// may be removed from these roots.
+	StaleRoots []string
+
+	// PruneOnlyStalePaths are stale ledger entries whose files are currently
+	// owned by another harness. The current harness claim is removed, but the
+	// on-disk file is preserved.
+	PruneOnlyStalePaths map[string]struct{}
+
 	// StripFuncs maps cleaned file paths to functions that strip only the
 	// managed keys from shared config files. When a stale ledger entry
 	// matches a path in this map, the strip function is called instead of
@@ -54,7 +68,7 @@ func (e *Engine) ApplyPlan(ctx context.Context, plan domain.Plan, ar ApplyReques
 	}
 	warnings = append(warnings, snapshotWarnings...)
 
-	diffs, err := e.buildDiffsForApply(plan, ar.Req.SkipSettings, lg)
+	diffs, err := e.buildDiffsForApply(plan, ar, lg)
 	if err != nil {
 		return warnings, wrapFatalApply("classify plan content", err)
 	}
@@ -64,7 +78,9 @@ func (e *Engine) ApplyPlan(ctx context.Context, plan domain.Plan, ar ApplyReques
 		return warnings, wrapFatalApply("apply file diffs", err)
 	}
 
-	warnings = append(warnings, e.reconcileStaleEntries(ctx, plan, &lg, managedRoots, recorded, ar)...)
+	staleRoots := append([]string{}, managedRoots...)
+	staleRoots = append(staleRoots, ar.StaleRoots...)
+	warnings = append(warnings, e.reconcileStaleEntries(ctx, plan, &lg, staleRoots, recorded, ar)...)
 
 	if err := e.SaveLedger(plan.Ledger, lg, ar.DryRun); err != nil {
 		return warnings, wrapFatalApply("save ledger", err)
@@ -88,11 +104,11 @@ func (e *Engine) snapshotSettingsForApply(plan domain.Plan, ar ApplyRequest) ([]
 	return e.SnapshotSettingsFiles(allSettings, plan.Ledger, ar.DryRun)
 }
 
-func (e *Engine) buildDiffsForApply(plan domain.Plan, skipSettings bool, lg domain.Ledger) ([]FileDiff, error) {
+func (e *Engine) buildDiffsForApply(plan domain.Plan, ar ApplyRequest, lg domain.Ledger) ([]FileDiff, error) {
 	var diffs []FileDiff
 
 	for _, w := range plan.Writes {
-		fd, err := e.ClassifyWrite(w, filepath.Base(w.Dst), lg)
+		fd, err := e.ClassifyWrite(w, ar.displayLabel(w.Dst), lg)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +118,9 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, skipSettings bool, lg doma
 	for _, c := range plan.Copies {
 		switch c.Kind {
 		case domain.CopyKindDir:
-			fds, err := e.ClassifyCopy(c.Src, c.Dst, c.SourcePack, lg)
+			fds, err := e.ClassifyCopyWithOptions(c.Src, c.Dst, c.SourcePack, lg, ClassifyCopyOptions{
+				LabelForPath: ar.displayLabel,
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -112,7 +130,7 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, skipSettings bool, lg doma
 			if err != nil {
 				return nil, err
 			}
-			fd, err := e.ClassifyFile(c.Dst, content, filepath.Base(c.Dst), c.SourcePack, lg)
+			fd, err := e.ClassifyFile(c.Dst, content, ar.displayLabel(c.Dst), c.SourcePack, lg)
 			if err != nil {
 				return nil, err
 			}
@@ -122,8 +140,8 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, skipSettings bool, lg doma
 		}
 	}
 
-	if !skipSettings {
-		settingsDiffs, err := e.ComputeSettingsDiffs(plan.Settings, lg)
+	if !ar.Req.SkipSettings {
+		settingsDiffs, err := e.ComputeSettingsDiffs(LabelSettingsActions(plan.Settings, ar.displayLabel), lg)
 		if err != nil {
 			return nil, err
 		}
@@ -131,12 +149,19 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, skipSettings bool, lg doma
 	}
 
 	// MCP configs are NEVER gated by SkipSettings.
-	mcpDiffs, err := e.ComputeSettingsDiffs(plan.MCP, lg)
+	mcpDiffs, err := e.ComputeSettingsDiffs(LabelSettingsActions(plan.MCP, ar.displayLabel), lg)
 	if err != nil {
 		return nil, err
 	}
 	diffs = append(diffs, mcpDiffs...)
 	return diffs, nil
+}
+
+func (ar ApplyRequest) displayLabel(path string) string {
+	if ar.LabelForPath != nil {
+		return ar.LabelForPath(path)
+	}
+	return domain.DisplayPath(path)
 }
 
 func (e *Engine) applyDiffsAndRecord(plan domain.Plan, ar ApplyRequest, lg *domain.Ledger, diffs []FileDiff) (map[string]struct{}, error) {
@@ -180,6 +205,13 @@ func (e *Engine) staleCandidates(plan domain.Plan, managedRoots []string) ([]str
 // StaleCandidatesWithLedger is like staleCandidates but accepts a pre-loaded
 // ledger, avoiding a redundant disk read when the caller already has one.
 func (e *Engine) StaleCandidatesWithLedger(plan domain.Plan, managedRoots []string, lg domain.Ledger) ([]string, error) {
+	return e.StaleCandidatesWithLedgerExcluding(plan, managedRoots, lg, nil)
+}
+
+// StaleCandidatesWithLedgerExcluding is like StaleCandidatesWithLedger, but
+// omits entries that should be pruned from the current ledger without deleting
+// the on-disk file.
+func (e *Engine) StaleCandidatesWithLedgerExcluding(plan domain.Plan, managedRoots []string, lg domain.Ledger, exclude map[string]struct{}) ([]string, error) {
 	if plan.Ledger == "" {
 		return nil, nil
 	}
@@ -192,10 +224,14 @@ func (e *Engine) StaleCandidatesWithLedger(plan domain.Plan, managedRoots []stri
 		if domain.IsMCPLedgerKey(k) {
 			continue
 		}
-		if !domain.IsUnderAny(k, staleRoots) {
+		clean := filepath.Clean(k)
+		if !domain.IsUnderAny(clean, staleRoots) {
 			continue
 		}
-		if _, ok := desired[filepath.Clean(k)]; ok {
+		if _, ok := desired[clean]; ok {
+			continue
+		}
+		if _, ok := exclude[clean]; ok {
 			continue
 		}
 		if _, err := e.FS.Stat(k); err != nil {

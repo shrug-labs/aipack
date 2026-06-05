@@ -141,43 +141,10 @@ const tuiVersionLoadTimeout = 5 * time.Second
 
 func Install(ctx context.Context, configDir, input, ref string, with domain.BundledSet) tea.Cmd {
 	return func() tea.Msg {
-		req := app.PackInstallRequest{
-			ConfigDir: configDir,
-			With:      with,
-			Ref:       ref,
-		}
-		if source.IsRemoteInstallInput(input) {
-			req.URL = input
-		} else if isRegistryName(input) {
-			regReq := app.RegistryListRequest{ConfigDir: configDir}
-			entry, err := app.RegistryLookup(regReq, input)
-			if err != nil {
-				fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{ConfigDir: configDir}, nil)
-				if fetchErr == nil {
-					entry, err = app.RegistryLookup(regReq, input)
-				}
-			}
-			if err != nil {
-				return InstalledMsg{Name: input, Err: fmt.Errorf("registry lookup for %q: %w", input, err)}
-			}
-			req = app.PackInstallRequestFromRegistryEntry(configDir, input, entry)
-			req.With = with
-			if ref != "" {
-				req.Ref = ref
-			}
-		} else {
-			req.PackPath = input
-			req.Link = true
-		}
-
 		opCtx, cancel := context.WithCancel(ctx)
 		eventCh := make(chan app.PackInstallEvent, 16)
 		resultCh := make(chan InstallResult, 1)
-		req.Events = eventCh
-		name := req.Name
-		if name == "" {
-			name = filepath.Base(input)
-		}
+		name := installDisplayName(input)
 		go func() {
 			defer cancel()
 			defer close(eventCh)
@@ -186,8 +153,16 @@ func Install(ctx context.Context, configDir, input, ref string, with domain.Bund
 					resultCh <- InstallResult{Name: name, Err: fmt.Errorf("panic: %v", r)}
 				}
 			}()
-			err := app.PackInstall(opCtx, req, nil)
-			resultCh <- InstallResult{Name: name, Err: err}
+			req, err := installRequestForInput(opCtx, configDir, input, ref, with)
+			resultName := name
+			if err == nil {
+				req.Events = eventCh
+				if req.Name != "" {
+					resultName = req.Name
+				}
+				err = app.PackInstall(opCtx, req, nil)
+			}
+			resultCh <- InstallResult{Name: resultName, Err: err}
 		}()
 		return InstallReadyMsg{
 			EventCh:  eventCh,
@@ -196,6 +171,57 @@ func Install(ctx context.Context, configDir, input, ref string, with domain.Bund
 			PackName: name,
 		}
 	}
+}
+
+func installRequestForInput(ctx context.Context, configDir, input, ref string, with domain.BundledSet) (app.PackInstallRequest, error) {
+	req := app.PackInstallRequest{
+		ConfigDir: configDir,
+		With:      with,
+		Ref:       ref,
+	}
+	if source.IsRemoteInstallInput(input) {
+		req.URL = input
+		return req, nil
+	}
+	if !isRegistryName(input) {
+		req.PackPath = input
+		req.Link = true
+		return req, nil
+	}
+
+	regReq := app.RegistryListRequest{ConfigDir: configDir}
+	entry, err := app.RegistryLookup(regReq, input)
+	if err != nil {
+		fetchErr := app.RegistryFetch(ctx, app.RegistryFetchRequest{ConfigDir: configDir}, nil)
+		if fetchErr == nil {
+			entry, err = app.RegistryLookup(regReq, input)
+		}
+	}
+	if err != nil {
+		return app.PackInstallRequest{}, fmt.Errorf("registry lookup for %q: %w", input, err)
+	}
+	req = app.PackInstallRequestFromRegistryEntry(configDir, input, entry)
+	req.With = with
+	if ref != "" {
+		req.Ref = ref
+	}
+	return req, nil
+}
+
+func installDisplayName(input string) string {
+	if source.IsRemoteInstallInput(input) {
+		if name := repoBaseName(input, ""); name != "" {
+			return name
+		}
+	}
+	if isRegistryName(input) {
+		return input
+	}
+	name := filepath.Base(input)
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		return "pack"
+	}
+	return name
 }
 
 func ReadNextInstallEvent(eventCh <-chan app.PackInstallEvent, resultCh <-chan InstallResult) tea.Cmd {

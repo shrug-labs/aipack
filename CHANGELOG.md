@@ -6,6 +6,23 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.30.0]
+
+### Changed
+
+- **Codex skills now render under Codex-owned directories.** Project Codex sync writes skills and promoted workflows to `.codex/skills/`, and default global sync writes them to `~/.codex/skills/`; `CODEX_HOME` sync continues to write directly under `$CODEX_HOME/skills/`. Cline remains the owner of `.agents/skills/`, so Codex no longer shares that render path.
+- **`aipack sync` now reports each target harness independently.** Existing multi-harness defaults and `--harness all` still run the resolved target set, but each harness now gets its own plan, apply, and ledger. Human-readable sync output reports one `sync OK [<harness>]` line per completed harness, and dry-run/apply output labels file changes as `[<harness>] /full/path`.
+- **`aipack sync --json` now emits per-harness results.** Sync JSON output is now an array of result objects, including for single-harness sync. Content counts are still profile-level, while `settings` and `warnings` describe the individual harness result. A multi-harness failure emits no partial JSON array.
+- **The manage TUI previews the same target set that default sync will run.** Active-profile sync prompts and pending-change previews aggregate all configured harnesses. Pack updates that affect the active profile also trigger a fresh sync-status check, even if an older check is already loading.
+- **The Packs screen shows clearer source and progress state.** Remote clone/archive/tarball installs show their origin URL as `Source` instead of the installed cache path, active installs show their current phase in the list/details/status areas, and remote install display names strip a trailing `.git`.
+
+### Fixed
+
+- **Codex upgrade cleanup protects active Cline skills.** During the next Codex sync, ledger-managed stale Codex entries under the old `.agents/skills/` root are cleaned up without treating that shared directory as a current Codex write root. Active Cline-owned entries are protected; inactive ledger-managed entries under the legacy root may be pruned so Codex stops discovering duplicate skills. For unattended upgrades, run `aipack sync --harness codex --yes` to auto-confirm deletion of managed stale entries.
+- **Legacy ledger migration now converges.** Entries migrated into current per-harness ledgers are pruned from old combined/project ledgers, so repeated syncs do not replay already-migrated stale entries.
+- **Legacy shared-root migration no longer lets Codex claim Cline-owned paths.** When migrating a legacy combined ledger, each tracked file is attributed to the harness that currently writes to its location. A Codex sync does not claim `.agents/skills/` entries as Codex-owned.
+- **Pack deletion keeps registered packs discoverable.** Deleting an installed pack that still exists in a registry now restores its search index status to `registered` instead of dropping it from search results. Pack deletion also recognizes Codex rendered skills in `.codex/skills/` and `$CODEX_HOME/skills/`.
+
 ## [0.29.2]
 
 ### Fixed

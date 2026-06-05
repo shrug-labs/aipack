@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,14 +17,15 @@ import (
 )
 
 type syncStubHarness struct {
-	id       domain.Harness
-	fragment domain.Fragment
-	roots    []string
+	id         domain.Harness
+	fragment   domain.Fragment
+	roots      []string
+	staleRoots []string
 }
 
 func (s syncStubHarness) ID() domain.Harness { return s.id }
 func (s syncStubHarness) Layout(domain.Scope, string, string) harness.Layout {
-	return harness.Layout{ValidationRoots: s.roots}
+	return harness.Layout{ValidationRoots: s.roots, StaleRoots: s.staleRoots}
 }
 func (s syncStubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return s.fragment, nil
@@ -35,40 +37,43 @@ func (s syncStubHarness) Capture(_ context.Context, _ harness.CaptureContext) (h
 	return harness.CaptureResult{}, nil
 }
 
-func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
+func TestRunSync_RejectsMultipleHarnesses(t *testing.T) {
 	t.Parallel()
 
 	projectDir := t.TempDir()
 	home := t.TempDir()
 
-	claudeHarness := syncStubHarness{
-		id: domain.HarnessClaudeCode,
-		fragment: domain.Fragment{
-			Copies: []domain.CopyAction{{
-				Src:  filepath.Join(projectDir, "pack", "rules", "alpha.md"),
-				Dst:  filepath.Join(projectDir, ".claude", "rules", "alpha.md"),
-				Kind: domain.CopyKindFile,
-			}},
-		},
-	}
-	codexHarness := syncStubHarness{
-		id: domain.HarnessCodex,
-		fragment: domain.Fragment{
-			Copies: []domain.CopyAction{{
-				Src:  filepath.Join(projectDir, "pack", "skills", "beta"),
-				Dst:  filepath.Join(projectDir, ".agents", "skills", "beta"),
-				Kind: domain.CopyKindDir,
-			}},
-			Settings: []domain.SettingsAction{{
-				Dst:     filepath.Join(projectDir, ".codex", "config.toml"),
-				Desired: []byte("[mcp_servers]\n"),
-				Harness: domain.HarnessCodex,
-			}},
-		},
-	}
-	reg := harness.NewRegistry(claudeHarness, codexHarness)
+	reg := harness.NewRegistry(
+		syncStubHarness{id: domain.HarnessClaudeCode},
+		syncStubHarness{id: domain.HarnessCodex},
+	)
 
-	result, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessClaudeCode, domain.HarnessCodex},
+			Home:       home,
+		},
+		DryRun: true,
+	}, reg, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "one harness per run") {
+		t.Fatalf("RunSync error = %v, want one-harness rejection", err)
+	}
+}
+
+func TestRunSyncEach_RunsEachHarnessIndependently(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+
+	reg := harness.NewRegistry(
+		syncStubHarness{id: domain.HarnessClaudeCode},
+		syncStubHarness{id: domain.HarnessCodex},
+	)
+
+	results, _, err := RunSyncEach(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
@@ -78,14 +83,56 @@ func TestRunSync_AggregatesCountsAcrossHarnesses(t *testing.T) {
 		DryRun: true,
 	}, reg, nil, nil)
 	if err != nil {
-		t.Fatalf("RunSync: %v", err)
+		t.Fatalf("RunSyncEach error = %v, want nil", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("RunSyncEach returned %d results, want 2", len(results))
+	}
+	if results[0].Harness != domain.HarnessClaudeCode || results[1].Harness != domain.HarnessCodex {
+		t.Fatalf("results harness order = [%s, %s], want [claudecode, codex]", results[0].Harness, results[1].Harness)
+	}
+}
+
+func TestRunSyncEach_RejectsNoHarness(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := RunSyncEach(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{Scope: domain.ScopeProject, ProjectDir: t.TempDir(), Home: t.TempDir()},
+		DryRun:     true,
+	}, harness.NewRegistry(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "at least one harness") {
+		t.Fatalf("RunSyncEach error = %v, want at-least-one-harness rejection", err)
+	}
+}
+
+func TestPlanWithDiffsEach_AggregatesAcrossHarnesses(t *testing.T) {
+	t.Parallel()
+
+	reg := harness.NewRegistry(
+		syncStubHarness{id: domain.HarnessClaudeCode},
+		syncStubHarness{id: domain.HarnessCodex},
+	)
+
+	summary, err := PlanWithDiffsEach(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: t.TempDir(),
+			Harnesses:  []domain.Harness{domain.HarnessClaudeCode, domain.HarnessCodex},
+			Home:       t.TempDir(),
+		},
+	}, reg)
+	if err != nil {
+		t.Fatalf("PlanWithDiffsEach error = %v, want nil", err)
+	}
+	// Empty profile means no pending changes for either harness.
+	if summary.TotalChanges() != 0 {
+		t.Fatalf("TotalChanges = %d, want 0", summary.TotalChanges())
 	}
 
-	if got := len(result.Plan.Copies); got != 2 {
-		t.Fatalf("copies = %d, want 2 (1 rule + 1 skill)", got)
-	}
-	if got := len(result.Plan.Settings); got != 1 {
-		t.Fatalf("settings = %d, want 1", got)
+	if _, err := PlanWithDiffsEach(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{Scope: domain.ScopeProject, ProjectDir: t.TempDir(), Home: t.TempDir()},
+	}, reg); err == nil || !strings.Contains(err.Error(), "at least one harness") {
+		t.Fatalf("PlanWithDiffsEach zero-harness error = %v, want rejection", err)
 	}
 }
 
@@ -146,7 +193,7 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 	home := t.TempDir()
 
 	claudeDst := filepath.Join(projectDir, ".claude", "rules", "alpha.md")
-	codexDst := filepath.Join(projectDir, ".agents", "skills", "demo-agent", "SKILL.md")
+	codexDst := filepath.Join(projectDir, ".codex", "skills", "demo-agent", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(claudeDst), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +237,7 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 				}},
 				Desired: []string{codexDst},
 			},
-			roots: []string{filepath.Join(projectDir, ".agents")},
+			roots: []string{filepath.Join(projectDir, ".codex")},
 		},
 	)
 
@@ -199,7 +246,7 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 		TargetSpec: TargetSpec{
 			Scope:      domain.ScopeProject,
 			ProjectDir: projectDir,
-			Harnesses:  []domain.Harness{domain.HarnessClaudeCode, domain.HarnessCodex},
+			Harnesses:  []domain.Harness{domain.HarnessCodex},
 			Home:       home,
 		},
 		DryRun: true,
@@ -208,8 +255,172 @@ func TestRunSync_DryRunUsesPerHarnessLedgerForClassification(t *testing.T) {
 		t.Fatalf("RunSync: %v", err)
 	}
 
-	if got := out.String(); got != "plan: 0 file ops from 0 content, 2 identical\n" {
-		t.Fatalf("output = %q, want %q", got, "plan: 0 file ops from 0 content, 2 identical\n")
+	if got := out.String(); got != "plan: 0 file ops from 0 content, 1 identical\n" {
+		t.Fatalf("output = %q, want %q", got, "plan: 0 file ops from 0 content, 1 identical\n")
+	}
+}
+
+func TestRunSync_ApplyOutputUsesHarnessFullDestinations(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	configDir := t.TempDir()
+	dst := filepath.Join(projectDir, ".codex", "skills", "deploy", "SKILL.md")
+
+	reg := harness.NewRegistry(syncStubHarness{
+		id: domain.HarnessCodex,
+		fragment: domain.Fragment{
+			Writes: []domain.WriteAction{{
+				Dst:        dst,
+				Content:    []byte("skill body"),
+				SourcePack: "core",
+			}},
+			Desired: []string{dst},
+		},
+		roots: []string{filepath.Join(projectDir, ".codex")},
+	})
+
+	var stderr bytes.Buffer
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{
+			ConfigDir:  configDir,
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessCodex},
+			Home:       home,
+		},
+	}, reg, nil, &stderr)
+	if err != nil {
+		t.Fatalf("RunSync: %v", err)
+	}
+	want := "  create: [codex] " + domain.DisplayPath(dst) + "\n"
+	if !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+	}
+}
+
+func TestRunSync_CodexLegacyStaleRootOwnership(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name            string
+		clineOwns       bool
+		activeHarnesses []domain.Harness
+		wantLegacy      bool
+	}{
+		{
+			name:            "removes orphaned legacy codex skill",
+			clineOwns:       false,
+			activeHarnesses: []domain.Harness{domain.HarnessCodex},
+		},
+		{
+			name:            "removes inactive cline current skill",
+			clineOwns:       true,
+			activeHarnesses: []domain.Harness{domain.HarnessCodex},
+		},
+		{
+			name:            "preserves active cline current skill",
+			clineOwns:       true,
+			activeHarnesses: []domain.Harness{domain.HarnessCodex, domain.HarnessCline},
+			wantLegacy:      true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			projectDir := t.TempDir()
+			home := t.TempDir()
+
+			legacyDst := filepath.Join(projectDir, ".agents", "skills", "deploy", "SKILL.md")
+			codexDst := filepath.Join(projectDir, ".codex", "skills", "deploy", "SKILL.md")
+			legacyContent := []byte("legacy managed skill")
+			codexContent := []byte("codex managed skill")
+
+			if err := os.MkdirAll(filepath.Dir(legacyDst), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacyDst, legacyContent, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex), map[string]domain.Entry{
+				legacyDst: {SourcePack: "core", Digest: domain.SingleFileDigest(legacyContent)},
+			})
+			if tc.clineOwns {
+				writeLedger(t, testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCline), map[string]domain.Entry{
+					legacyDst: {SourcePack: "core", Digest: domain.SingleFileDigest(legacyContent)},
+				})
+			}
+
+			reg := harness.NewRegistry(
+				syncStubHarness{
+					id:    domain.HarnessCline,
+					roots: []string{filepath.Join(projectDir, ".agents", "skills")},
+				},
+				syncStubHarness{
+					id: domain.HarnessCodex,
+					fragment: domain.Fragment{
+						Writes: []domain.WriteAction{{
+							Dst:        codexDst,
+							Content:    codexContent,
+							SourcePack: "core",
+						}},
+						Desired: []string{codexDst},
+					},
+					roots:      []string{filepath.Join(projectDir, ".codex")},
+					staleRoots: []string{filepath.Join(projectDir, ".agents", "skills")},
+				},
+			)
+
+			_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+				TargetSpec: TargetSpec{
+					Scope:           domain.ScopeProject,
+					ProjectDir:      projectDir,
+					Harnesses:       []domain.Harness{domain.HarnessCodex},
+					ActiveHarnesses: tc.activeHarnesses,
+					Home:            home,
+				},
+			}, reg, nil, nil)
+			if err != nil {
+				t.Fatalf("RunSync: %v", err)
+			}
+
+			if tc.wantLegacy {
+				got, err := os.ReadFile(legacyDst)
+				if err != nil {
+					t.Fatalf("cline skill should remain: %v", err)
+				}
+				if string(got) != string(legacyContent) {
+					t.Fatalf("cline skill content = %q, want %q", got, legacyContent)
+				}
+			} else if _, err := os.Stat(legacyDst); !os.IsNotExist(err) {
+				t.Fatalf("legacy codex skill path should be removed; stat err=%v", err)
+			}
+
+			got, err := os.ReadFile(codexDst)
+			if err != nil {
+				t.Fatalf("codex skill should be written: %v", err)
+			}
+			if string(got) != string(codexContent) {
+				t.Fatalf("codex skill content = %q, want %q", got, codexContent)
+			}
+			codexLedger, _, err := engine.New(nil, nil).LoadLedger(testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex))
+			if err != nil {
+				t.Fatalf("LoadLedger: %v", err)
+			}
+			if _, ok := codexLedger.Managed[filepath.Clean(legacyDst)]; ok {
+				t.Fatalf("codex stale ledger claim for legacy path should be pruned")
+			}
+			if tc.clineOwns && !tc.wantLegacy {
+				clineLedger, _, err := engine.New(nil, nil).LoadLedger(testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCline))
+				if err != nil {
+					t.Fatalf("LoadLedger cline: %v", err)
+				}
+				if _, ok := clineLedger.Managed[filepath.Clean(legacyDst)]; ok {
+					t.Fatalf("inactive cline stale ledger claim should be pruned")
+				}
+			}
+		})
 	}
 }
 
@@ -265,6 +476,97 @@ func TestRunSync_WritesLedgerToExplicitConfigDir(t *testing.T) {
 	}
 }
 
+func TestRunSync_CodexOnlySyncRetiresInactiveClineLegacyCombinedLedgerFiles(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	home := t.TempDir()
+	eng := engine.New(nil, nil)
+
+	legacyDst := filepath.Join(projectDir, ".agents", "skills", "deploy", "SKILL.md")
+	legacyContent := []byte("cline-owned legacy skill")
+	codexDst := filepath.Join(projectDir, ".codex", "skills", "deploy", "SKILL.md")
+	codexContent := []byte("codex managed skill")
+
+	if err := os.MkdirAll(filepath.Dir(legacyDst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyDst, legacyContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A legacy project-local combined ledger (pre per-harness ledgers) tracking a
+	// skill under .agents/skills — the directory Cline writes to now. No
+	// per-harness ledgers exist yet, mirroring a fresh upgrade.
+	combined := domain.NewLedger()
+	combined.Managed[legacyDst] = domain.Entry{SourcePack: "core", Digest: domain.SingleFileDigest(legacyContent)}
+	oldLedger := filepath.Join(projectDir, ".aipack", "ledger.json")
+	if err := os.MkdirAll(filepath.Dir(oldLedger), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.SaveLedger(oldLedger, combined, false); err != nil {
+		t.Fatalf("SaveLedger: %v", err)
+	}
+
+	reg := harness.NewRegistry(
+		syncStubHarness{
+			id:    domain.HarnessCline,
+			roots: []string{filepath.Join(projectDir, ".agents", "skills")},
+		},
+		syncStubHarness{
+			id: domain.HarnessCodex,
+			fragment: domain.Fragment{
+				Writes: []domain.WriteAction{{
+					Dst:        codexDst,
+					Content:    codexContent,
+					SourcePack: "core",
+				}},
+				Desired: []string{codexDst},
+			},
+			roots:      []string{filepath.Join(projectDir, ".codex")},
+			staleRoots: []string{filepath.Join(projectDir, ".agents", "skills")},
+		},
+	)
+
+	// Sync Codex only. Codex moved out of .agents/skills to .codex/skills, but
+	// Codex still discovers .agents/skills at runtime. Because Cline is not an
+	// active target, the migrated Cline ledger entry must be retired so Codex
+	// does not see duplicate skills.
+	_, _, err := RunSync(context.Background(), eng, domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:           domain.ScopeProject,
+			ProjectDir:      projectDir,
+			Harnesses:       []domain.Harness{domain.HarnessCodex},
+			ActiveHarnesses: []domain.Harness{domain.HarnessCodex},
+			Home:            home,
+		},
+	}, reg, nil, nil)
+	if err != nil {
+		t.Fatalf("RunSync: %v", err)
+	}
+
+	if _, err := os.Stat(legacyDst); !os.IsNotExist(err) {
+		t.Fatalf("inactive cline legacy skill should be removed by a codex-only sync; stat err=%v", err)
+	}
+
+	// The legacy entry migrates to the harness that lives there now (Cline),
+	// then is pruned because Cline is inactive for this sync.
+	clineLedger, _, err := eng.LoadLedger(testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCline))
+	if err != nil {
+		t.Fatalf("LoadLedger cline: %v", err)
+	}
+	if _, ok := clineLedger.Managed[filepath.Clean(legacyDst)]; ok {
+		t.Fatalf("inactive cline legacy .agents/skills entry should be pruned")
+	}
+	codexLedger, _, err := eng.LoadLedger(testLedgerPath(domain.ScopeProject, projectDir, home, domain.HarnessCodex))
+	if err != nil {
+		t.Fatalf("LoadLedger codex: %v", err)
+	}
+	if _, ok := codexLedger.Managed[filepath.Clean(legacyDst)]; ok {
+		t.Fatalf("codex must not claim a file under cline's live .agents/skills root")
+	}
+}
+
 func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 	t.Parallel()
 
@@ -290,7 +592,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 		{
 			name:     "new skill reports create",
 			setupDst: func(t *testing.T) { /* no destination */ },
-			wantOut:  "create: " + skillDst + "\nplan: 1 file ops from 1 skill, 0 identical\n",
+			wantOut:  "create: [claudecode] " + domain.DisplayPath(skillDst) + "\nplan: 1 file ops from 1 skill, 0 identical\n",
 		},
 		{
 			name: "identical skill is silent",
@@ -328,7 +630,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 					filepath.Join(skillDst, "SKILL.md"): {SourcePack: "pack", Digest: domain.SingleFileDigest([]byte("v1 content"))},
 				})
 			},
-			wantOut: "update: " + skillDst + "\nplan: 1 file ops from 1 skill, 0 identical\n",
+			wantOut: "update: [claudecode] " + domain.DisplayPath(skillDst) + "\nplan: 1 file ops from 1 skill, 0 identical\n",
 		},
 	}
 
@@ -353,11 +655,6 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 				}},
 			}
 
-			reg := harness.NewRegistry(syncStubHarness{
-				id:    domain.HarnessClaudeCode,
-				roots: []string{filepath.Join(projectDir, ".claude")},
-			})
-
 			var buf bytes.Buffer
 			printDryRun(engine.New(nil, nil), plan, SyncRequest{
 				TargetSpec: TargetSpec{
@@ -366,7 +663,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 					Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
 					Home:       home,
 				},
-			}, reg, ContentCounts{Skills: 1}, &buf)
+			}, ContentCounts{Skills: 1}, &buf)
 
 			if got := buf.String(); got != tt.wantOut {
 				t.Errorf("output = %q, want %q", got, tt.wantOut)
@@ -391,11 +688,6 @@ func TestPrintDryRun_CountsSettingsMergeAsFileOp(t *testing.T) {
 			MergeMode: true,
 		}},
 	}
-	reg := harness.NewRegistry(syncStubHarness{
-		id:    domain.HarnessClaudeCode,
-		roots: []string{filepath.Join(projectDir, ".claude")},
-	})
-
 	var buf bytes.Buffer
 	printDryRun(engine.New(nil, nil), plan, SyncRequest{
 		TargetSpec: TargetSpec{
@@ -404,9 +696,9 @@ func TestPrintDryRun_CountsSettingsMergeAsFileOp(t *testing.T) {
 			Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
 			Home:       home,
 		},
-	}, reg, ContentCounts{}, &buf)
+	}, ContentCounts{}, &buf)
 
-	want := "merge: " + settingsDst + "\nplan: 1 file ops from 0 content, 0 identical\n"
+	want := "merge: [claudecode] " + domain.DisplayPath(settingsDst) + "\nplan: 1 file ops from 0 content, 0 identical\n"
 	if got := buf.String(); got != want {
 		t.Errorf("output = %q, want %q", got, want)
 	}

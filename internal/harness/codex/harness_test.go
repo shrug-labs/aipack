@@ -95,7 +95,7 @@ func TestPlan_Project_AgentsOverride_WithRulesAndAgents(t *testing.T) {
 	}
 
 	// Agent should NOT be promoted to a skill.
-	skillPath := filepath.Join(projectDir, ".agents", "skills", "reviewer", "SKILL.md")
+	skillPath := filepath.Join(projectDir, ".codex", "skills", "reviewer", "SKILL.md")
 	for _, w := range f.Writes {
 		if w.Dst == skillPath {
 			t.Fatal("agent should NOT be promoted to skill — should be native TOML")
@@ -553,7 +553,7 @@ func TestPlan_Project_WithWorkflows(t *testing.T) {
 	}
 
 	// Workflow should be promoted to a skill.
-	skillPath := filepath.Join(projectDir, ".agents", "skills", "promote", "SKILL.md")
+	skillPath := filepath.Join(projectDir, ".codex", "skills", "promote", "SKILL.md")
 	var skillContent string
 	for _, w := range f.Writes {
 		if w.Dst == skillPath {
@@ -592,7 +592,7 @@ func TestPlan_Project_Skills(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	wantSkill := filepath.Join(projectDir, ".agents", "skills", "deploy")
+	wantSkill := filepath.Join(projectDir, ".codex", "skills", "deploy")
 	found := false
 	for _, c := range f.Copies {
 		if c.Dst == wantSkill {
@@ -633,7 +633,7 @@ func TestPlan_Project_SkillsRenderedWithNamespacedFrontmatter(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	skillPath := filepath.Join(projectDir, ".agents", "skills", "deploy__aipack__pack-a", domain.SkillEntryFile)
+	skillPath := filepath.Join(projectDir, ".codex", "skills", "deploy__aipack__pack-a", domain.SkillEntryFile)
 	var skillContent string
 	for _, w := range f.Writes {
 		if w.Dst == skillPath {
@@ -644,7 +644,7 @@ func TestPlan_Project_SkillsRenderedWithNamespacedFrontmatter(t *testing.T) {
 		t.Fatalf("rendered SKILL.md missing namespaced frontmatter:\n%s", skillContent)
 	}
 
-	helperDst := filepath.Join(projectDir, ".agents", "skills", "deploy__aipack__pack-a", "helper.md")
+	helperDst := filepath.Join(projectDir, ".codex", "skills", "deploy__aipack__pack-a", "helper.md")
 	foundHelper := false
 	for _, c := range f.Copies {
 		if c.Dst == helperDst && c.Kind == domain.CopyKindFile {
@@ -1090,6 +1090,25 @@ func TestBuildManagedContent_Empty(t *testing.T) {
 
 // --- Strip via Layout tests ---
 
+func TestLayout_ProjectSkillsUseCodexRootWithLegacyStaleRoot(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	layout := Harness{}.Layout(domain.ScopeProject, projectDir, projectDir)
+	currentSkills := filepath.Join(projectDir, ".codex", "skills")
+	legacySkills := filepath.Join(projectDir, ".agents", "skills")
+
+	if !slices.Contains(layout.ValidationRoots, currentSkills) {
+		t.Fatalf("validation roots should include current Codex skills root %q: %v", currentSkills, layout.ValidationRoots)
+	}
+	if slices.Contains(layout.ValidationRoots, legacySkills) {
+		t.Fatalf("legacy shared skills root %q must not be a current validation root: %v", legacySkills, layout.ValidationRoots)
+	}
+	if !slices.Contains(layout.StaleRoots, legacySkills) {
+		t.Fatalf("stale roots should include legacy Codex skills root %q: %v", legacySkills, layout.StaleRoots)
+	}
+}
+
 func TestLayout_StripManaged_RemovesMCPServersAndAgents(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
@@ -1177,7 +1196,7 @@ func TestCapture_Project(t *testing.T) {
 	projectDir := t.TempDir()
 
 	// Create skills dir.
-	skillDir := filepath.Join(projectDir, ".agents", "skills", "deploy")
+	skillDir := filepath.Join(projectDir, ".codex", "skills", "deploy")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1323,13 +1342,13 @@ func TestPromoteWorkflows_GeneratesSkillMD(t *testing.T) {
 		},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), true, workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".codex", "skills"), true, workflows)
 
 	if len(f.Writes) != 1 {
 		t.Fatalf("expected 1 write, got %d", len(f.Writes))
 	}
 	w := f.Writes[0]
-	wantDst := filepath.Join("/project", ".agents", "skills", "remediate__aipack__pack-a", "SKILL.md")
+	wantDst := filepath.Join("/project", ".codex", "skills", "remediate__aipack__pack-a", "SKILL.md")
 	if w.Dst != wantDst {
 		t.Fatalf("dst: got %q want %q", w.Dst, wantDst)
 	}
@@ -1347,7 +1366,7 @@ func TestPromoteWorkflows_GeneratesSkillMD(t *testing.T) {
 		t.Fatal("expected body content")
 	}
 	// Desired should include both the skill directory and the SKILL.md file.
-	wantDir := filepath.Join("/project", ".agents", "skills", "remediate__aipack__pack-a")
+	wantDir := filepath.Join("/project", ".codex", "skills", "remediate__aipack__pack-a")
 	wantFile := filepath.Join(wantDir, "SKILL.md")
 	if len(f.Desired) != 2 || f.Desired[0] != wantDir || f.Desired[1] != wantFile {
 		t.Fatalf("desired: got %v want [%s %s]", f.Desired, wantDir, wantFile)
@@ -1378,7 +1397,7 @@ func TestNativeAgents_GeneratesToml(t *testing.T) {
 	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
 		AgentsDir:    "/project/.codex/agents",
 		SkillsBase:   "/project",
-		SkillsSubDir: filepath.Join(".agents", "skills"),
+		SkillsSubDir: filepath.Join(".codex", "skills"),
 	})
 
 	if len(f.Writes) != 1 {
@@ -1429,7 +1448,7 @@ func TestNativeAgents_NamespacedGeneratesToml(t *testing.T) {
 	regs, _ := addNativeAgents(&f, agents, nativeAgentRenderContext{
 		AgentsDir:    "/project/.codex/agents",
 		SkillsBase:   "/project",
-		SkillsSubDir: filepath.Join(".agents", "skills"),
+		SkillsSubDir: filepath.Join(".codex", "skills"),
 		Namespaced:   true,
 	})
 
@@ -1481,7 +1500,7 @@ func TestNativeAgents_NamespacedSkillRefsUseAgentPack(t *testing.T) {
 		AgentsDir:    "/project/.codex/agents",
 		Skills:       skills,
 		SkillsBase:   "/project",
-		SkillsSubDir: filepath.Join(".agents", "skills"),
+		SkillsSubDir: filepath.Join(".codex", "skills"),
 		Namespaced:   true,
 	})
 
@@ -1492,7 +1511,7 @@ func TestNativeAgents_NamespacedSkillRefsUseAgentPack(t *testing.T) {
 		t.Fatalf("expected 1 write, got %d", len(f.Writes))
 	}
 	content := string(f.Writes[0].Content)
-	if !strings.Contains(content, filepath.Join("/project", ".agents", "skills", "deploy__aipack__pack-a")) {
+	if !strings.Contains(content, filepath.Join("/project", ".codex", "skills", "deploy__aipack__pack-a")) {
 		t.Fatalf("expected agent skill config to reference pack-a skill:\n%s", content)
 	}
 	if strings.Contains(content, "deploy__aipack__pack-b") {
@@ -1507,7 +1526,7 @@ func TestPromoteWorkflow_EmptyBody_Skipped(t *testing.T) {
 		{Name: "empty", Body: []byte("  \n  "), SourcePack: "pack-a"},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), false, workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".codex", "skills"), false, workflows)
 
 	if len(f.Writes) != 0 {
 		t.Fatalf("expected 0 writes for empty body, got %d", len(f.Writes))
@@ -1521,7 +1540,7 @@ func TestPromoteWorkflow_FallbackDescription(t *testing.T) {
 		{Name: "deploy", Body: []byte("deploy steps"), SourcePack: "pack-a"},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), false, workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".codex", "skills"), false, workflows)
 
 	content := string(f.Writes[0].Content)
 	if !strings.Contains(content, "[Workflow] Workflow: deploy") {
@@ -1541,7 +1560,7 @@ func TestPromoteWorkflow_DescriptionPrefix_NotDuplicated(t *testing.T) {
 		},
 	}
 
-	addPromotedWorkflows(&f, "/project", filepath.Join(".agents", "skills"), false, workflows)
+	addPromotedWorkflows(&f, "/project", filepath.Join(".codex", "skills"), false, workflows)
 
 	content := string(f.Writes[0].Content)
 	if strings.Contains(content, "[Workflow] [Workflow]") {
@@ -1603,7 +1622,7 @@ func TestCapturePromoted_Agent(t *testing.T) {
 	projectDir := t.TempDir()
 
 	// Write a promoted agent SKILL.md with enriched frontmatter.
-	skillDir := filepath.Join(projectDir, ".agents", "skills", "reviewer")
+	skillDir := filepath.Join(projectDir, ".codex", "skills", "reviewer")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1673,7 +1692,7 @@ func TestCapturePromoted_Workflow(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 
-	skillDir := filepath.Join(projectDir, ".agents", "skills", "remediate")
+	skillDir := filepath.Join(projectDir, ".codex", "skills", "remediate")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1726,7 +1745,7 @@ func TestCapturePromoted_WorkflowStripsRenderedContentName(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 
-	skillDir := filepath.Join(projectDir, ".agents", "skills", "remediate")
+	skillDir := filepath.Join(projectDir, ".codex", "skills", "remediate")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1758,7 +1777,7 @@ func TestCapturePromoted_PlainSkill(t *testing.T) {
 	projectDir := t.TempDir()
 
 	// Plain skill — no source_type in frontmatter.
-	skillDir := filepath.Join(projectDir, ".agents", "skills", "deploy")
+	skillDir := filepath.Join(projectDir, ".codex", "skills", "deploy")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1792,7 +1811,7 @@ func TestCapturePromoted_PlainSkillStripsRenderedContentName(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 
-	skillDir := filepath.Join(projectDir, ".agents", "skills", "deploy")
+	skillDir := filepath.Join(projectDir, ".codex", "skills", "deploy")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -21,12 +21,12 @@ type SyncCmd struct {
 	ProfilePath  string  `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
 	Scope        string  `help:"Where to apply: 'project' writes to project directory, 'global' writes to ~/ config locations (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
 	ProjectDir   *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
-	Harness      string  `help:"Target harness: claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS)" name:"harness" predictor:"harness"`
+	Harness      string  `help:"Target harness(es): claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS); each harness syncs independently" name:"harness" predictor:"harness"`
 	Force        bool    `help:"Override file conflicts"`
 	SkipSettings bool    `help:"Skip harness settings file sync (MCP configs still sync)" name:"skip-settings"`
 	Yes          bool    `help:"Auto-confirm deletions and overwrites without prompting"`
-	DryRun       bool    `help:"Preview planned changes without writing any files" name:"dry-run"`
-	Verbose      bool    `help:"Show content diffs for changed files" short:"v"`
+	DryRun       bool    `help:"Preview planned destination changes without writing any files" name:"dry-run"`
+	Verbose      bool    `help:"With --dry-run, show source packs and content diffs for changed files" short:"v"`
 	Watch        bool    `help:"Watch pack source directories and re-sync on changes"`
 	JSON         bool    `help:"Emit machine-readable JSON output" name:"json"`
 }
@@ -46,22 +46,29 @@ type loadedSyncOptions struct {
 
 func (c *SyncCmd) Help() string {
 	return `Resolves the named profile, plans file writes, directory copies, and settings
-merges for the target harness(es), then applies them. A ledger tracks which
-files are managed. On subsequent runs, only changed files are updated and files
-no longer in the profile are removed. Use --force to override conflicts.
+merges for each target harness, then applies them. Every harness syncs
+independently — its own plan, apply, and ledger — with no cross-harness
+aggregation. A ledger tracks which files are managed. On subsequent runs, only
+changed files are updated and files no longer in the profile are removed. Use
+--force to override conflicts.
 
 Profile resolution: --profile-path > --profile > sync-config defaults.profile > "default"
 Scope resolution:   --scope > sync-config defaults.scope > "global"
 Harness resolution: --harness > sync-config defaults.harnesses > AIPACK_DEFAULT_HARNESS
+Multiple harnesses (including --harness all) sync one after another; the first
+harness that fails stops the run.
 
 Examples:
-  # Sync default profile to all harness locations (default: global scope)
+  # Sync default profile to the configured harness(es) (default: global scope)
   aipack sync --profile default
 
-  # Preview what would change without writing files
+  # Sync to every supported harness, each independently
+  aipack sync --profile default --harness all
+
+  # Preview what would change and where without writing files
   aipack sync --profile default --dry-run
 
-  # Preview with content diffs for changed files
+  # Preview with source packs and content diffs for changed files
   aipack sync --profile default --dry-run --verbose
 
   # Force-sync globally, overriding conflicts
@@ -199,6 +206,10 @@ func runLoadedSync(ctx context.Context, g *Globals, loaded loadedProfile, opts l
 	if err != nil {
 		return err
 	}
+	if err := app.ValidateSyncHarnesses(hs); err != nil {
+		fmt.Fprintln(g.Stderr, "ERROR:", err)
+		return ExitError{Code: cmdutil.ExitUsage}
+	}
 
 	cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
 	if opts.AutoSync {
@@ -211,7 +222,7 @@ func runLoadedSync(ctx context.Context, g *Globals, loaded loadedProfile, opts l
 	}
 
 	eng := engine.NewWithStderr(g.Stderr)
-	res, syncWarnings, err := app.RunSync(ctx, eng, loaded.profile, app.SyncRequest{
+	results, syncWarnings, err := app.RunSyncEach(ctx, eng, loaded.profile, app.SyncRequest{
 		TargetSpec: app.TargetSpec{
 			ConfigDir:  loaded.configDir,
 			Scope:      scope,
@@ -227,44 +238,71 @@ func runLoadedSync(ctx context.Context, g *Globals, loaded loadedProfile, opts l
 		Verbose:      opts.Verbose,
 	}, g.Registry, syncStdout, g.Stderr)
 	cmdutil.PrintWarnings(g.Stderr, syncWarnings)
-	allWarnings := append(loaded.warnings, syncWarnings...)
-	if err != nil {
-		return err
-	}
-	p := res.Plan
 	counts := app.CountProfileContent(loaded.profile)
 	if opts.JSON {
-		jsonWarnings := make([]map[string]string, 0, len(allWarnings))
-		for _, w := range allWarnings {
-			entry := map[string]string{"message": w.Message}
-			if w.Path != "" {
-				entry["path"] = w.Path
-			}
-			if w.Field != "" {
-				entry["field"] = w.Field
-			}
-			jsonWarnings = append(jsonWarnings, entry)
+		// JSON output is atomic: a mid-run failure emits no partial array, just
+		// the error — a consumer must not mistake a truncated run for a complete
+		// one.
+		if err != nil {
+			return err
 		}
-		return cmdutil.WriteJSON(g.Stdout, map[string]any{
-			"dry_run":   opts.DryRun,
-			"rules":     counts.Rules,
-			"workflows": counts.Workflows,
-			"agents":    counts.Agents,
-			"skills":    counts.Skills,
-			"hooks":     counts.Hooks,
-			"plugins":   counts.Plugins,
-			"settings":  len(p.Settings),
-			"mcp":       counts.MCP,
-			"warnings":  jsonWarnings,
-		})
+		// Each harness syncs independently, so emit one self-contained result
+		// object per harness. Profile-resolution warnings are attached to the
+		// first harness's result.
+		out := make([]map[string]any, 0, len(results))
+		for i, res := range results {
+			w := res.Warnings
+			if i == 0 {
+				w = append(append([]domain.Warning{}, loaded.warnings...), w...)
+			}
+			out = append(out, map[string]any{
+				"harness":   string(res.Harness),
+				"dry_run":   opts.DryRun,
+				"rules":     counts.Rules,
+				"workflows": counts.Workflows,
+				"agents":    counts.Agents,
+				"skills":    counts.Skills,
+				"hooks":     counts.Hooks,
+				"plugins":   counts.Plugins,
+				"settings":  len(res.Plan.Settings),
+				"mcp":       counts.MCP,
+				"warnings":  syncJSONWarnings(w),
+			})
+		}
+		return cmdutil.WriteJSON(g.Stdout, out)
 	}
 	if opts.DryRun {
 		// Non-verbose dry-run: plan line already printed by printDryRun
 		// with source counts. Verbose dry-run: already returned above.
-		return nil
+		return err
 	}
-	fmt.Fprintf(g.Stdout, "sync OK: %s\n", counts.String())
-	return nil
+	// Report each harness that completed. RunSyncEach stops at the first
+	// failure and returns the harnesses processed so far with the failed one
+	// last, so on a partial failure we still show every harness that synced
+	// before surfacing the error — the user can see exactly how far the run got.
+	done := results
+	if err != nil && len(done) > 0 {
+		done = done[:len(done)-1]
+	}
+	for _, res := range done {
+		fmt.Fprintf(g.Stdout, "sync OK [%s]: %s\n", res.Harness, counts.String())
+	}
+	return err
+}
+
+func syncJSONWarnings(warnings []domain.Warning) []map[string]string {
+	out := make([]map[string]string, 0, len(warnings))
+	for _, w := range warnings {
+		entry := map[string]string{"message": w.Message}
+		if w.Path != "" {
+			entry["path"] = w.Path
+		}
+		if w.Field != "" {
+			entry["field"] = w.Field
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func resolveWatchDirs(profileFlag, profilePathFlag, configDirFlag string) ([]string, error) {

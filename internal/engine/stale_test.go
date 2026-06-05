@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 )
@@ -23,7 +24,11 @@ func TestShouldDelete_DigestMatch(t *testing.T) {
 	digest := domain.SingleFileDigest(content)
 
 	eng := New(nil, nil)
-	dec, err := eng.shouldDelete(context.Background(), path, false, digest, false)
+	dec, err := eng.shouldDelete(context.Background(), deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		PrevDigest:   digest,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +46,12 @@ func TestShouldDelete_DryRun(t *testing.T) {
 	}
 
 	eng := New(nil, nil)
-	dec, err := eng.shouldDelete(context.Background(), path, false, "stale-digest", true)
+	dec, err := eng.shouldDelete(context.Background(), deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		PrevDigest:   "stale-digest",
+		DryRun:       true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +69,12 @@ func TestShouldDelete_YesFlag(t *testing.T) {
 	}
 
 	eng := New(nil, nil)
-	dec, err := eng.shouldDelete(context.Background(), path, true, "stale-digest", false)
+	dec, err := eng.shouldDelete(context.Background(), deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		Yes:          true,
+		PrevDigest:   "stale-digest",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +94,11 @@ func TestShouldDelete_NonInteractive_ReturnsSkipped(t *testing.T) {
 	// nil Interactor = non-interactive
 	eng := New(nil, nil)
 	eng.Interact = nil
-	dec, err := eng.shouldDelete(context.Background(), path, false, "stale-digest", false)
+	dec, err := eng.shouldDelete(context.Background(), deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		PrevDigest:   "stale-digest",
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +108,11 @@ func TestShouldDelete_NonInteractive_ReturnsSkipped(t *testing.T) {
 
 	// Interactor that reports non-terminal
 	eng2 := New(nil, &FixedInteractor{Terminal: false})
-	dec, err = eng2.shouldDelete(context.Background(), path, false, "stale-digest", false)
+	dec, err = eng2.shouldDelete(context.Background(), deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		PrevDigest:   "stale-digest",
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +130,11 @@ func TestShouldDelete_Interactive_UserConfirms(t *testing.T) {
 	}
 
 	eng := New(nil, &FixedInteractor{Terminal: true, Responses: []string{"y"}})
-	dec, err := eng.shouldDelete(context.Background(), path, false, "stale-digest", false)
+	dec, err := eng.shouldDelete(context.Background(), deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		PrevDigest:   "stale-digest",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,12 +152,50 @@ func TestShouldDelete_Interactive_UserDeclines(t *testing.T) {
 	}
 
 	eng := New(nil, &FixedInteractor{Terminal: true, Responses: []string{"n"}})
-	dec, err := eng.shouldDelete(context.Background(), path, false, "stale-digest", false)
+	dec, err := eng.shouldDelete(context.Background(), deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		PrevDigest:   "stale-digest",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if dec != DeleteNo {
 		t.Errorf("user said 'n', expected DeleteNo, got %v", dec)
+	}
+}
+
+func TestShouldDelete_InteractivePromptUsesDisplayLabel(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".codex", "skills", "deploy", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	interact := &recordingInteractor{response: "n"}
+	eng := New(nil, interact)
+	displayLabel := "[codex] " + domain.DisplayPath(path)
+	dec, err := eng.shouldDelete(context.Background(), deleteRequest{
+		Path:                     path,
+		DisplayLabel:             displayLabel,
+		DisplayLabelIncludesPath: true,
+		PrevDigest:               "stale-digest",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec != DeleteNo {
+		t.Fatalf("decision = %v, want DeleteNo", dec)
+	}
+	if !strings.Contains(interact.prompt, "Delete stale path? "+displayLabel) {
+		t.Fatalf("prompt missing display label: %q", interact.prompt)
+	}
+	if !strings.Contains(interact.prompt, domain.DisplayPath(path)) {
+		t.Fatalf("prompt missing absolute path: %q", interact.prompt)
 	}
 }
 
@@ -147,7 +212,11 @@ func TestShouldDelete_Interactive_ContextCancelled(t *testing.T) {
 
 	// Use an Interactor whose Prompt respects context cancellation.
 	eng := New(nil, &contextAwareInteractor{ctx: ctx})
-	_, err := eng.shouldDelete(ctx, path, false, "stale-digest", false)
+	_, err := eng.shouldDelete(ctx, deleteRequest{
+		Path:         path,
+		DisplayLabel: path,
+		PrevDigest:   "stale-digest",
+	})
 	if err == nil {
 		t.Error("expected context cancellation error")
 	}
@@ -159,6 +228,17 @@ type contextAwareInteractor struct{ ctx context.Context }
 func (c *contextAwareInteractor) IsTerminal() bool { return true }
 func (c *contextAwareInteractor) Prompt(ctx context.Context, _ string) (string, error) {
 	return "", ctx.Err()
+}
+
+type recordingInteractor struct {
+	response string
+	prompt   string
+}
+
+func (r *recordingInteractor) IsTerminal() bool { return true }
+func (r *recordingInteractor) Prompt(_ context.Context, msg string) (string, error) {
+	r.prompt = msg
+	return r.response, nil
 }
 
 func TestReconcileStaleEntries_NonInteractive_WarnsForUserModifiedFiles(t *testing.T) {
@@ -478,6 +558,67 @@ func TestReconcileStaleEntries_OwnedFile_PrunesOnlyManagedMCPServers(t *testing.
 	}
 	if _, ok := servers["mine"]; !ok {
 		t.Error("user-added server mine MUST be preserved (regression: the blunt strip wiped it)")
+	}
+}
+
+func TestPruneLedgerManagedPaths_RemovesOnlyFilesystemEntriesUnderRoots(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	root := filepath.Join(dir, ".agents", "skills")
+	managed := filepath.Join(root, "deploy", "SKILL.md")
+	outside := filepath.Join(dir, ".cline", "settings.json")
+	ledgerPath := filepath.Join(dir, "ledger.json")
+
+	if err := os.MkdirAll(filepath.Dir(managed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	managedContent := []byte("managed skill")
+	if err := os.WriteFile(managed, managedContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideContent := []byte("outside")
+	if err := os.WriteFile(outside, outsideContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := New(nil, nil)
+	lg := domain.NewLedger()
+	lg.Record(managed, managedContent, "pack", nil, time.Now())
+	lg.Record(outside, outsideContent, "pack", nil, time.Now())
+	lg.Managed[domain.MCPLedgerKey(outside, "server")] = domain.Entry{Digest: "mcp", SourcePack: "pack"}
+	if err := eng.SaveLedger(ledgerPath, lg, false); err != nil {
+		t.Fatal(err)
+	}
+
+	warnings, err := eng.PruneLedgerManagedPaths(context.Background(), ledgerPath, []string{root}, PruneLedgerManagedRequest{Yes: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if _, err := os.Stat(managed); !os.IsNotExist(err) {
+		t.Fatalf("managed file should be removed; stat err=%v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside file should remain: %v", err)
+	}
+
+	got, _, err := eng.LoadLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Managed[filepath.Clean(managed)]; ok {
+		t.Fatalf("managed file ledger entry should be pruned")
+	}
+	if _, ok := got.Managed[filepath.Clean(outside)]; !ok {
+		t.Fatalf("outside file ledger entry should remain")
+	}
+	if _, ok := got.Managed[domain.MCPLedgerKey(outside, "server")]; !ok {
+		t.Fatalf("MCP ledger entry should remain")
 	}
 }
 

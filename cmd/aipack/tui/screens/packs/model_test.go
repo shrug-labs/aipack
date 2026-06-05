@@ -591,6 +591,56 @@ func TestPacksModel_PackInfoIsCompact(t *testing.T) {
 	}
 }
 
+func TestPacksModel_DetailsPanelShowsRemoteOriginAsSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		method     string
+		origin     string
+		installDir string
+	}{
+		{
+			name:       "clone",
+			method:     config.MethodClone,
+			origin:     "https://github.com/example/remote-pack.git",
+			installDir: "/tmp/aipack/packs/remote-pack",
+		},
+		{
+			name:       "archive",
+			method:     config.MethodArchive,
+			origin:     "https://example.com/packs/remote-pack.tar.gz",
+			installDir: "/tmp/aipack/packs/archive-pack",
+		},
+		{
+			name:       "http-tarball",
+			method:     config.MethodHTTPTarball,
+			origin:     "https://example.com/packs/remote-pack.tgz",
+			installDir: "/tmp/aipack/packs/http-pack",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestPacksModel([]packItemDetail{
+				{entry: app.PackShowEntry{
+					Name:   tt.name + "-pack",
+					Path:   tt.installDir,
+					Method: tt.method,
+					Origin: tt.origin,
+				}},
+			})
+
+			view := stripSGR(m.viewPackInfoPanel(90, 18))
+			if !strings.Contains(view, tt.origin) {
+				t.Fatalf("expected Source to show remote origin %q, got:\n%s", tt.origin, view)
+			}
+			if strings.Contains(view, tt.installDir) {
+				t.Fatalf("expected Source to hide installed directory %q for remote pack, got:\n%s", tt.installDir, view)
+			}
+		})
+	}
+}
+
 func TestWrapWords(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1367,6 +1417,70 @@ func TestPacksModel_ListPanelOmitsStatusBadges(t *testing.T) {
 	}
 	if strings.Contains(view, "ssh://git/example/repo.git") {
 		t.Fatalf("expected list panel to avoid duplicated repo metadata, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_RegistryRowShowsRegisteredStatusFromIndex(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m.registry = []registryItem{{
+		name: "registered-pack",
+		repo: "https://example.com/registered-pack.git",
+	}}
+	m.registryState = asyncLoaded
+	m.indexDetails = map[string]app.IndexedPackDetail{
+		"registered-pack": {
+			Name:   "registered-pack",
+			Status: "registered",
+			Source: "registry",
+		},
+	}
+	m.indexState = asyncLoaded
+	m.rebuildList()
+
+	view := stripSGR(m.viewListPanel(48, 10))
+	if !strings.Contains(view, "registered-pack") || !strings.Contains(view, "registered") {
+		t.Fatalf("expected registry row to show restored registered status, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_ListPanelShowsActiveRegistryInstall(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m.registry = []registryItem{{
+		name: "beta",
+	}}
+	m.registryState = asyncLoaded
+	m.rebuildList()
+	m.activeInstall = &activeInstall{
+		packName: "beta",
+		phase:    app.PackInstallPhaseCloning,
+	}
+
+	listView := stripSGR(m.viewListPanel(36, 10))
+	if !strings.Contains(listView, "beta") || !strings.Contains(listView, "cloning") {
+		t.Fatalf("expected active install row feedback, got:\n%s", listView)
+	}
+
+	detailView := stripSGR(m.viewPackInfoPanel(42, 14))
+	if !strings.Contains(detailView, "cloning beta") || !strings.Contains(detailView, "Esc to cancel") {
+		t.Fatalf("expected active install detail feedback, got:\n%s", detailView)
+	}
+}
+
+func TestPacksModel_ListPanelOmitsTerminalInstallNotice(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel(nil)
+	m.activeInstall = &activeInstall{packName: "beta"}
+
+	m, _ = updateTestModel(t, m, InstalledMsg{
+		Name: "beta",
+		Err:  fmt.Errorf("clone failed"),
+	})
+
+	view := stripSGR(m.viewListPanel(50, 10))
+	if strings.Contains(view, "install error") || strings.Contains(view, "clone failed") {
+		t.Fatalf("expected terminal install status to stay out of list panel, got:\n%s", view)
 	}
 }
 

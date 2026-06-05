@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -188,13 +189,14 @@ func knownPacksFromRoots(packRoots map[string]string) map[string]struct{} {
 
 // TargetSpec holds the common targeting fields shared across request types.
 type TargetSpec struct {
-	ConfigDir  string
-	Scope      domain.Scope
-	ProjectDir string
-	Harnesses  []domain.Harness
-	Home       string // $HOME — threaded explicitly for testability
-	Namespaced bool   // render pack-authored content with pack provenance suffixes
-	Env        map[string]string
+	ConfigDir       string
+	Scope           domain.Scope
+	ProjectDir      string
+	Harnesses       []domain.Harness
+	ActiveHarnesses []domain.Harness // full resolved sync target set; defaults to Harnesses
+	Home            string           // $HOME — threaded explicitly for testability
+	Namespaced      bool             // render pack-authored content with pack provenance suffixes
+	Env             map[string]string
 }
 
 // SyncRequest holds the parameters for a sync operation.
@@ -209,9 +211,50 @@ type SyncRequest struct {
 	NowFn        func() time.Time // test injection; nil = time.Now
 }
 
-// SyncResult holds the result of a sync operation.
+// SyncResult holds the result of a sync operation against one harness.
 type SyncResult struct {
-	Plan domain.Plan
+	Harness  domain.Harness
+	Plan     domain.Plan
+	Warnings []domain.Warning
+}
+
+// RunSyncEach syncs each resolved harness independently, in profile order. Each
+// harness gets its own plan, apply, ledger, and self-contained output block —
+// there is no cross-harness aggregation. It stops at the first harness that
+// fails and returns the results gathered so far along with the error.
+func RunSyncEach(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) ([]SyncResult, []domain.Warning, error) {
+	if err := ValidateSyncHarnesses(req.Harnesses); err != nil {
+		return nil, nil, wrapFatalSync("validate sync targets", err)
+	}
+	activeHarnesses := append([]domain.Harness{}, req.Harnesses...)
+	req.ActiveHarnesses = activeHarnesses
+	var warnings []domain.Warning
+	req, newInventories, prepWarnings := prepareSyncProfile(eng, profile, req, reg, stdout, stderr)
+	warnings = append(warnings, prepWarnings...)
+
+	results := make([]SyncResult, 0, len(req.Harnesses))
+	for _, hid := range req.Harnesses {
+		single := req
+		single.Harnesses = []domain.Harness{hid}
+		res, w, err := runSyncHarness(ctx, eng, profile, single, hid, reg, stdout, stderr)
+		warnings = append(warnings, w...)
+		res.Harness = hid
+		res.Warnings = w
+		results = append(results, res)
+		if err != nil {
+			return results, warnings, err
+		}
+	}
+	warnings = append(warnings, finishSyncProfile(profile, req, newInventories, stderr)...)
+	return results, warnings, nil
+}
+
+// ValidateSyncHarnesses checks that a sync run has at least one target harness.
+func ValidateSyncHarnesses(hs []domain.Harness) error {
+	if len(hs) == 0 {
+		return fmt.Errorf("sync requires at least one harness")
+	}
+	return nil
 }
 
 // RunSync plans and applies a sync. It is the primary v2 entry point for the sync command.
@@ -219,6 +262,24 @@ type SyncResult struct {
 // Error policy: loading/reading failures that degrade gracefully are returned
 // as warnings. Writing failures that leave inconsistent state are fatal errors.
 func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
+	var warnings []domain.Warning
+	hid, err := SingleSyncHarness(req.Harnesses)
+	if err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("validate sync target", err)
+	}
+	req, newInventories, prepWarnings := prepareSyncProfile(eng, profile, req, reg, stdout, stderr)
+	warnings = append(warnings, prepWarnings...)
+
+	res, runWarnings, err := runSyncHarness(ctx, eng, profile, req, hid, reg, stdout, stderr)
+	warnings = append(warnings, runWarnings...)
+	if err != nil {
+		return res, warnings, err
+	}
+	warnings = append(warnings, finishSyncProfile(profile, req, newInventories, stderr)...)
+	return res, warnings, nil
+}
+
+func prepareSyncProfile(eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) (SyncRequest, map[string]domain.PackInventory, []domain.Warning) {
 	var warnings []domain.Warning
 	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
 
@@ -248,83 +309,60 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 	printDrift(stdout, req.ConfigDir, profile, newInventories)
 
 	if !req.DryRun {
-		// Migrate legacy ledgers (combined-harness or project-local) on first run.
-		managedRootsMap := map[domain.Harness][]string{}
-		for _, hid := range req.Harnesses {
-			if h, lerr := reg.Lookup(hid); lerr == nil {
-				managedRootsMap[hid] = h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home).ValidationRoots
-			}
-		}
-		if n, merr := eng.MigrateOldLedgers(req.ConfigDir, req.Scope, req.ProjectDir, req.Harnesses, managedRootsMap); merr != nil {
-			warnings = append(warnings, warningf("ledger-migration", "%v", merr))
-		} else if n > 0 {
-			if stderr != nil {
-				fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
-			}
-		}
+		warnings = append(warnings, migrateLegacyLedgersForSync(eng, reg, req, stderr)...)
 	}
+	return req, newInventories, warnings
+}
 
-	// Plan and apply per harness — each gets its own ledger.
-	aggregatePlan := domain.Plan{Desired: map[string]struct{}{}}
-	for _, hid := range req.Harnesses {
-		planners, err := reg.AsPlanners([]domain.Harness{hid})
-		if err != nil {
-			return SyncResult{}, warnings, wrapFatalSync("lookup harness planners", err)
-		}
-
-		planReq := planRequestForHarness(req, hid)
-
-		plan, err := engine.PlanSync(ctx, profile, planReq, planners)
-		if err != nil {
-			return SyncResult{}, warnings, wrapFatalSync("plan sync", err)
-		}
-		warnings = append(warnings, plan.Warnings...)
-
-		if req.DryRun {
-			mergePlans(&aggregatePlan, plan)
-			continue
-		}
-
-		h, _ := reg.Lookup(hid)
-		layout := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home)
-		managedRoots := layout.ValidationRoots
-
-		stripFuncs := make(map[string]func([]byte, domain.Ledger) ([]byte, error), len(layout.OwnedFiles))
-		for _, of := range layout.OwnedFiles {
-			stripFuncs[filepath.Clean(of.Path)] = stripFuncForOwnedFile(of)
-		}
-
-		applyReq := engine.ApplyRequest{
-			Force:      req.Force,
-			Yes:        req.Yes,
-			DryRun:     req.DryRun,
-			Quiet:      req.Quiet,
-			Stdout:     stderr,
-			Req:        planReq,
-			StripFuncs: stripFuncs,
-		}
-
-		applyWarnings, err := eng.ApplyPlan(ctx, plan, applyReq, managedRoots)
-		warnings = append(warnings, applyWarnings...)
-		if err != nil {
-			if stderr != nil {
-				fmt.Fprintf(stderr, "error: sync: %v\n", err)
-			}
-			return SyncResult{}, warnings, wrapFatalSync("apply plan", err)
-		}
-
-		// Reconcile per-server MCP ledger entries with actual on-disk state.
-		// ApplyPlan records per-server entries using planned content, but
-		// three-way merge may write different content (preserving user
-		// additions). Re-capture from the now-updated file and record the
-		// actual digests so that save/inspect classify correctly.
-		if len(plan.MCPServers) > 0 {
-			reconWarnings := reconcileMCPLedger(ctx, eng, plan, h, req, req.NowFn)
-			warnings = append(warnings, reconWarnings...)
-		}
-
-		mergePlans(&aggregatePlan, plan)
+func migrateLegacyLedgersForSync(eng *engine.Engine, reg *harness.Registry, req SyncRequest, stderr io.Writer) []domain.Warning {
+	// Route every legacy entry to the harness that currently writes to its
+	// location so a single-harness sync does not claim another harness's files.
+	migrationHarnesses := make([]domain.Harness, 0, len(reg.All()))
+	managedRootsMap := map[domain.Harness][]string{}
+	for _, h := range reg.All() {
+		id := h.ID()
+		migrationHarnesses = append(migrationHarnesses, id)
+		managedRootsMap[id] = h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, id), req.Home).ValidationRoots
 	}
+	n, err := eng.MigrateOldLedgers(req.ConfigDir, req.Scope, req.ProjectDir, migrationHarnesses, managedRootsMap)
+	if err != nil {
+		return []domain.Warning{warningf("ledger-migration", "%v", err)}
+	}
+	if n > 0 && stderr != nil {
+		fmt.Fprintf(stderr, "migrated %d ledger entries to per-harness format\n", n)
+	}
+	return nil
+}
+
+func finishSyncProfile(profile domain.Profile, req SyncRequest, newInventories map[string]domain.PackInventory, stderr io.Writer) []domain.Warning {
+	if req.DryRun {
+		return nil
+	}
+	var warnings []domain.Warning
+	if idxErr := updateIndex(profile, req.ConfigDir); idxErr != nil {
+		warnings = append(warnings, warningf("index", "index update failed: %v", idxErr))
+	}
+	warnings = append(warnings, processEmbeddedRegistries(profile, req.ConfigDir, stderr)...)
+
+	if invErr := writebackInventories(req.ConfigDir, newInventories); invErr != nil {
+		warnings = append(warnings, warningf("inventory", "lockfile inventory writeback failed: %v", invErr))
+	}
+	return warnings
+}
+
+func runSyncHarness(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, hid domain.Harness, reg *harness.Registry, stdout, stderr io.Writer) (SyncResult, []domain.Warning, error) {
+	var warnings []domain.Warning
+
+	planners, err := reg.AsPlanners([]domain.Harness{hid})
+	if err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("lookup harness planners", err)
+	}
+	planReq := planRequestForHarness(req, hid)
+	plan, err := engine.PlanSync(ctx, profile, planReq, planners)
+	if err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("plan sync", err)
+	}
+	warnings = append(warnings, plan.Warnings...)
 
 	if req.DryRun {
 		if req.Verbose {
@@ -337,26 +375,101 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 			}
 			printDryRunVerbose(summary, stdout)
 		} else {
-			printDryRun(eng, aggregatePlan, req, reg, CountProfileContent(profile), stdout)
+			printDryRun(eng, plan, req, CountProfileContent(profile), stdout)
 		}
-		return SyncResult{Plan: aggregatePlan}, warnings, nil
+		return SyncResult{Harness: hid, Plan: plan}, warnings, nil
 	}
 
-	// Post-sync tasks — run once.
-	if idxErr := updateIndex(profile, req.ConfigDir); idxErr != nil {
-		warnings = append(warnings, warningf("index", "index update failed: %v", idxErr))
-	}
-	regWarnings := processEmbeddedRegistries(profile, req.ConfigDir, stderr)
-	warnings = append(warnings, regWarnings...)
-
-	// Writeback: record the new pack inventories into the lockfile so the
-	// next sync has a fresh baseline for drift detection. Non-fatal on
-	// failure — we've already applied the plan successfully.
-	if invErr := writebackInventories(req.ConfigDir, newInventories); invErr != nil {
-		warnings = append(warnings, warningf("inventory", "lockfile inventory writeback failed: %v", invErr))
+	h, _ := reg.Lookup(hid)
+	layout := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home)
+	managedRoots := layout.ValidationRoots
+	cleanup := staleCleanupContextForHarness(eng, reg, req.TargetSpec, hid, layout, nil)
+	if lg, _, lerr := eng.LoadLedger(plan.Ledger); lerr == nil {
+		if candidates, cerr := eng.StaleCandidatesWithLedger(plan, cleanup.Roots, lg); cerr == nil {
+			cleanup = staleCleanupContextForHarness(eng, reg, req.TargetSpec, hid, layout, candidates)
+		}
 	}
 
-	return SyncResult{Plan: aggregatePlan}, warnings, nil
+	stripFuncs := make(map[string]func([]byte, domain.Ledger) ([]byte, error), len(layout.OwnedFiles))
+	for _, of := range layout.OwnedFiles {
+		stripFuncs[filepath.Clean(of.Path)] = stripFuncForOwnedFile(of)
+	}
+
+	applyReq := engine.ApplyRequest{
+		Force:      req.Force,
+		Yes:        req.Yes,
+		DryRun:     req.DryRun,
+		Quiet:      req.Quiet,
+		Stdout:     stderr,
+		Req:        planReq,
+		StaleRoots: cleanup.StaleRoots,
+		LabelForPath: func(path string) string {
+			return syncDisplayPath(hid, path)
+		},
+		PruneOnlyStalePaths: cleanup.Protected,
+		StripFuncs:          stripFuncs,
+	}
+
+	applyWarnings, err := eng.ApplyPlan(ctx, plan, applyReq, managedRoots)
+	warnings = append(warnings, applyWarnings...)
+	if err != nil {
+		if stderr != nil {
+			fmt.Fprintf(stderr, "error: sync: %v\n", err)
+		}
+		return SyncResult{}, warnings, wrapFatalSync("apply plan", err)
+	}
+	warnings = append(warnings, newInactiveStaleContext(eng, reg, req.TargetSpec, hid, cleanup.StaleRoots).prune(ctx, engine.PruneLedgerManagedRequest{
+		Yes:    req.Yes,
+		DryRun: req.DryRun,
+	})...)
+
+	// Reconcile per-server MCP ledger entries with actual on-disk state.
+	// ApplyPlan records per-server entries using planned content, but
+	// three-way merge may write different content (preserving user
+	// additions). Re-capture from the now-updated file and record the
+	// actual digests so that save/inspect classify correctly.
+	if len(plan.MCPServers) > 0 {
+		reconWarnings := reconcileMCPLedger(ctx, eng, plan, h, req, req.NowFn)
+		warnings = append(warnings, reconWarnings...)
+	}
+
+	return SyncResult{Harness: hid, Plan: plan}, warnings, nil
+}
+
+func ValidateSingleSyncHarness(hs []domain.Harness) error {
+	if len(hs) == 1 {
+		return nil
+	}
+	if len(hs) == 0 {
+		return fmt.Errorf("sync requires exactly one harness")
+	}
+	names := make([]string, len(hs))
+	for i, h := range hs {
+		names[i] = string(h)
+	}
+	return fmt.Errorf("sync targets one harness per run; resolved %s", strings.Join(names, ","))
+}
+
+func SingleSyncHarness(hs []domain.Harness) (domain.Harness, error) {
+	if err := ValidateSingleSyncHarness(hs); err != nil {
+		return "", err
+	}
+	return hs[0], nil
+}
+
+func FirstSyncHarness(hs []domain.Harness) (domain.Harness, bool) {
+	if len(hs) == 0 {
+		return "", false
+	}
+	return hs[0], true
+}
+
+func ResolveSingleSyncHarness(raw []string) (domain.Harness, error) {
+	hs, err := cmdutil.ResolveHarnesses(raw)
+	if err != nil {
+		return "", err
+	}
+	return SingleSyncHarness(hs)
 }
 
 // printDrift compares the new per-pack inventories against the previous
@@ -421,23 +534,6 @@ func writebackInventories(configDir string, newInventories map[string]domain.Pac
 	})
 }
 
-func mergePlans(dst *domain.Plan, src domain.Plan) {
-	dst.Writes = append(dst.Writes, src.Writes...)
-	dst.Copies = append(dst.Copies, src.Copies...)
-	dst.Settings = append(dst.Settings, src.Settings...)
-	dst.MCP = append(dst.MCP, src.MCP...)
-	dst.MCPServers = append(dst.MCPServers, src.MCPServers...)
-	if dst.Desired == nil {
-		dst.Desired = map[string]struct{}{}
-	}
-	for path := range src.Desired {
-		dst.Desired[path] = struct{}{}
-	}
-	if dst.Ledger == "" {
-		dst.Ledger = src.Ledger
-	}
-}
-
 // reconcileMCPLedger re-captures MCP servers from the now-updated harness
 // config and overwrites the per-server ledger entries with actual (post-merge)
 // digests. This corrects the planned-vs-merged divergence that occurs when
@@ -491,47 +587,39 @@ func reconcileMCPLedger(ctx context.Context, eng *engine.Engine, plan domain.Pla
 	return nil
 }
 
-func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *harness.Registry, counts ContentCounts, stdout io.Writer) {
+func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, counts ContentCounts, stdout io.Writer) {
 	cfgDir := config.FallbackConfigDir(req.ConfigDir, req.Home)
 
-	ledgers := map[domain.Harness]domain.Ledger{}
-	for _, hid := range req.Harnesses {
-		path := engine.LedgerPath(cfgDir, req.Scope, req.ProjectDir, hid)
-		if lg, _, err := eng.LoadLedger(path); err == nil {
-			ledgers[hid] = lg
-		}
+	hid, ok := FirstSyncHarness(req.Harnesses)
+	if !ok {
+		hid = ""
 	}
-
-	rootsIdx := harness.BuildRootsIndexWithBaseDir(reg, req.Scope, req.Home, func(hid domain.Harness) string {
-		return targetDirForHarness(req.TargetSpec, hid)
-	})
-	ledgerForPath := func(path string) domain.Ledger {
-		hid := rootsIdx.Identify(path)
-		if lg, ok := ledgers[hid]; ok {
-			return lg
+	ledgerPath := plan.Ledger
+	if ledgerPath == "" && hid != "" {
+		ledgerPath = engine.LedgerPath(cfgDir, req.Scope, req.ProjectDir, hid)
+	}
+	lg := domain.NewLedger()
+	if ledgerPath != "" {
+		if loaded, _, err := eng.LoadLedger(ledgerPath); err == nil {
+			lg = loaded
 		}
-		if plan.Ledger != "" {
-			if lg, _, err := eng.LoadLedger(plan.Ledger); err == nil {
-				return lg
-			}
-		}
-		return domain.NewLedger()
 	}
 
 	emitOp := func(verb, path string) {
 		if stdout == nil {
 			return
 		}
+		label := syncDisplayPath(hid, path)
 		if verb == "skip-conflict" {
-			fmt.Fprintf(stdout, "skip(conflict): %s\n", path)
+			fmt.Fprintf(stdout, "skip(conflict): %s\n", label)
 			return
 		}
-		fmt.Fprintf(stdout, "%s: %s\n", verb, path)
+		fmt.Fprintf(stdout, "%s: %s\n", verb, label)
 	}
 
 	var changes, skips int
 	for _, wr := range plan.Writes {
-		kind, err := classifyWriteKind(eng, wr, ledgerForPath(wr.Dst))
+		kind, err := classifyWriteKind(eng, wr, lg)
 		if err != nil {
 			emitOp("create", wr.Dst)
 			changes++
@@ -557,7 +645,6 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 		}
 	}
 	for _, cp := range plan.Copies {
-		lg := ledgerForPath(cp.Dst)
 		dirKind := classifyCopyKind(eng, cp, lg)
 		switch dirKind {
 		case domain.DiffIdentical:
@@ -581,7 +668,7 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *har
 	// Merge actions count only when aipack-managed keys would change.
 	for _, group := range [][]domain.SettingsAction{plan.Settings, plan.MCP} {
 		for _, sa := range group {
-			kind, derr := eng.ClassifySettingsKind(sa, ledgerForPath(sa.Dst))
+			kind, derr := eng.ClassifySettingsKind(sa, lg)
 			if derr != nil {
 				emitOp("merge", sa.Dst)
 				changes++
@@ -923,12 +1010,16 @@ func printDryRunVerbose(summary PlanSummary, stdout io.Writer) {
 		if op.DiffKind != "" {
 			label = string(op.DiffKind)
 		}
+		dst := op.DisplayDst
+		if dst == "" {
+			dst = op.Dst
+		}
 		if op.SourcePack != "" {
 			if stdout != nil {
-				fmt.Fprintf(stdout, "\n%s: %s [%s]\n", label, op.Dst, op.SourcePack)
+				fmt.Fprintf(stdout, "\n%s: %s [%s]\n", label, dst, op.SourcePack)
 			}
 		} else if stdout != nil {
-			fmt.Fprintf(stdout, "\n%s: %s\n", label, op.Dst)
+			fmt.Fprintf(stdout, "\n%s: %s\n", label, dst)
 		}
 		if len(op.MergeOps) > 0 {
 			printMergeOps(op.MergeOps, stdout)

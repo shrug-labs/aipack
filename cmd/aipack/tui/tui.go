@@ -165,6 +165,7 @@ type rootModel struct {
 	pendingConfigParamHint string // param key to keep selected after config refresh
 	pendingConfigEnvHint   string // env key to keep selected after config refresh
 	pendingAutoSync        *pendingAutoSyncState
+	pendingSyncRecheck     string // active profile needing a fresh sync check after current loading check completes
 	autoSyncSeq            int
 
 	// Save plan state: stashed context for executing save after user confirms.
@@ -798,11 +799,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusText = common.DimStyle.Render(fmt.Sprintf("synced %d file(s)", msg.filesWritten))
 		}
 		// Re-check sync status and refresh save tab.
-		cmds := []tea.Cmd{m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)}
-		if next, inspCmd := m.triggerInspect(); inspCmd != nil {
-			m = next
-			cmds = append(cmds, inspCmd)
-		}
+		m, cmds := m.syncCheckAndInspectCmds()
 		return m, tea.Batch(cmds...)
 	}
 
@@ -835,11 +832,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusText = common.DimStyle.Render(fmt.Sprintf("saved %d, unchanged %d", msg.saved, msg.unchanged))
 		}
 		// Re-check sync status and refresh save tab since pack content changed.
-		cmds := []tea.Cmd{m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)}
-		if next, inspCmd := m.triggerInspect(); inspCmd != nil {
-			m = next
-			cmds = append(cmds, inspCmd)
-		}
+		m, cmds := m.syncCheckAndInspectCmds()
 		return m, tea.Batch(cmds...)
 	}
 
@@ -851,11 +844,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusText = common.DimStyle.Render(fmt.Sprintf("added %s to %s", filepath.Base(msg.harnessPath), msg.packName))
 		}
 		// Refresh save tab + sync status since ledger/pack changed.
-		cmds := []tea.Cmd{m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)}
-		if next, inspCmd := m.triggerInspect(); inspCmd != nil {
-			m = next
-			cmds = append(cmds, inspCmd)
-		}
+		m, cmds := m.syncCheckAndInspectCmds()
 		return m, tea.Batch(cmds...)
 	}
 
@@ -870,12 +859,10 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{
 			loadPacks(m.cfg.ConfigDir),
 			packsscreen.LoadIndexDetails(m.cfg.ConfigDir),
-			m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry),
 		}
-		if next, inspCmd := m.triggerInspect(); inspCmd != nil {
-			m = next
-			cmds = append(cmds, inspCmd)
-		}
+		var refreshCmds []tea.Cmd
+		m, refreshCmds = m.syncCheckAndInspectCmds()
+		cmds = append(cmds, refreshCmds...)
 		return m, tea.Batch(cmds...)
 	}
 
@@ -957,7 +944,9 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.cfg.SyncCfg = msg.syncCfg
 		m, _ = m.syncConfigScreenContext(false)
-		return m, m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)
+		var syncCmd tea.Cmd
+		m, syncCmd = m.requestActiveSyncCheck()
+		return m, syncCmd
 	}
 	if msg, ok := msg.(envSetMsg); ok {
 		if msg.err != nil {
@@ -1131,6 +1120,11 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusText = common.DimStyle.Render("updated")
 		}
 		cmds := []tea.Cmd{loadPacks(m.cfg.ConfigDir), packsscreen.LoadIndexDetails(m.cfg.ConfigDir)}
+		if packsscreen.AnyUpdated(msg.Results) {
+			var refreshCmds []tea.Cmd
+			m, refreshCmds = m.syncCheckAndInspectCmds()
+			cmds = append(cmds, refreshCmds...)
+		}
 		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 	}
@@ -1171,19 +1165,26 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Load packs and registry after profiles arrive (sequenced
 			// from Init to avoid concurrent-command race condition).
 			cmd = tea.Batch(cmd, m.packsScreen().Init())
-			syncCmd := m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)
-			if syncCmd != nil {
-				cmd = tea.Batch(cmd, syncCmd)
-			}
-			if next, inspCmd := m.triggerInspect(); inspCmd != nil {
-				m = next
-				cmd = tea.Batch(cmd, inspCmd)
+			var refreshCmds []tea.Cmd
+			m, refreshCmds = m.syncCheckAndInspectCmds()
+			for _, refreshCmd := range refreshCmds {
+				cmd = tea.Batch(cmd, refreshCmd)
 			}
 			if pmsg.Err == nil {
 				var refsCmd tea.Cmd
 				m, refsCmd = m.syncConfigScreenContext(m.activeTab == tabConfig)
 				if refsCmd != nil {
 					cmd = tea.Batch(cmd, refsCmd)
+				}
+			}
+		}
+		if smsg, ok := msg.(profilescreen.SyncStatusMsg); ok && m.pendingSyncRecheck == smsg.ProfileName {
+			m.pendingSyncRecheck = ""
+			if active, ok := m.profilesScreen().ActiveProfile(); ok && active.Name == smsg.ProfileName {
+				var syncCmd tea.Cmd
+				m, syncCmd = m.requestActiveSyncCheck()
+				if syncCmd != nil {
+					cmd = tea.Batch(cmd, syncCmd)
 				}
 			}
 		}
@@ -2160,7 +2161,9 @@ func (m rootModel) refresh() (tea.Model, tea.Cmd) {
 	m.statusText = common.DimStyle.Render("refreshing...")
 	var cmds []tea.Cmd
 	// Always re-check sync status.
-	if syncCmd := m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry); syncCmd != nil {
+	var syncCmd tea.Cmd
+	m, syncCmd = m.requestActiveSyncCheck()
+	if syncCmd != nil {
 		cmds = append(cmds, syncCmd)
 	}
 	if next, inspCmd := m.triggerInspect(); inspCmd != nil {
@@ -2192,6 +2195,39 @@ func (m rootModel) refresh() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func (m rootModel) requestActiveSyncCheck() (rootModel, tea.Cmd) {
+	snap := m.activeSyncSnapshot()
+	if snap.ProfileName == "" {
+		return m, nil
+	}
+	if snap.Status == common.SyncStatusLoading {
+		m.pendingSyncRecheck = snap.ProfileName
+		return m, nil
+	}
+	if m.pendingSyncRecheck == snap.ProfileName {
+		m.pendingSyncRecheck = ""
+	}
+	return m, m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)
+}
+
+func (m rootModel) syncCheckAndInspectCmds() (rootModel, []tea.Cmd) {
+	var cmds []tea.Cmd
+	m, cmds = m.syncCheckCmds()
+	if next, inspCmd := m.triggerInspect(); inspCmd != nil {
+		m = next
+		cmds = append(cmds, inspCmd)
+	}
+	return m, cmds
+}
+
+func (m rootModel) syncCheckCmds() (rootModel, []tea.Cmd) {
+	syncCmdModel, syncCmd := m.requestActiveSyncCheck()
+	if syncCmd == nil {
+		return syncCmdModel, nil
+	}
+	return syncCmdModel, []tea.Cmd{syncCmd}
 }
 
 // triggerInspect fires an async harness detection for the Save tab pipeline.
@@ -2251,9 +2287,9 @@ func (m rootModel) doSyncItem(item profilescreen.ProfileSnapshot, scope, harness
 	if scope == "" {
 		scope = string(domain.ScopeGlobal)
 	}
-	if harness == "" {
-		harness = strings.Join(item.SyncTarget.Harnesses, ",")
-	}
+	// An empty harness means "all configured harnesses" — runSync syncs each
+	// resolved harness independently. The customize flow may pass a specific
+	// harness to narrow the sync to one.
 
 	m = m.setProfilesScreen(m.profilesScreen().MarkSyncStarted(item.Name))
 	m.statusText = common.DimStyle.Render("syncing...")
@@ -2279,11 +2315,12 @@ func (m rootModel) promptSync() (tea.Model, tea.Cmd) {
 		title = fmt.Sprintf("Sync %q:", item.Name)
 	}
 
-	// Build default sync label from target info.
+	// Build default sync label from target info. The default sync targets all
+	// configured harnesses, each synced independently.
 	defaultLabel := "Sync"
 	if len(item.SyncTarget.Harnesses) > 0 {
 		defaultLabel = fmt.Sprintf("Sync (%s, %s)",
-			strings.Join(item.SyncTarget.Harnesses, ","),
+			strings.Join(item.SyncTarget.Harnesses, ", "),
 			item.SyncTarget.Scope)
 	}
 
@@ -3225,8 +3262,13 @@ func (m rootModel) statusLine() string {
 			right = hint
 		}
 	}
-	if m.activeTab == tabPacks && m.packsScreen().ActiveInstall() && right != "" {
-		right = m.packsScreen().SpinnerView() + " " + right
+	if m.activeTab == tabPacks && m.packsScreen().ActiveInstall() {
+		if right == "" {
+			right = common.DimStyle.Render(m.packsScreen().InstallStatus())
+		}
+		if right != "" {
+			right = m.packsScreen().SpinnerView() + " " + right
+		}
 	}
 
 	// Compose: left-align profile, right-align status.
@@ -3337,16 +3379,16 @@ func scheduleStatusClear(id int) tea.Cmd {
 }
 
 func (m rootModel) syncCheckAndMaybeAutoSync(profileName string, allowAutoSync bool, skipCheckWhenAutoScheduled bool) (rootModel, tea.Cmd) {
-	cmds := []tea.Cmd{m.profilesScreen().CheckSyncCmd(m.cfg.SyncCfg, m.cfg.Registry)}
-	if !allowAutoSync {
-		return m, tea.Batch(cmds...)
-	}
 	var autoCmd tea.Cmd
-	m, autoCmd = m.scheduleAutoSyncForActiveProfile(profileName)
-	if autoCmd != nil {
-		if skipCheckWhenAutoScheduled {
+	if allowAutoSync {
+		m, autoCmd = m.scheduleAutoSyncForActiveProfile(profileName)
+		if autoCmd != nil && skipCheckWhenAutoScheduled {
 			return m, autoCmd
 		}
+	}
+	var cmds []tea.Cmd
+	m, cmds = m.syncCheckCmds()
+	if autoCmd != nil {
 		cmds = append(cmds, autoCmd)
 	}
 	return m, tea.Batch(cmds...)

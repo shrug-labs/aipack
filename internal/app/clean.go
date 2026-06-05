@@ -206,7 +206,15 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 		if err != nil {
 			continue
 		}
-		spec := TargetSpec{Scope: scope, ProjectDir: projectDir, Home: home, Env: t.env}
+		spec := TargetSpec{
+			ConfigDir:       t.configDir,
+			Scope:           scope,
+			ProjectDir:      projectDir,
+			Harnesses:       t.harnesses,
+			ActiveHarnesses: registryHarnessIDs(t.reg),
+			Home:            home,
+			Env:             t.env,
+		}
 		layout := h.Layout(scope, targetDirForHarness(spec, hid), home)
 
 		ledgerPath := engine.LedgerPath(configDir, scope, projectDir, hid)
@@ -243,16 +251,28 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 			ops = append(ops, removePathOp{Path: cleanPath})
 		}
 
-		// Mixed containers may also hold fully-owned leaf files (for example,
-		// plugin/drop-in config files). Remove any ledger-tracked paths inside
-		// validation roots that are not partially-owned files and not already
-		// covered by an explicit RemovePath.
+		// Mixed and legacy containers may also hold fully-owned leaf files (for
+		// example, plugin/drop-in config files, or old render roots). Remove any
+		// ledger-tracked paths inside cleanup roots that are not partially-owned
+		// files and not already covered by an explicit RemovePath.
 		if lgErr != nil {
 			continue
 		}
+		cleanup := staleCleanupContextForHarness(t.eng, t.reg, spec, hid, layout, nil)
+		var trackedCleanupPaths []string
 		for trackedPath := range lg.Managed {
 			cleanPath := filepath.Clean(trackedPath)
-			if !domain.IsUnderAny(cleanPath, layout.ValidationRoots) {
+			if domain.IsUnderAny(cleanPath, cleanup.Roots) {
+				trackedCleanupPaths = append(trackedCleanupPaths, cleanPath)
+			}
+		}
+		cleanup = staleCleanupContextForHarness(t.eng, t.reg, spec, hid, layout, trackedCleanupPaths)
+		for trackedPath := range lg.Managed {
+			cleanPath := filepath.Clean(trackedPath)
+			if !domain.IsUnderAny(cleanPath, cleanup.Roots) {
+				continue
+			}
+			if _, protected := cleanup.Protected[cleanPath]; protected {
 				continue
 			}
 			if _, owned := ownedPaths[cleanPath]; owned {

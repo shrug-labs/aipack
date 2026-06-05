@@ -10,7 +10,7 @@ import (
 )
 
 // addPromotedWorkflows converts workflows to SKILL.md WriteActions under the
-// given subDir (e.g. ".agents/skills"). Each workflow becomes a skill directory
+// given subDir (e.g. ".codex/skills"). Each workflow becomes a skill directory
 // with a generated SKILL.md containing enriched frontmatter + the workflow body.
 func addPromotedWorkflows(f *domain.Fragment, baseDir, subDir string, namespaced bool, workflows []domain.Workflow) {
 	for _, w := range workflows {

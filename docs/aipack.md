@@ -681,4 +681,4 @@ aipack --version   # same output; -V also works
 
 ## Per-harness reference
 
-For rendering behavior, rendered content identity, write targets, global config-root environment variables, MCP configuration differences, and harness-specific notes, see the [Harness Reference](./harness-reference.md).
+For rendering behavior, rendered content identity, write targets, global config-root environment variables, MCP configuration differences, and harness-specific notes, see the [Harness Reference](./harness-reference.md). Codex skills and promoted workflows render under Codex-owned skill directories (`.codex/skills/` for project scope and `~/.codex/skills/` for default global scope).

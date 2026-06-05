@@ -139,10 +139,13 @@ func (e *Engine) migrateOneLedger(oldPath, configDir string, scope domain.Scope,
 	}
 
 	migrated := 0
+	routed := map[string]struct{}{}
 	for path, entry := range old.Managed {
-		for h, roots := range managedRoots {
+		for _, h := range harnesses {
+			roots := managedRoots[h]
 			if domain.IsUnderAny(path, roots) {
 				if lg, ok := perHarness[h]; ok {
+					routed[path] = struct{}{}
 					if _, exists := lg.Managed[path]; !exists {
 						lg.Managed[path] = entry
 						migrated++
@@ -153,16 +156,31 @@ func (e *Engine) migrateOneLedger(oldPath, configDir string, scope domain.Scope,
 		}
 	}
 
-	if migrated == 0 {
+	if len(routed) == 0 {
 		return 0, nil
 	}
 
 	// Save per-harness ledgers.
-	for h, lg := range perHarness {
-		lp := LedgerPath(configDir, scope, projectDir, h)
-		if err := e.SaveLedger(lp, *lg, false); err != nil {
+	if migrated > 0 {
+		for h, lg := range perHarness {
+			lp := LedgerPath(configDir, scope, projectDir, h)
+			if err := e.SaveLedger(lp, *lg, false); err != nil {
+				return migrated, err
+			}
+		}
+	}
+
+	for path := range routed {
+		delete(old.Managed, path)
+	}
+	if len(old.Managed) == 0 {
+		if err := e.FS.Remove(oldPath); err != nil && !os.IsNotExist(err) {
 			return migrated, err
 		}
+		return migrated, nil
+	}
+	if err := e.SaveLedger(oldPath, old, false); err != nil {
+		return migrated, err
 	}
 
 	return migrated, nil

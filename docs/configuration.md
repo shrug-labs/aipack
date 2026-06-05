@@ -85,7 +85,7 @@ schema_version: 1
 
 defaults:
   profile: default        # active profile name
-  harnesses:              # target harnesses for sync (list)
+  harnesses:              # default target harnesses for sync (each synced independently)
     - codex
   scope: global           # "project" or "global" (default: global)
   auto_sync: false        # automatically sync after active-profile changes
@@ -119,7 +119,7 @@ Installed pack metadata used to live here under an `installed_packs` section. It
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `profile` | string | `default` | Active profile. Changed by `profile set` or `config defaults set profile <name>`. |
-| `harnesses` | string[] | `[codex]` | Target harnesses for sync. Multiple harnesses sync in one pass. Set with a comma-separated value such as `config defaults set harnesses codex,opencode`. |
+| `harnesses` | string[] | `[codex]` | Default target harnesses for sync. `sync` syncs each resolved harness independently (including `all`), in order. Set with a comma-separated value such as `config defaults set harnesses codex,opencode`. |
 | `scope` | string | `global` | Default scope when `--scope` is not specified. Set with `config defaults set scope global` or `project`. |
 | `collision_strategy` | string | `last-wins` | How content ID collisions between packs are resolved: `last-wins`, `first-wins`, or `error`. Explicit profile `overrides` always take precedence. |
 | `auto_sync` | bool | `false` | When true, successful pack/profile changes that affect the active profile automatically run a normal sync using the current defaults. Set with `config defaults set auto_sync true`. |

@@ -24,10 +24,15 @@ func (Harness) ID() domain.Harness { return domain.HarnessCodex }
 
 // Layout describes Codex's filesystem footprint for a given scope.
 func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
-	paths := PathsForScope(scope, layoutTargetConfigDir(scope, baseDir, home))
+	targetConfigDir := layoutTargetConfigDir(scope, baseDir, home)
+	paths := PathsForScope(scope, targetConfigDir)
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
 	hooksPath := filepath.Join(baseDir, paths.HooksFile)
 	agentsDir := filepath.Join(baseDir, paths.AgentsDir)
+	var staleRoots []string
+	if !targetConfigDir {
+		staleRoots = append(staleRoots, filepath.Join(baseDir, LegacySkillsDir))
+	}
 	l := harness.Layout{
 		ValidationRoots: []string{
 			filepath.Join(baseDir, paths.SkillsDir),
@@ -36,6 +41,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 			configPath,
 			hooksPath,
 		},
+		StaleRoots: staleRoots,
 		RemovePaths: []string{
 			filepath.Join(baseDir, paths.SkillsDir),
 			agentsDir,
@@ -111,7 +117,7 @@ func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 }
 
 // planCodex is the shared implementation for both project and global scope.
-// overrideBase is where AGENTS.override.md lives; skillsBase is where .agents/skills/ lives.
+// overrideBase is where AGENTS.override.md lives; skillsBase is where Codex skills live.
 func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsBase, settingsPath string) error {
 	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
 	skillsSubDir := paths.SkillsDir
