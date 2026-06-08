@@ -84,7 +84,18 @@ func (v *packValidator) validateManifestAndInventory() {
 		}
 	}
 
+	v.validateBundledProfiles()
 	v.validateFrontmatter()
+}
+
+func (v *packValidator) validateBundledProfiles() {
+	for _, id := range v.manifest.Profiles {
+		if !IsProtectedPackProfileID(id) {
+			continue
+		}
+		v.addFinding(filepath.ToSlash(filepath.Join("profiles", id+".yaml")), FindingCategoryPolicy, FindingSeverityError,
+			fmt.Sprintf("profile name %q is reserved for the user's local default profile", DefaultProfileName))
+	}
 }
 
 func (v *packValidator) validateFrontmatter() {

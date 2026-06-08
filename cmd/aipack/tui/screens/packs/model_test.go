@@ -1622,6 +1622,27 @@ func TestCreatePack_DuplicateErrors(t *testing.T) {
 	}
 }
 
+func TestCreatePack_DefaultNameErrorsGracefully(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	if err := config.SaveSyncConfig(config.SyncConfigPath(dir), config.SyncConfig{SchemaVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := Create(dir, "default")
+	msg := cmd().(CreatedMsg)
+	if msg.Err == nil {
+		t.Fatal("expected error for reserved default pack name")
+	}
+	if !strings.Contains(msg.Err.Error(), "reserved") {
+		t.Fatalf("expected reserved-name error, got: %v", msg.Err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packs", "default")); !os.IsNotExist(err) {
+		t.Fatalf("reserved pack should not be scaffolded, stat err=%v", err)
+	}
+}
+
 func TestPacksView_SeparatorHighlightsWithFocus(t *testing.T) {
 	t.Parallel()
 	m := newTestPacksModel([]packItemDetail{

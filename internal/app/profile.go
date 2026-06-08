@@ -215,6 +215,9 @@ func ProfileListItems(configDir string, syncCfg config.SyncConfig) ([]ProfileLis
 
 // ProfileBundledOwners returns installed packs that declare the named bundled profile.
 func ProfileBundledOwners(configDir, profileName string) []string {
+	if config.IsProtectedPackProfileID(profileName) {
+		return nil
+	}
 	packsDir := PacksDir(configDir)
 	entries, err := os.ReadDir(packsDir)
 	if err != nil {

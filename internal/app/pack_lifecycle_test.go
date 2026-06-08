@@ -163,6 +163,18 @@ func TestPackDelete(t *testing.T) {
 			t.Fatalf("output = %s", out.String())
 		}
 	})
+
+	t.Run("does not return protected default bundled profile", func(t *testing.T) {
+		t.Parallel()
+		configDir := t.TempDir()
+		writeFile(t, filepath.Join(configDir, "profiles", "default.yaml"), "schema_version: 1\npacks: []\n")
+		writeFile(t, filepath.Join(configDir, "profiles", "dev.yaml"), "schema_version: 1\npacks: []\n")
+
+		got := packFindBundledProfiles(configDir, []string{"default", "dev"})
+		if len(got) != 1 || got[0] != "dev" {
+			t.Fatalf("packFindBundledProfiles = %v, want [dev]", got)
+		}
+	})
 }
 
 func TestPackDelete_RemovesInstalledSearchIndexRows(t *testing.T) {
@@ -1210,7 +1222,7 @@ func TestPackAdd_InheritsInstallQuietFromLockfile(t *testing.T) {
 func TestPackAdd_WarnsWhenProfileIsBundled(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
-	writeEmptyProfile(t, configDir, "default")
+	writeEmptyProfile(t, configDir, "team")
 
 	packDir := filepath.Join(configDir, "packs", "source-pack")
 	if err := os.MkdirAll(packDir, 0o700); err != nil {
@@ -1220,13 +1232,13 @@ func TestPackAdd_WarnsWhenProfileIsBundled(t *testing.T) {
 		SchemaVersion: 2,
 		Name:          "source-pack",
 		Root:          ".",
-		Profiles:      []string{"default"},
+		Profiles:      []string{"team"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	var out bytes.Buffer
-	if err := PackAdd(configDir, "default", "my-pack", nil, &out); err != nil {
+	if err := PackAdd(configDir, "team", "my-pack", nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "pack-provided profile") || !strings.Contains(out.String(), "source-pack") {

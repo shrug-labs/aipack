@@ -200,6 +200,9 @@ func packFindBundledProfiles(configDir string, manifestProfiles []string) []stri
 	profilesDir := filepath.Join(configDir, "profiles")
 	var found []string
 	for _, id := range manifestProfiles {
+		if config.IsProtectedPackProfileID(id) {
+			continue
+		}
 		dest := filepath.Join(profilesDir, id+".yaml")
 		if _, err := os.Stat(dest); err == nil {
 			found = append(found, id)
@@ -212,6 +215,9 @@ func packFindBundledProfiles(configDir string, manifestProfiles []string) []stri
 // active-profile setting if needed. Delegates to ProfileDelete for each profile.
 func RemoveBundledProfiles(configDir string, names []string, stdout io.Writer) {
 	for _, name := range names {
+		if config.IsProtectedPackProfileID(name) {
+			continue
+		}
 		if err := ProfileDelete(ProfileDeleteRequest{ConfigDir: configDir, Name: name}); err != nil {
 			fmt.Fprintf(stdout, "Warning: failed to remove bundled profile %q: %v\n", name, err)
 			continue

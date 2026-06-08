@@ -130,7 +130,7 @@ aipack profile set frontend-dev --install
 aipack sync
 ```
 
-`-w all` accepts the pack's bundled content — profiles are copied to the user's profile directory, and registry entries are merged into the local registry cache so declared packs become discoverable via `aipack search` and installable by name. `--install` fetches any dependency packs referenced in the profile. Three commands to go from zero to a fully configured agent environment.
+`-w all` accepts the pack's bundled content — profiles are copied to the user's profile directory, and registry entries are merged into the local registry cache so declared packs become discoverable via `aipack search` and installable by name. A bundled profile named `default` is skipped with a warning because the user's local default profile is protected. `--install` fetches any dependency packs referenced in the profile. Three commands to go from zero to a fully configured agent environment.
 
 ## Install from any repository
 

@@ -114,6 +114,22 @@ func TestPackList_JSON_WithPack(t *testing.T) {
 	}
 }
 
+func TestPackCreate_DefaultNameRejected(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+
+	_, stderr, code := runApp(t, "pack", "create", "default", "--local", "--config-dir", configDir)
+	if code == cmdutil.ExitOK {
+		t.Fatal("expected pack create default to fail")
+	}
+	if !strings.Contains(stderr, "reserved") {
+		t.Fatalf("expected reserved-name error, got stderr=%q", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "packs", "default")); !os.IsNotExist(err) {
+		t.Fatalf("reserved pack should not be created, stat err=%v", err)
+	}
+}
+
 func TestPackUpdate_HelpReturnsOK(t *testing.T) {
 	t.Parallel()
 	_, _, code := runApp(t, "pack", "update", "--help")

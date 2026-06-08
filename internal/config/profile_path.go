@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+const DefaultProfileName = "default"
+
+// IsProtectedPackProfileID reports whether a profile ID is reserved for
+// user-local config and must not be supplied by a pack.
+func IsProtectedPackProfileID(id string) bool {
+	return strings.TrimSpace(id) == DefaultProfileName
+}
+
 // ResolveProfilePath returns the absolute path to a profile YAML file.
 // If profilePath is provided, it is used directly (absolutized if relative).
 // Otherwise, the profile name is normalized and resolved under configDir.
@@ -41,7 +49,7 @@ func ResolveProfilePath(profilePath string, configDir string, profile string, ho
 func NormalizeProfileName(profile string) (string, error) {
 	name := strings.TrimSpace(profile)
 	if name == "" {
-		return "default", nil
+		return DefaultProfileName, nil
 	}
 	if strings.Contains(name, "..") {
 		return "", fmt.Errorf("invalid profile %q: traversal is not allowed", profile)

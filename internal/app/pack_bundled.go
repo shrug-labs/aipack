@@ -160,7 +160,7 @@ func applyPreferenceFilter(staging string, incoming *config.PackManifest, oldMet
 // --- bundled content side-effects ---
 
 // installBundledProfiles copies bundled profile YAML files from the installed pack
-// to configDir/profiles/, overwriting any existing file with the same name.
+// to configDir/profiles/, except for protected user-local profiles.
 // Bundled profiles are treated as managed content — they stay in sync with the
 // upstream pack. Users who want to customize should copy the profile to a new
 // name rather than editing the pack-managed original.
@@ -174,6 +174,10 @@ func installBundledProfiles(configDir, packDir string, profiles []string, stdout
 		return
 	}
 	for _, id := range profiles {
+		if config.IsProtectedPackProfileID(id) {
+			printBundledWarning(stdout, fmt.Sprintf("skipping bundled profile %q because it is reserved for the user's local default profile", config.DefaultProfileName), nil)
+			continue
+		}
 		src := filepath.Join(packDir, "profiles", id+".yaml")
 		name := id
 		dest := filepath.Join(profilesDir, id+".yaml")

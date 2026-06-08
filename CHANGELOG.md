@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-06-08
+
+### Changed
+
+- **`default` is now protected for pack-provided profiles.** Pack installs skip `profiles/default.yaml` instead of copying it over the user's local default profile, emit a warning, and continue installing the rest of the pack. `aipack pack validate` now reports an error when a pack declares a bundled profile named `default`, and pack names of `default` are rejected so `pack create default` cannot scaffold a reserved bundled profile.
+
 ## [0.30.0]
 
 ### Changed

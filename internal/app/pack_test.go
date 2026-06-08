@@ -2010,6 +2010,7 @@ func TestValidatePackName(t *testing.T) {
 		{"path/traversal", "forward slash"},
 		{"back\\slash", "backslash"},
 		{"null\x00byte", "null byte"},
+		{"default", "reserved local profile name"},
 		{"bad__aipack__pack", "rendered identity separator"},
 	}
 	for _, tc := range invalid {

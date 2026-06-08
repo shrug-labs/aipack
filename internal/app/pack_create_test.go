@@ -202,7 +202,7 @@ func TestPackCreate_ErrorOnEmptyName(t *testing.T) {
 
 func TestPackCreate_ErrorOnInvalidName(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"../evil", "foo/bar", `foo\bar`} {
+	for _, name := range []string{"../evil", "foo/bar", `foo\bar`, "default"} {
 		if err := PackCreate(PackCreateRequest{Name: name, ConfigDir: t.TempDir()}); err == nil {
 			t.Errorf("expected error for name %q", name)
 		}

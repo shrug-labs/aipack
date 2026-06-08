@@ -236,10 +236,10 @@ aipack sync
 
 For packs with dependencies or multiple profiles, bundle profiles and a registry with the pack. This turns setup into three commands.
 
-**1. Add bundled profiles** — see [Profiles](./profiles.md#role-based-profiles) for role-based examples. At minimum, a default:
+**1. Add bundled profiles** — see [Profiles](./profiles.md#role-based-profiles) for role-based examples. Use a named onboarding profile; `default` is reserved for the user's local default profile, is not a valid pack name, and is rejected by `pack validate` when used as a bundled profile:
 
 ```yaml
-# profiles/default.yaml
+# profiles/team.yaml
 schema_version: 2
 params:
   tracker_url: "https://tracker.example.com"
@@ -267,7 +267,7 @@ Profiles and registries are auto-discovered from their directories, just like ru
 ```bash
 aipack pack install --url https://github.com/org/shared-repo.git \
   --path my-pack -w all
-aipack profile set default --install
+aipack profile set team --install
 aipack sync
 ```
 

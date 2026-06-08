@@ -111,6 +111,20 @@ func TestRunPackValidate_DoesNotRejectDotEnvFiles(t *testing.T) {
 	}
 }
 
+func TestRunPackValidate_RejectsDefaultBundledProfile(t *testing.T) {
+	t.Parallel()
+	packDir := writePackValidateFixture(t)
+	writeFile(t, filepath.Join(packDir, "profiles", "default.yaml"), "schema_version: 1\npacks: []\n")
+
+	rep := RunPackValidate(PackValidateRequest{PackRoot: packDir})
+	if rep.OK {
+		t.Fatal("expected default bundled profile to fail validation")
+	}
+	if !findingExists(rep.Findings, "profiles/default.yaml", `profile name "default" is reserved for the user's local default profile`) {
+		t.Fatalf("expected reserved profile finding, got %v", rep.Findings)
+	}
+}
+
 func writePackValidateFixture(t *testing.T) string {
 	t.Helper()
 	packDir := t.TempDir()

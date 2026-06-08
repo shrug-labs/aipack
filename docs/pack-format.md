@@ -72,7 +72,7 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | Field | Type | Description |
 |-------|------|-------------|
 | `schema_version` | integer | `2` for current packs (flat `mcp` array). `1` is the pre-v0.23 shape with nested `mcp: { servers: { ... } }` and is still accepted. The shape of `mcp` is strictly tied to the version — a mismatch is rejected at parse time. |
-| `name` | string | Pack identifier (must match directory name). `__aipack__` is reserved for rendered content identity and is not allowed in pack names. |
+| `name` | string | Pack identifier (must match directory name). `default` is reserved for the user's local default profile, and `__aipack__` is reserved for rendered content identity; neither is allowed in pack names. |
 | `root` | string | Base path for content resolution (typically `"."`) |
 
 ### Optional fields
@@ -90,7 +90,7 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | `plugins` | string[] | Harness plugin reference IDs (flat — no slashes). Auto-discovered from `plugins/**/*.json`; the file basename is the id. See [Section 7](#7-plugin-references). |
 | `mcp` | string[] | Explicit MCP server IDs. Auto-discovered from `mcp/**/*.json`. See [Section 6](#6-mcp-servers). |
 | `configs` | object | Harness settings and drop-in plugin inventory (see [Section 8](#8-configurations)) |
-| `profiles` | string[] | Profile IDs. Auto-discovered from `profiles/**/*.yaml` |
+| `profiles` | string[] | Profile IDs. Auto-discovered from `profiles/**/*.yaml`; `default` is reserved and invalid in packs. |
 | `registries` | string[] | Registry IDs. Auto-discovered from `registries/**/*.yaml` |
 | `extras` | string[] | Relative paths to bundled assets (scripts, data files, helper source) preserved through install. Referenced via `{pack:root}` in MCP configs. Max 50 entries. Must not collide with standard content directories. |
 
@@ -407,7 +407,7 @@ The pack manifest's `mcp` field is a flat list of server IDs. The pack declares 
 
 Tool permissions are configured in profiles, not the manifest. See [Profiles — MCP server overrides](./profiles.md#mcp-server-overrides).
 
-A silent profile (no `allowed_tools`, `always_allowed_tools`, or `disabled_tools` entries for a server) maps to "no allow list emitted" at the harness — the harness's native default (ask per call) applies. Packs that want to ship opinionated defaults do so through a bundled profile (`profiles/default.yaml`), not the manifest.
+A silent profile (no `allowed_tools`, `always_allowed_tools`, or `disabled_tools` entries for a server) maps to "no allow list emitted" at the harness — the harness's native default (ask per call) applies. Packs that want to ship opinionated defaults do so through a named bundled profile such as `profiles/team.yaml`, not the manifest. Do not use `profiles/default.yaml`; `default` is reserved for the user's local default profile.
 
 ## 7. Plugin References
 
@@ -654,7 +654,7 @@ my-pack/
     └── team-tools.yaml
 ```
 
-On install with `-w all`, bundled profiles are copied to the user's profile directory and bundled registry entries are merged into the user's embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`) using first-seen-wins semantics — existing entries with the same pack name are not overwritten. This enables single-command team onboarding:
+On install with `-w all`, bundled profiles are copied to the user's profile directory and bundled registry entries are merged into the user's embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`) using first-seen-wins semantics — existing entries with the same pack name are not overwritten. A bundled profile named `default` is skipped with a warning because the user's local default profile is protected. This enables single-command team onboarding:
 
 ```bash
 aipack pack install --url https://github.com/org/tools.git --path team-pack -w all

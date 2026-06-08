@@ -1185,20 +1185,23 @@ func warnPackJSONVersionMismatch(stdout io.Writer, requestedRef, manifestVersion
 	}
 }
 
-// packProfileName returns the trimmed profile name, defaulting to "default".
+// packProfileName returns the trimmed profile name, defaulting to the local default profile.
 func packProfileName(raw string) string {
 	if p := strings.TrimSpace(raw); p != "" {
 		return p
 	}
-	return "default"
+	return config.DefaultProfileName
 }
 
 // validatePackName rejects names containing path traversal sequences,
-// path separators, or null bytes.
+// path separators, null bytes, or profile-reserved names.
 func validatePackName(name string) error {
 	if strings.Contains(name, "..") || strings.Contains(name, "/") ||
 		strings.Contains(name, "\\") || strings.Contains(name, "\x00") {
 		return fmt.Errorf("invalid pack name %q: must not contain path separators or traversal sequences", name)
+	}
+	if config.IsProtectedPackProfileID(name) {
+		return fmt.Errorf("invalid pack name %q: %q is reserved for the user's local default profile", name, config.DefaultProfileName)
 	}
 	if strings.Contains(name, domain.RenderedIdentitySeparator) {
 		return fmt.Errorf("invalid pack name %q: must not contain %q (reserved for rendered content identity)", name, domain.RenderedIdentitySeparator)

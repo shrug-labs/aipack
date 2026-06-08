@@ -133,7 +133,7 @@ Packs are portable, versioned bundles of AI agent configuration installed under 
 
 ### pack create
 
-Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `hooks/`, `plugins/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync.
+Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `hooks/`, `plugins/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync. `default` is reserved for the user's local default profile and is not a valid pack name.
 
 By default the pack is created in the current directory and symlinked into the packs directory. Use `--local` to create it directly inside the packs directory instead.
 
@@ -205,7 +205,7 @@ Multiple positional sources are supported for registry pack names only. Shared f
 
 When `defaults.auto_sync: true` is set in `sync-config.yaml`, installs that add content to the active profile automatically run `aipack sync` after the install succeeds. Installs that target another profile do not auto-sync.
 
-Core content (rules, skills, workflows, agents, hooks, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name.
+Core content (rules, skills, workflows, agents, hooks, prompts, mcp, configs) is always installed. Packs that bundle registries, profiles, or extras print a preview of what additional content would be applied. Use `-w all` to accept all bundled content, or apply selectively with `-w profiles`, `-w registries`, or `-w extras` (short forms: `-w p`, `-w r`, `-w e`). With `-w registries` (or `-w all`), bundled registry entries are merged into the user's local embedded registry cache (`~/.config/aipack/registries/_embedded.yaml`), making declared packs discoverable via `aipack search` and installable by name. A bundled profile named `default` is reserved for the user's local default profile; installs skip it with a warning and continue.
 
 ```bash
 # Reconcile the active profile — install any missing packs (default)
@@ -372,7 +372,7 @@ aipack pack disable my-pack --profile my-profile
 
 ### pack validate
 
-Read-only validation of a single pack source tree. Checks pack structure, manifest inventory, frontmatter correctness, extras shape, and cross-reference consistency without installing, syncing, or scanning authored content bodies. Exit code 0 when there are no error-severity findings, 1 otherwise.
+Read-only validation of a single pack source tree. Checks pack structure, manifest inventory, bundled profile names, frontmatter correctness, extras shape, and cross-reference consistency without installing, syncing, or scanning authored content bodies. Exit code 0 when there are no error-severity findings, 1 otherwise.
 
 Each finding includes a severity (`error` or `warning`), a category (`frontmatter`, `policy`, `consistency`, or `inventory`), the file path, and a message. Warnings are reported but do not make the command fail. In human output, findings are printed as `- [severity] path: message`. For the JSON output shape, see the [CLI Specification](./cli-spec.md#aipack-pack-validate).
 

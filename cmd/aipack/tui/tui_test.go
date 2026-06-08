@@ -1126,12 +1126,15 @@ func TestRootModel_PackCreateMsgError(t *testing.T) {
 	m := newRootModel(context.Background(), RunConfig{})
 
 	result, _ := m.Update(packCreatedMsg{
-		Name: "bad",
-		Err:  fmt.Errorf("already exists"),
+		Name: "default",
+		Err:  fmt.Errorf("invalid pack name %q: %q is reserved for the user's local default profile", "default", "default"),
 	})
 	rm := result.(rootModel)
 	if !strings.Contains(rm.statusText, "create error") {
 		t.Fatalf("expected status to mention 'create error', got %q", rm.statusText)
+	}
+	if !strings.Contains(rm.statusText, "reserved") {
+		t.Fatalf("expected status to include reserved-name error, got %q", rm.statusText)
 	}
 }
 

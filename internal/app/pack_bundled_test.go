@@ -321,3 +321,37 @@ func TestInstallBundledProfiles(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallBundledProfiles_SkipsDefaultProfile(t *testing.T) {
+	t.Parallel()
+
+	packDir := t.TempDir()
+	configDir := t.TempDir()
+	writeFile(t, filepath.Join(packDir, "profiles", "default.yaml"), "schema_version: 1\npacks:\n  - pack-owned\n")
+	writeFile(t, filepath.Join(packDir, "profiles", "dev.yaml"), "schema_version: 1\npacks:\n  - dev-pack\n")
+	writeFile(t, filepath.Join(configDir, "profiles", "default.yaml"), "schema_version: 1\npacks:\n  - user-owned\n")
+
+	var out bytes.Buffer
+	installBundledProfiles(configDir, packDir, []string{"default", "dev"}, &out)
+
+	defaultBytes, err := os.ReadFile(filepath.Join(configDir, "profiles", "default.yaml"))
+	if err != nil {
+		t.Fatalf("read default profile: %v", err)
+	}
+	if strings.Contains(string(defaultBytes), "pack-owned") {
+		t.Fatalf("default profile was overwritten:\n%s", defaultBytes)
+	}
+	if !strings.Contains(string(defaultBytes), "user-owned") {
+		t.Fatalf("default profile lost user content:\n%s", defaultBytes)
+	}
+	devBytes, err := os.ReadFile(filepath.Join(configDir, "profiles", "dev.yaml"))
+	if err != nil {
+		t.Fatalf("read dev profile: %v", err)
+	}
+	if !strings.Contains(string(devBytes), "dev-pack") {
+		t.Fatalf("dev profile was not installed:\n%s", devBytes)
+	}
+	if !strings.Contains(out.String(), `Warning: skipping bundled profile "default"`) {
+		t.Fatalf("expected warning about skipped default profile, got:\n%s", out.String())
+	}
+}

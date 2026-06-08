@@ -269,7 +269,7 @@ my-pack/
     └── lean.yaml
 ```
 
-On install with `-w all`, bundled profiles are copied to `~/.config/aipack/profiles/` and bundled registries are merged into the user's registry configuration. This enables single-command team setup:
+On install with `-w all`, bundled profiles are copied to `~/.config/aipack/profiles/` and bundled registries are merged into the user's registry configuration. A bundled profile named `default` is skipped with a warning because the user's local default profile is protected. This enables single-command team setup:
 
 ```bash
 aipack pack install --url https://github.com/org/team-pack.git -w all
