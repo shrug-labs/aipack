@@ -85,11 +85,11 @@ To check a profile's required values, run `aipack setup`. It prints the short re
 ```bash
 aipack setup oncall
 aipack profile refs oncall
-aipack profile set-param oncall tracker_url https://tracker.example.com
-aipack profile unset-param oncall old_param
+aipack config params set tracker_url https://tracker.example.com --profile oncall
+aipack config params unset old_param --profile oncall
 ```
 
-`aipack setup` is the shorter first-time checklist view over the same data. The TUI exposes param editing from the Profiles tab action menu. Use profile params for stable environment metadata and `{env:*}` for secrets or machine-local values.
+`aipack setup` is the shorter first-time checklist view over the same data. `aipack config params` edits profile-scoped params from the same configuration surface as sync defaults and `.env` values; the older `profile set-param` and `profile unset-param` commands remain compatibility aliases. Use profile params for stable environment metadata and `{env:*}` for secrets or machine-local values.
 
 ## Vector selectors
 

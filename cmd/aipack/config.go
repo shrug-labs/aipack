@@ -12,21 +12,23 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
-// ConfigCmd groups machine-local aipack configuration commands.
+// ConfigCmd groups aipack configuration commands.
 type ConfigCmd struct {
 	Defaults ConfigDefaultsCmd `cmd:"" help:"Manage sync-config defaults"`
 	Env      EnvCmd            `cmd:"" help:"Manage the config-dir .env file used by {env:*} refs"`
+	Params   ConfigParamsCmd   `cmd:"" help:"Manage profile-scoped params used by {params.*} refs"`
 }
 
 func (c *ConfigCmd) Help() string {
-	return `Manage aipack configuration that is not specific to one profile.
+	return `Manage aipack configuration, including sync defaults, .env values, and profile params.
 
 Examples:
   aipack config defaults get auto_sync
   aipack config defaults set auto_sync true
   aipack config defaults set namespaced true
   aipack config env list
-  aipack config env set API_TOKEN abc123`
+  aipack config env set API_TOKEN abc123
+  aipack config params set workspace team-alpha`
 }
 
 // ConfigDefaultsCmd manages sync-config.yaml defaults.

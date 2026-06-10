@@ -188,7 +188,7 @@ Examples:
   aipack profile refs
   aipack profile refs dev --json
 
-See also: profile set-param, doctor`
+See also: config params, doctor`
 }
 
 func (c *ProfileRefsCmd) Run(ctx context.Context, g *Globals) error {

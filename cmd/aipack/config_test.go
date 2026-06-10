@@ -72,6 +72,123 @@ func TestConfigEnvListJSON(t *testing.T) {
 	}
 }
 
+func TestConfigParamsSetGetListUnsetDefaultProfile(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+
+	stdout, stderr, code := runApp(t, "config", "params", "set", "workspace", "team-alpha", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config params set exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, "Set workspace in profile default") {
+		t.Fatalf("stdout = %q, want confirmation", stdout)
+	}
+
+	stdout, stderr, code = runApp(t, "config", "params", "get", "workspace", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config params get exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if strings.TrimSpace(stdout) != "team-alpha" {
+		t.Fatalf("config params get stdout = %q, want team-alpha", stdout)
+	}
+
+	stdout, stderr, code = runApp(t, "config", "params", "list", "--json", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config params list --json exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	var got struct {
+		Profile string `json:"profile"`
+		Params  []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("unmarshal config params list JSON: %v\nstdout=%s", err, stdout)
+	}
+	if got.Profile != "default" || len(got.Params) != 1 || got.Params[0].Key != "workspace" || got.Params[0].Value != "team-alpha" {
+		t.Fatalf("params JSON = %+v, want default workspace", got)
+	}
+
+	stdout, stderr, code = runApp(t, "config", "params", "unset", "workspace", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config params unset exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, "Unset workspace in profile default") {
+		t.Fatalf("stdout = %q, want unset confirmation", stdout)
+	}
+
+	_, stderr, code = runApp(t, "config", "params", "get", "workspace", "--config-dir", configDir)
+	if code != cmdutil.ExitFail {
+		t.Fatalf("config params get missing exit=%d, want %d; stderr=%s", code, cmdutil.ExitFail, stderr)
+	}
+	if !strings.Contains(stderr, "workspace is not set in profile default") {
+		t.Fatalf("stderr = %q, want missing param message", stderr)
+	}
+}
+
+func TestConfigParamsUsesSyncDefaultProfile(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	if _, stderr, code := runApp(t, "profile", "create", "oncall", "--config-dir", configDir); code != cmdutil.ExitOK {
+		t.Fatalf("profile create exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+	if _, stderr, code := runApp(t, "config", "defaults", "set", "profile", "oncall", "--config-dir", configDir); code != cmdutil.ExitOK {
+		t.Fatalf("config defaults set profile exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+
+	if _, stderr, code := runApp(t, "config", "params", "set", "workspace", "team-alpha", "--config-dir", configDir); code != cmdutil.ExitOK {
+		t.Fatalf("config params set exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+
+	oncall, err := config.LoadProfile(filepath.Join(configDir, "profiles", "oncall.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oncall.Params["workspace"] != "team-alpha" {
+		t.Fatalf("oncall workspace = %q, want team-alpha", oncall.Params["workspace"])
+	}
+	defaultProfile, err := config.LoadProfile(filepath.Join(configDir, "profiles", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := defaultProfile.Params["workspace"]; ok {
+		t.Fatalf("default profile should not receive workspace: %+v", defaultProfile.Params)
+	}
+}
+
+func TestConfigParamsExplicitProfileWins(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	for _, name := range []string{"oncall", "research"} {
+		if _, stderr, code := runApp(t, "profile", "create", name, "--config-dir", configDir); code != cmdutil.ExitOK {
+			t.Fatalf("profile create %s exit=%d, want %d; stderr=%s", name, code, cmdutil.ExitOK, stderr)
+		}
+	}
+	if _, stderr, code := runApp(t, "config", "defaults", "set", "profile", "oncall", "--config-dir", configDir); code != cmdutil.ExitOK {
+		t.Fatalf("config defaults set profile exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+
+	if _, stderr, code := runApp(t, "config", "params", "set", "workspace", "research-lab", "--profile", "research", "--config-dir", configDir); code != cmdutil.ExitOK {
+		t.Fatalf("config params set --profile exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+
+	research, err := config.LoadProfile(filepath.Join(configDir, "profiles", "research.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if research.Params["workspace"] != "research-lab" {
+		t.Fatalf("research workspace = %q, want research-lab", research.Params["workspace"])
+	}
+	oncall, err := config.LoadProfile(filepath.Join(configDir, "profiles", "oncall.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := oncall.Params["workspace"]; ok {
+		t.Fatalf("oncall profile should not receive workspace: %+v", oncall.Params)
+	}
+}
+
 func TestConfigSetAutoSyncTrue(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()

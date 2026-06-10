@@ -59,7 +59,7 @@ func printSetup(w io.Writer, cfgDir string, result app.ProfileRefsResult) {
 		}
 		fmt.Fprintln(w, "\nSet params")
 		for _, ref := range missingParams {
-			fmt.Fprintf(w, "  aipack profile set-param %s %s <value>\n", result.Profile, ref.Name)
+			fmt.Fprintf(w, "  aipack config params set %s <value> --profile %s\n", ref.Name, result.Profile)
 		}
 	}
 	if len(missingEnv) > 0 {

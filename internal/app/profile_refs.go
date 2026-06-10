@@ -251,8 +251,7 @@ func mutateProfileParam(req ProfileParamRequest, fn func(*config.ProfileConfig, 
 	if !validProfileParamKey(key) {
 		return fmt.Errorf("invalid param key %q", req.Key)
 	}
-	path := filepath.Join(req.ConfigDir, "profiles", name+".yaml")
-	cfg, err := config.LoadProfile(path)
+	cfg, _, _, err := loadProfileParamsConfig(ProfileParamsRequest{ConfigDir: req.ConfigDir, ProfileName: name})
 	if err != nil {
 		return err
 	}

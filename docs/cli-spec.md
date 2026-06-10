@@ -16,13 +16,18 @@ aipack
 │   ├── defaults
 │   │   ├── get
 │   │   └── set
-│   └── env
+│   ├── env
+│   │   ├── list
+│   │   ├── get
+│   │   ├── set
+│   │   ├── unset
+│   │   ├── path
+│   │   └── edit
+│   └── params
 │       ├── list
 │       ├── get
 │       ├── set
-│       ├── unset
-│       ├── path
-│       └── edit
+│       └── unset
 ├── sync
 ├── save
 ├── restore
@@ -661,6 +666,35 @@ Text-only mutating commands. They update the target profile's content selectors 
 | `refs[].target` | string | MCP server name or harness id (omitempty) |
 | `refs[].location` | string | Field or config file where the placeholder was found (omitempty) |
 
+### `aipack config params list`
+
+Lists profile-scoped params. The `--profile` flag selects the profile; when omitted, aipack uses `sync-config.defaults.profile`, then `default`.
+
+```json
+{
+  "profile": "oncall",
+  "profile_path": "/Users/x/.config/aipack/profiles/oncall.yaml",
+  "params": [
+    {
+      "key": "tracker_url",
+      "value": "https://tracker.example.com"
+    },
+    {
+      "key": "workspace",
+      "value": "team-alpha"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `profile` | string | Resolved profile name |
+| `profile_path` | string | Absolute path to the profile YAML |
+| `params` | array | Profile params, sorted by key |
+| `params[].key` | string | Parameter key |
+| `params[].value` | string | Parameter value |
+
 ### `aipack config env list`
 
 Lists keys from the config-dir `.env` file. Values are omitted by default and present only when `--show` is also set. Entries are sorted by key.
@@ -674,9 +708,9 @@ Lists keys from the config-dir `.env` file. Values are omitted by default and pr
       "length": 12
     },
     {
-      "key": "REGION",
-      "value": "us-ashburn-1",
-      "length": 12
+      "key": "API_BASE_URL",
+      "value": "https://api.example.com",
+      "length": 23
     }
   ]
 }

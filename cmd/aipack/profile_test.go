@@ -145,7 +145,7 @@ func TestProfileSetAndUnsetParam_CLI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, stderr, code := runApp(t, "profile", "set-param", "default", "region", "us-ashburn-1", "--config-dir", configDir)
+	_, stderr, code := runApp(t, "profile", "set-param", "default", "workspace", "team-alpha", "--config-dir", configDir)
 	if code != cmdutil.ExitOK {
 		t.Fatalf("profile set-param exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
@@ -153,11 +153,11 @@ func TestProfileSetAndUnsetParam_CLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Params["region"] != "us-ashburn-1" {
-		t.Fatalf("region = %q", cfg.Params["region"])
+	if cfg.Params["workspace"] != "team-alpha" {
+		t.Fatalf("workspace = %q", cfg.Params["workspace"])
 	}
 
-	_, stderr, code = runApp(t, "profile", "unset-param", "default", "region", "--config-dir", configDir)
+	_, stderr, code = runApp(t, "profile", "unset-param", "default", "workspace", "--config-dir", configDir)
 	if code != cmdutil.ExitOK {
 		t.Fatalf("profile unset-param exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
 	}
@@ -165,8 +165,8 @@ func TestProfileSetAndUnsetParam_CLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cfg.Params["region"]; ok {
-		t.Fatalf("region should be unset: %+v", cfg.Params)
+	if _, ok := cfg.Params["workspace"]; ok {
+		t.Fatalf("workspace should be unset: %+v", cfg.Params)
 	}
 }
 

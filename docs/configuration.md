@@ -76,6 +76,20 @@ aipack config env edit                # open the file in $EDITOR (or VISUAL, fal
 
 `env set` is line-preserving — comments, blank lines, and unrelated entries survive the rewrite, and existing `export KEY=...` prefixes are kept on the rewritten line. The TUI Config tab exposes profile params and config-dir `.env` entries together, with values hidden by default. Values containing newlines are rejected; key validation matches the file parser (letters, digits after the first character, and underscore).
 
+## Profile params
+
+Profile params are stored in `profiles/<name>.yaml` under `params:` and expanded through `{params.KEY}` references. Manage them through `aipack config params` so setup values live under one command family:
+
+```bash
+aipack config params list
+aipack config params get workspace
+aipack config params set workspace team-alpha
+aipack config params unset workspace
+aipack config params set tracker_url https://tracker.example.com --profile oncall
+```
+
+When `--profile` is omitted, aipack uses `sync-config.defaults.profile`, then `default`. Keep secrets and machine-local paths in `.env` via `{env:*}`; use profile params for stable values that should move with the profile.
+
 ## sync-config.yaml
 
 The root configuration file. Created by `aipack init`, modified by `profile set` and `registry fetch`. You can also edit it by hand.

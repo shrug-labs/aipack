@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-06-10
+
+### Added
+
+- **`aipack config params` manages profile-scoped `{params.*}` values.** `list`, `get`, `set`, and `unset` use the active profile by default and accept `--profile` for explicit targeting. Existing `profile set-param` and `profile unset-param` commands remain available as compatibility aliases, while `aipack setup` now prints `config params set` remediation commands.
+
 ## [0.30.1] - 2026-06-08
 
 ### Changed

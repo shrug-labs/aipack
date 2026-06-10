@@ -22,7 +22,7 @@ func TestSetupShowsMissingEnvAndParamFixes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mcpDir, "srv.json"), []byte(`{
   "name": "srv",
   "transport": "stdio",
-  "command": ["tool", "--region", "{params.region}", "--region-again", "{params.region}", "--token", "{env:API_TOKEN}", "--token-again", "{env:API_TOKEN}"],
+  "command": ["tool", "--workspace", "{params.workspace}", "--workspace-again", "{params.workspace}", "--token", "{env:API_TOKEN}", "--token-again", "{env:API_TOKEN}"],
   "available_tools": ["ping"]
 }`), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,8 +49,8 @@ func TestSetupShowsMissingEnvAndParamFixes(t *testing.T) {
 	for _, want := range []string{
 		"Profile: default",
 		"Missing params",
-		"region",
-		"aipack profile set-param default region <value>",
+		"workspace",
+		"aipack config params set workspace <value> --profile default",
 		"Missing env",
 		"API_TOKEN",
 		"aipack config env set API_TOKEN <value>",
@@ -62,8 +62,8 @@ func TestSetupShowsMissingEnvAndParamFixes(t *testing.T) {
 			t.Fatalf("setup output missing %q:\n%s", want, stdout)
 		}
 	}
-	if count := strings.Count(stdout, "aipack profile set-param default region <value>"); count != 1 {
-		t.Fatalf("setup output should dedupe region set command, got %d:\n%s", count, stdout)
+	if count := strings.Count(stdout, "aipack config params set workspace <value> --profile default"); count != 1 {
+		t.Fatalf("setup output should dedupe workspace set command, got %d:\n%s", count, stdout)
 	}
 	if count := strings.Count(stdout, "aipack config env set API_TOKEN <value>"); count != 1 {
 		t.Fatalf("setup output should dedupe API_TOKEN set command, got %d:\n%s", count, stdout)

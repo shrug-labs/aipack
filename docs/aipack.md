@@ -17,7 +17,7 @@ Use `pack import` for one markdown rule, prompt, or skill file; it can create a 
 
 ## Command map
 
-- Setup: `init`, `doctor`, `setup`, `config defaults`, `config env`, `mcp inspect-tools`
+- Setup: `init`, `doctor`, `setup`, `config defaults`, `config env`, `config params`, `mcp inspect-tools`
 - Pack lifecycle: `pack create`, `pack import`, `pack install`, `pack inspect`, `pack delete`, `pack update`, `pack rename`, `pack add`, `pack remove`, `pack enable`, `pack disable`, `pack list`, `pack show`, `pack validate`
 - Profiles: `profile create`, `profile delete`, `profile list`, `profile set`, `profile show`, `profile include`, `profile exclude`, `profile refs`, `profile set-param`, `profile unset-param`
 - Collections: `collection list`, `collection show`, `collection install`
@@ -42,7 +42,7 @@ aipack init --config-dir /path/to/config
 
 ### setup
 
-Shows the missing params and env vars needed before sync. Params are shown with `profile set-param` commands, and env vars are shown with `config env set` commands that write to the active config directory's `.env` file.
+Shows the missing params and env vars needed before sync. Params are shown with `config params set` commands for the target profile, and env vars are shown with `config env set` commands that write to the active config directory's `.env` file.
 
 ```bash
 aipack setup
@@ -61,6 +61,18 @@ aipack config defaults set scope global
 aipack config defaults set collision_strategy last-wins
 aipack config defaults set auto_sync true
 aipack config defaults set namespaced true
+```
+
+### config params
+
+Manages profile-scoped values used by `{params.*}` references. Values are stored in the selected profile; `--profile` defaults to `sync-config.defaults.profile`, then `default`.
+
+```bash
+aipack config params list
+aipack config params list --profile production --json
+aipack config params get tracker_url --profile production
+aipack config params set tracker_url https://tracker.example.com --profile production
+aipack config params unset tracker_url --profile production
 ```
 
 ### doctor
@@ -451,7 +463,7 @@ aipack profile refs production --json
 
 ### profile set-param / profile unset-param
 
-Edits the `params` map in a profile without hand-editing YAML. Use `aipack setup` first to find missing strict parameters, then set the values that belong in the profile. Machine-local secrets should still use `{env:*}` plus `.env` or the process environment.
+Compatibility aliases for editing the `params` map in a profile without hand-editing YAML. Prefer `aipack config params` for new usage. Machine-local secrets should still use `{env:*}` plus `.env` or the process environment.
 
 ```bash
 aipack profile set-param production tracker_url https://tracker.example.com
