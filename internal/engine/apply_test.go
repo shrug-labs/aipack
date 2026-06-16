@@ -483,6 +483,46 @@ func TestApplyPlan_CopyFile(t *testing.T) {
 	}
 }
 
+func TestApplyPlan_CopyFilePreservesExecutableMode(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	srcDir := filepath.Join(dir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcFile := filepath.Join(srcDir, "run")
+	if err := os.WriteFile(srcFile, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dstFile := filepath.Join(dir, "output", "run")
+	plan := domain.Plan{
+		Copies: []domain.CopyAction{
+			{Src: srcFile, Dst: dstFile, Kind: domain.CopyKindFile, SourcePack: "pack1"},
+		},
+		Desired: map[string]struct{}{
+			filepath.Clean(dstFile): {},
+		},
+		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
+	}
+
+	if _, err := eng.ApplyPlan(context.Background(), plan, ApplyRequest{Quiet: true}, []string{dir}); err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	info, err := os.Stat(dstFile)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("mode = %o, want 755", got)
+	}
+}
+
 func TestApplyPlan_CopyDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -531,6 +571,106 @@ func TestApplyPlan_CopyDir(t *testing.T) {
 	}
 	if string(gotB) != "file b" {
 		t.Errorf("b.md = %q, want %q", gotB, "file b")
+	}
+}
+
+func TestApplyPlan_CopyDirRepairsExecutableModeDrift(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	content := []byte("#!/bin/sh\nexit 0\n")
+	srcDir := filepath.Join(dir, "src", "skill")
+	srcFile := filepath.Join(srcDir, "scripts", "run")
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcFile, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dstDir := filepath.Join(dir, "output", "skill")
+	dstFile := filepath.Join(dstDir, "scripts", "run")
+	if err := os.MkdirAll(filepath.Dir(dstFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dstFile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := domain.Plan{
+		Copies: []domain.CopyAction{
+			{Src: srcDir, Dst: dstDir, Kind: domain.CopyKindDir, SourcePack: "pack1"},
+		},
+		Desired: map[string]struct{}{
+			filepath.Clean(dstDir):  {},
+			filepath.Clean(dstFile): {},
+		},
+		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
+	}
+
+	if _, err := eng.ApplyPlan(context.Background(), plan, ApplyRequest{Quiet: true}, []string{dir}); err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	info, err := os.Stat(dstFile)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("mode = %o, want 755", got)
+	}
+}
+
+func TestApplyPlan_CopyDirRevokesExecutableModeDrift(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	dir := t.TempDir()
+	eng := New(nil, nil)
+
+	content := []byte("#!/bin/sh\nexit 0\n")
+	srcDir := filepath.Join(dir, "src", "skill")
+	srcFile := filepath.Join(srcDir, "scripts", "run")
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcFile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dstDir := filepath.Join(dir, "output", "skill")
+	dstFile := filepath.Join(dstDir, "scripts", "run")
+	if err := os.MkdirAll(filepath.Dir(dstFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dstFile, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := domain.Plan{
+		Copies: []domain.CopyAction{
+			{Src: srcDir, Dst: dstDir, Kind: domain.CopyKindDir, SourcePack: "pack1"},
+		},
+		Desired: map[string]struct{}{
+			filepath.Clean(dstDir):  {},
+			filepath.Clean(dstFile): {},
+		},
+		Ledger: filepath.Join(dir, ".aipack", "ledger.json"),
+	}
+
+	if _, err := eng.ApplyPlan(context.Background(), plan, ApplyRequest{Quiet: true}, []string{dir}); err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	info, err := os.Stat(dstFile)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("mode = %o, want 644", got)
 	}
 }
 

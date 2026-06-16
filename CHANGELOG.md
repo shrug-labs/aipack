@@ -6,6 +6,10 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+### Fixed
+
+- **Skill helper scripts keep executable permissions during sync.** Copied skill assets with source execute bits now render as executable files and resync repairs mode drift when the file content is unchanged.
+
 ## [0.31.0] - 2026-06-10
 
 ### Added

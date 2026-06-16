@@ -147,17 +147,45 @@ func (e *Engine) writeModeMatches(dst string, w domain.WriteAction) (bool, os.Fi
 
 // ClassifyFile classifies a single file against on-disk state and the ledger.
 func (e *Engine) ClassifyFile(dst string, desired []byte, label, sourcePack string, lg domain.Ledger) (FileDiff, error) {
+	return e.classifyFileWithMode(dst, desired, defaultWriteMode, false, label, sourcePack, lg)
+}
+
+func (e *Engine) ClassifyFileWithMode(dst string, desired []byte, desiredMode os.FileMode, label, sourcePack string, lg domain.Ledger) (FileDiff, error) {
+	if desiredMode == 0 {
+		return e.ClassifyFile(dst, desired, label, sourcePack, lg)
+	}
+	return e.classifyFileWithMode(dst, desired, desiredMode.Perm(), true, label, sourcePack, lg)
+}
+
+func (e *Engine) classifyFileWithMode(dst string, desired []byte, desiredMode os.FileMode, checkMode bool, label, sourcePack string, lg domain.Ledger) (FileDiff, error) {
 	dst = filepath.Clean(dst)
 
 	onDisk, err := e.FS.ReadFile(dst)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return FileDiff{Dst: dst, Desired: desired, DesiredMode: defaultWriteMode, Label: label, SourcePack: sourcePack, Kind: domain.DiffCreate}, nil
+			return FileDiff{Dst: dst, Desired: desired, DesiredMode: desiredMode, Label: label, SourcePack: sourcePack, Kind: domain.DiffCreate}, nil
 		}
 		return FileDiff{}, err
 	}
 
-	return classifyFilePreRead(dst, desired, label, sourcePack, lg, onDisk), nil
+	if checkMode && bytes.Equal(desired, onDisk) {
+		info, err := e.FS.Stat(dst)
+		if err != nil {
+			return FileDiff{}, err
+		}
+		onDiskMode := info.Mode().Perm()
+		if onDiskMode != desiredMode.Perm() {
+			return FileDiff{
+				Dst: dst, Desired: desired, DesiredMode: desiredMode, Label: label,
+				SourcePack: sourcePack, Kind: domain.DiffManaged, OnDisk: onDisk,
+				Diff: fmt.Sprintf("mode: %#o → %#o (content unchanged)\n", onDiskMode, desiredMode.Perm()),
+			}, nil
+		}
+	}
+
+	fd := classifyFilePreRead(dst, desired, label, sourcePack, lg, onDisk)
+	fd.DesiredMode = desiredMode
+	return fd, nil
 }
 
 // classifyFilePreRead classifies a file when the on-disk content is already known.
@@ -226,11 +254,15 @@ func (e *Engine) ClassifyCopyWithOptions(src, dst, sourcePack string, lg domain.
 		if err != nil {
 			return err
 		}
+		desiredMode, err := e.copyDesiredMode(p)
+		if err != nil {
+			return err
+		}
 		label := filepath.Join(filepath.Base(dst), rel)
 		if opts.LabelForPath != nil {
 			label = opts.LabelForPath(target)
 		}
-		fd, err := e.ClassifyFile(target, content, label, sourcePack, lg)
+		fd, err := e.ClassifyFileWithMode(target, content, desiredMode, label, sourcePack, lg)
 		if err != nil {
 			return err
 		}
@@ -238,6 +270,18 @@ func (e *Engine) ClassifyCopyWithOptions(src, dst, sourcePack string, lg domain.
 		return nil
 	})
 	return out, err
+}
+
+func (e *Engine) copyDesiredMode(src string) (os.FileMode, error) {
+	info, err := e.FS.Stat(src)
+	if err != nil {
+		return 0, err
+	}
+	mode := info.Mode().Perm()
+	if mode&0o111 == 0 {
+		return defaultWriteMode, nil
+	}
+	return mode, nil
 }
 
 // ComputeSettingsDiffs classifies each settings action against on-disk state and the ledger.
