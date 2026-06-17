@@ -134,7 +134,7 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, ar ApplyRequest, lg domain
 			if err != nil {
 				return nil, err
 			}
-			fd, err := e.ClassifyFileWithMode(c.Dst, content, desiredMode, ar.displayLabel(c.Dst), c.SourcePack, lg)
+			fd, err := e.classifyCopyFileWithMode(c.Dst, content, desiredMode, ar.displayLabel(c.Dst), c.SourcePack, lg)
 			if err != nil {
 				return nil, err
 			}
