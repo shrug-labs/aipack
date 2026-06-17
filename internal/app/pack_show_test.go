@@ -3,13 +3,16 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/domain"
 
 	"gopkg.in/yaml.v3"
 )
@@ -151,6 +154,99 @@ func TestPackShow(t *testing.T) {
 		}
 		if len(entry.Skills) != 1 || entry.Skills[0] != "my-skill" {
 			t.Errorf("Skills = %v", entry.Skills)
+		}
+	})
+
+	t.Run("populates settings from configs block", func(t *testing.T) {
+		t.Parallel()
+		packDir := t.TempDir()
+		configDir := t.TempDir()
+
+		manifest := map[string]any{
+			"schema_version": 2,
+			"name":           "settings-pack",
+			"version":        "1.0.0",
+			"root":           ".",
+			"configs": map[string]any{
+				"harness_settings": map[string][]string{
+					"codex":    {"config.toml"},
+					"opencode": {"opencode.json"},
+				},
+				"harness_plugins": map[string][]string{
+					"opencode": {"oh-my-opencode.json"},
+				},
+			},
+		}
+		b, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(packDir, "pack.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for rel, body := range map[string]string{
+			"configs/codex/config.toml":            "model = \"x\"\n",
+			"configs/opencode/opencode.json":       "{}\n",
+			"configs/opencode/oh-my-opencode.json": "{}\n",
+		} {
+			fp := filepath.Join(packDir, filepath.FromSlash(rel))
+			os.MkdirAll(filepath.Dir(fp), 0o755)
+			if err := os.WriteFile(fp, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		writeTestSyncConfig(t, configDir)
+		var out bytes.Buffer
+		PackInstall(context.Background(), PackInstallRequest{
+			PackPath: packDir, ConfigDir: configDir, Link: true,
+			NowFn: func() time.Time { return fixedNow },
+		}, &out)
+
+		entry, err := PackShow(configDir, "settings-pack")
+		if err != nil {
+			t.Fatalf("PackShow: %v", err)
+		}
+
+		// Sorted "<harness>/<file>" IDs across both settings and plugin configs.
+		want := []string{"codex/config.toml", "opencode/oh-my-opencode.json", "opencode/opencode.json"}
+		if got := entry.Settings; !slices.Equal(got, want) {
+			t.Errorf("Settings = %v, want %v", got, want)
+		}
+		if got := entry.ContentIDs(domain.CategorySettings); !slices.Equal(got, want) {
+			t.Errorf("ContentIDs(Settings) = %v, want %v", got, want)
+		}
+
+		// ContentPath resolves under the pack's configs/ directory.
+		gotPath := entry.ContentPath(domain.CategorySettings, "codex/config.toml")
+		wantPath := filepath.Join(entry.Path, "configs", "codex", "config.toml")
+		if gotPath != wantPath {
+			t.Errorf("ContentPath = %q, want %q", gotPath, wantPath)
+		}
+		if sz := entry.ContentSize(domain.CategorySettings, "codex/config.toml"); sz <= 0 {
+			t.Errorf("ContentSize = %d, want > 0", sz)
+		}
+	})
+
+	t.Run("settings empty when no configs block", func(t *testing.T) {
+		t.Parallel()
+		packDir := t.TempDir()
+		configDir := t.TempDir()
+		writePackManifest(t, packDir, "no-settings-pack")
+		writeTestSyncConfig(t, configDir)
+		var out bytes.Buffer
+		PackInstall(context.Background(), PackInstallRequest{
+			PackPath: packDir, ConfigDir: configDir, Link: true,
+			NowFn: func() time.Time { return fixedNow },
+		}, &out)
+
+		entry, err := PackShow(configDir, "no-settings-pack")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Non-nil empty slice keeps JSON/output shape stable for settings-less packs.
+		if entry.Settings == nil || len(entry.Settings) != 0 {
+			t.Errorf("Settings = %v, want non-nil empty", entry.Settings)
 		}
 	})
 

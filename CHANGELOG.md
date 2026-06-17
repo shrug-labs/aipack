@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-06-16
+
+### Added
+
+- **The manage TUI Packs tab now browses a pack's Settings.** Harness config files shipped under a pack's `configs/` directory appear as a Settings section in the content browser alongside rules, skills, MCP servers, and the other content vectors, with file preview and size. `aipack pack show --json` gains a `settings` array listing them as `<harness>/<file>` IDs.
+
 ### Fixed
 
 - **Skill helper scripts keep executable permissions during sync.** Copied skill assets with source execute bits now render as executable files and resync repairs mode drift when the file content is unchanged.

@@ -1090,6 +1090,8 @@ func kindForCategory(category domain.PackCategory) string {
 		return "plugin"
 	case domain.CategoryPrompts:
 		return "prompt"
+	case domain.CategorySettings:
+		return "setting"
 	default:
 		return string(category)
 	}
@@ -1107,6 +1109,7 @@ func packTabCategories() []domain.PackCategory {
 		domain.CategoryPlugins,
 		domain.CategoryPrompts,
 		domain.CategoryMCP,
+		domain.CategorySettings,
 	}
 }
 

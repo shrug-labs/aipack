@@ -427,6 +427,7 @@ Content ID arrays are always present (empty `[]`, never null).
   "plugins": ["linear"],
   "prompts": [],
   "mcp_servers": [],
+  "settings": ["codex/config.toml", "opencode/opencode.json"],
   "extras": ["scripts/run-server.sh"]
 }
 ```
@@ -449,6 +450,7 @@ Content ID arrays are always present (empty `[]`, never null).
 | `plugins` | string[] | Plugin reference IDs |
 | `prompts` | string[] | Prompt IDs |
 | `mcp_servers` | string[] | MCP server names |
+| `settings` | string[] | Harness config files as `<harness>/<file>` IDs (omitempty) |
 | `extras` | string[] | Extra bundled file paths (omitempty) |
 
 ### `aipack pack inspect`

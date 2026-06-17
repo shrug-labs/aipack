@@ -95,6 +95,59 @@ func TestBuildContentItemsFromEntry_IncludesPrompts(t *testing.T) {
 	}
 }
 
+func TestBuildContentItemsFromEntry_IncludesSettings(t *testing.T) {
+	t.Parallel()
+	items := buildContentItemsFromEntry(app.PackShowEntry{
+		Name:     "pack-with-settings",
+		Rules:    []string{"rule-a"},
+		Settings: []string{"codex/config.toml", "opencode/opencode.json"},
+	})
+
+	var settingsHeader bool
+	var settingsIDs []string
+	for _, it := range items {
+		if it.isHeader && it.category == domain.CategorySettings {
+			settingsHeader = true
+			if it.id != domain.CategorySettings.Label() {
+				t.Errorf("settings header label = %q, want %q", it.id, domain.CategorySettings.Label())
+			}
+		}
+		if !it.isHeader && it.category == domain.CategorySettings {
+			settingsIDs = append(settingsIDs, it.id)
+		}
+	}
+	if !settingsHeader {
+		t.Error("expected Settings header in content items")
+	}
+	want := []string{"codex/config.toml", "opencode/opencode.json"}
+	if len(settingsIDs) != len(want) || settingsIDs[0] != want[0] || settingsIDs[1] != want[1] {
+		t.Errorf("settings ids = %v, want %v", settingsIDs, want)
+	}
+}
+
+func TestPacksModel_RendersSettingsSection(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{
+		{entry: app.PackShowEntry{
+			Name:     "settings-pack",
+			Path:     "/tmp/pack",
+			Rules:    []string{"rule-a"},
+			Settings: []string{"codex/config.toml"},
+		}},
+	})
+	m = m.SetSize(120, 30).(Model)
+	// Drill into the content panel so it renders content for the selected pack.
+	m = m.SetFocus(FocusContent)
+
+	out := m.RenderString()
+	if !strings.Contains(out, "Settings") {
+		t.Errorf("expected rendered content panel to contain 'Settings' header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "config.toml") {
+		t.Errorf("expected rendered content panel to contain settings file id; got:\n%s", out)
+	}
+}
+
 func TestPacksModel_ListSortedInstalledThenAlphabetical(t *testing.T) {
 	t.Parallel()
 	m := Model{

@@ -32,7 +32,12 @@ type PackShowEntry struct {
 	Plugins       []string `json:"plugins"`
 	Prompts       []string `json:"prompts"`
 	MCPServers    []string `json:"mcp_servers"`
-	Extras        []string `json:"extras,omitempty"`
+	// Settings lists the pack's harness config files as "<harness>/<file>"
+	// IDs (e.g. "codex/config.toml"). Both base settings and plugin configs
+	// live under the pack's configs/ directory; the Packs-tab content browser
+	// lists them together under the Settings category.
+	Settings []string `json:"settings,omitempty"`
+	Extras   []string `json:"extras,omitempty"`
 
 	// manifest is populated at construction time so ContentPath / ContentSize
 	// can resolve nested authored files via PackManifest.RelPath. Unexported
@@ -43,6 +48,12 @@ type PackShowEntry struct {
 // ContentPath returns the absolute on-disk path of a content item, honoring
 // any organizational subdirectories the manifest's RelPath knows about.
 func (e PackShowEntry) ContentPath(category domain.PackCategory, id string) string {
+	// Settings IDs are "<harness>/<file>" relative to the pack's configs/
+	// directory; RelPath has no knowledge of harness config files, so resolve
+	// them directly.
+	if category == domain.CategorySettings {
+		return filepath.Join(e.Path, "configs", filepath.FromSlash(id))
+	}
 	return filepath.Join(e.Path, filepath.FromSlash(e.manifest.RelPath(category, id)))
 }
 
@@ -104,8 +115,43 @@ func (e PackShowEntry) ContentIDs(cat domain.PackCategory) []string {
 		return e.Prompts
 	case domain.CategoryMCP:
 		return e.MCPServers
+	case domain.CategorySettings:
+		return e.Settings
 	}
 	return nil
+}
+
+// settingsIDsFromConfigs flattens a pack's harness config files into sorted,
+// deduplicated "<harness>/<file>" IDs. Both base settings and plugin configs
+// live under the pack's configs/<harness>/ directory, so they share the
+// Settings category in the content browser.
+func settingsIDsFromConfigs(c config.PackConfigs) []string {
+	seen := map[string]struct{}{}
+	var ids []string
+	add := func(m map[string][]string) {
+		for harness, files := range m {
+			h := strings.ToLower(strings.TrimSpace(harness))
+			if h == "" {
+				continue
+			}
+			for _, f := range files {
+				name := strings.TrimSpace(f)
+				if name == "" {
+					continue
+				}
+				id := h + "/" + name
+				if _, ok := seen[id]; ok {
+					continue
+				}
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+	}
+	add(c.HarnessSettings)
+	add(c.HarnessPlugins)
+	slices.Sort(ids)
+	return ids
 }
 
 // Counts returns content counts for display formatting.
@@ -221,6 +267,7 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Plugins = m.Plugins
 		entry.Prompts = m.Prompts
 		entry.MCPServers = slices.Clone(m.MCP)
+		entry.Settings = settingsIDsFromConfigs(m.Configs)
 		entry.Extras = m.Extras
 		entry.manifest = m
 	}
@@ -264,6 +311,9 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 	}
 	if entry.MCPServers == nil {
 		entry.MCPServers = []string{}
+	}
+	if entry.Settings == nil {
+		entry.Settings = []string{}
 	}
 
 	return entry, nil
