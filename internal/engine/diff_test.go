@@ -294,6 +294,38 @@ func TestClassifyCopy_Dir(t *testing.T) {
 	}
 }
 
+func TestClassifyCopy_IgnoresNonExecutableModeDrift(t *testing.T) {
+	t.Parallel()
+	fs := NewMemFS()
+	eng := New(fs, nil)
+	src := "/src/skill"
+	dst := "/dst/skill"
+	content := []byte("v2 content")
+	if err := fs.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(filepath.Join(src, "SKILL.md"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(filepath.Join(dst, "SKILL.md"), content, 0o666); err != nil {
+		t.Fatal(err)
+	}
+
+	diffs, err := eng.ClassifyCopy(src, dst, "pack1", domain.NewLedger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("diffs = %d, want 1", len(diffs))
+	}
+	if diffs[0].Kind != domain.DiffIdentical {
+		t.Fatalf("Kind = %q, want %q", diffs[0].Kind, domain.DiffIdentical)
+	}
+}
+
 func TestClassifyCopy_RootDirectorySymlink(t *testing.T) {
 	t.Parallel()
 	testutil.SkipWithoutSymlinks(t)
