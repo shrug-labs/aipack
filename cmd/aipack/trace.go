@@ -30,7 +30,8 @@ func (c *TraceCmd) Help() string {
 	return `Traces a pack resource from source through the sync pipeline to its
 harness destination(s). Shows the pack source path, planned destination
 per harness, and on-disk state (create, identical, managed, conflict,
-untracked, error).
+untracked, error). If the resource is installed but inactive, reports the
+profile blocker and next commands instead of destinations.
 
 Useful for debugging content routing issues — "why didn't my rule appear?"
 or "which pack is this agent coming from?"
@@ -67,12 +68,12 @@ func (c *TraceCmd) Validate() error {
 }
 
 func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
-	loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
+	loaded, exitCode := loadProfileAllowNoEnabledPacks(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
 	if exitCode >= 0 {
 		return ExitError{Code: exitCode}
 	}
 
-	resType, resName, ok, err := resolveTraceArgs(loaded.profile, c.Type, c.Name, g.Stderr)
+	resType, resName, diagnostic, ok, err := resolveTraceArgs(loaded, c.Type, c.Name, g.Stderr)
 	if err != nil {
 		return err
 	}
@@ -80,13 +81,19 @@ func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 		return ExitError{Code: cmdutil.ExitFail}
 	}
 
-	result, err := c.runResolved(ctx, g, loaded, resType, resName)
+	result, err := c.runResolved(ctx, g, loaded, resType, resName, diagnostic)
 	if err != nil {
 		return err
 	}
 
 	if c.JSON {
-		return cmdutil.WriteJSON(g.Stdout, result)
+		if err := cmdutil.WriteJSON(g.Stdout, result); err != nil {
+			return err
+		}
+		if !result.Found {
+			return ExitError{Code: cmdutil.ExitFail}
+		}
+		return nil
 	}
 
 	printTraceHuman(result, g)
@@ -96,7 +103,7 @@ func (c *TraceCmd) Run(ctx context.Context, g *Globals) error {
 	return nil
 }
 
-func (c *TraceCmd) runResolved(ctx context.Context, g *Globals, loaded loadedProfile, resType, resName string) (app.TraceResult, error) {
+func (c *TraceCmd) runResolved(ctx context.Context, g *Globals, loaded loadedProfile, resType, resName string, diagnostic *app.TraceDiagnostic) (app.TraceResult, error) {
 	scope, err := cmdutil.ResolveScopeDefault(c.Scope, loaded.syncCfg.Defaults.Scope)
 	if err != nil {
 		return app.TraceResult{}, err
@@ -132,18 +139,25 @@ func (c *TraceCmd) runResolved(ctx context.Context, g *Globals, loaded loadedPro
 			Home:       config.HomeDir(),
 			Namespaced: loaded.syncCfg.Defaults.Namespaced,
 		},
-		ResourceType: resType,
-		ResourceName: resName,
+		ProfileName:   loaded.profileName,
+		ProfileConfig: loaded.profileCfg,
+		ResourceType:  resType,
+		ResourceName:  resName,
+		Diagnostic:    diagnostic,
 	}, g.Registry)
 }
 
 func printTraceHuman(result app.TraceResult, g *Globals) {
 	if !result.Found {
 		fmt.Fprintf(g.Stderr, "%s %q not found in active profile\n", result.ResourceType, result.ResourceName)
+		printTraceBlockersAndRemediation(result, g.Stderr)
 		return
 	}
 
 	fmt.Fprintf(g.Stdout, "%s: %s\n", result.ResourceType, result.ResourceName)
+	if result.ProfileState != "" && result.ProfileState != app.TraceProfileStateActive {
+		fmt.Fprintf(g.Stdout, "  profile state: %s\n", result.ProfileState)
+	}
 	if result.Source != nil {
 		fmt.Fprintf(g.Stdout, "  pack: %s\n", result.Source.Pack)
 		if result.Source.SourcePath != "" {
@@ -153,6 +167,7 @@ func printTraceHuman(result app.TraceResult, g *Globals) {
 
 	if len(result.Destinations) == 0 {
 		fmt.Fprintln(g.Stdout, "  destinations: (none planned)")
+		printTraceBlockersAndRemediation(result, g.Stdout)
 		return
 	}
 
@@ -166,29 +181,54 @@ func printTraceHuman(result app.TraceResult, g *Globals) {
 	}
 }
 
-func resolveTraceArgs(profile domain.Profile, first, second string, stderr io.Writer) (string, string, bool, error) {
+func printTraceBlockersAndRemediation(result app.TraceResult, w io.Writer) {
+	if len(result.Blockers) > 0 {
+		fmt.Fprintln(w, "  blockers:")
+		for _, blocker := range result.Blockers {
+			fmt.Fprintf(w, "    - %s\n", blocker)
+		}
+	}
+	if len(result.Remediation) > 0 {
+		fmt.Fprintln(w, "  remediation:")
+		for _, cmd := range result.Remediation {
+			fmt.Fprintf(w, "    %s\n", cmd)
+		}
+	}
+}
+
+func resolveTraceArgs(loaded loadedProfile, first, second string, stderr io.Writer) (string, string, *app.TraceDiagnostic, bool, error) {
 	if second != "" {
 		resType, err := normalizeTraceType(first)
-		return resType, second, err == nil, err
+		return resType, second, nil, err == nil, err
 	}
 	name := strings.TrimSpace(first)
-	candidates := app.FindTraceCandidates(profile, name)
+	candidates := app.FindTraceCandidates(loaded.profile, name)
 	switch len(candidates) {
 	case 0:
-		fmt.Fprintf(stderr, "resource %q not found in active profile\n", name)
-		fmt.Fprintf(stderr, "Try: %s\n", cmdutil.ShellCommand("aipack", "search", name))
-		return "", "", false, nil
+		inactive := app.FindTraceDiagnosticCandidates(loaded.profileCfg, loaded.configDir, name, loaded.profileName)
+		switch len(inactive) {
+		case 0:
+			fmt.Fprintf(stderr, "resource %q not found in active profile\n", name)
+			fmt.Fprintf(stderr, "Try: %s\n", traceSearchShellCommand(name))
+			return "", "", nil, false, nil
+		case 1:
+			diagnostic := inactive[0]
+			return diagnostic.Candidate.ResourceType, diagnostic.Candidate.ResourceName, &diagnostic, true, nil
+		default:
+			printTraceDiagnostics(stderr, name, inactive)
+			return "", "", nil, false, nil
+		}
 	case 1:
-		return candidates[0].ResourceType, candidates[0].ResourceName, true, nil
+		return candidates[0].ResourceType, candidates[0].ResourceName, nil, true, nil
 	default:
 		printTraceCandidates(stderr, name, candidates)
-		return "", "", false, nil
+		return "", "", nil, false, nil
 	}
 }
 
 func normalizeTraceType(raw string) (string, error) {
 	cat, ok := domain.ParseSingularLabel(strings.ToLower(strings.TrimSpace(raw)))
-	if !ok || !isTraceableCategory(cat) {
+	if !ok || !app.IsTraceableCategory(cat) {
 		return "", fmt.Errorf("invalid resource type %q (valid: rule, agent, workflow, skill, hook, plugin, mcp)", raw)
 	}
 	if cat == domain.CategoryMCP {
@@ -197,22 +237,33 @@ func normalizeTraceType(raw string) (string, error) {
 	return strings.ToLower(cat.SingularLabel()), nil
 }
 
-func isTraceableCategory(cat domain.PackCategory) bool {
-	switch cat {
-	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills, domain.CategoryHooks, domain.CategoryPlugins, domain.CategoryMCP:
-		return true
-	default:
-		return false
-	}
-}
-
 func printTraceCandidates(w io.Writer, name string, candidates []app.TraceCandidate) {
-	fmt.Fprintf(w, "Multiple resources named %q in active profile:\n", name)
+	fmt.Fprintf(w, "Multiple resources named %q:\n", name)
 	for _, candidate := range candidates {
-		fmt.Fprintf(w, "  %-8s pack=%s\n", candidate.ResourceType, candidate.Pack)
+		state := ""
+		if candidate.ProfileState != "" {
+			state = " state=" + string(candidate.ProfileState)
+		}
+		fmt.Fprintf(w, "  %-8s pack=%s%s\n", candidate.ResourceType, candidate.Pack, state)
 	}
 	fmt.Fprintln(w, "\nRun one explicit command:")
 	for _, candidate := range candidates {
-		fmt.Fprintf(w, "  %s\n", cmdutil.ShellCommand("aipack", "trace", candidate.ResourceType, candidate.ResourceName))
+		fmt.Fprintf(w, "  %s\n", traceExplicitShellCommand(candidate.ResourceType, candidate.ResourceName))
 	}
+}
+
+func printTraceDiagnostics(w io.Writer, name string, diagnostics []app.TraceDiagnostic) {
+	candidates := make([]app.TraceCandidate, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		candidates = append(candidates, diagnostic.Candidate)
+	}
+	printTraceCandidates(w, name, candidates)
+}
+
+func traceSearchShellCommand(name string) string {
+	return cmdutil.ShellCommandWithOperand([]string{"aipack", "search"}, name)
+}
+
+func traceExplicitShellCommand(resType, name string) string {
+	return cmdutil.ShellCommandWithOperand([]string{"aipack", "trace", resType}, name)
 }

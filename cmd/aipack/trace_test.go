@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 )
 
 func TestTrace_HelpReturnsOK(t *testing.T) {
@@ -108,6 +111,172 @@ func TestTrace_DefaultGlobalScopeRejectsProjectDir(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "effective scope global") {
 		t.Fatalf("expected effective scope error, got: %s", stderr)
+	}
+}
+
+func TestTrace_DisabledPackReportsDiagnostic(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+	writeRulePackFixture(t, configDir, "disabled", "hidden", "1.0.0")
+	profile := "schema_version: 2\npacks:\n  - name: demo\n    enabled: true\n  - name: disabled\n    enabled: false\n"
+	if err := os.WriteFile(filepath.Join(configDir, "profiles", "default.yaml"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "trace", "rule", "hidden", "--config-dir", configDir, "--project-dir", projectDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("trace exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"profile state: pack_disabled",
+		"destinations: (none planned)",
+		"aipack pack enable disabled --profile default",
+		"aipack sync --profile default",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestTrace_AllDisabledProfileReportsDiagnostic(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+	writeRulePackFixture(t, configDir, "disabled", "hidden", "1.0.0")
+	profile := "schema_version: 2\npacks:\n  - name: disabled\n    enabled: false\n"
+	if err := os.WriteFile(filepath.Join(configDir, "profiles", "default.yaml"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "trace", "rule", "hidden", "--config-dir", configDir, "--project-dir", projectDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("trace exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"profile state: pack_disabled",
+		"aipack pack enable disabled --profile default",
+		"aipack sync --profile default",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestTrace_JSONContentExcludedDiagnostic(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+	profile := "schema_version: 2\npacks:\n  - name: demo\n    enabled: true\n    rules:\n      exclude:\n        - sample\n"
+	if err := os.WriteFile(filepath.Join(configDir, "profiles", "default.yaml"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "trace", "rule", "sample", "--json", "--config-dir", configDir, "--project-dir", projectDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("trace exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	var result app.TraceResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if !result.Found || result.ProfileState != "content_excluded" {
+		t.Fatalf("result found/state = %v/%q, want true/content_excluded: %+v", result.Found, result.ProfileState, result)
+	}
+	if len(result.Destinations) != 0 {
+		t.Fatalf("inactive resource should have no destinations: %+v", result.Destinations)
+	}
+	if len(result.Remediation) == 0 || !strings.Contains(strings.Join(result.Remediation, "\n"), "aipack profile include sample --kind rule --pack demo --profile default") {
+		t.Fatalf("missing include remediation: %+v", result.Remediation)
+	}
+}
+
+func TestTrace_InstalledNotInProfileReportsDiagnostic(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+	writeRulePackFixture(t, configDir, "outside", "orphan", "1.0.0")
+
+	stdout, stderr, code := runApp(t, "trace", "rule", "orphan", "--config-dir", configDir, "--project-dir", projectDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("trace exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"profile state: installed_not_in_profile",
+		"aipack pack add outside --profile default",
+		"aipack sync --profile default",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestTrace_QuietInstalledPackQuotesSelectiveRemediation(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+	writeRulePackFixture(t, configDir, "outside pack", "space rule", "1.0.0")
+	if err := config.SaveLockfile(config.LockfilePath(configDir), config.Lockfile{
+		Packs: map[string]config.InstalledPackMeta{
+			"outside pack": {InstallQuiet: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "trace", "rule", "space rule", "--config-dir", configDir, "--project-dir", projectDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("trace exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"aipack pack add 'outside pack' --profile default",
+		"aipack profile include 'space rule' --kind rule --pack 'outside pack' --profile default",
+		"aipack sync --profile default",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestTrace_MissingResourceExitsFailWithJSONDiagnostic(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+
+	stdout, stderr, code := runApp(t, "trace", "rule", "absent", "--json", "--config-dir", configDir, "--project-dir", projectDir)
+	if code != cmdutil.ExitFail {
+		t.Fatalf("trace missing exit=%d, want %d; stdout=%s stderr=%s", code, cmdutil.ExitFail, stdout, stderr)
+	}
+	var result app.TraceResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if result.Found || result.ProfileState != "not_installed" {
+		t.Fatalf("result found/state = %v/%q, want false/not_installed", result.Found, result.ProfileState)
+	}
+}
+
+func TestTrace_SmartNameInactiveAmbiguityListsStates(t *testing.T) {
+	home, configDir, projectDir := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+	writeRulePackFixture(t, configDir, "disabled", "hidden", "1.0.0")
+	writeSkillFixture(t, filepath.Join(configDir, "packs", "disabled"), "hidden")
+	profile := "schema_version: 2\npacks:\n  - name: demo\n    enabled: true\n  - name: disabled\n    enabled: false\n"
+	if err := os.WriteFile(filepath.Join(configDir, "profiles", "default.yaml"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "trace", "hidden", "--config-dir", configDir, "--project-dir", projectDir)
+	if code == cmdutil.ExitOK {
+		t.Fatalf("trace smart inactive ambiguous should fail; stdout=%s stderr=%s", stdout, stderr)
+	}
+	for _, want := range []string{
+		`Multiple resources named "hidden"`,
+		"state=pack_disabled",
+		"aipack trace rule hidden",
+		"aipack trace skill hidden",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("trace ambiguity output missing %q:\n%s", want, stderr)
+		}
 	}
 }
 

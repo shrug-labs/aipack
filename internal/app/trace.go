@@ -5,18 +5,24 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // TraceRequest holds the parameters for tracing a resource through the sync pipeline.
 type TraceRequest struct {
 	TargetSpec
-	ResourceType string // rule, agent, workflow, skill, plugin, mcp
-	ResourceName string // name of the resource to trace
+	ProfileName   string
+	ProfileConfig config.ProfileConfig
+	ResourceType  string // rule, agent, workflow, skill, plugin, mcp
+	ResourceName  string // name of the resource to trace
+	Diagnostic    *TraceDiagnostic
 }
 
 // TraceSource describes where a resource comes from in the pack.
@@ -28,11 +34,12 @@ type TraceSource struct {
 
 // TraceCandidate describes an exact active-profile resource match that can be traced.
 type TraceCandidate struct {
-	ResourceType string `json:"resource_type"`
-	ResourceName string `json:"resource_name"`
-	Pack         string `json:"pack"`
-	SourcePath   string `json:"source_path,omitempty"`
-	Category     string `json:"category"`
+	ResourceType string            `json:"resource_type"`
+	ResourceName string            `json:"resource_name"`
+	Pack         string            `json:"pack"`
+	SourcePath   string            `json:"source_path,omitempty"`
+	Category     string            `json:"category"`
+	ProfileState TraceProfileState `json:"profile_state,omitempty"`
 }
 
 // TraceDestination describes where a resource lands in a harness location.
@@ -49,8 +56,37 @@ type TraceResult struct {
 	ResourceType string             `json:"resource_type"`
 	ResourceName string             `json:"resource_name"`
 	Found        bool               `json:"found"`
+	ProfileState TraceProfileState  `json:"profile_state"`
+	Blockers     []string           `json:"blockers,omitempty"`
+	Remediation  []string           `json:"remediation,omitempty"`
 	Source       *TraceSource       `json:"source,omitempty"`
 	Destinations []TraceDestination `json:"destinations"`
+}
+
+// TraceProfileState describes whether a traced resource is active in a profile.
+type TraceProfileState string
+
+const (
+	TraceProfileStateActive                TraceProfileState = "active"
+	TraceProfileStatePackDisabled          TraceProfileState = "pack_disabled"
+	TraceProfileStateContentExcluded       TraceProfileState = "content_excluded"
+	TraceProfileStateInstalledNotInProfile TraceProfileState = "installed_not_in_profile"
+	TraceProfileStateNotInstalled          TraceProfileState = "not_installed"
+)
+
+// TraceDiagnostic describes an inactive resource and how to activate it.
+type TraceDiagnostic struct {
+	Candidate   TraceCandidate
+	Blockers    []string
+	Remediation []string
+}
+
+func (d TraceDiagnostic) source() TraceSource {
+	return TraceSource{
+		Pack:       d.Candidate.Pack,
+		SourcePath: d.Candidate.SourcePath,
+		Category:   d.Candidate.Category,
+	}
 }
 
 // RunTrace traces a resource through the sync pipeline, showing where it comes
@@ -59,15 +95,22 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 	result := TraceResult{
 		ResourceType: req.ResourceType,
 		ResourceName: req.ResourceName,
+		ProfileState: TraceProfileStateNotInstalled,
 	}
 	knownPacks := knownPacksFromRoots(resolvePackRoots(profile))
 
 	// Find the resource in the profile.
 	source := findResource(profile, req.ResourceType, req.ResourceName)
 	if source == nil {
+		if req.Diagnostic != nil {
+			applyTraceDiagnosticMatch(&result, *req.Diagnostic)
+			return result, nil
+		}
+		applyTraceDiagnostic(&result, req)
 		return result, nil
 	}
 	result.Found = true
+	result.ProfileState = TraceProfileStateActive
 	result.Source = source
 
 	// Build per-harness plans and aggregate destinations.
@@ -104,6 +147,267 @@ func RunTrace(ctx context.Context, eng *engine.Engine, profile domain.Profile, r
 	}
 
 	return result, nil
+}
+
+func applyTraceDiagnostic(result *TraceResult, req TraceRequest) {
+	matches := findTraceDiagnostics(req.ProfileConfig, req.ConfigDir, req.ResourceType, req.ResourceName, req.ProfileName)
+	if len(matches) == 0 {
+		result.Blockers = []string{traceTypeLabel(req.ResourceType) + " " + req.ResourceName + " is not installed or active in the profile"}
+		result.Remediation = []string{traceSearchCommand(req.ResourceName)}
+		return
+	}
+	applyTraceDiagnosticMatch(result, matches[0])
+}
+
+func applyTraceDiagnosticMatch(result *TraceResult, match TraceDiagnostic) {
+	result.Found = true
+	result.ResourceType = match.Candidate.ResourceType
+	result.ResourceName = match.Candidate.ResourceName
+	result.ProfileState = match.Candidate.ProfileState
+	source := match.source()
+	result.Source = &source
+	result.Blockers = match.Blockers
+	result.Remediation = match.Remediation
+}
+
+// FindTraceDiagnosticCandidates finds exact inactive resources by name across
+// profile entries and installed packs. It is used by smart-name trace fallback
+// after active-profile candidates have missed.
+func FindTraceDiagnosticCandidates(profileCfg config.ProfileConfig, configDir, name, profileName string) []TraceDiagnostic {
+	matches := findTraceDiagnostics(profileCfg, configDir, "", name, profileName)
+	out := make([]TraceDiagnostic, 0, len(matches))
+	seen := map[string]struct{}{}
+	for _, match := range matches {
+		candidate := match.Candidate
+		key := candidate.ResourceType + "\x00" + candidate.ResourceName + "\x00" + candidate.Pack + "\x00" + string(candidate.ProfileState)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, match)
+	}
+	return out
+}
+
+func findTraceDiagnostics(profileCfg config.ProfileConfig, configDir, resType, name, profileName string) []TraceDiagnostic {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	catFilter, ok := traceCategoryFilter(resType)
+	if !ok {
+		return nil
+	}
+
+	var matches []TraceDiagnostic
+	profilePackNames := map[string]struct{}{}
+	for _, pe := range profileCfg.Packs {
+		profilePackNames[pe.Name] = struct{}{}
+	}
+
+	packs, _ := ResolveProfilePacks(configDir, profileCfg.Packs)
+	tree := BuildContentTree(packs, profileCfg.Packs)
+	for _, item := range tree.Items {
+		if catFilter != "" && item.Category != catFilter {
+			continue
+		}
+		if item.ID != name || item.Enabled {
+			continue
+		}
+		pack := tree.Packs[item.PackIdx]
+		pe := profileCfg.Packs[pack.Index]
+		matches = append(matches, traceDiagnosticFromProfileItem(pack, pe, item, profileName))
+	}
+	if len(matches) > 0 {
+		return orderTraceDiagnostics(matches)
+	}
+
+	installed, err := PackListDetailed(configDir)
+	if err != nil {
+		return nil
+	}
+	for _, pack := range installed {
+		if _, inProfile := profilePackNames[pack.Name]; inProfile {
+			continue
+		}
+		for _, cat := range TraceableCategories() {
+			if catFilter != "" && cat != catFilter {
+				continue
+			}
+			if !slices.Contains(pack.ContentIDs(cat), name) {
+				continue
+			}
+			candidate := TraceCandidate{
+				ResourceType: traceResourceType(cat),
+				ResourceName: name,
+				Pack:         pack.Name,
+				SourcePath:   traceInstalledSourcePath(pack, cat, name),
+				Category:     string(cat),
+				ProfileState: TraceProfileStateInstalledNotInProfile,
+			}
+			matches = append(matches, TraceDiagnostic{
+				Candidate: candidate,
+				Blockers: []string{
+					"pack " + pack.Name + " is installed but not listed in profile " + profileName,
+				},
+				Remediation: installedPackRemediation(pack.installQuiet, pack.Name, name, traceResourceType(cat), profileName),
+			})
+		}
+	}
+	return orderTraceDiagnostics(matches)
+}
+
+func traceCategoryFilter(resType string) (domain.PackCategory, bool) {
+	if resType == "" {
+		return "", true
+	}
+	cat, ok := domain.ParseSingularLabel(resType)
+	if !ok || !IsTraceableCategory(cat) {
+		return "", false
+	}
+	return cat, true
+}
+
+func traceDiagnosticFromProfileItem(pack ProfilePackInfo, pe config.PackEntry, item ContentItem, profileName string) TraceDiagnostic {
+	cat := item.Category
+	state := TraceProfileStateContentExcluded
+	var blockers []string
+	var remediation []string
+	if !config.PackEnabled(pe.Enabled) {
+		state = TraceProfileStatePackDisabled
+		blockers = append(blockers, "pack "+pack.Name+" is disabled in profile "+profileName)
+		remediation = append(remediation, tracePackProfileCommand("enable", pack.Name, profileName))
+	}
+	if blocker := contentExcludedBlocker(pack.Name, pe, cat, item.ID, profileName); blocker != "" {
+		blockers = append(blockers, blocker)
+	}
+	if len(blockers) == 0 {
+		blockers = append(blockers, traceResourceType(cat)+" "+item.ID+" from pack "+pack.Name+" is excluded in profile "+profileName)
+	}
+	if state == TraceProfileStateContentExcluded || len(blockers) > 1 {
+		remediation = append(remediation, traceProfileIncludeCommand(item.ID, traceResourceType(cat), pack.Name, profileName))
+	}
+	remediation = append(remediation, traceSyncCommand(profileName))
+
+	return TraceDiagnostic{
+		Candidate: TraceCandidate{
+			ResourceType: traceResourceType(cat),
+			ResourceName: item.ID,
+			Pack:         pack.Name,
+			SourcePath:   traceProfileSourcePath(pack, cat, item.ID),
+			Category:     string(cat),
+			ProfileState: state,
+		},
+		Blockers:    blockers,
+		Remediation: remediation,
+	}
+}
+
+func contentExcludedBlocker(packName string, pe config.PackEntry, cat domain.PackCategory, id, profileName string) string {
+	if cat == domain.CategoryMCP {
+		if cfg, ok := pe.MCP[id]; ok && !config.PackEnabled(cfg.Enabled) {
+			return "mcp " + id + " from pack " + packName + " is disabled in profile " + profileName
+		}
+		if cfg, ok := config.ResolveProfileMCPSelection([]string{id}, pe.MCP, pe.Quiet)[id]; ok && config.PackEnabled(cfg.Enabled) {
+			return ""
+		}
+		if pe.Quiet {
+			return "quiet pack " + packName + " does not include mcp " + id + " in profile " + profileName
+		}
+		return "mcp " + id + " from pack " + packName + " is excluded in profile " + profileName
+	}
+	if cat == domain.CategoryHooks && pe.Hooks.Enabled != nil && !*pe.Hooks.Enabled {
+		return "hooks are disabled for pack " + packName + " in profile " + profileName
+	}
+	if sel := pe.VectorSelectorFor(cat); sel != nil {
+		if selectorListContains(sel.Exclude, id) {
+			return traceResourceType(cat) + " " + id + " from pack " + packName + " is excluded in profile " + profileName
+		}
+		if sel.Include != nil && !selectorListContains(sel.Include, id) {
+			return traceResourceType(cat) + " " + id + " from pack " + packName + " is not included by the profile include list"
+		}
+		if pe.Quiet && (sel.Include == nil || !selectorListContains(sel.Include, id)) {
+			return "quiet pack " + packName + " does not include " + traceResourceType(cat) + " " + id + " in profile " + profileName
+		}
+	}
+	return ""
+}
+
+func traceProfileSourcePath(pack ProfilePackInfo, cat domain.PackCategory, id string) string {
+	if cat == domain.CategoryMCP {
+		return ""
+	}
+	return pack.ContentPath(cat, id)
+}
+
+func traceInstalledSourcePath(pack PackShowEntry, cat domain.PackCategory, id string) string {
+	if cat == domain.CategoryMCP {
+		return ""
+	}
+	return pack.ContentPath(cat, id)
+}
+
+func orderTraceDiagnostics(matches []TraceDiagnostic) []TraceDiagnostic {
+	slices.SortStableFunc(matches, func(a, b TraceDiagnostic) int {
+		ap := traceDiagnosticPriority(a.Candidate.ProfileState)
+		bp := traceDiagnosticPriority(b.Candidate.ProfileState)
+		if ap != bp {
+			return ap - bp
+		}
+		if a.Candidate.Pack != b.Candidate.Pack {
+			return strings.Compare(a.Candidate.Pack, b.Candidate.Pack)
+		}
+		if a.Candidate.ResourceType != b.Candidate.ResourceType {
+			return strings.Compare(a.Candidate.ResourceType, b.Candidate.ResourceType)
+		}
+		return strings.Compare(a.Candidate.ResourceName, b.Candidate.ResourceName)
+	})
+	return matches
+}
+
+func traceDiagnosticPriority(state TraceProfileState) int {
+	switch state {
+	case TraceProfileStatePackDisabled:
+		return 0
+	case TraceProfileStateContentExcluded:
+		return 1
+	case TraceProfileStateInstalledNotInProfile:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func traceTypeLabel(resType string) string {
+	if resType == "" {
+		return "resource"
+	}
+	return resType
+}
+
+func installedPackRemediation(installQuiet bool, packName, id, kind, profileName string) []string {
+	remediation := []string{tracePackProfileCommand("add", packName, profileName)}
+	if installQuiet {
+		remediation = append(remediation, traceProfileIncludeCommand(id, kind, packName, profileName))
+	}
+	remediation = append(remediation, traceSyncCommand(profileName))
+	return remediation
+}
+
+func traceSearchCommand(name string) string {
+	return util.ShellCommandWithOperand([]string{"aipack", "search"}, name)
+}
+
+func tracePackProfileCommand(action, packName, profileName string) string {
+	return util.ShellCommandWithOperand([]string{"aipack", "pack", action}, packName, "--profile", profileName)
+}
+
+func traceProfileIncludeCommand(id, kind, packName, profileName string) string {
+	return util.ShellCommandWithOperand([]string{"aipack", "profile", "include"}, id, "--kind", kind, "--pack", packName, "--profile", profileName)
+}
+
+func traceSyncCommand(profileName string) string {
+	return util.ShellCommand("aipack", "sync", "--profile", profileName)
 }
 
 // findResource locates a resource in the profile by type and name.
@@ -190,6 +494,16 @@ func traceResourceType(cat domain.PackCategory) string {
 		return "mcp"
 	}
 	return strings.ToLower(cat.SingularLabel())
+}
+
+// TraceableCategories returns the resource categories supported by trace.
+func TraceableCategories() []domain.PackCategory {
+	return profileContentSearchCategories()
+}
+
+// IsTraceableCategory reports whether trace supports the category.
+func IsTraceableCategory(cat domain.PackCategory) bool {
+	return slices.Contains(TraceableCategories(), cat)
 }
 
 // matchDestinations finds plan actions that correspond to the traced resource

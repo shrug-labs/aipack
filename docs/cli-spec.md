@@ -180,6 +180,20 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
       "settings": true
     }
   ],
+  "disabled_packs": [
+    {
+      "name": "archived-pack",
+      "version": "2026.01.10",
+      "rules": 2,
+      "agents": 0,
+      "workflows": 0,
+      "skills": 1,
+      "hooks": 0,
+      "plugins": 0,
+      "mcp_servers": 0,
+      "settings": false
+    }
+  ],
   "total_rules": 8,
   "total_agents": 1,
   "total_workflows": 11,
@@ -196,7 +210,8 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
 | `profile` | string | Active profile name |
 | `profile_path` | string | Absolute path to the profile YAML |
 | `config_dir` | string | Config directory path |
-| `packs` | array | Per-pack content inventories |
+| `packs` | array | Enabled profile packs contributing content |
+| `disabled_packs` | array | Disabled profile packs with the same count fields as `packs`, omitted when empty |
 | `packs[].name` | string | Pack name |
 | `packs[].version` | string | Pack version from manifest (omitempty) |
 | `packs[].rules` | int | Rule count in this pack |
@@ -207,6 +222,7 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
 | `packs[].plugins` | int | Plugin reference count |
 | `packs[].mcp_servers` | int | MCP server count |
 | `packs[].settings` | bool | Whether this pack provides settings |
+| `disabled_packs[].error` | string | Manifest/discovery error for disabled pack diagnostics (omitempty) |
 | `total_rules` | int | Sum of rules across all packs |
 | `total_agents` | int | Sum of agents |
 | `total_workflows` | int | Sum of workflows |
@@ -218,13 +234,14 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
 
 ### `aipack trace`
 
-Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single-argument form resolves exact active-profile matches across traceable resource types. Exit code 1 when the resource is not found or when the single-argument form is ambiguous.
+Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single-argument form resolves exact active-profile matches across traceable resource types, then inactive matches from disabled/excluded profile content and installed packs. Exit code 1 when the resource is absent or when the single-argument form is ambiguous.
 
 ```json
 {
   "resource_type": "rule",
   "resource_name": "anti-slop",
   "found": true,
+  "profile_state": "active",
   "source": {
     "pack": "essentials",
     "source_path": "/Users/x/.config/aipack/packs/essentials/rules/anti-slop.md",
@@ -250,14 +267,17 @@ Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `resource_type` | string | Echoed input type |
-| `resource_name` | string | Echoed input name |
-| `found` | bool | Whether the resource exists in the active profile |
+| `resource_type` | string | Resolved resource type |
+| `resource_name` | string | Resolved resource name |
+| `found` | bool | Whether the resource exists in the active profile or was diagnostically found as inactive |
+| `profile_state` | string | `active`, `pack_disabled`, `content_excluded`, `installed_not_in_profile`, or `not_installed` |
+| `blockers` | string[] | Reasons an inactive resource is not syncing (omitempty) |
+| `remediation` | string[] | Exact next commands for inactive resources (omitempty) |
 | `source` | object or null | Source location (absent when `found` is false) |
 | `source.pack` | string | Pack name containing the resource |
 | `source.source_path` | string | Absolute path to the source file |
 | `source.category` | string | Content category: `rules`, `agents`, `workflows`, `skills`, `hooks`, `plugins`, `mcp` |
-| `destinations` | array | Per-harness destination info (empty when not found) |
+| `destinations` | array | Per-harness destination info (empty when not found or inactive) |
 | `destinations[].harness` | string | Harness ID |
 | `destinations[].path` | string | Absolute path where the resource lands |
 | `destinations[].embedded` | bool | True when composited into a multi-resource file (omitempty) |

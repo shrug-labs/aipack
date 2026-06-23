@@ -589,7 +589,7 @@ For the sync workflow, save round-trips, restore, clean, and render, see [Sync a
 
 ### status
 
-Shows ecosystem status: active profile, installed packs with content inventories, and totals.
+Shows ecosystem status: active profile, enabled profile packs with content inventories, disabled profile packs, and enabled-content totals. Disabled packs appear in a separate section so installed-but-inactive content is visible without changing profile behavior.
 
 ```bash
 aipack status
@@ -602,11 +602,11 @@ aipack status --json
 
 Traces a single resource through the sync pipeline, showing where it comes from (pack source) and where it would land in each harness location. Useful for debugging why a rule isn't showing up or which harness file contains a given resource.
 
-If the resource name is unique in the active profile, the type can be omitted. If multiple active resources share the same name, `trace` prints the explicit commands to disambiguate.
+If the resource name is unique in the active profile, the type can be omitted. If the active profile does not contain the resource, `trace` checks disabled profile packs, excluded profile content, and installed packs that are not in the profile. Inactive resources show no destinations and include exact next commands such as `aipack pack enable`, `aipack profile include`, `aipack pack add`, then `aipack sync`. If multiple active or inactive resources share the same name, `trace` prints the explicit commands to disambiguate.
 
 Valid resource types: `rule`, `agent`, `workflow`, `skill`, `hook`, `plugin`, `mcp`.
 
-The output shows the source pack, source file path, and each destination with its harness, file path, and on-disk state (`create`, `identical`, `managed`, `conflict`, `untracked`, or `error`). Use `--harness` to filter output to a single harness. Destinations where the resource is composited into a multi-resource file (e.g. Codex flattening rules into `AGENTS.override.md`) are flagged as embedded separately from the state.
+JSON output always includes the profile state; human output prints it for inactive resources. The output also shows the source pack, source file path, and each destination with its harness, file path, and on-disk state (`create`, `identical`, `managed`, `conflict`, `untracked`, or `error`). Use `--harness` to filter output to a single harness. Destinations where the resource is composited into a multi-resource file (e.g. Codex flattening rules into `AGENTS.override.md`) are flagged as embedded separately from the state.
 
 ```bash
 # Trace a rule named "anti-slop"

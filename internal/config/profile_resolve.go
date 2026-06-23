@@ -16,6 +16,9 @@ import (
 // the raw resolver error.
 var ErrProfileNoPacks = errors.New("profile packs must be configured")
 
+// ErrProfileNoEnabledPacks signals that every configured pack is disabled.
+var ErrProfileNoEnabledPacks = errors.New("no enabled packs in profile")
+
 const (
 	capRules     = "rules"
 	capAgents    = "agents"
@@ -369,7 +372,7 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 	}
 
 	if len(packs) == 0 {
-		return ResolveResult{}, errors.New("no enabled packs in profile")
+		return ResolveResult{}, ErrProfileNoEnabledPacks
 	}
 
 	// Post-resolution validation: every override ID must match actual

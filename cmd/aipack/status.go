@@ -18,8 +18,9 @@ type StatusCmd struct {
 }
 
 func (c *StatusCmd) Help() string {
-	return `Shows ecosystem status: active profile, installed packs with content
-inventories (rules, agents, workflows, skills, hooks, plugins, MCP servers), and totals.
+	return `Shows ecosystem status: active profile, enabled packs with content
+inventories (rules, agents, workflows, skills, hooks, plugins, MCP servers),
+disabled profile packs, and enabled-content totals.
 
 Examples:
   # Show status for the default profile
@@ -35,13 +36,13 @@ See also: doctor, profile show`
 }
 
 func (c *StatusCmd) Run(ctx context.Context, g *Globals) error {
-	loaded, code := loadProfile(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
+	loaded, code := loadProfileAllowNoEnabledPacks(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
 	if code >= 0 {
 		return ExitError{Code: code}
 	}
 	cmdutil.PrintWarnings(g.Stderr, loaded.warnings)
 
-	es := app.BuildEcosystemStatus(loaded.profile, loaded.profileName, loaded.profilePath, loaded.configDir)
+	es := app.BuildEcosystemStatus(loaded.profile, loaded.profileCfg, loaded.profileName, loaded.profilePath, loaded.configDir)
 
 	if c.JSON {
 		return cmdutil.WriteJSON(g.Stdout, es)
@@ -56,19 +57,23 @@ func printEcosystemStatus(es *app.EcosystemStatus, w io.Writer) {
 	if len(es.SettingsPacks) > 0 {
 		fmt.Fprintf(w, "settings: %s\n", strings.Join(es.SettingsPacks, ", "))
 	}
-	fmt.Fprintf(w, "\npacks (%d):\n", len(es.Packs))
+	fmt.Fprintf(w, "\npacks (%d enabled):\n", len(es.Packs))
 	for i, p := range es.Packs {
-		settings := ""
-		if p.Settings {
-			settings = " (settings)"
-		}
-		ver := ""
-		if p.Version != "" {
-			ver = " v" + p.Version
-		}
-		fmt.Fprintf(w, "  %d. %s%s%s\n", i+1, p.Name, ver, settings)
+		fmt.Fprintf(w, "  %d. %s\n", i+1, statusPackLabel(p))
 		if summary := statusContentSummary(p); summary != "" {
 			fmt.Fprintf(w, "     %s\n", summary)
+		}
+	}
+	if len(es.DisabledPacks) > 0 {
+		fmt.Fprintf(w, "\ndisabled packs (%d):\n", len(es.DisabledPacks))
+		for i, p := range es.DisabledPacks {
+			fmt.Fprintf(w, "  %d. %s\n", i+1, statusPackLabel(p))
+			if summary := statusContentSummary(p); summary != "" {
+				fmt.Fprintf(w, "     %s\n", summary)
+			}
+			if p.Error != "" {
+				fmt.Fprintf(w, "     error: %s\n", p.Error)
+			}
 		}
 	}
 	fmt.Fprintf(w, "\ntotals: %s\n", statusTotals(es))
@@ -78,6 +83,18 @@ func printEcosystemStatus(es *app.EcosystemStatus, w io.Writer) {
 			fmt.Fprintf(w, "config: %s\n", es.ConfigDir)
 		}
 	}
+}
+
+func statusPackLabel(p app.PackStatus) string {
+	settings := ""
+	if p.Settings {
+		settings = " (settings)"
+	}
+	ver := ""
+	if p.Version != "" {
+		ver = " v" + p.Version
+	}
+	return p.Name + ver + settings
 }
 
 func statusContentSummary(p app.PackStatus) string {

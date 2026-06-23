@@ -60,6 +60,7 @@ type EcosystemStatus struct {
 	ProfilePath    string       `json:"profile_path"`
 	ConfigDir      string       `json:"config_dir"`
 	Packs          []PackStatus `json:"packs"`
+	DisabledPacks  []PackStatus `json:"disabled_packs,omitempty"`
 	TotalRules     int          `json:"total_rules"`
 	TotalAgents    int          `json:"total_agents"`
 	TotalWorkflows int          `json:"total_workflows"`
@@ -82,6 +83,7 @@ type PackStatus struct {
 	Plugins    int    `json:"plugins"`
 	MCPServers int    `json:"mcp_servers"`
 	Settings   bool   `json:"settings"`
+	Error      string `json:"error,omitempty"`
 }
 
 // PackInfo describes a resolved pack for doctor output.
@@ -290,7 +292,7 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	if req.Status {
 		statusProfile, _, engErr := eng.ResolveWithOptions(prof, pp, configDir, resolveOpts)
 		if engErr == nil {
-			rep.Ecosystem = BuildEcosystemStatus(statusProfile, profileName, pp, configDir)
+			rep.Ecosystem = BuildEcosystemStatus(statusProfile, prof, profileName, pp, configDir)
 		}
 	}
 
@@ -976,7 +978,7 @@ func DetectPackDrift(
 }
 
 // BuildEcosystemStatus constructs an EcosystemStatus summary from a resolved profile.
-func BuildEcosystemStatus(profile domain.Profile, profileName, profilePath, configDir string) *EcosystemStatus {
+func BuildEcosystemStatus(profile domain.Profile, profileCfg config.ProfileConfig, profileName, profilePath, configDir string) *EcosystemStatus {
 	// Count MCP servers per pack via SourcePack provenance.
 	mcpPerPack := map[string]int{}
 	for _, srv := range profile.MCPServers {
@@ -1010,7 +1012,38 @@ func BuildEcosystemStatus(profile domain.Profile, profileName, profilePath, conf
 		es.TotalMCP += ps.MCPServers
 		es.Packs = append(es.Packs, ps)
 	}
+	for _, pe := range profileCfg.Packs {
+		if config.PackEnabled(pe.Enabled) {
+			continue
+		}
+		es.DisabledPacks = append(es.DisabledPacks, disabledPackStatus(configDir, pe))
+	}
 	return es
+}
+
+func disabledPackStatus(configDir string, pe config.PackEntry) PackStatus {
+	ps := PackStatus{Name: pe.Name}
+	packs, errs := ResolveProfilePacks(configDir, []config.PackEntry{pe})
+	if len(packs) == 0 {
+		ps.Error = strings.Join(errs, "; ")
+		return ps
+	}
+	return packStatusFromManifest(pe.Name, packs[0].Manifest)
+}
+
+func packStatusFromManifest(name string, manifest config.PackManifest) PackStatus {
+	return PackStatus{
+		Name:       name,
+		Version:    manifest.Version,
+		Rules:      len(manifest.Rules),
+		Agents:     len(manifest.Agents),
+		Workflows:  len(manifest.Workflows),
+		Skills:     len(manifest.Skills),
+		Hooks:      len(manifest.Hooks),
+		Plugins:    len(manifest.Plugins),
+		MCPServers: len(manifest.MCP),
+		Settings:   manifest.Configs.HasAnyConfigs(),
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -21,9 +22,21 @@ type loadedProfile struct {
 	configDir   string
 }
 
+type loadProfileOptions struct {
+	AllowNoEnabledPacks bool
+}
+
 // loadProfile resolves a profile from flags and sync-config defaults.
 // Returns (result, exitCode) where exitCode < 0 means success.
 func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.Writer) (loadedProfile, int) {
+	return loadProfileWithOptions(profileFlag, profilePathFlag, configDirFlag, stderr, loadProfileOptions{})
+}
+
+func loadProfileAllowNoEnabledPacks(profileFlag, profilePathFlag, configDirFlag string, stderr io.Writer) (loadedProfile, int) {
+	return loadProfileWithOptions(profileFlag, profilePathFlag, configDirFlag, stderr, loadProfileOptions{AllowNoEnabledPacks: true})
+}
+
+func loadProfileWithOptions(profileFlag, profilePathFlag, configDirFlag string, stderr io.Writer, opts loadProfileOptions) (loadedProfile, int) {
 	configDir := configDirFlag
 	if configDir == "" {
 		if d, err := config.DefaultConfigDir(config.HomeDir()); err == nil {
@@ -40,10 +53,14 @@ func loadProfile(profileFlag, profilePathFlag, configDirFlag string, stderr io.W
 		}
 	}
 
-	return loadProfileWithSyncConfig(profileFlag, profilePathFlag, configDir, syncCfg, stderr)
+	return loadProfileWithSyncConfigOptions(profileFlag, profilePathFlag, configDir, syncCfg, stderr, opts)
 }
 
 func loadProfileWithSyncConfig(profileFlag, profilePathFlag, configDir string, syncCfg config.SyncConfig, stderr io.Writer) (loadedProfile, int) {
+	return loadProfileWithSyncConfigOptions(profileFlag, profilePathFlag, configDir, syncCfg, stderr, loadProfileOptions{})
+}
+
+func loadProfileWithSyncConfigOptions(profileFlag, profilePathFlag, configDir string, syncCfg config.SyncConfig, stderr io.Writer, opts loadProfileOptions) (loadedProfile, int) {
 	profile := cmdutil.ResolveProfileName(profileFlag, syncCfg)
 
 	path, err := config.ResolveProfilePath(profilePathFlag, configDir, profile, config.HomeDir())
@@ -64,6 +81,15 @@ func loadProfileWithSyncConfig(profileFlag, profilePathFlag, configDir string, s
 		PrevInventories:   prevInventories,
 	})
 	if err != nil {
+		if opts.AllowNoEnabledPacks && errors.Is(err, config.ErrProfileNoEnabledPacks) {
+			return loadedProfile{
+				profileCfg:  profileCfg,
+				profileName: profile,
+				profilePath: path,
+				syncCfg:     syncCfg,
+				configDir:   configDir,
+			}, -1
+		}
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail
 	}

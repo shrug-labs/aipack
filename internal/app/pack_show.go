@@ -42,7 +42,8 @@ type PackShowEntry struct {
 	// manifest is populated at construction time so ContentPath / ContentSize
 	// can resolve nested authored files via PackManifest.RelPath. Unexported
 	// to stay out of JSON output.
-	manifest config.PackManifest
+	manifest     config.PackManifest
+	installQuiet bool
 }
 
 // ContentPath returns the absolute on-disk path of a content item, honoring
@@ -279,6 +280,7 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.CommitHash = m.CommitHash
 		entry.InstalledAt = m.InstalledAt
 		entry.LastCheckedAt = m.LastCheckedAt
+		entry.installQuiet = m.InstallQuiet
 		if isPinned(m) {
 			entry.Pin = m.Ref
 		}

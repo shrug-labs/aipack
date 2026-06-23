@@ -6,7 +6,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
-## [0.31.1] - 2026-06-16
+## [0.32.0]
+
+### Added
+
+- **`aipack status` and `aipack trace` now diagnose inactive profile content.** Status lists disabled profile packs separately while keeping totals scoped to enabled content, and status JSON adds `disabled_packs`. Trace now reports inactive matches from disabled packs, excluded content, and installed packs outside the profile with `profile_state`, blockers, and exact remediation commands.
+
+## [0.31.1]
 
 ### Added
 
@@ -16,13 +22,13 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 - **Skill helper scripts keep executable permissions during sync.** Copied skill assets with source execute bits now render as executable files and resync repairs mode drift when the file content is unchanged.
 
-## [0.31.0] - 2026-06-10
+## [0.31.0]
 
 ### Added
 
 - **`aipack config params` manages profile-scoped `{params.*}` values.** `list`, `get`, `set`, and `unset` use the active profile by default and accept `--profile` for explicit targeting. Existing `profile set-param` and `profile unset-param` commands remain available as compatibility aliases, while `aipack setup` now prints `config params set` remediation commands.
 
-## [0.30.1] - 2026-06-08
+## [0.30.1]
 
 ### Changed
 

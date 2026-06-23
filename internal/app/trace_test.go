@@ -4,8 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -151,6 +153,162 @@ func TestFindResource_MultiPack(t *testing.T) {
 	}
 	if src.Pack != "ops" {
 		t.Errorf("pack = %q, want %q", src.Pack, "ops")
+	}
+}
+
+func TestRunTrace_DisabledPackDiagnostic(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTraceRulePack(t, configDir, "disabled", "hidden")
+	f := false
+	profileCfg := config.ProfileConfig{
+		Packs: []config.PackEntry{{Name: "disabled", Enabled: &f}},
+	}
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), domain.Profile{}, TraceRequest{
+		TargetSpec:    TargetSpec{ConfigDir: configDir},
+		ProfileName:   "default",
+		ProfileConfig: profileCfg,
+		ResourceType:  "rule",
+		ResourceName:  "hidden",
+	}, testRegistry())
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+	if !result.Found || result.ProfileState != "pack_disabled" {
+		t.Fatalf("found/state = %v/%q, want true/pack_disabled: %+v", result.Found, result.ProfileState, result)
+	}
+	if len(result.Destinations) != 0 {
+		t.Fatalf("disabled resource should not have destinations: %+v", result.Destinations)
+	}
+	if len(result.Remediation) == 0 || result.Remediation[0] != "aipack pack enable disabled --profile default" {
+		t.Fatalf("remediation = %+v", result.Remediation)
+	}
+}
+
+func TestRunTrace_DisabledNonQuietMCPNeedsOnlyPackEnable(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTraceMCPPack(t, configDir, "disabled", "jira")
+	f := false
+	profileCfg := config.ProfileConfig{
+		Packs: []config.PackEntry{{Name: "disabled", Enabled: &f}},
+	}
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), domain.Profile{}, TraceRequest{
+		TargetSpec:    TargetSpec{ConfigDir: configDir},
+		ProfileName:   "default",
+		ProfileConfig: profileCfg,
+		ResourceType:  "mcp",
+		ResourceName:  "jira",
+	}, testRegistry())
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+	want := []string{
+		"aipack pack enable disabled --profile default",
+		"aipack sync --profile default",
+	}
+	if !slices.Equal(result.Remediation, want) {
+		t.Fatalf("remediation = %#v, want %#v", result.Remediation, want)
+	}
+	if got := len(result.Blockers); got != 1 {
+		t.Fatalf("blockers = %#v, want only the pack-disabled blocker", result.Blockers)
+	}
+}
+
+func TestRunTrace_InstalledNotInProfileDiagnostic(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTraceRulePack(t, configDir, "outside", "orphan")
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), domain.Profile{}, TraceRequest{
+		TargetSpec:   TargetSpec{ConfigDir: configDir},
+		ProfileName:  "default",
+		ResourceType: "rule",
+		ResourceName: "orphan",
+	}, testRegistry())
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+	if !result.Found || result.ProfileState != "installed_not_in_profile" {
+		t.Fatalf("found/state = %v/%q, want true/installed_not_in_profile: %+v", result.Found, result.ProfileState, result)
+	}
+	if result.Source == nil || result.Source.Pack != "outside" {
+		t.Fatalf("source = %+v, want outside pack", result.Source)
+	}
+}
+
+func TestRunTrace_QuietInstalledNotInProfileAddsSelectiveInclude(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	writeTraceRulePack(t, configDir, "outside", "orphan")
+	if err := config.SaveLockfile(config.LockfilePath(configDir), config.Lockfile{
+		Packs: map[string]config.InstalledPackMeta{
+			"outside": {InstallQuiet: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), domain.Profile{}, TraceRequest{
+		TargetSpec:   TargetSpec{ConfigDir: configDir},
+		ProfileName:  "default",
+		ResourceType: "rule",
+		ResourceName: "orphan",
+	}, testRegistry())
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+	want := []string{
+		"aipack pack add outside --profile default",
+		"aipack profile include orphan --kind rule --pack outside --profile default",
+		"aipack sync --profile default",
+	}
+	if !slices.Equal(result.Remediation, want) {
+		t.Fatalf("remediation = %#v, want %#v", result.Remediation, want)
+	}
+}
+
+func TestRunTrace_MissingDiagnostic(t *testing.T) {
+	t.Parallel()
+	result, err := RunTrace(context.Background(), engine.New(nil, nil), domain.Profile{}, TraceRequest{
+		TargetSpec:   TargetSpec{ConfigDir: t.TempDir()},
+		ProfileName:  "default",
+		ResourceType: "rule",
+		ResourceName: "absent",
+	}, testRegistry())
+	if err != nil {
+		t.Fatalf("RunTrace: %v", err)
+	}
+	if result.Found || result.ProfileState != "not_installed" {
+		t.Fatalf("found/state = %v/%q, want false/not_installed", result.Found, result.ProfileState)
+	}
+	if len(result.Blockers) == 0 {
+		t.Fatalf("missing diagnostic should include blockers: %+v", result)
+	}
+}
+
+func writeTraceRulePack(t *testing.T, configDir, packName, ruleName string) {
+	t.Helper()
+	packRoot := filepath.Join(configDir, "packs", packName)
+	if err := writeTestFile(filepath.Join(packRoot, "pack.json"), `{"schema_version":2,"name":"`+packName+`","root":"."}`); err != nil {
+		t.Fatal(err)
+	}
+	rule := "---\nname: " + ruleName + "\ndescription: sample rule\nmetadata:\n  owner: test\n  last_updated: 2026-06-22\n---\nbody\n"
+	if err := writeTestFile(filepath.Join(packRoot, "rules", ruleName+".md"), rule); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTraceMCPPack(t *testing.T, configDir, packName, serverName string) {
+	t.Helper()
+	packRoot := filepath.Join(configDir, "packs", packName)
+	if err := writeTestFile(filepath.Join(packRoot, "pack.json"), `{"schema_version":2,"name":"`+packName+`","root":".","mcp":["`+serverName+`"]}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestFile(filepath.Join(packRoot, "mcp", serverName+".json"), `{"name":"`+serverName+`","transport":"stdio","command":["true"]}`); err != nil {
+		t.Fatal(err)
 	}
 }
 
