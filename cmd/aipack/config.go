@@ -23,6 +23,7 @@ func (c *ConfigCmd) Help() string {
 	return `Manage aipack configuration, including sync defaults, .env values, and profile params.
 
 Examples:
+  aipack config defaults get
   aipack config defaults get auto_sync
   aipack config defaults set auto_sync true
   aipack config defaults set namespaced true
@@ -41,6 +42,7 @@ func (c *ConfigDefaultsCmd) Help() string {
 	return `Manage defaults in sync-config.yaml.
 
 Examples:
+  aipack config defaults get
   aipack config defaults get auto_sync
   aipack config defaults set auto_sync true
   aipack config defaults set namespaced true`
@@ -48,11 +50,11 @@ Examples:
 
 // ConfigDefaultsGetCmd prints scalar defaults from sync-config.yaml.
 type ConfigDefaultsGetCmd struct {
-	Key string `arg:"" help:"Setting key (profile, harnesses, scope, collision_strategy, auto_sync, namespaced)"`
+	Key string `arg:"" optional:"" help:"Setting key (profile, harnesses, scope, collision_strategy, auto_sync, namespaced). Omit to list all defaults."`
 }
 
 func (c *ConfigDefaultsGetCmd) Help() string {
-	return fmt.Sprintf(`Prints a scalar sync-config default.
+	return fmt.Sprintf(`Prints sync-config defaults.
 
 Supported settings:
   %s
@@ -60,6 +62,7 @@ Aliases:
   hyphenated names and defaults.<name> are accepted
 
 Examples:
+  aipack config defaults get
   aipack config defaults get profile
   aipack config defaults get harnesses
   aipack config defaults get auto_sync
@@ -72,16 +75,24 @@ func (c *ConfigDefaultsGetCmd) Run(_ context.Context, g *Globals) error {
 		return err
 	}
 
+	syncCfg, err := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(c.Key) == "" {
+		for _, spec := range configDefaultSpecs {
+			fmt.Fprintf(g.Stdout, "%s=%s\n", spec.name, spec.get(syncCfg))
+		}
+		return nil
+	}
+
 	key, ok := normalizeConfigDefaultKey(c.Key)
 	if !ok {
 		fmt.Fprintf(g.Stderr, "unknown config setting %q (supported: %s)\n", c.Key, supportedConfigDefaults())
 		return ExitError{Code: cmdutil.ExitUsage}
 	}
 
-	syncCfg, err := config.LoadSyncConfig(config.SyncConfigPath(cfgDir))
-	if err != nil {
-		return err
-	}
 	fmt.Fprintln(g.Stdout, configDefaultValue(syncCfg, key))
 	return nil
 }

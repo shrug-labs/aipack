@@ -117,6 +117,7 @@ registry_sources:         # managed by registry fetch
 Set scalar defaults from the CLI when you do not want to edit YAML directly:
 
 ```bash
+aipack config defaults get
 aipack config defaults get harnesses
 aipack config defaults set auto_sync true
 aipack config defaults set collision_strategy error

@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.32.1]
+
+### Changed
+
+- **`aipack config defaults get` without a key now lists all sync defaults.** The keyed form still prints the selected default value.
+
 ## [0.32.0]
 
 ### Added

@@ -51,9 +51,10 @@ aipack setup production
 
 ### config defaults
 
-Reads and sets scalar defaults in `sync-config.yaml` from the CLI. Supported keys are `profile`, `harnesses`, `scope`, `collision_strategy`, `auto_sync`, and `namespaced`; hyphenated names and `defaults.<name>` are accepted as aliases.
+Reads and sets scalar defaults in `sync-config.yaml` from the CLI. `get` without a key lists all defaults. Supported keys are `profile`, `harnesses`, `scope`, `collision_strategy`, `auto_sync`, and `namespaced`; hyphenated names and `defaults.<name>` are accepted as aliases.
 
 ```bash
+aipack config defaults get
 aipack config defaults get harnesses
 aipack config defaults set profile default
 aipack config defaults set harnesses codex,opencode

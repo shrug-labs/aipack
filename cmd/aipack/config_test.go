@@ -350,6 +350,30 @@ func TestConfigGetAutoSyncDefaultsFalse(t *testing.T) {
 	}
 }
 
+func TestConfigDefaultsGetWithoutKeyListsDefaults(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+
+	stdout, stderr, code := runApp(t, "config", "defaults", "get", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("config defaults get exit=%d, want %d; stderr=%s", code, cmdutil.ExitOK, stderr)
+	}
+
+	want := []string{
+		"profile=default",
+		"harnesses=codex",
+		"scope=global",
+		"collision_strategy=last-wins",
+		"auto_sync=false",
+		"namespaced=false",
+	}
+	for _, line := range want {
+		if !strings.Contains(stdout, line+"\n") {
+			t.Fatalf("config defaults get stdout = %q, want line %q", stdout, line)
+		}
+	}
+}
+
 func TestConfigDefaultsSetAndGetProfile(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
