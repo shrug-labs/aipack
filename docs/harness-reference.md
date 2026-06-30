@@ -95,9 +95,11 @@ Pack content uses `{env:VAR}` and `{env:VAR:-default}` placeholders. All harness
 | Workflows | `.claude/commands/<file>.md` | `~/.claude/commands/<file>.md` |
 | Skills | `.claude/skills/<dirname>/` | `~/.claude/skills/<dirname>/` |
 | MCP servers | `.mcp.json` | `~/.claude.json` |
-| Settings | `.claude/settings.local.json` | `~/.claude/settings.local.json` |
+| Settings | `.claude/settings.local.json` | `~/.claude/settings.json` |
 | Plugins | `.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` | `~/.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` |
-| Hooks | `.claude/settings.local.json` | `~/.claude/settings.local.json` |
+| Hooks | `.claude/settings.local.json` | `~/.claude/settings.json` |
+
+Claude Code only recognizes `settings.local.json` at project scope; the sole user-scope settings file is `~/.claude/settings.json`. At global scope, managed settings, hooks, and `enabledPlugins` therefore share `~/.claude/settings.json` (settings and plugins merge into a single three-way merge to avoid clobbering).
 
 Claude Code remote MCP transport rendering follows Claude's current config vocabulary: aipack `streamable-http` servers render as `type: "http"`, while `sse` servers render as `type: "sse"`.
 

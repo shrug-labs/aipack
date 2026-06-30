@@ -35,6 +35,43 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 		harness.PruneMapKeys(root, "mcpServers", ctx.ManagedMCPServers)
 	}
 
+	ownedFiles := []harness.OwnedFile{
+		{
+			Path: mcpPath, Format: harness.FormatJSON,
+			Strip: pruneMCPServers,
+			Reset: pruneMCPServers,
+		},
+		{
+			Path: settingsPath, Format: harness.FormatJSON,
+			Strip: func(root map[string]any, ctx harness.EditContext) {
+				stripManagedPermissions(root)
+				stripManagedHooks(root, ctx)
+			},
+			Reset: func(root map[string]any, ctx harness.EditContext) {
+				delete(root, "permissions")
+				stripManagedHooks(root, ctx)
+			},
+		},
+	}
+	// At global scope the managed settings file and the plugin settings file are
+	// both ~/.claude/settings.json. Registering a second OwnedFile for the same
+	// path would clobber the managed strip/reset in sync's path-keyed map (last
+	// entry wins), so only add the plugin OwnedFile when the paths differ. The
+	// managed strip/reset already preserve enabledPlugins (they touch only
+	// permissions and hooks), so the converged single entry is correct.
+	if pluginSettingsPath != settingsPath {
+		ownedFiles = append(ownedFiles, harness.OwnedFile{
+			Path: pluginSettingsPath, Format: harness.FormatJSON,
+			Strip: noopJSONEdit,
+			Reset: noopJSONEdit,
+		})
+	}
+	ownedFiles = append(ownedFiles, harness.OwnedFile{
+		Path: knownMarketplacesPath, Format: harness.FormatJSON,
+		Strip: noopJSONEdit,
+		Reset: noopJSONEdit,
+	})
+
 	l := harness.Layout{
 		ValidationRoots: []string{
 			filepath.Join(baseDir, paths.RulesDir),
@@ -52,34 +89,7 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 			filepath.Join(baseDir, paths.WorkflowsDir),
 			filepath.Join(baseDir, paths.SkillsDir),
 		},
-		OwnedFiles: []harness.OwnedFile{
-			{
-				Path: mcpPath, Format: harness.FormatJSON,
-				Strip: pruneMCPServers,
-				Reset: pruneMCPServers,
-			},
-			{
-				Path: settingsPath, Format: harness.FormatJSON,
-				Strip: func(root map[string]any, ctx harness.EditContext) {
-					stripManagedPermissions(root)
-					stripManagedHooks(root, ctx)
-				},
-				Reset: func(root map[string]any, ctx harness.EditContext) {
-					delete(root, "permissions")
-					stripManagedHooks(root, ctx)
-				},
-			},
-			{
-				Path: pluginSettingsPath, Format: harness.FormatJSON,
-				Strip: noopJSONEdit,
-				Reset: noopJSONEdit,
-			},
-			{
-				Path: knownMarketplacesPath, Format: harness.FormatJSON,
-				Strip: noopJSONEdit,
-				Reset: noopJSONEdit,
-			},
-		},
+		OwnedFiles: ownedFiles,
 	}
 	return l
 }
@@ -191,14 +201,32 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	hookTraceRefs := domain.TraceRefsForHooks(hooks)
 	hasManagedKeys := hasMCP || hasHooks
 	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
+	plugins := ctx.Profile.AllPlugins()
+
+	// At global scope settingsPath == pluginSettingsPath (both
+	// ~/.claude/settings.json). When a managed settings action also targets that
+	// file, emitting enabledPlugins as a second same-destination merge would
+	// clobber it (each merge bakes against the pre-write file, so the later write
+	// wins). Fold enabledPlugins into the managed action instead. User-added
+	// plugins survive: the three-way merge preserves enabledPlugins entries that
+	// were never in the managed overlay.
+	foldPlugins := settingsPath == pluginSettingsPath && len(plugins) > 0 &&
+		(decision.EmitSettings || decision.EmitMCP)
+	settingsLabel := filepath.Base(paths.SettingsFile)
+
 	if decision.EmitSettings {
 		out, err := RenderSettingsBytesWithRenderedHooks(base, ctx.Profile.MCPServers, renderedHooks)
 		if err != nil {
 			return fmt.Errorf("render settings bytes: %w", err)
 		}
+		if foldPlugins {
+			if out, err = InjectEnabledPlugins(out, plugins); err != nil {
+				return fmt.Errorf("inject enabledPlugins: %w", err)
+			}
+		}
 		f.Settings = append(f.Settings, domain.SettingsAction{
 			Dst: settingsPath, Desired: out, Harness: domain.HarnessClaudeCode,
-			Label: "settings.local.json", SourcePack: sp, MergeMode: true, TraceRefs: hookTraceRefs,
+			Label: settingsLabel, SourcePack: sp, MergeMode: true, TraceRefs: hookTraceRefs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
@@ -207,28 +235,34 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		if err != nil {
 			return fmt.Errorf("render managed settings bytes: %w", err)
 		}
+		if foldPlugins {
+			if out, err = InjectEnabledPlugins(out, plugins); err != nil {
+				return fmt.Errorf("inject enabledPlugins: %w", err)
+			}
+		}
 		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst: settingsPath, Desired: out, Harness: domain.HarnessClaudeCode,
-			Label: "settings.local.json (managed keys)", SourcePack: sp, MergeMode: true, TraceRefs: hookTraceRefs,
+			Label: settingsLabel + " (managed keys)", SourcePack: sp, MergeMode: true, TraceRefs: hookTraceRefs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	}
-	plugins := ctx.Profile.AllPlugins()
 	if len(plugins) > 0 {
-		out, err := RenderPluginSettingsBytes(plugins)
-		if err != nil {
-			return fmt.Errorf("render plugin settings bytes: %w", err)
+		if !foldPlugins {
+			out, err := RenderPluginSettingsBytes(plugins)
+			if err != nil {
+				return fmt.Errorf("render plugin settings bytes: %w", err)
+			}
+			f.MCP = append(f.MCP, domain.SettingsAction{
+				Dst:          pluginSettingsPath,
+				Desired:      out,
+				Harness:      domain.HarnessClaudeCode,
+				Label:        "settings.json (plugins)",
+				SourcePack:   compositePluginSourcePack(plugins),
+				MergeMode:    true,
+				AdditiveOnly: true,
+			})
+			f.Desired = append(f.Desired, filepath.Clean(pluginSettingsPath))
 		}
-		f.MCP = append(f.MCP, domain.SettingsAction{
-			Dst:          pluginSettingsPath,
-			Desired:      out,
-			Harness:      domain.HarnessClaudeCode,
-			Label:        "settings.json (plugins)",
-			SourcePack:   compositePluginSourcePack(plugins),
-			MergeMode:    true,
-			AdditiveOnly: true,
-		})
-		f.Desired = append(f.Desired, filepath.Clean(pluginSettingsPath))
 
 		if hasSourceMarketplace(plugins) {
 			out, err := RenderKnownMarketplacesBytes(home, plugins)

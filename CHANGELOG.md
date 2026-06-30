@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.32.2]
+
+### Fixed
+
+- **Claude Code hooks and permissions now load when synced at global scope.** They were written to `~/.claude/settings.local.json`, which Claude Code reads only at project scope, so globally synced hooks and managed permissions never took effect. They now sync to `~/.claude/settings.json` — the user-scope file Claude Code reads — three-way merged with `enabledPlugins` and your existing settings.
+
 ## [0.32.1]
 
 ### Changed

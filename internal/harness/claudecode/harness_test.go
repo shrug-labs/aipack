@@ -359,6 +359,86 @@ func TestPlan_Project_PluginsSettings(t *testing.T) {
 	}
 }
 
+func TestPlan_Global_SettingsToSettingsJSON_FoldsPlugins(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	ctx := engine.SyncContext{
+		Scope:     domain.ScopeGlobal,
+		TargetDir: home,
+		Home:      home,
+		Profile: domain.Profile{
+			Packs: []domain.Pack{{
+				Name: "p",
+				Hooks: []domain.Hook{{
+					ID:         "audit-bash",
+					SourcePack: "p",
+					Events: []domain.HookEvent{{
+						On:    domain.HookEventToolBefore,
+						Match: domain.HookMatch{Tool: "Bash"},
+						Handler: domain.HookHandler{
+							Type:    domain.HookHandlerTypeCommand,
+							Command: "echo audit",
+							Timeout: "5s",
+						},
+					}},
+				}},
+				Plugins: []domain.Plugin{
+					{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "p"},
+				},
+			}},
+		},
+	}
+
+	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	localPath := filepath.Join(home, ".claude", "settings.local.json")
+
+	// Managed hooks must target ~/.claude/settings.json; Claude Code does not
+	// read a user-level settings.local.json. Exactly one action may target the
+	// file — a second same-destination merge would clobber the first.
+	var managed *domain.SettingsAction
+	targeting := 0
+	for i := range f.Settings {
+		if f.Settings[i].Dst == localPath {
+			t.Errorf("global managed settings written to settings.local.json (Claude Code ignores it)")
+		}
+		if f.Settings[i].Dst == settingsPath {
+			managed = &f.Settings[i]
+			targeting++
+		}
+	}
+	for i := range f.MCP {
+		if f.MCP[i].Dst == localPath {
+			t.Errorf("global managed settings written to settings.local.json (Claude Code ignores it)")
+		}
+		if f.MCP[i].Dst == settingsPath {
+			targeting++
+		}
+	}
+	if managed == nil {
+		t.Fatalf("no managed settings action targeting %s; got Settings=%+v MCP=%+v", settingsPath, f.Settings, f.MCP)
+	}
+	if targeting != 1 {
+		t.Fatalf("expected exactly 1 action targeting %s, got %d (plugin fold failed — same-Dst actions would clobber)", settingsPath, targeting)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(managed.Desired, &root); err != nil {
+		t.Fatalf("unmarshal managed settings: %v\n%s", err, managed.Desired)
+	}
+	if _, ok := root["hooks"].(map[string]any); !ok {
+		t.Errorf("managed settings missing hooks: %v", root)
+	}
+	enabled, ok := root["enabledPlugins"].(map[string]any)
+	if !ok || enabled["linear@claude-plugins-official"] != true {
+		t.Errorf("managed settings missing folded enabledPlugins: %v", root["enabledPlugins"])
+	}
+}
+
 func TestPlan_Global_WritesToGlobalDirs(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

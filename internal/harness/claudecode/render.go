@@ -256,6 +256,36 @@ func RenderPluginSettingsBytes(plugins []domain.Plugin) ([]byte, error) {
 	return append(out, '\n'), nil
 }
 
+// InjectEnabledPlugins merges enabledPlugins entries into already-rendered
+// settings JSON, preserving every other key. Used at global scope, where Claude
+// Code exposes a single user settings file (~/.claude/settings.json): managed
+// keys (hooks, permissions) and enabledPlugins must share it rather than collide
+// as two same-destination merge actions.
+func InjectEnabledPlugins(settings []byte, plugins []domain.Plugin) ([]byte, error) {
+	if len(plugins) == 0 {
+		return settings, nil
+	}
+	root := map[string]any{}
+	if len(settings) > 0 {
+		if err := json.Unmarshal(settings, &root); err != nil {
+			return nil, err
+		}
+	}
+	enabled, _ := root["enabledPlugins"].(map[string]any)
+	if enabled == nil {
+		enabled = map[string]any{}
+	}
+	for _, p := range plugins {
+		enabled[p.Binding(defaultClaudePluginMarketplace)] = true
+	}
+	root["enabledPlugins"] = enabled
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
 // RenderKnownMarketplacesBytes renders source-prefixed marketplace registrations.
 func RenderKnownMarketplacesBytes(home string, plugins []domain.Plugin) ([]byte, error) {
 	marketplaces := map[string]knownMarketplace{}
