@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.32.3]
+
+### Fixed
+
+- **Claude Code settings documentation now distinguishes project and global targets.** Project sync writes settings and hooks to `.claude/settings.local.json`, while global sync writes them to `~/.claude/settings.json`, matching the v0.32.2 global hook and permission behavior.
+
 ## [0.32.2]
 
 ### Fixed

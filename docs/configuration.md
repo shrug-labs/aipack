@@ -267,7 +267,7 @@ Each entry in the ledger records a content digest (SHA256), the sync timestamp, 
 
 Each time `aipack sync` writes a settings file, it first snapshots the existing content into a `presync/` directory alongside the ledger. This enables `aipack restore` to undo the last sync's settings changes.
 
-Cache files are keyed by `<harness>--<filename>` (e.g., `claudecode--settings.local.json`). An `index.json` manifest maps cache keys to their original file paths. Only settings and drop-in plugin files are cached — content files (rules, agents, workflows, skills, hooks, plugin descriptors) are not.
+Cache files are keyed by `<harness>--<filename>` (for example, `claudecode--settings.local.json` for project Claude settings or `claudecode--settings.json` for global Claude settings). An `index.json` manifest maps cache keys to their original file paths. Only settings and drop-in plugin files are cached — content files (rules, agents, workflows, skills, hooks, plugin descriptors) are not.
 
 The cache is overwritten on every sync. `--dry-run` does not write cache files. `aipack restore --dry-run` previews what would be recovered.
 

@@ -34,7 +34,7 @@ aipack is the infrastructure layer. **Packs** are portable, versioned bundles of
 
 | Harness | Rules | Skills | Workflows | Agents | MCP Servers | Settings |
 |---------|-------|--------|-----------|--------|-------------|----------|
-| Claude Code | Individual files | Skill directories | Command files | Subagent files | `.mcp.json` | `settings.local.json` |
+| Claude Code | Individual files | Skill directories | Command files | Subagent files | `.mcp.json` project, `~/.claude.json` global | `settings.local.json` project, `settings.json` global |
 | OpenCode | Individual files | Skill directories | Command files | Individual files | `opencode.json` | `opencode.json` |
 | Codex | Flattened to `AGENTS.override.md` | Skill directories in `.codex/skills/` | Promoted to `.codex/skills/` | Native TOML in `.codex/agents/` | `config.toml` | `config.toml` |
 | Cline | Individual files | Skill directories | Individual files | Promoted to skill dirs | Global only | N/A |

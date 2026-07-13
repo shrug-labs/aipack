@@ -138,8 +138,8 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
 {
   "restored_files": [
     {
-      "cache_key": "claudecode--settings.local.json",
-      "original_path": "/Users/x/.claude/settings.local.json"
+      "cache_key": "claudecode--settings.json",
+      "original_path": "/Users/x/.claude/settings.json"
     }
   ]
 }

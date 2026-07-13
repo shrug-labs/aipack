@@ -560,7 +560,7 @@ String values in command handlers may use `{hook:root}`, `{pack:root}`, `{params
 
 Hook commands receive a JSON payload on stdin. The payload is harness-specific; simple side-effect hooks can ignore stdin.
 
-For Claude Code targets, sync merges portable hooks into `settings.local.json` under Claude Code's native `hooks` object. Managed hook groups are merged with user-authored hook groups and are stripped by exact managed overlay during save/clean.
+For Claude Code targets, sync merges portable hooks into Claude Code's native `hooks` object: `.claude/settings.local.json` at project scope and `~/.claude/settings.json` at global scope. Managed hook groups are merged with user-authored hook groups and are stripped by exact managed overlay during save/clean.
 
 For OpenCode targets, sync writes a generated server plugin at `.opencode/plugins/aipack-hooks.js` or `~/.config/opencode/plugins/aipack-hooks.js`. OpenCode auto-discovers files under `plugin/` and `plugins/`. The generated plugin maps `tool.before`, `tool.after`, and `compact.before` to native plugin hooks; `prompt.submit` maps through `chat.message`; `run.start` maps through the generic `event` hook when `event.type == "session.created"`. Portable `match.tool` and `match.source` fields are evaluated by the generated plugin.
 

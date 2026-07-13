@@ -13,7 +13,7 @@ For the CLI commands that trigger sync, see the [aipack reference](./aipack.md).
 | Workflows | Individual files in `.claude/commands/` | Individual files in `.opencode/commands/` | Promoted to skill dirs in `.codex/skills/` for round-trip capture | Individual files in `.clinerules/workflows/` |
 | Skills | Per-skill dirs in `.claude/skills/` | Per-skill dirs in `.opencode/skills/` + referenced via `skills.paths` in `opencode.json` | Per-skill dirs in `.codex/skills/` | Per-skill dirs in `.agents/skills/` |
 | Plugins | `enabledPlugins` in `.claude/settings.json`; source marketplaces in `~/.claude/plugins/known_marketplaces.json` | Not supported by first-class plugin references | `[plugins."<id>@<marketplace>"] enabled = true` in `config.toml` | Not supported |
-| Hooks | Native hook groups in `settings.local.json` | Generated server plugin in `plugins/aipack-hooks.js` | `.codex/hooks.json` + trust state in `config.toml` | Generated wrappers in `hooks/` |
+| Hooks | Native hook groups in `settings.local.json` at project scope or `settings.json` at global scope | Generated server plugin in `plugins/aipack-hooks.js` | `.codex/hooks.json` + trust state in `config.toml` | Generated wrappers in `hooks/` |
 
 ## Rendered content identity
 
@@ -51,7 +51,7 @@ Each harness controls MCP tool access differently. Some harnesses store permissi
 
 | Harness | Permission location | Visibility/allow format | Per-tool auto-approve | Deny format |
 |---------|-------------------|-------------------------|-----------------------|-------------|
-| Claude Code | `settings.local.json` `permissions.allow` / `permissions.deny` | `mcp__<server>__<tool>` patterns in `permissions.allow` (allow is already auto-approve) | same as allow — both `allowed_tools` and `always_allowed_tools` render to `permissions.allow` | `mcp__<server>__<tool>` patterns in `permissions.deny` |
+| Claude Code | Claude settings `permissions.allow` / `permissions.deny` (`settings.local.json` project, `settings.json` global) | `mcp__<server>__<tool>` patterns in `permissions.allow` (allow is already auto-approve) | same as allow — both `allowed_tools` and `always_allowed_tools` render to `permissions.allow` | `mcp__<server>__<tool>` patterns in `permissions.deny` |
 | Cline | Per-server in MCP JSON | `alwaysAllow: [...]` (Cline's only concept) | same as allow — both fields union into `alwaysAllow` | Not supported |
 | Codex | Per-server in TOML | `enabled_tools = [...]` (union of both fields) | `[mcp_servers.<name>.tools.<tool>] approval_mode = "approve"` — nested per-tool stanza emitted for each `always_allowed_tools` entry | `disabled_tools = [...]` |
 | OpenCode | `opencode.json` `tools` key (legacy, still supported) | `server_tool: true` per-tool (union of both fields) | not yet rendered — warning emitted, awaiting upstream syntax confirmation | `server_*: false` wildcard deny |
@@ -71,7 +71,7 @@ Each harness controls MCP tool access differently. Some harnesses store permissi
 
 | Harness | Settings file | Other config files | Format | Merge behavior |
 |---------|--------------|-------------|--------|----------------|
-| Claude Code | `.claude/settings.local.json`; `.claude/settings.json` for first-class plugins | `.mcp.json` | JSON | **Always three-way merge** — user permissions preserved, only `mcp__*` entries managed. Plugin enablement is additive-only. |
+| Claude Code | `.claude/settings.local.json` project; `~/.claude/settings.json` global; `.claude/settings.json` for project first-class plugins | `.mcp.json` | JSON | **Always three-way merge** — user permissions preserved, only `mcp__*` entries managed. Plugin enablement is additive-only. |
 | OpenCode | `.opencode/opencode.json` | `.opencode/oh-my-opencode.json`; `.opencode/plugins/aipack-hooks.js` | JSON settings + generated JS hooks | Template + managed keys three-way merge. With `--skip-settings`: managed keys only. |
 | Codex | `.codex/config.toml` | `.codex/hooks.json` | TOML settings + rendered JSON hooks | Template + MCP/plugin/hook trust-state three-way merge. With `--skip-settings`: `mcp_servers`, agents, plugins, and `hooks.state` managed keys only. Plugin enablement is additive-only. |
 | Cline | None | `cline_mcp_settings.json` (written to VS Code + standalone Cline global paths); generated hook wrappers | JSON MCP + generated hook scripts | Generated from inventory (no base template). Always synced |
@@ -166,9 +166,9 @@ First-class plugin references are additive-only. Save and clean do not remove pl
 - `CLAUDE.managed.md` is no longer written. On first sync after upgrade, it is automatically removed as a stale managed file. `CLAUDE.md` is no longer touched.
 - Global scope syncs to `~/.claude/{rules,agents,skills,commands}/`.
 - Save/capture normalizes Claude Code's native `type: "http"` MCP entries back to aipack `streamable-http`.
-- `settings.local.json` always uses three-way merge, even without `--skip-settings`. User-controlled permissions (non-`mcp__` prefix) are always preserved in both `allow` and `deny` arrays.
+- Claude settings always use three-way merge, even without `--skip-settings`. Project sync writes `.claude/settings.local.json`; global sync writes `~/.claude/settings.json`. User-controlled permissions (non-`mcp__` prefix) are always preserved in both `allow` and `deny` arrays.
 - Plugin references write `enabledPlugins` in `.claude/settings.json`. Source-prefixed marketplaces such as `github:owner/marketplace` are registered in `~/.claude/plugins/known_marketplaces.json`.
-- Pack hooks merge into `settings.local.json` under Claude Code's native `hooks` object. AIPack removes only prior managed hook groups, preserving user-authored groups and user-edited former managed groups. Portable `match.tool`/`match.source` pass through verbatim — Claude Code matches them as regular expressions. A handler with only `command_windows` is omitted when synced on a non-Windows host.
+- Pack hooks merge into Claude Code's native `hooks` object in `.claude/settings.local.json` for project sync or `~/.claude/settings.json` for global sync. AIPack removes only prior managed hook groups, preserving user-authored groups and user-edited former managed groups. Portable `match.tool`/`match.source` pass through verbatim — Claude Code matches them as regular expressions. A handler with only `command_windows` is omitted when synced on a non-Windows host.
 - `permissions.deny` blocks tools entirely (deny > ask > allow precedence). Unlike OpenCode's `server_*: false` wildcard, Claude Code cannot use wildcard deny patterns because deny always takes precedence over allow regardless of specificity. Only explicit per-tool deny entries are rendered from `disabled_tools` in the profile config.
 
 **OpenCode**
