@@ -700,6 +700,99 @@ func TestPackUpdate_MutualExclusion(t *testing.T) {
 	}
 }
 
+func TestPackUpdate_DryRunJSON_StableReportAndNoLockfileMutation(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	sourceDir := t.TempDir()
+	writePackManifestCmd(t, sourceDir, "demo")
+	if err := app.PackInstall(context.Background(), app.PackInstallRequest{
+		PackPath:  sourceDir,
+		ConfigDir: configDir,
+		Link:      true,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := config.LockfilePath(configDir)
+	before, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runApp(t, "pack", "update", "--all", "--dry-run", "--json", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("exit=%d stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	var report app.PackUpdateReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if report.SchemaVersion != 1 || !report.DryRun {
+		t.Fatalf("metadata = %+v", report)
+	}
+	if len(report.Results) != 1 || report.Results[0].Name != "demo" || report.Results[0].Status != app.StatusUpToDate {
+		t.Fatalf("results = %+v", report.Results)
+	}
+	if report.Summary.Total != 1 || report.Summary.UpToDate != 1 {
+		t.Fatalf("summary = %+v", report.Summary)
+	}
+	if !slices.Equal(report.Results[0].Bundled.Available.New, []domain.BundledCategory{}) {
+		t.Fatalf("bundled.available.new = %v", report.Results[0].Bundled.Available.New)
+	}
+	after, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("dry-run JSON mutated aipack.lock")
+	}
+}
+
+func TestPackUpdate_JSONRequiresDryRun(t *testing.T) {
+	t.Parallel()
+	_, stderr, code := runApp(t, "pack", "update", "--all", "--json")
+	if code == cmdutil.ExitOK {
+		t.Fatal("expected --json without --dry-run to fail")
+	}
+	if !strings.Contains(stderr, "--json requires --dry-run") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestPackUpdate_DryRunJSON_EmitsReportBeforeErrorExit(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	sourceDir := filepath.Join(t.TempDir(), "source")
+	if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifestCmd(t, sourceDir, "broken")
+	if err := app.PackInstall(context.Background(), app.PackInstallRequest{
+		PackPath:  sourceDir,
+		ConfigDir: configDir,
+		Link:      true,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, code := runApp(t, "pack", "update", "--all", "--dry-run", "--json", "--config-dir", configDir)
+	if code != cmdutil.ExitFail {
+		t.Fatalf("exit=%d stdout=%s", code, stdout)
+	}
+	var report app.PackUpdateReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("nonzero exit did not preserve valid JSON: %v\n%s", err, stdout)
+	}
+	if len(report.Results) != 1 || report.Results[0].Name != "broken" || report.Results[0].Status != app.StatusError {
+		t.Fatalf("results = %+v", report.Results)
+	}
+	if report.Summary.Error != 1 {
+		t.Fatalf("summary = %+v", report.Summary)
+	}
+}
+
 // TestPackInstall_NonSemverVersionTreatedAsLiteralRef verifies that
 // `pack install --version main` is dispatched as a literal ref through
 // the clone path rather than rejected at the CLI validation gate. The

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,28 @@ func TestBundledCandidates_Filter(t *testing.T) {
 	var nilBC *BundledCandidates
 	if got := nilBC.Filter(domain.BundledAll()); got != nil {
 		t.Errorf("nil receiver should return nil, got %+v", got)
+	}
+}
+
+func TestBundledCandidates_DistinguishesNewAndPreviouslyDeclined(t *testing.T) {
+	t.Parallel()
+	bc := &BundledCandidates{
+		Profiles:           []string{"team"},
+		Registries:         []string{"catalog"},
+		PreviouslyDeclined: []domain.BundledCategory{domain.BundledRegistries},
+	}
+	if got := bc.NewCategories(); !slices.Equal(got, []domain.BundledCategory{domain.BundledProfiles}) {
+		t.Fatalf("NewCategories() = %v", got)
+	}
+	if got := bc.DeclinedCategories(); !slices.Equal(got, []domain.BundledCategory{domain.BundledRegistries}) {
+		t.Fatalf("DeclinedCategories() = %v", got)
+	}
+	filtered := bc.Filter(domain.NewBundledSet(domain.BundledProfiles))
+	if filtered == nil {
+		t.Fatal("expected declined registry candidate to remain")
+	}
+	if got := filtered.DeclinedCategories(); !slices.Equal(got, []domain.BundledCategory{domain.BundledRegistries}) {
+		t.Fatalf("filtered declined categories = %v", got)
 	}
 }
 

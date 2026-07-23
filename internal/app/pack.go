@@ -729,6 +729,7 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 	if effectiveWith == nil {
 		effectiveWith = domain.NewBundledSet()
 	}
+	installCandidates := diffBundledCandidates(result.manifest, effectiveWith).Filter(effectiveWith)
 
 	if err := applyWithFilter(result.destDir, &result.manifest, effectiveWith); err != nil {
 		err = fmt.Errorf("applying content filter: %w", err)
@@ -752,6 +753,7 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 
 	origin := archiveOrigin(req.URL)
 	approvedList, declinedList := buildPrefsLists(effectiveWith)
+	installCandidates.markPreviouslyDeclined(declinedList)
 	meta := config.InstalledPackMeta{
 		Origin: origin, Method: config.MethodArchive, InstalledAt: now.UTC().Format(time.RFC3339),
 		SubPath: req.SubPath, ContentPaths: req.ContentPaths,
@@ -766,7 +768,11 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 	}
 
 	packWarnMCPServers(result.manifest, stdout)
-	_, _ = saveIntegrity(destDir)
+	installedIntegrity, integrityErr := saveIntegrity(destDir)
+	// Observation state is disposable. A seed failure must not turn a
+	// successful install into a failure; the next update simply does a full
+	// semantic comparison.
+	_ = seedArchiveObservation(req, result, origin, effectiveWith, installCandidates, installedIntegrity, integrityErr)
 	installBundledContent(req.ConfigDir, destDir, result.manifest, effectiveWith, stdout)
 
 	if req.Add {
@@ -783,7 +789,51 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 	return nil
 }
 
+func seedArchiveObservation(
+	req PackInstallRequest,
+	result packInstallResult,
+	origin string,
+	effectiveWith domain.BundledSet,
+	candidates *BundledCandidates,
+	installedIntegrity IntegrityManifest,
+	integrityErr error,
+) error {
+	if integrityErr != nil {
+		return integrityErr
+	}
+	integrity, err := integrityDigest(installedIntegrity)
+	if err != nil {
+		return err
+	}
+	selection, err := archiveSelectionDigest(effectiveWith)
+	if err != nil {
+		return err
+	}
+	key := makeArchiveObservationKey(origin, req.SubPath, req.ContentPaths, selection, integrity)
+	current := PackUpdateResult{
+		Name:              result.name,
+		Method:            config.MethodArchive,
+		Status:            StatusUpToDate,
+		Message:           "archive content unchanged at " + origin,
+		BundledCandidates: candidates,
+	}
+	return saveArchiveObservation(
+		req.ConfigDir,
+		result.name,
+		newArchiveObservation(key, result.archiveFetch, integrity, current),
+	)
+}
+
 func packFetchArchive(ctx context.Context, req PackInstallRequest, stdout io.Writer) (packInstallResult, error) {
+	return packFetchArchiveWithOptions(ctx, req, stdout, source.HTTPArchiveOptions{})
+}
+
+func packFetchArchiveWithOptions(
+	ctx context.Context,
+	req PackInstallRequest,
+	stdout io.Writer,
+	opts source.HTTPArchiveOptions,
+) (packInstallResult, error) {
 	archiveDir, err := makePackTempDir(req.ConfigDir, "archive-*")
 	if err != nil {
 		err = fmt.Errorf("creating temp dir: %w", err)
@@ -802,7 +852,8 @@ func packFetchArchive(ctx context.Context, req PackInstallRequest, stdout io.Wri
 		}
 	}
 	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseExtracting})
-	if err := source.FetchArchive(ctx, req.URL, archiveDir, source.HTTPArchiveOptions{}); err != nil {
+	fetch, err := source.FetchArchiveObserved(ctx, req.URL, archiveDir, opts)
+	if err != nil {
 		err = fmt.Errorf("fetching archive %s: %w", req.URL, err)
 		if stdout != nil {
 			if req.Name == "" {
@@ -812,6 +863,9 @@ func packFetchArchive(ctx context.Context, req PackInstallRequest, stdout io.Wri
 			}
 		}
 		return packInstallResult{}, err
+	}
+	if fetch.NotModified {
+		return packInstallResult{method: config.MethodArchive, archiveFetch: fetch}, nil
 	}
 
 	var packRoot string
@@ -857,7 +911,10 @@ func packFetchArchive(ctx context.Context, req PackInstallRequest, stdout io.Wri
 		}
 		return packInstallResult{}, err
 	}
-	return packInstallResult{name: name, destDir: staging, method: config.MethodArchive, manifest: manifest}, nil
+	return packInstallResult{
+		name: name, destDir: staging, method: config.MethodArchive, manifest: manifest,
+		archiveFetch: fetch,
+	}, nil
 }
 
 func archiveOrigin(archiveSource string) string {
@@ -1006,11 +1063,12 @@ func listArchivePacks(root string) string {
 // The manifest is always unfiltered — callers apply applyWithFilter after
 // computing any diffs they need against the full source content.
 type packInstallResult struct {
-	name       string
-	destDir    string
-	method     string
-	manifest   config.PackManifest
-	commitHash string
+	name         string
+	destDir      string
+	method       string
+	manifest     config.PackManifest
+	commitHash   string
+	archiveFetch source.ArchiveFetchResult
 }
 
 type packCloneOptions struct {

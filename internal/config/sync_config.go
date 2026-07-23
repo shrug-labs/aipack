@@ -18,10 +18,10 @@ const SyncConfigSchemaVersion = 1
 // RegistrySourceEntry describes a remote registry source for fetching.
 // Ref presence implies git-based fetch; otherwise HTTP GET.
 type RegistrySourceEntry struct {
-	Name string `yaml:"name"`
-	URL  string `yaml:"url"`
-	Ref  string `yaml:"ref,omitempty"`  // git ref (branch/tag); presence implies git-based fetch
-	Path string `yaml:"path,omitempty"` // file path within repo (git only); default: registry.yaml
+	Name string `yaml:"name" json:"name"`
+	URL  string `yaml:"url" json:"url"`
+	Ref  string `yaml:"ref,omitempty" json:"ref,omitempty"`   // git ref (branch/tag); presence implies git-based fetch
+	Path string `yaml:"path,omitempty" json:"path,omitempty"` // file path within repo (git only); default: registry.yaml
 }
 
 // Install method constants for InstalledPackMeta.Method.

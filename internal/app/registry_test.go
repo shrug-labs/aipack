@@ -356,6 +356,44 @@ func TestRegistryFetch_CachesRemoteRegistry(t *testing.T) {
 	}
 }
 
+func TestRegistryFetch_SkipsSyntheticEmbeddedSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sc := config.SyncConfig{SchemaVersion: config.SyncConfigSchemaVersion}
+	sc.RegistrySources = []config.RegistrySourceEntry{
+		{Name: embeddedRegistrySourceName, URL: "embedded://sync"},
+		{Name: "team", URL: "https://example.com/team.yaml"},
+	}
+	if err := config.SaveSyncConfig(config.SyncConfigPath(dir), sc); err != nil {
+		t.Fatal(err)
+	}
+
+	var fetched []string
+	fetch := func(url string) ([]byte, error) {
+		fetched = append(fetched, url)
+		return []byte(testRemoteRegistryYAML), nil
+	}
+	gitFetch := func(repo, _, _ string) ([]byte, error) {
+		fetched = append(fetched, repo)
+		return []byte(testRemoteRegistryYAML), nil
+	}
+	if err := RegistryFetch(context.Background(), RegistryFetchRequest{
+		ConfigDir:  dir,
+		FetchFn:    fetch,
+		GitFetchFn: gitFetch,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, rawURL := range fetched {
+		if strings.HasPrefix(rawURL, "embedded://") {
+			t.Fatalf("synthetic source was fetched: %q", rawURL)
+		}
+	}
+	if len(fetched) == 0 {
+		t.Fatal("expected real registry sources to be fetched")
+	}
+}
+
 func TestRegistryFetch_SavesSourceToSyncConfig(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

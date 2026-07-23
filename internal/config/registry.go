@@ -83,6 +83,22 @@ type Registry struct {
 	Collections   map[string]RegistryCollection `yaml:"collections,omitempty"`
 }
 
+// RegistryEntryProvenance records which configured registry source won a
+// first-seen-wins merge and which later sources were shadowed by it.
+type RegistryEntryProvenance struct {
+	Winner   RegistrySourceEntry   `json:"winner"`
+	Shadowed []RegistrySourceEntry `json:"shadowed"`
+}
+
+// MergedRegistry preserves the ordinary merged catalog alongside source
+// provenance. Registry remains the compatibility view consumed by existing
+// install and search paths.
+type MergedRegistry struct {
+	Registry             Registry                           `json:"registry"`
+	PackProvenance       map[string]RegistryEntryProvenance `json:"pack_provenance"`
+	CollectionProvenance map[string]RegistryEntryProvenance `json:"collection_provenance"`
+}
+
 // RegistryEntry describes a pack available in the registry.
 type RegistryEntry struct {
 	Method       string                         `yaml:"method,omitempty" json:"method,omitempty"`
@@ -356,6 +372,12 @@ func SourceCachePath(configDir, name string) string {
 	return filepath.Join(RegistriesCacheDir(configDir), name+".yaml")
 }
 
+// IsEmbeddedRegistrySource reports whether a registry source is compiled into
+// aipack rather than fetched into the ordinary source cache.
+func IsEmbeddedRegistrySource(src RegistrySourceEntry) bool {
+	return strings.HasPrefix(src.URL, "embedded://")
+}
+
 // LoadMergedRegistry loads all cached source registries, producing a unified
 // in-memory view. Sources are merged in registry_sources list order;
 // first-seen wins for pack name conflicts.
@@ -365,11 +387,9 @@ func LoadMergedRegistry(configDir string) (Registry, error) {
 		Packs:         make(map[string]RegistryEntry),
 		Collections:   make(map[string]RegistryCollection),
 	}
-
 	sc, _ := LoadSyncConfig(SyncConfigPath(configDir))
 	for _, src := range sc.RegistrySources {
-		cachePath := SourceCachePath(configDir, src.Name)
-		cached, err := LoadRegistry(cachePath)
+		cached, err := LoadRegistry(SourceCachePath(configDir, src.Name))
 		if err != nil {
 			continue
 		}
@@ -384,8 +404,93 @@ func LoadMergedRegistry(configDir string) (Registry, error) {
 			}
 		}
 	}
-
 	return merged, nil
+}
+
+// LoadPackRegistryProvenance returns merged entries and provenance only for
+// requested pack names. It avoids materializing unrelated registry entries for
+// update reports.
+func LoadPackRegistryProvenance(configDir string, names []string) (map[string]RegistryEntry, map[string]RegistryEntryProvenance) {
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[name] = struct{}{}
+	}
+	entries := make(map[string]RegistryEntry, len(wanted))
+	provenance := make(map[string]RegistryEntryProvenance, len(wanted))
+	sc, _ := LoadSyncConfig(SyncConfigPath(configDir))
+	for _, src := range sc.RegistrySources {
+		cached, err := LoadRegistry(SourceCachePath(configDir, src.Name))
+		if err != nil {
+			continue
+		}
+		for name := range wanted {
+			entry, ok := cached.Packs[name]
+			if !ok {
+				continue
+			}
+			if _, exists := entries[name]; !exists {
+				entries[name] = entry
+				provenance[name] = RegistryEntryProvenance{Winner: src, Shadowed: []RegistrySourceEntry{}}
+				continue
+			}
+			item := provenance[name]
+			item.Shadowed = append(item.Shadowed, src)
+			provenance[name] = item
+		}
+	}
+	return entries, provenance
+}
+
+// LoadMergedRegistryWithProvenance loads the unified first-seen-wins registry
+// while retaining the winning and shadowed source coordinates for every name.
+func LoadMergedRegistryWithProvenance(configDir string) (MergedRegistry, error) {
+	merged := Registry{
+		SchemaVersion: RegistrySchemaVersion,
+		Packs:         make(map[string]RegistryEntry),
+		Collections:   make(map[string]RegistryCollection),
+	}
+	result := MergedRegistry{
+		Registry:             merged,
+		PackProvenance:       make(map[string]RegistryEntryProvenance),
+		CollectionProvenance: make(map[string]RegistryEntryProvenance),
+	}
+
+	sc, _ := LoadSyncConfig(SyncConfigPath(configDir))
+	for _, src := range sc.RegistrySources {
+		cachePath := SourceCachePath(configDir, src.Name)
+		cached, err := LoadRegistry(cachePath)
+		if err != nil {
+			continue
+		}
+		for name, entry := range cached.Packs {
+			if _, exists := result.Registry.Packs[name]; !exists {
+				result.Registry.Packs[name] = entry
+				result.PackProvenance[name] = RegistryEntryProvenance{
+					Winner:   src,
+					Shadowed: []RegistrySourceEntry{},
+				}
+			} else {
+				provenance := result.PackProvenance[name]
+				provenance.Shadowed = append(provenance.Shadowed, src)
+				result.PackProvenance[name] = provenance
+			}
+		}
+		for name, entry := range cached.Collections {
+			if _, exists := result.Registry.Collections[name]; !exists {
+				result.Registry.Collections[name] = entry
+				result.CollectionProvenance[name] = RegistryEntryProvenance{
+					Winner:   src,
+					Shadowed: []RegistrySourceEntry{},
+				}
+			} else {
+				provenance := result.CollectionProvenance[name]
+				provenance.Shadowed = append(provenance.Shadowed, src)
+				result.CollectionProvenance[name] = provenance
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // DeriveSourceName extracts a short source name from a URL and optional

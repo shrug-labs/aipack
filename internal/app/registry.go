@@ -29,15 +29,42 @@ type RegistryListRequest struct {
 
 // RegistrySearchResult describes a pack found in the registry.
 type RegistrySearchResult struct {
-	Name      string `json:"name"`
-	Installed bool   `json:"installed"`
+	Name       string                          `json:"name"`
+	Installed  bool                            `json:"installed"`
+	Provenance *config.RegistryEntryProvenance `json:"-"`
 	config.RegistryEntry
+}
+
+func (r RegistrySearchResult) MarshalJSON() ([]byte, error) {
+	source, shadowed := registryProvenanceJSON(r.Provenance)
+	return json.Marshal(struct {
+		Name      string                       `json:"name"`
+		Installed bool                         `json:"installed"`
+		Source    *config.RegistrySourceEntry  `json:"source,omitempty"`
+		Shadowed  []config.RegistrySourceEntry `json:"shadowed_sources"`
+		config.RegistryEntry
+	}{
+		Name: r.Name, Installed: r.Installed, Source: source, Shadowed: shadowed, RegistryEntry: r.RegistryEntry,
+	})
 }
 
 // RegistryCollectionResult describes a collection found in the registry.
 type RegistryCollectionResult struct {
-	Name string `json:"name"`
+	Name       string                          `json:"name"`
+	Provenance *config.RegistryEntryProvenance `json:"-"`
 	config.RegistryCollection
+}
+
+func (r RegistryCollectionResult) MarshalJSON() ([]byte, error) {
+	source, shadowed := registryProvenanceJSON(r.Provenance)
+	return json.Marshal(struct {
+		Name     string                       `json:"name"`
+		Source   *config.RegistrySourceEntry  `json:"source,omitempty"`
+		Shadowed []config.RegistrySourceEntry `json:"shadowed_sources"`
+		config.RegistryCollection
+	}{
+		Name: r.Name, Source: source, Shadowed: shadowed, RegistryCollection: r.RegistryCollection,
+	})
 }
 
 // RegistryValidateResult describes semantic validation of one registry file.
@@ -115,22 +142,22 @@ func RegistryValidate(path string) (RegistryValidateResult, error) {
 
 // RegistryList returns all packs in the registry, sorted by name.
 func RegistryList(req RegistryListRequest) ([]RegistrySearchResult, error) {
-	reg, err := loadRegistryForRequest(req)
+	merged, err := loadRegistryForRequestWithProvenance(req)
 	if err != nil {
 		return nil, err
 	}
-	results := registryEntriesToResults(reg)
+	results := registryEntriesToResults(merged.Registry, merged.PackProvenance)
 	markInstalled(results, req.ConfigDir)
 	return results, nil
 }
 
 // RegistrySearch returns packs whose name or description match the query (case-insensitive substring).
 func RegistrySearch(req RegistryListRequest, query string) ([]RegistrySearchResult, error) {
-	reg, err := loadRegistryForRequest(req)
+	merged, err := loadRegistryForRequestWithProvenance(req)
 	if err != nil {
 		return nil, err
 	}
-	all := registryEntriesToResults(reg)
+	all := registryEntriesToResults(merged.Registry, merged.PackProvenance)
 	markInstalled(all, req.ConfigDir)
 	q := strings.ToLower(query)
 	var matched []RegistrySearchResult
@@ -144,11 +171,11 @@ func RegistrySearch(req RegistryListRequest, query string) ([]RegistrySearchResu
 
 // RegistryCollectionList returns all collections in the registry, sorted by name.
 func RegistryCollectionList(req RegistryListRequest) ([]RegistryCollectionResult, error) {
-	reg, err := loadRegistryForRequest(req)
+	merged, err := loadRegistryForRequestWithProvenance(req)
 	if err != nil {
 		return nil, err
 	}
-	return registryCollectionsToResults(reg), nil
+	return registryCollectionsToResults(merged.Registry, merged.CollectionProvenance), nil
 }
 
 // RegistryCollectionLookup returns the registry collection for a collection by name.
@@ -289,6 +316,18 @@ func loadRegistryForRequest(req RegistryListRequest) (config.Registry, error) {
 	return config.LoadMergedRegistry(req.ConfigDir)
 }
 
+func loadRegistryForRequestWithProvenance(req RegistryListRequest) (config.MergedRegistry, error) {
+	if req.RegistryPath != "" {
+		reg, err := config.LoadRegistry(req.RegistryPath)
+		return config.MergedRegistry{
+			Registry:             reg,
+			PackProvenance:       map[string]config.RegistryEntryProvenance{},
+			CollectionProvenance: map[string]config.RegistryEntryProvenance{},
+		}, err
+	}
+	return config.LoadMergedRegistryWithProvenance(req.ConfigDir)
+}
+
 // RegistrySourceInfo describes a configured registry source for display.
 type RegistrySourceInfo struct {
 	Name   string `json:"name"`
@@ -414,7 +453,15 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 	sources = appendMissingDefaultRegistrySources(sources, config.DefaultRegistrySources())
 
 	var totalPacks, succeeded int
+	fetchable := 0
 	for _, src := range sources {
+		// Synthetic embedded sources are materialized from installed pack
+		// content. They have no remote transport and must never be handed to
+		// the HTTP fetcher.
+		if config.IsEmbeddedRegistrySource(src) {
+			continue
+		}
+		fetchable++
 		oneReq := RegistryFetchRequest{
 			ConfigDir:  req.ConfigDir,
 			URL:        src.URL,
@@ -434,7 +481,7 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 	}
 
 	if succeeded == 0 {
-		return fmt.Errorf("all %d registry source(s) failed to fetch", len(sources))
+		return fmt.Errorf("all %d registry source(s) failed to fetch", fetchable)
 	}
 
 	sc.RegistrySources = orderRegistrySources(sc.RegistrySources, sources)
@@ -444,8 +491,8 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 		return fmt.Errorf("saving sync-config: %w", err)
 	}
 
-	if len(sources) > 1 && stdout != nil {
-		fmt.Fprintf(stdout, "%d source(s), %d total pack(s)\n", len(sources), totalPacks)
+	if fetchable > 1 && stdout != nil {
+		fmt.Fprintf(stdout, "%d source(s), %d total pack(s)\n", fetchable, totalPacks)
 	}
 	return nil
 }
@@ -1009,11 +1056,12 @@ func extractMCPServerFromFile(path string) (index.Resource, error) {
 	}, nil
 }
 
-func registryEntriesToResults(reg config.Registry) []RegistrySearchResult {
+func registryEntriesToResults(reg config.Registry, provenance map[string]config.RegistryEntryProvenance) []RegistrySearchResult {
 	results := make([]RegistrySearchResult, 0, len(reg.Packs))
 	for name, entry := range reg.Packs {
 		results = append(results, RegistrySearchResult{
 			Name:          name,
+			Provenance:    projectRegistryProvenance(provenance, name),
 			RegistryEntry: entry,
 		})
 	}
@@ -1023,11 +1071,12 @@ func registryEntriesToResults(reg config.Registry) []RegistrySearchResult {
 	return results
 }
 
-func registryCollectionsToResults(reg config.Registry) []RegistryCollectionResult {
+func registryCollectionsToResults(reg config.Registry, provenance map[string]config.RegistryEntryProvenance) []RegistryCollectionResult {
 	results := make([]RegistryCollectionResult, 0, len(reg.Collections))
 	for name, entry := range reg.Collections {
 		results = append(results, RegistryCollectionResult{
 			Name:               name,
+			Provenance:         projectRegistryProvenance(provenance, name),
 			RegistryCollection: entry,
 		})
 	}
@@ -1035,6 +1084,23 @@ func registryCollectionsToResults(reg config.Registry) []RegistryCollectionResul
 		return cmp.Compare(a.Name, b.Name)
 	})
 	return results
+}
+
+func projectRegistryProvenance(entries map[string]config.RegistryEntryProvenance, name string) *config.RegistryEntryProvenance {
+	entry, ok := entries[name]
+	if !ok {
+		return nil
+	}
+	entry.Shadowed = slices.Clone(entry.Shadowed)
+	return &entry
+}
+
+func registryProvenanceJSON(provenance *config.RegistryEntryProvenance) (*config.RegistrySourceEntry, []config.RegistrySourceEntry) {
+	if provenance == nil {
+		return nil, []config.RegistrySourceEntry{}
+	}
+	source := provenance.Winner
+	return &source, slices.Clone(provenance.Shadowed)
 }
 
 // markInstalled sets the Installed flag for packs that exist in the packs directory.

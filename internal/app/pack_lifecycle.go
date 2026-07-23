@@ -132,6 +132,9 @@ func PackDeleteWithOptions(eng *engine.Engine, req PackDeleteRequest, stdout io.
 		fmt.Fprintf(stdout, "Removed: %s\n", destDir)
 		result.SourceRemoved = true
 	}
+	if err := deleteArchiveObservation(req.ConfigDir, name); err != nil {
+		fmt.Fprintf(stdout, "Warning: failed to remove archive observation for pack %q: %v\n", name, err)
+	}
 	if inLockfile {
 		if err := packClearOrigin(req.ConfigDir, name); err != nil {
 			return result, fmt.Errorf("clearing lockfile entry: %w", err)

@@ -36,6 +36,37 @@ func EnsureLockfileMigrated(configDir string) (Lockfile, error) {
 	return LoadLockfile(LockfilePath(configDir))
 }
 
+// LoadLockfileReadOnlyMerged returns the same effective installed-pack state
+// as migration without writing either aipack.lock or sync-config.yaml.
+// Lockfile entries win over vestigial sync-config installed_packs entries.
+func LoadLockfileReadOnlyMerged(configDir string) (Lockfile, error) {
+	lf, err := LoadLockfile(LockfilePath(configDir))
+	if err != nil {
+		return Lockfile{}, err
+	}
+	sc, err := LoadSyncConfig(SyncConfigPath(configDir))
+	if err != nil {
+		return Lockfile{}, err
+	}
+	mergeInstalledPackState(&lf, sc.InstalledPacks)
+	return lf, nil
+}
+
+func mergeInstalledPackState(lf *Lockfile, legacy map[string]InstalledPackMeta) bool {
+	if lf.Packs == nil {
+		lf.Packs = make(map[string]InstalledPackMeta)
+	}
+	merged := false
+	for name, meta := range legacy {
+		if _, exists := lf.Packs[name]; exists {
+			continue
+		}
+		lf.Packs[name] = meta
+		merged = true
+	}
+	return merged
+}
+
 // LoadLockfile reads and parses the lockfile. Returns a zero-value Lockfile
 // when the file does not exist. Pure read — does not run migration.
 func LoadLockfile(path string) (Lockfile, error) {
@@ -97,16 +128,7 @@ func MigratePackStateToLockfile(configDir string) error {
 	if err != nil {
 		return err
 	}
-	if lf.Packs == nil {
-		lf.Packs = make(map[string]InstalledPackMeta)
-	}
-	merged := false
-	for name, meta := range sc.InstalledPacks {
-		if _, ok := lf.Packs[name]; !ok {
-			lf.Packs[name] = meta
-			merged = true
-		}
-	}
+	merged := mergeInstalledPackState(&lf, sc.InstalledPacks)
 	if merged {
 		if err := SaveLockfile(lfPath, lf); err != nil {
 			return fmt.Errorf("writing lockfile during migration: %w", err)

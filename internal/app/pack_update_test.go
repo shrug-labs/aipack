@@ -144,6 +144,53 @@ func TestPackUpdate_Local_BackfillsResolvedInventory(t *testing.T) {
 	}
 }
 
+func TestPackUpdate_DryRunReadsLegacyMetadataWithoutMigrating(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	packDir := filepath.Join(PacksDir(e.configDir), "legacy-local")
+	if err := os.MkdirAll(packDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePackManifest(t, packDir, "legacy-local")
+
+	syncPath := config.SyncConfigPath(e.configDir)
+	syncConfig, err := config.LoadSyncConfig(syncPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncConfig.InstalledPacks = map[string]config.InstalledPackMeta{
+		"legacy-local": {
+			Origin: packDir, Method: config.MethodLocal,
+			InstalledAt: fixedNow.UTC().Format(time.RFC3339),
+		},
+	}
+	if err := config.SaveSyncConfig(syncPath, syncConfig); err != nil {
+		t.Fatal(err)
+	}
+	syncBefore, err := os.ReadFile(syncPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := e.update(t, "legacy-local", func(req *PackUpdateRequest) { req.DryRun = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != StatusUpToDate || results[0].Method != config.MethodLocal {
+		t.Fatalf("legacy dry-run result = %+v", results)
+	}
+	syncAfter, err := os.ReadFile(syncPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(syncBefore, syncAfter) {
+		t.Fatal("dry-run mutated legacy sync-config metadata")
+	}
+	if _, err := os.Stat(config.LockfilePath(e.configDir)); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created lockfile: %v", err)
+	}
+}
+
 // TestPackUpdate_UpToDate_BackfillsResolvedInventory asserts that running
 // pack update against an up-to-date pack whose lockfile entry lacks a
 // Resolved inventory (simulating a pre-v0.22 install) backfills the
@@ -526,6 +573,285 @@ func TestPackUpdate_Archive_DryRunMakesNoMutations(t *testing.T) {
 	}
 	if strings.Contains(e.out.String(), "\nUpdated (archive)") {
 		t.Fatalf("dry-run output should not include 'Updated (archive)' line: %s", e.out.String())
+	}
+}
+
+func TestPackUpdate_Archive_RepackedIdenticalContentIsUpToDate(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+
+	archives := [][]byte{
+		buildPackZip(t, map[string]string{
+			"repo-main/pack.json":    `{"schema_version":2,"name":"repacked","version":"1.0.0","root":"."}`,
+			"repo-main/rules/foo.md": "same\n",
+		}),
+		buildPackZip(t, map[string]string{
+			"repo-main/pack.json":    `{"schema_version":2,"name":"repacked","version":"1.0.0","root":"."}`,
+			"repo-main/rules/foo.md": "same\n",
+			"repo-main/README.md":    "archive-only packaging change\n",
+		}),
+	}
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		idx := hits
+		if idx >= len(archives) {
+			idx = len(archives) - 1
+		}
+		hits++
+		w.Write(archives[idx])
+	}))
+	defer srv.Close()
+
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		URL: srv.URL + "/pack.zip", Archive: true, ConfigDir: e.configDir,
+	}, &e.out); err != nil {
+		t.Fatal(err)
+	}
+	results, err := e.update(t, "repacked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpToDate {
+		t.Fatalf("result = %+v, want up-to-date", results[0])
+	}
+	if hits != 2 {
+		t.Fatalf("archive requests = %d, want 2", hits)
+	}
+}
+
+func TestPackUpdate_Archive_DryRunUsesETagWithoutWriting(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"etag-pack","version":"1.0.0","root":"."}`,
+		"repo-main/rules/foo.md": "same\n",
+	})
+	const etag = `"etag-v1"`
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		URL: srv.URL + "/pack.zip", Archive: true, ConfigDir: e.configDir,
+	}, &e.out); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := archiveObservationPath(e.configDir, "etag-pack")
+	cacheBefore, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := config.LockfilePath(e.configDir)
+	lockBefore, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := e.update(t, "etag-pack", func(req *PackUpdateRequest) { req.DryRun = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpToDate {
+		t.Fatalf("result = %+v, want up-to-date", results[0])
+	}
+	cacheAfter, _ := os.ReadFile(cachePath)
+	lockAfter, _ := os.ReadFile(lockPath)
+	if !bytes.Equal(cacheBefore, cacheAfter) {
+		t.Fatal("dry-run mutated archive observation cache")
+	}
+	if !bytes.Equal(lockBefore, lockAfter) {
+		t.Fatal("dry-run mutated lockfile")
+	}
+	if hits != 2 {
+		t.Fatalf("archive requests = %d, want install + conditional check", hits)
+	}
+}
+
+func TestPackUpdate_Archive_304PreservesKnownUninstalledUpdate(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	oldArchive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"pending-pack","version":"1.0.0","root":"."}`,
+		"repo-main/rules/foo.md": "old\n",
+	})
+	newArchive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"pending-pack","version":"1.0.1","root":"."}`,
+		"repo-main/rules/foo.md": "new\n",
+	})
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits == 1 {
+			w.Header().Set("ETag", `"pending-v1"`)
+			w.Write(oldArchive)
+			return
+		}
+		if r.Header.Get("If-None-Match") == `"pending-v2"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"pending-v2"`)
+		w.Write(newArchive)
+	}))
+	defer srv.Close()
+
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		URL: srv.URL + "/pack.zip", Archive: true, ConfigDir: e.configDir,
+	}, &e.out); err != nil {
+		t.Fatal(err)
+	}
+	observation, ok := loadArchiveObservation(e.configDir, "pending-pack")
+	if !ok {
+		t.Fatal("install did not seed archive observation")
+	}
+	cacheBefore, _ := os.ReadFile(archiveObservationPath(e.configDir, "pending-pack"))
+
+	firstPreview, err := e.update(t, "pending-pack", func(req *PackUpdateRequest) { req.DryRun = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPreview[0].Status != StatusUpdated {
+		t.Fatalf("first preview = %+v, want updated", firstPreview[0])
+	}
+	cacheWithCandidate, _ := os.ReadFile(archiveObservationPath(e.configDir, "pending-pack"))
+	if bytes.Equal(cacheBefore, cacheWithCandidate) {
+		t.Fatal("dry-run did not cache the pending candidate observation")
+	}
+	observation, ok = loadArchiveObservation(e.configDir, "pending-pack")
+	if !ok || observation.Semantic.Status != StatusUpdated {
+		t.Fatalf("cached observation = %+v, want pending update", observation)
+	}
+
+	secondPreview, err := e.update(t, "pending-pack", func(req *PackUpdateRequest) { req.DryRun = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondPreview[0].Status != StatusUpdated {
+		t.Fatalf("304 preview = %+v, want cached updated result", secondPreview[0])
+	}
+	cacheAfter304, _ := os.ReadFile(archiveObservationPath(e.configDir, "pending-pack"))
+	if !bytes.Equal(cacheWithCandidate, cacheAfter304) {
+		t.Fatal("304 replay rewrote an unchanged pending observation")
+	}
+
+	applied, err := e.update(t, "pending-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied[0].Status != StatusUpdated {
+		t.Fatalf("real update = %+v, want updated after unconditional fallback", applied[0])
+	}
+	got, err := os.ReadFile(filepath.Join(PacksDir(e.configDir), "pending-pack", "rules", "foo.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new\n" {
+		t.Fatalf("installed content = %q, want new", got)
+	}
+	if hits != 5 {
+		t.Fatalf("archive requests = %d, want install + preview 200 + preview 304 + update 304 + fallback 200", hits)
+	}
+}
+
+func TestPackUpdate_Archive_WithChangeBypassesCachedValidator(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	archive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":          `{"schema_version":2,"name":"with-pack","version":"1.0.0","root":".","profiles":["team"]}`,
+		"repo-main/rules/foo.md":       "same\n",
+		"repo-main/profiles/team.yaml": "packs: []\n",
+	})
+	const etag = `"with-v1"`
+	var conditionalRequests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "" {
+			conditionalRequests++
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		URL: srv.URL + "/pack.zip", Archive: true, ConfigDir: e.configDir,
+	}, &e.out); err != nil {
+		t.Fatal(err)
+	}
+	declinedPreview, err := e.update(t, "with-pack", func(req *PackUpdateRequest) { req.DryRun = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declinedPreview[0].BundledCandidates == nil ||
+		!slices.Contains(declinedPreview[0].BundledCandidates.Profiles, "team") ||
+		!slices.Contains(declinedPreview[0].BundledCandidates.DeclinedCategories(), domain.BundledProfiles) {
+		t.Fatalf("304 replay lost declined bundled details: %+v", declinedPreview[0].BundledCandidates)
+	}
+	conditionalBeforeWith := conditionalRequests
+	results, err := e.update(t, "with-pack", func(req *PackUpdateRequest) {
+		req.DryRun = true
+		req.With = domain.NewBundledSet(domain.BundledProfiles)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("result = %+v, want update preview for newly approved profile", results[0])
+	}
+	if conditionalRequests != conditionalBeforeWith {
+		t.Fatalf("selection-changing update sent a conditional request: before=%d after=%d", conditionalBeforeWith, conditionalRequests)
+	}
+}
+
+func TestPackUpdate_LocalArchiveByteHashDetectsReplacement(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	oldArchive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"local-archive","version":"1.0.0","root":"."}`,
+		"repo-main/rules/foo.md": "old\n",
+	})
+	newArchive := buildPackZip(t, map[string]string{
+		"repo-main/pack.json":    `{"schema_version":2,"name":"local-archive","version":"1.0.0","root":"."}`,
+		"repo-main/rules/foo.md": "new\n",
+	})
+	archivePath := filepath.Join(t.TempDir(), "pack.zip")
+	if err := os.WriteFile(archivePath, oldArchive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PackInstall(context.Background(), PackInstallRequest{
+		URL: archivePath, Archive: true, ConfigDir: e.configDir,
+	}, &e.out); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldArchive) != len(newArchive) {
+		t.Fatalf("test archives differ in size: %d != %d", len(oldArchive), len(newArchive))
+	}
+	if err := os.WriteFile(archivePath, newArchive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(archivePath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := e.update(t, "local-archive", func(req *PackUpdateRequest) { req.DryRun = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusUpdated {
+		t.Fatalf("result = %+v, want updated despite preserved size and mtime", results[0])
 	}
 }
 

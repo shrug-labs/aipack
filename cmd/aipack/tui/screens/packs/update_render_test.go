@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 
 	"github.com/shrug-labs/aipack/internal/app"
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 // TestFormatRowSuffix locks in the minimal-glyph rendering contract:
@@ -110,6 +111,29 @@ func TestFormatRowSuffix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFormatUpdatePreviewDistinguishesNewAndDeclinedBundledContent(t *testing.T) {
+	t.Parallel()
+
+	got := formatUpdatePreview("", []app.PackUpdateResult{{
+		Name:   "demo",
+		Status: app.StatusUpToDate,
+		BundledCandidates: &app.BundledCandidates{
+			Profiles:           []string{"team"},
+			Extras:             []string{"scripts"},
+			PreviouslyDeclined: []domain.BundledCategory{domain.BundledExtras},
+		},
+	}})
+
+	for _, want := range []string{
+		"New bundled content:\n- profiles",
+		"Previously declined bundled content:\n- extras",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("preview missing %q:\n%s", want, got)
+		}
 	}
 }
 

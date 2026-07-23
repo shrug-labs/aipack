@@ -458,3 +458,42 @@ func TestFetchFileViaGitWith_ClonesSuccessfully(t *testing.T) {
 		t.Errorf("got %q, want %q", string(data), wantContent)
 	}
 }
+
+func TestLoadMergedRegistryWithProvenance_FirstSourceWinsAndRecordsShadow(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sc := SyncConfig{SchemaVersion: SyncConfigSchemaVersion}
+	sc.RegistrySources = []RegistrySourceEntry{
+		{Name: "team", URL: "https://example.com/team.yaml"},
+		{Name: "public", URL: "https://example.com/public.yaml"},
+	}
+	if err := SaveSyncConfig(SyncConfigPath(dir), sc); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RegistriesCacheDir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"team":   "schema_version: 1\npacks:\n  shared:\n    repo: https://example.com/team.git\n",
+		"public": "schema_version: 1\npacks:\n  shared:\n    repo: https://example.com/public.git\n",
+	} {
+		if err := os.WriteFile(SourceCachePath(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	merged, err := LoadMergedRegistryWithProvenance(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := merged.Registry.Packs["shared"].Repo; got != "https://example.com/team.git" {
+		t.Fatalf("winning repo = %q", got)
+	}
+	provenance := merged.PackProvenance["shared"]
+	if provenance.Winner.Name != "team" {
+		t.Fatalf("winner = %+v", provenance.Winner)
+	}
+	if len(provenance.Shadowed) != 1 || provenance.Shadowed[0].Name != "public" {
+		t.Fatalf("shadowed = %+v", provenance.Shadowed)
+	}
+}

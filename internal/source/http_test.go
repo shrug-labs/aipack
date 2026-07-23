@@ -156,6 +156,67 @@ func TestFetchHTTPArchive_ZipHappyPath(t *testing.T) {
 	}
 }
 
+func TestFetchHTTPArchiveObserved_ConditionalValidators(t *testing.T) {
+	t.Parallel()
+	const (
+		etag         = `"archive-v1"`
+		lastModified = "Wed, 22 Jul 2026 12:00:00 GMT"
+	)
+	tests := []struct {
+		name             string
+		etag             string
+		wantRequestETag  string
+		wantRequestSince string
+	}{
+		{name: "etag takes precedence", etag: etag, wantRequestETag: etag},
+		{name: "last modified fallback", wantRequestSince: lastModified},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			zipData := buildTestZip(t, map[string]string{"pack.json": `{"name":"conditional"}`})
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if test.etag != "" {
+					w.Header().Set("ETag", test.etag)
+				}
+				w.Header().Set("Last-Modified", lastModified)
+				if requests == 2 {
+					if got := r.Header.Get("If-None-Match"); got != test.wantRequestETag {
+						t.Errorf("If-None-Match = %q, want %q", got, test.wantRequestETag)
+					}
+					if got := r.Header.Get("If-Modified-Since"); got != test.wantRequestSince {
+						t.Errorf("If-Modified-Since = %q, want %q", got, test.wantRequestSince)
+					}
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				w.Write(zipData)
+			}))
+			defer srv.Close()
+
+			first, err := FetchHTTPArchiveObserved(
+				context.Background(), srv.URL+"/pack.zip", t.TempDir(), HTTPArchiveOptions{},
+			)
+			if err != nil {
+				t.Fatalf("first fetch: %v", err)
+			}
+			second, err := FetchHTTPArchiveObserved(
+				context.Background(), srv.URL+"/pack.zip", t.TempDir(),
+				HTTPArchiveOptions{Validator: first.Validator},
+			)
+			if err != nil {
+				t.Fatalf("conditional fetch: %v", err)
+			}
+			if !second.NotModified || requests != 2 {
+				t.Fatalf("second observation = %+v, requests = %d", second, requests)
+			}
+		})
+	}
+}
+
 func TestFetchHTTPArchive_UsesNetrc(t *testing.T) {
 	t.Parallel()
 	zipData := buildTestZip(t, map[string]string{"pack.json": `{"name":"auth-pack"}`})

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
@@ -1153,7 +1154,8 @@ type PackUpdateCmd struct {
 	All    bool     `help:"Update all installed packs" name:"all"`
 	Ref    string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
 	With   []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
-	DryRun bool     `help:"Preview changes without writing to disk, lockfile, or bundled content" name:"dry-run"`
+	DryRun bool     `help:"Preview without changing installed or configured state; archive observations may refresh" name:"dry-run"`
+	JSON   bool     `help:"Emit versioned machine-readable check output" name:"json"`
 }
 
 func (c *PackUpdateCmd) Help() string {
@@ -1192,6 +1194,9 @@ Examples:
   # --all is an explicit alias for the bare form (useful in scripts)
   aipack pack update --all
 
+  # Machine-readable update check without installed/configured state changes
+  aipack pack update --all --dry-run --json
+
 See also: pack install, pack show`
 }
 
@@ -1201,6 +1206,9 @@ func (c *PackUpdateCmd) Validate() error {
 	}
 	if c.Ref != "" && c.Name == "" {
 		return fmt.Errorf("--ref/--version requires a pack name argument")
+	}
+	if c.JSON && !c.DryRun {
+		return fmt.Errorf("--json requires --dry-run")
 	}
 	return nil
 }
@@ -1220,7 +1228,11 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 	// remains as an explicit alias for scripts and muscle memory.
 	all := c.All || c.Name == ""
 
-	results, err := app.PackUpdate(ctx, app.PackUpdateRequest{
+	updateOut := g.Stdout
+	if c.JSON {
+		updateOut = io.Discard
+	}
+	execution, err := app.PackUpdateWithState(ctx, app.PackUpdateRequest{
 		ConfigDir: cfgDir,
 		Name:      c.Name,
 		All:       all,
@@ -1228,30 +1240,65 @@ func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
 		With:      with,
 		DryRun:    c.DryRun,
 		Quiet:     all,
-	}, g.Stdout, nil)
+	}, updateOut, nil)
 	if err != nil {
 		return err
 	}
 
-	hasError := false
-	for _, r := range results {
-		if r.Status == app.StatusError {
-			fmt.Fprintf(g.Stderr, "error: %s: %s\n", r.Name, r.Message)
-			hasError = true
+	checkResults := app.BuildPackUpdateCheckResults(cfgDir, execution)
+	if c.JSON {
+		report := app.BuildPackUpdateReport(time.Now(), checkResults)
+		if err := cmdutil.WriteJSON(g.Stdout, report); err != nil {
+			return err
 		}
-		if cats := r.BundledCandidates.Categories(); len(cats) > 0 {
-			names := make([]string, len(cats))
-			for i, c := range cats {
-				names[i] = string(c)
-			}
-			fmt.Fprintf(g.Stdout, "New content available in %s: %s\n", r.Name, strings.Join(names, ", "))
-			fmt.Fprintf(g.Stdout, "  To approve: aipack pack update %s -w %s\n", r.Name, strings.Join(names, ","))
+		if report.Summary.Error > 0 {
+			return ExitError{Code: cmdutil.ExitFail}
+		}
+		return nil
+	}
+
+	hasError := false
+	for _, result := range checkResults {
+		if renderPackUpdateCheck(g, result) {
+			hasError = true
 		}
 	}
 	if hasError {
 		return ExitError{Code: cmdutil.ExitFail}
 	}
-	return maybeAutoSyncAfterPackUpdate(ctx, g, cfgDir, results)
+	return maybeAutoSyncAfterPackUpdate(ctx, g, cfgDir, execution.Results)
+}
+
+func bundledCategoryNames(categories []domain.BundledCategory, separator string) string {
+	names := make([]string, len(categories))
+	for i, category := range categories {
+		names[i] = string(category)
+	}
+	return strings.Join(names, separator)
+}
+
+func renderPackUpdateCheck(g *Globals, result app.PackUpdateCheckResult) bool {
+	if result.ReportStatus == app.PackUpdateReportError {
+		fmt.Fprintf(g.Stderr, "error: %s: %s\n", result.Name, result.Message)
+		return true
+	}
+	if categories := result.Bundled.Available.New; len(categories) > 0 {
+		fmt.Fprintf(g.Stdout, "New content available in %s: %s\n",
+			result.Name, bundledCategoryNames(categories, ", "))
+		fmt.Fprintf(g.Stdout, "  To approve: aipack pack update %s -w %s\n",
+			result.Name, bundledCategoryNames(categories, ","))
+	}
+	if categories := result.Bundled.Available.PreviouslyDeclined; len(categories) > 0 {
+		fmt.Fprintf(g.Stdout, "Previously declined content remains available in %s: %s\n",
+			result.Name, bundledCategoryNames(categories, ", "))
+		fmt.Fprintf(g.Stdout, "  To review: aipack pack update %s -w %s\n",
+			result.Name, bundledCategoryNames(categories, ","))
+	}
+	if migration := result.OriginMigration; migration != nil {
+		fmt.Fprintf(g.Stdout, "Registry origin migration available for %s: %s -> %s (not applied)\n",
+			result.Name, migration.Installed.Origin, migration.Candidate.Origin)
+	}
+	return false
 }
 
 // --- pack show ---

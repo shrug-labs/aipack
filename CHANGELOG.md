@@ -6,6 +6,23 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-07-23
+
+### Added
+
+- **Bulk pack update checks support machine-readable output.** `aipack pack update --all --dry-run --json` emits versioned results with per-pack statuses, summary counts, bundled-content availability, and registry source differences.
+- **Registry listings show source precedence.** `aipack registry list` identifies the source that supplied each pack and any lower-priority definitions it shadowed.
+
+### Changed
+
+- **Pack updates keep using the source recorded at install time.** A registry entry that later points elsewhere is reported but does not silently redirect an installed pack.
+- **Declined bundled content is reported separately.** Previously declined profiles, registries, and extras are no longer presented as newly available.
+
+### Fixed
+
+- **Archive updates no longer report repackaged-but-unchanged packs as updates.** ZIP and tar archives are compared by extracted pack content. HTTP validators and local file hashes avoid redundant work without determining the update result.
+- **Registry refresh skips embedded entries.** `aipack registry fetch` no longer tries to fetch synthetic `embedded://` sources.
+
 ## [0.32.3]
 
 ### Fixed

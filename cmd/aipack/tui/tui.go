@@ -1080,8 +1080,6 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingPackCursorHint = msg.Name
 			}
 			summaries := make([]string, len(msg.Results))
-			seen := map[domain.BundledCategory]bool{}
-			var items []checkItem
 			for i, r := range msg.Results {
 				// Prefer r.Message — it carries pin status ("pinned at
 				// v1.2.3 (latest: v2.0.0)") for skipped pinned packs and
@@ -1092,16 +1090,8 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					detail = string(r.Status)
 				}
 				summaries[i] = fmt.Sprintf("%s: %s", r.Name, detail)
-				for _, cat := range r.BundledCandidates.Categories() {
-					if !seen[cat] {
-						seen[cat] = true
-						items = append(items, checkItem{
-							Label:   string(cat),
-							Checked: cat == domain.BundledProfiles,
-						})
-					}
-				}
 			}
+			items, hasDeclined := bundledUpdateChecklist(msg.Results)
 			// If any pack actually changed, remind the user to sync — pack
 			// content updated but harnesses won't see it until the next
 			// sync. When everything was up-to-date or a no-op, show the
@@ -1113,7 +1103,11 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(items) > 0 {
 				m.updateFlow.Results = msg.Results
-				d := newChecklistDialog(dialogBundledCandidates, "New bundled content found:", items)
+				title := "Bundled content available:"
+				if hasDeclined {
+					title = "Bundled content available (previously declined items start unchecked):"
+				}
+				d := newChecklistDialog(dialogBundledCandidates, title, items)
 				m = m.withDialog(d)
 			}
 		} else {
@@ -3498,6 +3492,34 @@ func bundledCheckItems() []checkItem {
 		})
 	}
 	return items
+}
+
+func bundledUpdateChecklist(results []app.PackUpdateResult) ([]checkItem, bool) {
+	available := domain.NewBundledSet()
+	newCandidates := domain.NewBundledSet()
+	declinedCandidates := domain.NewBundledSet()
+	for _, result := range results {
+		newCategories, declinedCategories := result.BundledCandidates.PartitionCategories()
+		for _, category := range newCategories {
+			available[category] = true
+			newCandidates[category] = true
+		}
+		for _, category := range declinedCategories {
+			available[category] = true
+			declinedCandidates[category] = true
+		}
+	}
+	var items []checkItem
+	for _, category := range domain.AllBundledCategories {
+		if !available.Has(category) {
+			continue
+		}
+		items = append(items, checkItem{
+			Label:   string(category),
+			Checked: category == domain.BundledProfiles && newCandidates.Has(category),
+		})
+	}
+	return items, len(declinedCandidates) > 0
 }
 
 // parseBundledChecklist converts selected checklist values into a BundledSet.

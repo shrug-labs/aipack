@@ -304,9 +304,11 @@ Inspected rows are not durable cache — they live alongside installed and regis
 
 Updates installed pack(s) to latest version from their origin. By default, updates every installed pack; pass a name to target one. For cloned packs, re-clones from origin and re-extracts content (content path mappings from the original install are preserved). For copied packs, re-copies from the recorded origin. For symlinked packs, re-validates the link target.
 
-`--dry-run` previews per-pack outcomes and file-level content changes without touching installed packs, bundled content, the lockfile, or the local git cache. Use it before a real update to check the commit-hash transition, changed files, and any new bundled categories that would land.
+`--dry-run` previews per-pack outcomes and file-level content changes without touching installed packs, bundled content, profiles, registries, the lockfile, or the local git cache. Archive checks may refresh disposable validator and semantic-result observations under `.cache/archive-observations/` so repeated startup checks can use conditional requests. Use dry-run before a real update to check the commit-hash transition, changed files, and any new bundled categories that would land.
 
-When an update brings new bundled content categories that weren't previously approved, they're surfaced for review — printed in the CLI, shown as a checklist dialog in the TUI. Use `-w` to approve specific categories or `-w all` to accept everything.
+For startup hooks and automation, `pack update --all --dry-run --json` emits versioned check output and suppresses progress text from stdout. `--json` requires `--dry-run`. Statuses describe the check (`update-available`, `up-to-date`, `skipped`, or `error`), and bundled availability is separate from persisted preferences. Dry-run never adopts registry coordinates: the installed lockfile origin remains authoritative.
+
+When an update brings bundled content categories that were never reviewed, they're labeled new. Previously declined categories are reported separately instead of repeatedly appearing new. Use `-w` to approve specific categories or `-w all` to accept everything.
 
 With `defaults.auto_sync: true`, successful updates automatically sync only when at least one updated pack is enabled in the active profile. `--dry-run`, failed updates, and updates for inactive-profile-only packs do not auto-sync.
 
@@ -314,6 +316,7 @@ With `defaults.auto_sync: true`, successful updates automatically sync only when
 aipack pack update                         # update all installed packs
 aipack pack update my-pack                 # update one specific pack
 aipack pack update --all                   # explicit alias for the bare form (scripts)
+aipack pack update --all --dry-run --json  # structured check without installed/configured state changes
 aipack pack update my-pack -w profiles     # also apply bundled profiles on this update
 aipack pack update my-pack -w all          # accept all new bundled content
 ```
@@ -510,7 +513,7 @@ aipack collection install team-dev --add -w all
 
 ## Registry
 
-The registry maps pack names to source repositories and collection names to ordered pack install recipes. The unified view merges all cached sources in `~/.config/aipack/registries/` in `registry_sources` order from sync-config (first-seen wins for pack and collection name conflicts). Sources include remote registries fetched via `registry fetch` and embedded entries bundled inside installed packs.
+The registry maps pack names to source repositories and collection names to ordered pack install recipes. The unified view merges all cached sources in `~/.config/aipack/registries/` in `registry_sources` order from sync-config (first-seen wins for pack and collection name conflicts). Registry listing exposes the winning source and any lower-priority sources shadowed for the same name. Sources include remote registries fetched via `registry fetch` and embedded entries bundled inside installed packs; synthetic `embedded://` sources are local materializations and are skipped by `registry fetch`.
 
 ### registry fetch
 

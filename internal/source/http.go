@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +58,24 @@ type HTTPArchiveOptions struct {
 	ArchiveOpts
 	NetrcPath string
 	Client    *http.Client
+	Validator ArchiveValidator
+}
+
+// ArchiveValidator is a provider-neutral HTTP representation validator.
+// ETag takes precedence over Last-Modified when both are present.
+type ArchiveValidator struct {
+	ETag         string `json:"etag,omitempty"`
+	LastModified string `json:"last_modified,omitempty"`
+}
+
+// ArchiveFetchResult describes the transport-level observation made while
+// fetching an archive. Callers must still compare extracted content to decide
+// whether the installed pack is semantically current.
+type ArchiveFetchResult struct {
+	NotModified      bool
+	Validator        ArchiveValidator
+	ResourceIdentity string
+	ByteHash         string
 }
 
 // FetchHTTPTarball downloads a gzipped tarball from tarballURL and extracts its
@@ -330,15 +350,28 @@ func FetchHTTPTarball(ctx context.Context, tarballURL, destDir, subPath string, 
 // FetchHTTPArchive downloads a zip, tar, tar.gz, or tgz archive from archiveURL
 // and extracts it into destDir without stripping path components.
 func FetchHTTPArchive(ctx context.Context, archiveURL, destDir string, opts HTTPArchiveOptions) error {
+	_, err := FetchHTTPArchiveObserved(ctx, archiveURL, destDir, opts)
+	return err
+}
+
+// FetchHTTPArchiveObserved is FetchHTTPArchive with conditional HTTP support
+// and representation metadata. It treats validators only as transport hints;
+// a 200 response is always extracted for the caller's semantic comparison.
+func FetchHTTPArchiveObserved(ctx context.Context, archiveURL, destDir string, opts HTTPArchiveOptions) (ArchiveFetchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL, nil)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return ArchiveFetchResult{}, fmt.Errorf("creating request: %w", err)
 	}
 	if err := applyNetrcAuth(req, opts.NetrcPath); err != nil {
-		return err
+		return ArchiveFetchResult{}, err
+	}
+	if opts.Validator.ETag != "" {
+		req.Header.Set("If-None-Match", opts.Validator.ETag)
+	} else if opts.Validator.LastModified != "" {
+		req.Header.Set("If-Modified-Since", opts.Validator.LastModified)
 	}
 
 	client := opts.Client
@@ -347,28 +380,73 @@ func FetchHTTPArchive(ctx context.Context, archiveURL, destDir string, opts HTTP
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetching archive: %w", err)
+		return ArchiveFetchResult{}, fmt.Errorf("fetching archive: %w", err)
 	}
 	defer resp.Body.Close()
 
+	result := ArchiveFetchResult{
+		NotModified: resp.StatusCode == http.StatusNotModified,
+		Validator: ArchiveValidator{
+			ETag:         resp.Header.Get("ETag"),
+			LastModified: resp.Header.Get("Last-Modified"),
+		},
+	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		result.ResourceIdentity = resp.Request.URL.String()
+	}
+	if result.NotModified {
+		if result.Validator.ETag == "" {
+			result.Validator.ETag = opts.Validator.ETag
+		}
+		if result.Validator.LastModified == "" {
+			result.Validator.LastModified = opts.Validator.LastModified
+		}
+		return result, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%w: HTTP %d", ErrHTTPTarballFailed, resp.StatusCode)
+		return ArchiveFetchResult{}, fmt.Errorf("%w: HTTP %d", ErrHTTPTarballFailed, resp.StatusCode)
 	}
 
 	lower := strings.ToLower(req.URL.Path)
-	return extractArchiveByPath(lower, resp.Body, destDir, opts.ArchiveOpts, archiveURL)
+	if err := extractArchiveByPath(lower, resp.Body, destDir, opts.ArchiveOpts, archiveURL); err != nil {
+		return ArchiveFetchResult{}, err
+	}
+	return result, nil
 }
 
 // FetchArchive extracts a local or HTTP zip, tar, tar.gz, or tgz archive into
 // destDir without stripping path components.
 func FetchArchive(ctx context.Context, archiveSource, destDir string, opts HTTPArchiveOptions) error {
+	_, err := FetchArchiveObserved(ctx, archiveSource, destDir, opts)
+	return err
+}
+
+// FetchArchiveObserved extracts an HTTP or local archive and returns
+// provider-neutral observation metadata. Local archives use a byte hash;
+// HTTP archives use standard validators when supplied by the server.
+func FetchArchiveObserved(ctx context.Context, archiveSource, destDir string, opts HTTPArchiveOptions) (ArchiveFetchResult, error) {
 	if IsHTTPURL(archiveSource) {
-		return FetchHTTPArchive(ctx, archiveSource, destDir, opts)
+		return FetchHTTPArchiveObserved(ctx, archiveSource, destDir, opts)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return ArchiveFetchResult{}, err
 	}
-	return FetchLocalArchive(archiveSource, destDir, opts.ArchiveOpts)
+	f, err := os.Open(archiveSource)
+	if err != nil {
+		return ArchiveFetchResult{}, fmt.Errorf("opening archive: %w", err)
+	}
+	defer f.Close()
+	hash := sha256.New()
+	observed := io.TeeReader(f, hash)
+	if err := extractArchiveByPath(strings.ToLower(archiveSource), observed, destDir, opts.ArchiveOpts, archiveSource); err != nil {
+		return ArchiveFetchResult{}, err
+	}
+	// Some archive readers can stop after the logical end marker. Include any
+	// trailing representation bytes so repacks are observed by the byte hash.
+	if _, err := io.Copy(hash, f); err != nil {
+		return ArchiveFetchResult{}, fmt.Errorf("hashing archive: %w", err)
+	}
+	return ArchiveFetchResult{ByteHash: hex.EncodeToString(hash.Sum(nil)), ResourceIdentity: archiveSource}, nil
 }
 
 // FetchLocalArchive extracts a local zip, tar, tar.gz, or tgz archive into

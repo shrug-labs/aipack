@@ -388,7 +388,8 @@ func formatUpdatePreview(stdout string, results []app.PackUpdateResult) string {
 				sb.WriteString(" (dry-run)")
 			}
 			sb.WriteString("\n")
-			appendPreviewList(&sb, "  New bundled content", bundledCandidateNames(r.BundledCandidates))
+			appendPreviewList(&sb, "  New bundled content", bundledCategoryNames(r.BundledCandidates.NewCategories()))
+			appendPreviewList(&sb, "  Previously declined bundled content", bundledCategoryNames(r.BundledCandidates.DeclinedCategories()))
 		}
 	}
 	fmt.Fprintln(&sb)
@@ -406,11 +407,7 @@ func appendPreviewList(sb *strings.Builder, label string, values []string) {
 	}
 }
 
-func bundledCandidateNames(candidates *app.BundledCandidates) []string {
-	if candidates == nil {
-		return nil
-	}
-	cats := candidates.Categories()
+func bundledCategoryNames(cats []domain.BundledCategory) []string {
 	names := make([]string, len(cats))
 	for i, cat := range cats {
 		names[i] = string(cat)

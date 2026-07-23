@@ -333,5 +333,15 @@ func printRegistryResults(g *Globals, results []app.RegistrySearchResult) {
 		if r.Contact != "" {
 			fmt.Fprintf(g.Stdout, "Contact:     %s\n", r.Contact)
 		}
+		if r.Provenance != nil {
+			fmt.Fprintf(g.Stdout, "Source:      %s\n", r.Provenance.Winner.Name)
+		}
+		if r.Provenance != nil && len(r.Provenance.Shadowed) > 0 {
+			names := make([]string, len(r.Provenance.Shadowed))
+			for i, source := range r.Provenance.Shadowed {
+				names[i] = source.Name
+			}
+			fmt.Fprintf(g.Stdout, "Shadowed:    %s\n", strings.Join(names, ", "))
+		}
 	}
 }

@@ -573,6 +573,83 @@ Inspects a source without installing it. Content ID arrays are always present (e
 
 Versions list contains only tags that parse as valid semver. When the pack has no semver tags, `versions` is an empty array. When the pin is a commit hash, no entry is marked installed.
 
+### `aipack pack update --all --dry-run --json`
+
+Versioned update-check output intended for startup hooks and automation. `--json` requires `--dry-run`; progress output is suppressed so stdout contains exactly one JSON object. Dry-run does not write installed packs, bundled content, profiles, registries, the lockfile, or the git cache. Archive checks may refresh disposable validator and semantic-result observations under `.cache/archive-observations/`.
+
+```json
+{
+  "schema_version": 1,
+  "checked_at": "2026-07-23T16:00:00Z",
+  "dry_run": true,
+  "results": [
+    {
+      "name": "essentials",
+      "method": "archive",
+      "status": "update-available",
+      "message": "remote content differs",
+      "dry_run": true,
+      "bundled": {
+        "available": {
+          "new": ["profiles"],
+          "previously_declined": ["registries"],
+          "profiles": ["team"],
+          "registries": ["internal"],
+          "extras": []
+        },
+        "preferences": {
+          "approved": ["extras"],
+          "declined": ["registries"]
+        }
+      },
+      "origin_migration": {
+        "installed": {
+          "method": "archive",
+          "origin": "https://downloads.example.com/essentials.zip"
+        },
+        "candidate": {
+          "method": "archive",
+          "origin": "https://cdn.example.com/essentials.zip"
+        },
+        "registry_source": {
+          "name": "team",
+          "url": "https://example.com/team-registry.yaml"
+        },
+        "shadowed_sources": []
+      }
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "update_available": 1,
+    "up_to_date": 0,
+    "skipped": 0,
+    "error": 0
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | int | Output schema; currently `1` |
+| `checked_at` | RFC3339 string | Time the check output was assembled |
+| `dry_run` | bool | Always true for this contract |
+| `results` | object[] | One result per selected installed pack, sorted by name |
+| `results[].name` | string | Installed pack name |
+| `results[].method` | string | Install method |
+| `results[].status` | string | Semantic check status: `update-available`, `up-to-date`, `skipped`, or `error` |
+| `results[].message` | string | Human-readable detail |
+| `results[].commit_hash` | string | Candidate git commit hash (omitempty) |
+| `results[].dry_run` | bool | True when an update was previewed (omitempty) |
+| `results[].bundled.available` | object | Categories and exact bundled IDs offered by the current candidate; `new`, `previously_declined`, `profiles`, `registries`, and `extras` arrays are always present |
+| `results[].bundled.preferences` | object | Complete persisted `approved` and `declined` category preferences; arrays are always present |
+| `results[].origin_migration` | object | Registry coordinates differ from the authoritative installed lockfile coordinates (omitempty). This is advisory and is never adopted by update implicitly |
+| `results[].origin_migration.registry_source` | object | Winning registry source |
+| `results[].origin_migration.shadowed_sources` | object[] | Lower-priority registry sources that also define this name |
+| `summary` | object | Counts by semantic check status |
+
+The command emits complete JSON output even when one or more results have status `error`, then exits 1. Consumers should parse valid stdout on non-zero exit and treat only malformed or missing JSON as a command-wide failure. `skipped` does not make the command fail.
+
 ### `aipack pack validate`
 
 Validates pack structure and metadata, not authored content bodies. Exit code 1 when `ok` is false.
@@ -790,7 +867,18 @@ Lists keys from the config-dir `.env` file. Values are omitted by default and pr
     "ref": "main",
     "description": "Foundation pack for AI agent configuration",
     "owner": "shrug-labs",
-    "contact": ""
+    "contact": "",
+    "source": {
+      "name": "team",
+      "url": "https://example.com/team-registry.yaml"
+    },
+    "shadowed_sources": [
+      {
+        "name": "public",
+        "url": "https://github.com/shrug-labs/packs.git",
+        "path": "registry.yaml"
+      }
+    ]
   }
 ]
 ```
@@ -805,6 +893,8 @@ Lists keys from the config-dir `.env` file. Values are omitted by default and pr
 | `description` | string | Human-readable description (omitempty) |
 | `owner` | string | Maintainer or team (omitempty) |
 | `contact` | string | Contact info (omitempty) |
+| `source` | object | Winning configured registry source (omitempty in explicit single-file mode) |
+| `shadowed_sources` | object[] | Lower-priority configured sources that also define this name; always present |
 
 ### `aipack registry validate`
 

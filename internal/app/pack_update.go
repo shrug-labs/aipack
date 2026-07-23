@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,7 @@ type PackUpdateRequest struct {
 	// dispatches. Set from either --ref or --version (CLI alias).
 	Ref              string
 	With             domain.BundledSet                                              // approve these categories for new content; nil = carry forward only
-	DryRun           bool                                                           // preview changes without mutating disk, lockfile, or bundled content
+	DryRun           bool                                                           // preview without mutating installed content, lockfile, profiles, or registries; disposable observations may refresh
 	Quiet            bool                                                           // suppress phase lines; terminal outcome lines still print
 	RunGitFn         func(ctx context.Context, args ...string) error                // test injection; nil = real git
 	NowFn            func() time.Time                                               // test injection; nil = time.Now
@@ -119,6 +120,14 @@ type PackUpdateResult struct {
 	DryRun            bool               `json:"dry_run,omitempty"`            // true when --dry-run prevented actual mutations
 }
 
+// PackUpdateExecution contains update outcomes and the effective installed
+// metadata from the same operation. Consumers can enrich results without
+// rereading mutable config state.
+type PackUpdateExecution struct {
+	Results   []PackUpdateResult
+	Installed map[string]config.InstalledPackMeta
+}
+
 type packUpdateOutcome struct {
 	PackUpdateResult
 	manifest      *config.PackManifest
@@ -133,7 +142,7 @@ type packUpdateContext struct {
 	configDir        string
 	ref              string                              // target ref spec from --ref/--version; empty = carry forward current pin
 	with             domain.BundledSet                   // explicit --with from the request; nil = carry forward only
-	dryRun           bool                                // preview only — no atomic-move, integrity-write, lockfile-save, or bundled-install
+	dryRun           bool                                // preview only — no installed-content, integrity, lockfile, or bundled-content writes
 	packs            map[string]config.InstalledPackMeta // from lockfile
 	registry         config.Registry
 	runGitFn         func(ctx context.Context, args ...string) error
@@ -212,14 +221,27 @@ func newPackUpdateContext(req PackUpdateRequest, packs map[string]config.Install
 
 // PackUpdate refreshes one or all installed packs.
 func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer, events chan<- PackUpdateEvent) ([]PackUpdateResult, error) {
+	execution, err := PackUpdateWithState(ctx, req, stdout, events)
+	return execution.Results, err
+}
+
+// PackUpdateWithState refreshes packs and returns the effective metadata
+// snapshot used by structured update-check consumers.
+func PackUpdateWithState(ctx context.Context, req PackUpdateRequest, stdout io.Writer, events chan<- PackUpdateEvent) (PackUpdateExecution, error) {
 	if req.ConfigDir == "" {
-		return nil, fmt.Errorf("config dir is required")
+		return PackUpdateExecution{}, fmt.Errorf("config dir is required")
 	}
 
 	lfPath := config.LockfilePath(req.ConfigDir)
-	lf, err := config.EnsureLockfileMigrated(req.ConfigDir)
+	var lf config.Lockfile
+	var err error
+	if req.DryRun {
+		lf, err = config.LoadLockfileReadOnlyMerged(req.ConfigDir)
+	} else {
+		lf, err = config.EnsureLockfileMigrated(req.ConfigDir)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("loading lockfile: %w", err)
+		return PackUpdateExecution{}, fmt.Errorf("loading lockfile: %w", err)
 	}
 	uctx := newPackUpdateContext(req, lf.Packs, stdout, events)
 
@@ -228,9 +250,9 @@ func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer, ev
 		entries, err := os.ReadDir(uctx.packsDir)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil, nil
+				return PackUpdateExecution{Installed: maps.Clone(lf.Packs)}, nil
 			}
-			return nil, err
+			return PackUpdateExecution{}, err
 		}
 		for _, e := range entries {
 			if strings.HasPrefix(e.Name(), ".") {
@@ -315,16 +337,16 @@ func PackUpdate(ctx context.Context, req PackUpdateRequest, stdout io.Writer, ev
 	}
 	if metaChanged && !req.DryRun {
 		if err := config.SaveLockfile(lfPath, lf); err != nil {
-			return results, fmt.Errorf("saving updated pack metadata: %w", err)
+			return PackUpdateExecution{Results: results, Installed: maps.Clone(lf.Packs)}, fmt.Errorf("saving updated pack metadata: %w", err)
 		}
 	}
-	return results, nil
+	return PackUpdateExecution{Results: results, Installed: maps.Clone(lf.Packs)}, nil
 }
 
 func packUpdateNeedsRegistry(names []string, packs map[string]config.InstalledPackMeta) bool {
 	for _, name := range names {
 		switch packs[name].Method {
-		case config.MethodArchive, config.MethodHTTPTarball:
+		case config.MethodHTTPTarball:
 			return true
 		}
 	}
@@ -821,6 +843,25 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 	}
 }
 
+type archiveUpdatePreparation struct {
+	origin           string
+	oldIntegrity     IntegrityManifest
+	installedDigest  string
+	selectionDigest  string
+	observationKey   archiveObservationKey
+	observation      archiveObservation
+	hasObservation   bool
+	hasExplicitPrefs bool
+}
+
+type archiveUpdateComparison struct {
+	candidates         *BundledCandidates
+	effective          domain.BundledSet
+	candidateIntegrity IntegrityManifest
+	candidateDigest    string
+	diff               IntegrityCheckResult
+}
+
 func packUpdateArchive(
 	ctx context.Context,
 	name string,
@@ -830,99 +871,278 @@ func packUpdateArchive(
 	uctx packUpdateContext,
 	hasExplicitPrefs bool,
 ) packUpdateOutcome {
-	origin := meta.Origin
-	if origin == "" {
-		return packUpdateOutcome{PackUpdateResult: PackUpdateResult{Name: name, Method: method, Status: StatusSkipped, Message: "no origin recorded; cannot re-fetch"}}
+	if meta.Origin == "" {
+		return packUpdateOutcome{PackUpdateResult: PackUpdateResult{
+			Name: name, Method: method, Status: StatusSkipped,
+			Message: "no origin recorded; cannot re-fetch",
+		}}
 	}
 
-	subPath := meta.SubPath
-	contentPaths := meta.ContentPaths
-	if entry, ok := uctx.registry.Packs[name]; ok && entry.Method == config.MethodArchive {
-		if entry.URL != "" {
-			origin = entry.URL
+	preparation, err := prepareArchiveUpdate(name, meta, packDir, uctx, hasExplicitPrefs)
+	if err != nil {
+		return archiveUpdateFailure(name, method, err, uctx)
+	}
+	fetched, replayed, err := probeArchiveUpdate(ctx, name, meta, preparation, uctx)
+	if err != nil {
+		return archiveUpdateFailure(name, method, err, uctx)
+	}
+	if replayed != nil {
+		return *replayed
+	}
+	defer os.RemoveAll(fetched.destDir)
+
+	comparison, err := compareArchiveUpdateCandidate(fetched, meta, preparation, uctx)
+	if err != nil {
+		return archiveUpdateFailure(name, method, err, uctx)
+	}
+	return applyArchiveUpdate(name, meta, packDir, fetched, preparation, comparison, uctx)
+}
+
+func prepareArchiveUpdate(
+	name string,
+	meta config.InstalledPackMeta,
+	packDir string,
+	uctx packUpdateContext,
+	hasExplicitPrefs bool,
+) (archiveUpdatePreparation, error) {
+	oldIntegrity, err := loadIntegrity(packDir)
+	if err != nil || len(oldIntegrity.Files) == 0 {
+		oldIntegrity, err = computeIntegrity(packDir)
+	}
+	if err != nil {
+		return archiveUpdatePreparation{}, fmt.Errorf("computing installed archive integrity: %w", err)
+	}
+	installedDigest, err := integrityDigest(oldIntegrity)
+	if err != nil {
+		return archiveUpdatePreparation{}, fmt.Errorf("digesting installed archive integrity: %w", err)
+	}
+	selectionDigest, err := archiveSelectionDigest(metaApprovedSet(meta).Merge(uctx.with))
+	if err != nil {
+		return archiveUpdatePreparation{}, fmt.Errorf("digesting archive content selection: %w", err)
+	}
+	key := makeArchiveObservationKey(meta.Origin, meta.SubPath, meta.ContentPaths, selectionDigest, installedDigest)
+	observation, ok := loadArchiveObservation(uctx.configDir, name)
+	ok = ok && archiveObservationMatches(observation, key)
+	return archiveUpdatePreparation{
+		origin:           meta.Origin,
+		oldIntegrity:     oldIntegrity,
+		installedDigest:  installedDigest,
+		selectionDigest:  selectionDigest,
+		observationKey:   key,
+		observation:      observation,
+		hasObservation:   ok,
+		hasExplicitPrefs: hasExplicitPrefs,
+	}, nil
+}
+
+func replayArchiveObservation(name string, preparation archiveUpdatePreparation, uctx packUpdateContext) (packUpdateOutcome, bool) {
+	if !preparation.hasObservation {
+		return packUpdateOutcome{}, false
+	}
+	cached := preparation.observation.Semantic.result(name)
+	switch cached.Status {
+	case StatusUpToDate:
+	case StatusUpdated:
+		if !uctx.dryRun {
+			return packUpdateOutcome{}, false
 		}
-		if entry.Path != "" {
-			subPath = entry.Path
-		}
-		if len(entry.ContentPaths) > 0 {
-			contentPaths = entry.ContentPaths
+		cached.DryRun = true
+	default:
+		return packUpdateOutcome{}, false
+	}
+	if uctx.stdout != nil {
+		if cached.Status == StatusUpdated {
+			fmt.Fprintf(uctx.lockedStdout(), "Would update (archive): %s from %s\n", name, preparation.origin)
+		} else {
+			fmt.Fprintf(uctx.lockedStdout(), "Up to date (archive): %s from %s\n", name, preparation.origin)
 		}
 	}
+	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &cached})
+	return packUpdateOutcome{
+		PackUpdateResult: cached,
+		explicitPrefs:    preparation.hasExplicitPrefs,
+	}, true
+}
 
-	oldIntegrity, _ := loadIntegrity(packDir)
-
+func probeArchiveUpdate(
+	ctx context.Context,
+	name string,
+	meta config.InstalledPackMeta,
+	preparation archiveUpdatePreparation,
+	uctx packUpdateContext,
+) (packInstallResult, *packUpdateOutcome, error) {
+	// Local archives use bytes as their transport observation. Size and mtime
+	// are insufficient because replacements can preserve both.
+	if !source.IsHTTPURL(preparation.origin) && preparation.hasObservation && preparation.observation.ByteHash != "" {
+		if byteHash, err := util.FileDigest(preparation.origin); err == nil && byteHash == preparation.observation.ByteHash {
+			if outcome, ok := replayArchiveObservation(name, preparation, uctx); ok {
+				return packInstallResult{}, &outcome, nil
+			}
+		}
+	}
 	if !uctx.quiet && uctx.stdout != nil {
-		uctx.stdoutMu.Lock()
-		fmt.Fprintf(uctx.stdout, "Fetching archive %s from %s\n", name, origin)
-		uctx.stdoutMu.Unlock()
+		fmt.Fprintf(uctx.lockedStdout(), "Fetching archive %s from %s\n", name, preparation.origin)
 	}
 	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseExtracting})
 
-	installReq := PackInstallRequest{
-		URL:          origin,
+	req := PackInstallRequest{
+		URL:          preparation.origin,
 		Archive:      true,
 		ConfigDir:    uctx.configDir,
-		SubPath:      subPath,
+		SubPath:      meta.SubPath,
 		Name:         name,
-		ContentPaths: contentPaths,
+		ContentPaths: meta.ContentPaths,
 	}
-	result, err := packFetchArchive(ctx, installReq, nil)
+	options := source.HTTPArchiveOptions{}
+	if source.IsHTTPURL(preparation.origin) && preparation.hasObservation {
+		options.Validator = preparation.observation.Validator
+	}
+	fetched, err := packFetchArchiveWithOptions(ctx, req, nil, options)
 	if err != nil {
-		updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
-		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
-		return packUpdateOutcome{PackUpdateResult: updateResult}
+		return packInstallResult{}, nil, err
 	}
-	defer os.RemoveAll(result.destDir)
+	if !fetched.archiveFetch.NotModified {
+		return fetched, nil, nil
+	}
 
-	candidates, effective, err := applyPreferenceFilter(result.destDir, &result.manifest, meta, uctx.with)
+	sameResource := preparation.hasObservation &&
+		preparation.observation.ResourceIdentity != "" &&
+		fetched.archiveFetch.ResourceIdentity == preparation.observation.ResourceIdentity
+	if sameResource {
+		if outcome, ok := replayArchiveObservation(name, preparation, uctx); ok {
+			return packInstallResult{}, &outcome, nil
+		}
+	}
+	fetched, err = packFetchArchiveWithOptions(ctx, req, nil, source.HTTPArchiveOptions{})
 	if err != nil {
-		updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
-		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
-		return packUpdateOutcome{PackUpdateResult: updateResult}
+		return packInstallResult{}, nil, err
+	}
+	if fetched.archiveFetch.NotModified {
+		return packInstallResult{}, nil, fmt.Errorf("archive server returned 304 to an unconditional request")
+	}
+	return fetched, nil, nil
+}
+
+func compareArchiveUpdateCandidate(
+	fetched packInstallResult,
+	meta config.InstalledPackMeta,
+	preparation archiveUpdatePreparation,
+	uctx packUpdateContext,
+) (archiveUpdateComparison, error) {
+	candidates, effective, err := applyPreferenceFilter(fetched.destDir, &fetched.manifest, meta, uctx.with)
+	if err != nil {
+		return archiveUpdateComparison{}, err
+	}
+	candidateIntegrity, err := computeIntegrity(fetched.destDir)
+	if err != nil {
+		return archiveUpdateComparison{}, fmt.Errorf("computing fetched archive integrity: %w", err)
+	}
+	candidateDigest, err := integrityDigest(candidateIntegrity)
+	if err != nil {
+		return archiveUpdateComparison{}, fmt.Errorf("digesting fetched archive integrity: %w", err)
+	}
+	return archiveUpdateComparison{
+		candidates:         candidates,
+		effective:          effective,
+		candidateIntegrity: candidateIntegrity,
+		candidateDigest:    candidateDigest,
+		diff:               diffIntegrity(preparation.oldIntegrity, candidateIntegrity),
+	}, nil
+}
+
+func applyArchiveUpdate(
+	name string,
+	meta config.InstalledPackMeta,
+	packDir string,
+	fetched packInstallResult,
+	preparation archiveUpdatePreparation,
+	comparison archiveUpdateComparison,
+	uctx packUpdateContext,
+) packUpdateOutcome {
+	if !comparison.diff.HasChanges() {
+		result := PackUpdateResult{
+			Name: name, Method: config.MethodArchive, Status: StatusUpToDate,
+			Message:           "archive content unchanged at " + preparation.origin,
+			BundledCandidates: comparison.candidates,
+		}
+		if uctx.stdout != nil {
+			fmt.Fprintf(uctx.lockedStdout(), "Up to date (archive): %s from %s\n", name, preparation.origin)
+			if uctx.dryRun {
+				fmt.Fprint(uctx.lockedStdout(), "Changes: none\n")
+			}
+		}
+		_ = saveArchiveObservation(uctx.configDir, name,
+			newArchiveObservation(preparation.observationKey, fetched.archiveFetch, comparison.candidateDigest, result))
+		outcome := packUpdateOutcome{
+			PackUpdateResult: result,
+			manifest:         &fetched.manifest,
+			effective:        comparison.effective,
+			explicitPrefs:    preparation.hasExplicitPrefs,
+		}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
+		return outcome
 	}
 
 	if uctx.dryRun {
-		changes := dryRunIntegrityDiffText(packDir, result.destDir, oldIntegrity)
 		if uctx.stdout != nil {
-			uctx.stdoutMu.Lock()
-			fmt.Fprintf(uctx.stdout, "Would update (archive): %s from %s\n", name, origin)
-			fmt.Fprint(uctx.stdout, changes)
-			uctx.stdoutMu.Unlock()
+			fmt.Fprintf(uctx.lockedStdout(), "Would update (archive): %s from %s\n", name, preparation.origin)
+			fmt.Fprint(uctx.lockedStdout(), integrityDiffText(comparison.diff))
 		}
-		updateResult := PackUpdateResult{
-			Name: name, Method: config.MethodArchive, Status: StatusUpdated,
-			Message: "re-fetch from " + origin, BundledCandidates: candidates, DryRun: true,
+		result := PackUpdateResult{
+			Name: name, Method: config.MethodArchive, Status: StatusUpdated, DryRun: true,
+			Message: "re-fetch from " + preparation.origin, BundledCandidates: comparison.candidates,
 		}
-		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult})
-		return packUpdateOutcome{PackUpdateResult: updateResult}
+		_ = saveArchiveObservation(uctx.configDir, name,
+			newArchiveObservation(preparation.observationKey, fetched.archiveFetch, comparison.candidateDigest, result))
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result})
+		return packUpdateOutcome{PackUpdateResult: result}
 	}
 
-	if err := util.ReplaceDirAtomic(packDir, result.destDir); err != nil {
-		updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
-		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
-		return packUpdateOutcome{PackUpdateResult: updateResult}
+	if err := util.ReplaceDirAtomic(packDir, fetched.destDir); err != nil {
+		return archiveUpdateFailure(name, config.MethodArchive, err, uctx)
 	}
-
-	_, _, _ = saveAndDiffIntegrity(packDir, oldIntegrity, uctx.lockedStdout())
-	aList, dList := buildPrefsLists(effective)
+	if err := saveIntegrityManifest(packDir, comparison.candidateIntegrity); err != nil && uctx.stdout != nil {
+		fmt.Fprintf(uctx.lockedStdout(), "Warning: failed to record integrity: %v\n", err)
+	}
 	if uctx.stdout != nil {
-		uctx.stdoutMu.Lock()
-		fmt.Fprintf(uctx.stdout, "Updated (archive): %s from %s\n", name, origin)
-		uctx.stdoutMu.Unlock()
+		fmt.Fprintf(uctx.lockedStdout(), "Changes:\n%s", formatIntegrityDiff(comparison.diff))
+		fmt.Fprintf(uctx.lockedStdout(), "Updated (archive): %s from %s\n", name, preparation.origin)
 	}
+	approved, declined := buildPrefsLists(comparison.effective)
 	now := uctx.nowFn()
-	updateResult := PackUpdateResult{Name: name, Method: config.MethodArchive, Status: StatusUpdated, Message: "re-fetched from " + origin, BundledCandidates: candidates}
+	result := PackUpdateResult{
+		Name: name, Method: config.MethodArchive, Status: StatusUpdated,
+		Message: "re-fetched from " + preparation.origin, BundledCandidates: comparison.candidates,
+	}
+	current := PackUpdateResult{
+		Name: name, Method: config.MethodArchive, Status: StatusUpToDate,
+		Message: "archive content unchanged at " + preparation.origin, BundledCandidates: comparison.candidates,
+	}
+	currentKey := makeArchiveObservationKey(
+		preparation.origin, meta.SubPath, meta.ContentPaths,
+		preparation.selectionDigest, comparison.candidateDigest,
+	)
+	_ = saveArchiveObservation(uctx.configDir, name,
+		newArchiveObservation(currentKey, fetched.archiveFetch, comparison.candidateDigest, current))
 	outcome := packUpdateOutcome{
-		PackUpdateResult: updateResult,
-		manifest:         &result.manifest,
-		effective:        effective,
-		explicitPrefs:    hasExplicitPrefs,
-		updatedMeta: refreshedInstalledPackMeta(meta, origin, config.MethodArchive, now.UTC().Format(time.RFC3339),
-			"", subPath, "", contentPaths, aList, dList,
-			buildResolvedInventory(uctx.configDir, name, packDir, "", now, uctx.lockedStdout())),
+		PackUpdateResult: result,
+		manifest:         &fetched.manifest,
+		effective:        comparison.effective,
+		explicitPrefs:    preparation.hasExplicitPrefs,
+		updatedMeta: refreshedInstalledPackMeta(
+			meta, preparation.origin, config.MethodArchive, now.UTC().Format(time.RFC3339),
+			"", meta.SubPath, "", meta.ContentPaths, approved, declined,
+			buildResolvedInventory(uctx.configDir, name, packDir, "", now, uctx.lockedStdout()),
+		),
 	}
 	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
 	return outcome
+}
+
+func archiveUpdateFailure(name, method string, err error, uctx packUpdateContext) packUpdateOutcome {
+	result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+	return packUpdateOutcome{PackUpdateResult: result}
 }
 
 // packReportPinned reports the status of a pinned pack without updating it.
@@ -1021,11 +1241,13 @@ func buildUpToDateResult(
 		candidates = diffBundledCandidates(m, approved)
 	}
 	effective := approved.Merge(uctx.with)
+	candidates = candidates.Filter(effective)
+	candidates.markPreviouslyDeclined(meta.Declined)
 
 	result := PackUpdateResult{
 		Name: name, Method: method, Status: StatusUpToDate,
 		Message: message, CommitHash: commitHash,
-		BundledCandidates: candidates.Filter(effective),
+		BundledCandidates: candidates,
 	}
 	outcome := packUpdateOutcome{
 		PackUpdateResult: result,

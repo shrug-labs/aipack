@@ -208,7 +208,6 @@ Smoke body.
 	}, &out); err != nil {
 		t.Fatalf("PackInstall: %v", err)
 	}
-
 	installed := true
 	before, err := RunIndexSearch(IndexSearchRequest{
 		ConfigDir: configDir,
@@ -351,6 +350,13 @@ func TestPackDelete_RemovesTrackingAndRenderedFilesByDefault(t *testing.T) {
 	}, &out); err != nil {
 		t.Fatalf("PackInstall: %v", err)
 	}
+	if err := saveArchiveObservation(configDir, "deletable", archiveObservation{
+		Key:                archiveObservationKey{Origin: "fixture", SelectionDigest: "selection", InstalledIntegrity: "installed"},
+		CandidateIntegrity: "candidate",
+		Semantic:           archiveSemanticObservation{Status: StatusUpToDate},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Seed a ledger entry that pretends a sync rendered a file from `deletable`,
 	// plus an entry from a sibling pack that must be preserved.
@@ -405,6 +411,9 @@ func TestPackDelete_RemovesTrackingAndRenderedFilesByDefault(t *testing.T) {
 	// Pack source removed.
 	if _, err := os.Stat(filepath.Join(configDir, "packs", "deletable")); !os.IsNotExist(err) {
 		t.Fatalf("expected pack source gone")
+	}
+	if _, err := os.Stat(archiveObservationPath(configDir, "deletable")); !os.IsNotExist(err) {
+		t.Fatalf("expected archive observation gone")
 	}
 	// Lockfile entry gone.
 	lf, _ := config.LoadLockfile(config.LockfilePath(configDir))

@@ -63,15 +63,22 @@ func saveIntegrity(packDir string) (IntegrityManifest, error) {
 	if err != nil {
 		return IntegrityManifest{}, fmt.Errorf("computing integrity: %w", err)
 	}
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return IntegrityManifest{}, err
-	}
-	data = append(data, '\n')
-	if err := util.WriteFileAtomicWithPerms(filepath.Join(packDir, integrityFileName), data, 0o700, 0o600); err != nil {
+	if err := saveIntegrityManifest(packDir, m); err != nil {
 		return IntegrityManifest{}, err
 	}
 	return m, nil
+}
+
+func saveIntegrityManifest(packDir string, m IntegrityManifest) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := util.WriteFileAtomicWithPerms(filepath.Join(packDir, integrityFileName), data, 0o700, 0o600); err != nil {
+		return err
+	}
+	return nil
 }
 
 // loadIntegrity reads the integrity manifest from packDir.
@@ -194,6 +201,13 @@ func dryRunIntegrityDiffText(installedDir, stagedDir string, oldIntegrity Integr
 	}
 
 	diff := diffIntegrity(baseline, newIntegrity)
+	if !diff.HasChanges() {
+		return "Changes: none\n"
+	}
+	return fmt.Sprintf("Changes:\n%s", formatIntegrityDiff(diff))
+}
+
+func integrityDiffText(diff IntegrityCheckResult) string {
 	if !diff.HasChanges() {
 		return "Changes: none\n"
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/config"
@@ -14,13 +15,49 @@ import (
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
-// BundledCandidates describes new bundled content categories found during an
-// update that were not previously approved by the user. The TUI shows these
-// in a checklist dialog; the CLI prints them as a preview.
+// BundledCandidates describes bundled content offered by an incoming pack but
+// not currently approved. PreviouslyDeclined distinguishes reviewed offers
+// from categories the user has not seen.
 type BundledCandidates struct {
-	Profiles   []string `json:"profiles,omitempty"`
-	Registries []string `json:"registries,omitempty"`
-	Extras     []string `json:"extras,omitempty"`
+	Profiles           []string                 `json:"profiles,omitempty"`
+	Registries         []string                 `json:"registries,omitempty"`
+	Extras             []string                 `json:"extras,omitempty"`
+	PreviouslyDeclined []domain.BundledCategory `json:"previously_declined,omitempty"`
+}
+
+// PartitionCategories returns available candidates split by preference history.
+func (bc *BundledCandidates) PartitionCategories() (newCategories, declinedCategories []domain.BundledCategory) {
+	if bc == nil {
+		return nil, nil
+	}
+	declined := domain.NewBundledSet(bc.PreviouslyDeclined...)
+	for _, category := range bc.Categories() {
+		if declined.Has(category) {
+			declinedCategories = append(declinedCategories, category)
+		} else {
+			newCategories = append(newCategories, category)
+		}
+	}
+	return newCategories, declinedCategories
+}
+
+// NewCategories returns candidates the user has never reviewed.
+func (bc *BundledCandidates) NewCategories() []domain.BundledCategory {
+	newCategories, _ := bc.PartitionCategories()
+	return newCategories
+}
+
+// DeclinedCategories returns candidate categories the user previously declined.
+func (bc *BundledCandidates) DeclinedCategories() []domain.BundledCategory {
+	_, declinedCategories := bc.PartitionCategories()
+	return declinedCategories
+}
+
+func (bc *BundledCandidates) markPreviouslyDeclined(declined []domain.BundledCategory) {
+	if bc == nil {
+		return
+	}
+	bc.PreviouslyDeclined = slices.Clone(declined)
 }
 
 // Categories returns the list of category names that have bundled content candidates.
@@ -47,7 +84,9 @@ func (bc *BundledCandidates) Filter(approved domain.BundledSet) *BundledCandidat
 	if bc == nil {
 		return nil
 	}
-	filtered := &BundledCandidates{}
+	filtered := &BundledCandidates{
+		PreviouslyDeclined: slices.Clone(bc.PreviouslyDeclined),
+	}
 	if len(bc.Profiles) > 0 && !approved.Has(domain.BundledProfiles) {
 		filtered.Profiles = append(filtered.Profiles, bc.Profiles...)
 	}
@@ -151,6 +190,7 @@ func applyPreferenceFilter(staging string, incoming *config.PackManifest, oldMet
 	approved := metaApprovedSet(oldMeta)
 	effective := approved.Merge(with)
 	candidates := diffBundledCandidates(*incoming, approved).Filter(effective)
+	candidates.markPreviouslyDeclined(oldMeta.Declined)
 	if err := applyWithFilter(staging, incoming, effective); err != nil {
 		return nil, nil, err
 	}
