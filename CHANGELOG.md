@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.33.1]
+
+### Fixed
+
+- **JSON output detects incomplete writes.** Machine-readable commands preserve their existing indented, escaped output while returning an error when the destination accepts only part of the payload.
+
 ## [0.33.0] - 2026-07-23
 
 ### Added

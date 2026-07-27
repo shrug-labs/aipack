@@ -480,11 +480,6 @@ func (e *Engine) PathDigest(path string) (string, error) {
 	return e.pathDigest(path)
 }
 
-func (e *Engine) collectFiles(root string) (map[string]string, error) {
-	out, _, err := e.collectFilesStatus(root)
-	return out, err
-}
-
 func (e *Engine) collectFilesStatus(root string) (map[string]string, bool, error) {
 	out := map[string]string{}
 	st, err := e.FS.Stat(root)

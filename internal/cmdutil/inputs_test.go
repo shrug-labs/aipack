@@ -3,6 +3,8 @@ package cmdutil
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -84,4 +86,37 @@ func TestWriteJSONEscapesStringContent(t *testing.T) {
 	if _, ok := object["injected"]; ok {
 		t.Fatalf("string content escaped into JSON structure: %s", buf.String())
 	}
+}
+
+func TestWriteJSONPropagatesWriterError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("write failed")
+	err := WriteJSON(errorWriter{err: want}, map[string]string{"key": "value"})
+	if !errors.Is(err, want) {
+		t.Fatalf("WriteJSON error = %v, want %v", err, want)
+	}
+}
+
+func TestWriteJSONRejectsShortWrite(t *testing.T) {
+	t.Parallel()
+
+	err := WriteJSON(shortWriter{}, map[string]string{"key": "value"})
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteJSON error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+type errorWriter struct {
+	err error
+}
+
+func (w errorWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) {
+	return len(p) - 1, nil
 }
