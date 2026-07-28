@@ -348,16 +348,30 @@ func PackInspectClear(req PackInspectClearRequest) (PackInspectClearResult, erro
 
 func resourcesFromManifestRoot(packName, root string, manifest config.PackManifest) []index.Resource {
 	resources := indexManifestContent(packName, manifest, root, nil)
-	for _, jd := range []struct {
-		cat     domain.PackCategory
-		extract func(string) (index.Resource, error)
-	}{
-		{domain.CategoryPlugins, extractPluginFromFile},
-		{domain.CategoryMCP, extractMCPServerFromFile},
-	} {
-		for _, id := range manifest.ContentIDs(jd.cat) {
-			rel := filepath.ToSlash(manifest.RelPath(jd.cat, id))
-			if r, err := jd.extract(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+	resources = append(resources, structuredResourcesFromManifestRoot(
+		root,
+		manifest,
+		domain.CategoryPlugins,
+		domain.CategoryMCP,
+	)...)
+	return resources
+}
+
+func structuredResourcesFromManifestRoot(root string, manifest config.PackManifest, categories ...domain.PackCategory) []index.Resource {
+	var resources []index.Resource
+	for _, category := range categories {
+		var extract func(string) (index.Resource, error)
+		switch category {
+		case domain.CategoryPlugins:
+			extract = extractPluginFromFile
+		case domain.CategoryMCP:
+			extract = extractMCPServerFromFile
+		default:
+			continue
+		}
+		for _, id := range manifest.ContentIDs(category) {
+			rel := filepath.ToSlash(manifest.RelPath(category, id))
+			if r, err := extract(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
 				r.Name = id
 				r.Path = rel
 				resources = append(resources, r)

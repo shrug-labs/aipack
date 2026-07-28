@@ -777,6 +777,11 @@ func updateIndex(profile domain.Profile, configDir string) error {
 				skip[w.Name] = true
 			}
 			resources = append(resources, indexManifestContent(pack.Name, m, packRoot, skip)...)
+			resources = append(resources, structuredResourcesFromManifestRoot(
+				packRoot,
+				m,
+				domain.CategoryMCP,
+			)...)
 		}
 
 		if err := db.Update(info, resources); err != nil {
@@ -815,7 +820,7 @@ func indexInstalledPack(configDir, packName, packRoot string) error {
 		Source:    "install",
 	}
 
-	resources := indexManifestContent(packName, m, root, nil)
+	resources := resourcesFromManifestRoot(packName, root, m)
 	return db.Update(info, resources)
 }
 

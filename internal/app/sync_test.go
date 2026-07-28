@@ -847,6 +847,104 @@ func TestUpdateIndex_QuietPackIndexesFromManifest(t *testing.T) {
 	}
 }
 
+func TestUpdateIndex_IndexesMCPServersFromManifest(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packRoot := filepath.Join(t.TempDir(), "tool-catalog")
+	writeFile(t, filepath.Join(packRoot, "mcp", "jira.json"), `{
+  "name": "jira",
+  "transport": "stdio",
+  "command": ["jira-mcp"],
+  "available_tools": ["search_work_items"],
+  "notes": "Search Jira work items"
+}`)
+	if err := config.SavePackManifest(filepath.Join(packRoot, "pack.json"), config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "tool-catalog",
+		Version:       "1.0.0",
+		Root:          ".",
+		MCP:           []string{"jira"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := domain.Profile{
+		Packs: []domain.Pack{{
+			Name:    "tool-catalog",
+			Version: "1.0.0",
+			Root:    packRoot,
+		}},
+	}
+	if err := updateIndex(profile, configDir); err != nil {
+		t.Fatalf("updateIndex: %v", err)
+	}
+
+	db, err := index.Open(filepath.Join(configDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	results, err := db.Search("search_work_items", index.SearchFilters{
+		Pack:   "tool-catalog",
+		Kind:   "mcp",
+		Status: "installed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Name != "jira" {
+		t.Fatalf("installed MCP search results = %+v, want jira", results)
+	}
+}
+
+func TestIndexInstalledPack_IndexesStructuredManifestResources(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	packRoot := t.TempDir()
+	writeFile(t, filepath.Join(packRoot, "plugins", "linear.json"), `{
+  "source": "github:linear/linear-codex-plugin"
+}`)
+	writeFile(t, filepath.Join(packRoot, "mcp", "jira.json"), `{
+  "name": "jira",
+  "transport": "stdio",
+  "command": ["jira-mcp"],
+  "available_tools": ["get_issue"]
+}`)
+	if err := config.SavePackManifest(filepath.Join(packRoot, "pack.json"), config.PackManifest{
+		SchemaVersion: 2,
+		Name:          "structured-tools",
+		Version:       "1.0.0",
+		Root:          ".",
+		Plugins:       []string{"linear"},
+		MCP:           []string{"jira"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := indexInstalledPack(configDir, "structured-tools", packRoot); err != nil {
+		t.Fatalf("indexInstalledPack: %v", err)
+	}
+
+	db, err := index.Open(filepath.Join(configDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for kind, name := range map[string]string{"plugin": "linear", "mcp": "jira"} {
+		results, err := db.Search("", index.SearchFilters{
+			Pack:   "structured-tools",
+			Kind:   kind,
+			Status: "installed",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 || results[0].Name != name {
+			t.Fatalf("installed %s search results = %+v, want %s", kind, results, name)
+		}
+	}
+}
+
 // TestUpdateIndex_PartialIncludeStillIndexesRest verifies that when a quiet
 // pack has some content resolved (via include) the remaining manifest items
 // are still indexed for discovery. Regression: the == 0 guard only indexed
