@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // ---------------------------------------------------------------------------
@@ -143,15 +145,12 @@ func (e *Engine) parseSkills(rp config.ResolvedPack) ([]domain.Skill, []domain.W
 	// Attach the bundled-asset list for each resolved skill. Anything in
 	// the skill directory other than SKILL.md is considered an asset that
 	// "ships with the skill" for drift-detection purposes.
+	boundary := skillSourceBoundary(rp.Root)
 	for i := range skills {
-		assets, aerr := listSkillAssets(skills[i].DirPath)
+		skills[i].SourceBoundary = boundary
+		assets, aerr := listSkillAssets(skills[i].DirPath, boundary)
 		if aerr != nil {
-			warnings = append(warnings, domain.Warning{
-				Path:    skills[i].DirPath,
-				Field:   "skill.assets",
-				Message: fmt.Sprintf("could not list skill assets: %v", aerr),
-			})
-			continue
+			return skills, warnings, fmt.Errorf("listing assets for skill %s: %w", skills[i].Name, aerr)
 		}
 		skills[i].Assets = assets
 	}
@@ -319,11 +318,29 @@ func (e *Engine) parsePlugins(rp config.ResolvedPack) ([]domain.Plugin, []domain
 // listSkillAssets returns the sorted list of files under dir (recursively)
 // other than SKILL.md, as paths relative to dir with forward slashes for
 // stable cross-platform comparison.
-func listSkillAssets(dir string) ([]string, error) {
+func listSkillAssets(dir, boundary string) ([]string, error) {
 	if dir == "" {
 		return nil, nil
 	}
 	var out []string
+	if boundary != "" {
+		err := util.WalkFilesResolvingSymlinks(dir, boundary, func(path, _ string, _ os.FileInfo) error {
+			rel, rerr := filepath.Rel(dir, path)
+			if rerr != nil {
+				return rerr
+			}
+			rel = filepath.ToSlash(rel)
+			if rel != domain.SkillEntryFile {
+				out = append(out, rel)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(out)
+		return out, nil
+	}
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -347,6 +364,20 @@ func listSkillAssets(dir string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func skillSourceBoundary(packRoot string) string {
+	if packRoot == "" {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(packRoot)
+	if err != nil {
+		resolved = filepath.Clean(packRoot)
+	}
+	if repoRoot := util.FindRepoRoot(resolved); repoRoot != "" {
+		return repoRoot
+	}
+	return resolved
 }
 
 // ---------------------------------------------------------------------------

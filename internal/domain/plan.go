@@ -102,12 +102,20 @@ func (f *Fragment) AddSkillCopies(baseDir, subDir string, skills []Skill) {
 	for _, s := range skills {
 		dst := filepath.Join(baseDir, subDir, s.Name)
 		f.Copies = append(f.Copies, CopyAction{
-			Src:        s.DirPath,
-			Dst:        dst,
-			Kind:       CopyKindDir,
-			SourcePack: s.SourcePack,
+			Src:            s.DirPath,
+			Dst:            dst,
+			Kind:           CopyKindDir,
+			SourcePack:     s.SourcePack,
+			SourceBoundary: s.SourceBoundary,
 		})
 		f.Desired = append(f.Desired, dst)
+		if len(s.Assets) > 0 {
+			f.Desired = append(f.Desired, filepath.Join(dst, SkillEntryFile))
+			for _, rel := range s.Assets {
+				f.Desired = append(f.Desired, filepath.Join(dst, filepath.FromSlash(rel)))
+			}
+			continue
+		}
 		// Expand individual file paths for stale-file detection.
 		// Best-effort: if the source directory is missing, ClassifyCopy
 		// will catch it during apply.

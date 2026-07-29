@@ -195,6 +195,16 @@ func resolveAllowedSymlinkWithinBoundary(src, boundary string) (string, os.FileI
 	return resolved, info, nil
 }
 
+// ResolvePathWithinBoundary resolves path, including symlinks in parent
+// components, and verifies that the final target is safe pack content within
+// boundary.
+func ResolvePathWithinBoundary(path, boundary string) (string, os.FileInfo, error) {
+	if boundary == "" {
+		return "", nil, fmt.Errorf("path cannot be resolved without a boundary: %s", path)
+	}
+	return resolveAllowedSymlink(path, boundary)
+}
+
 // ValidateSymlinkTarget checks that a resolved symlink target is safe for
 // inclusion in pack content. The target must be within boundary, must not
 // traverse a .git directory, and must be a regular file (not a directory).
@@ -209,15 +219,17 @@ func ValidateSymlinkTarget(resolvedTarget, boundary string) error {
 	return nil
 }
 
-// FindRepoRoot walks up from dir looking for a .git directory and returns
-// the repository root. Returns empty string if no .git directory is found.
+// FindRepoRoot walks up from dir looking for a .git repository marker and
+// returns the repository root. The marker may be a directory for a normal
+// checkout or a file for a linked worktree. Returns empty string if no marker
+// is found.
 func FindRepoRoot(dir string) string {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return ""
 	}
 	for {
-		if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && info.IsDir() {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -335,6 +347,72 @@ func copyDirResolvingSymlinks(src, dst, boundary string, visiting map[string]boo
 		}
 		return WriteFileAtomicWithPerms(target, data, 0o700, 0o600)
 	})
+}
+
+// WalkFilesResolvingSymlinks walks the regular files under src while
+// preserving their logical paths beneath src. Repository-local file and
+// directory symlinks are followed only when their resolved targets remain
+// within boundary. Directory cycles and targets traversing .git are rejected.
+func WalkFilesResolvingSymlinks(src, boundary string, fn func(logicalPath, resolvedPath string, info os.FileInfo) error) error {
+	if boundary == "" {
+		return fmt.Errorf("walking symlink-aware content requires a boundary: %s", src)
+	}
+	boundary = resolveBoundary(boundary)
+	resolvedRoot, info, err := resolveAllowedSymlinkWithinBoundary(src, boundary)
+	if err != nil {
+		return fmt.Errorf("resolving walk root %s: %w", src, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("walk root is not a directory: %s", src)
+	}
+	return walkFilesResolvingSymlinks(src, resolvedRoot, boundary, map[string]bool{}, fn)
+}
+
+func walkFilesResolvingSymlinks(logicalDir, resolvedDir, boundary string, visiting map[string]bool, fn func(string, string, os.FileInfo) error) error {
+	resolvedDir, err := filepath.EvalSymlinks(resolvedDir)
+	if err != nil {
+		return fmt.Errorf("resolving directory %s: %w", resolvedDir, err)
+	}
+	if _, err := validateSymlinkTargetWithinBoundary(resolvedDir, boundary); err != nil {
+		return err
+	}
+	if visiting[resolvedDir] {
+		return fmt.Errorf("symlink cycle detected while walking directory: %s", resolvedDir)
+	}
+	visiting[resolvedDir] = true
+	defer delete(visiting, resolvedDir)
+
+	entries, err := os.ReadDir(resolvedDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if IgnoredName(entry.Name()) {
+			continue
+		}
+		logicalPath := filepath.Join(logicalDir, entry.Name())
+		resolvedPath := filepath.Join(resolvedDir, entry.Name())
+		info, err := os.Lstat(resolvedPath)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolvedPath, info, err = resolveAllowedSymlinkWithinBoundary(resolvedPath, boundary)
+			if err != nil {
+				return fmt.Errorf("symlink not allowed in pack content: %s: %w", logicalPath, err)
+			}
+		}
+		if info.IsDir() {
+			if err := walkFilesResolvingSymlinks(logicalPath, resolvedPath, boundary, visiting, fn); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := fn(logicalPath, resolvedPath, info); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ResolveSymlinksInDir walks dir and replaces file symlinks with the content

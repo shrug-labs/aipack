@@ -230,11 +230,12 @@ func (w Workflow) writeSourcePath() string { return w.SourcePath }
 
 // Skill is a parsed pack skill directory.
 type Skill struct {
-	Name        string           // directory name (= skill name)
-	Frontmatter SkillFrontmatter // parsed from SKILL.md
-	Body        []byte           // markdown body (after frontmatter)
-	DirPath     string           // absolute path to skill directory (for copy)
-	SourcePack  string
+	Name           string           // directory name (= skill name)
+	Frontmatter    SkillFrontmatter // parsed from SKILL.md
+	Body           []byte           // markdown body (after frontmatter)
+	DirPath        string           // absolute path to skill directory (for copy)
+	SourcePack     string
+	SourceBoundary string // repository or pack root allowed for source symlinks
 	// Assets is the sorted list of files bundled in the skill directory
 	// other than SKILL.md, as paths relative to DirPath. Populated at
 	// parse time by walking DirPath; used by drift detection to surface

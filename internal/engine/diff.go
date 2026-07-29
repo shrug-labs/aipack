@@ -45,7 +45,8 @@ func LabelSettingsActions(actions []domain.SettingsAction, labelFor func(string)
 }
 
 type ClassifyCopyOptions struct {
-	LabelForPath func(string) string
+	LabelForPath   func(string) string
+	SourceBoundary string
 }
 
 // classifyFileKind classifies a file without computing a diff string.
@@ -245,6 +246,31 @@ func (e *Engine) ClassifyCopy(src, dst, sourcePack string, lg domain.Ledger) ([]
 func (e *Engine) ClassifyCopyWithOptions(src, dst, sourcePack string, lg domain.Ledger, opts ClassifyCopyOptions) ([]FileDiff, error) {
 	var out []FileDiff
 	src = filepath.Clean(src)
+	boundary := copySourceBoundary(src, opts.SourceBoundary)
+	if boundary != "" {
+		err := util.WalkFilesResolvingSymlinks(src, boundary, func(logicalPath, resolvedPath string, info os.FileInfo) error {
+			rel, err := filepath.Rel(src, logicalPath)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(dst, rel)
+			content, err := e.FS.ReadFile(resolvedPath)
+			if err != nil {
+				return err
+			}
+			label := filepath.Join(filepath.Base(dst), rel)
+			if opts.LabelForPath != nil {
+				label = opts.LabelForPath(target)
+			}
+			fd, err := e.classifyCopyFileWithMode(target, content, normalizedCopyMode(info.Mode()), label, sourcePack, lg)
+			if err != nil {
+				return err
+			}
+			out = append(out, fd)
+			return nil
+		})
+		return out, err
+	}
 	if resolver, ok := e.FS.(symlinkEvaluator); ok {
 		resolved, err := resolver.EvalSymlinks(src)
 		if err == nil && resolved != src {
@@ -293,16 +319,64 @@ func (e *Engine) ClassifyCopyWithOptions(src, dst, sourcePack string, lg domain.
 	return out, err
 }
 
+// ClassifyCopyFileWithOptions resolves and validates a file copy source before
+// classifying it against the destination. Parent-component symlinks are checked
+// when SourceBoundary is set.
+func (e *Engine) ClassifyCopyFileWithOptions(src, dst, sourcePack string, lg domain.Ledger, opts ClassifyCopyOptions) (FileDiff, error) {
+	readPath := src
+	var info os.FileInfo
+	var err error
+	boundary := copySourceBoundary(src, opts.SourceBoundary)
+	if boundary != "" {
+		readPath, info, err = util.ResolvePathWithinBoundary(src, boundary)
+	} else {
+		info, err = e.FS.Stat(src)
+	}
+	if err != nil {
+		return FileDiff{}, err
+	}
+	if info.IsDir() {
+		return FileDiff{}, fmt.Errorf("read %s: is a directory", src)
+	}
+	content, err := e.FS.ReadFile(readPath)
+	if err != nil {
+		return FileDiff{}, err
+	}
+	label := filepath.Base(dst)
+	if opts.LabelForPath != nil {
+		label = opts.LabelForPath(dst)
+	}
+	return e.classifyCopyFileWithMode(dst, content, normalizedCopyMode(info.Mode()), label, sourcePack, lg)
+}
+
+func copySourceBoundary(src, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	resolved, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return ""
+	}
+	if info, statErr := os.Stat(resolved); statErr == nil && !info.IsDir() {
+		resolved = filepath.Dir(resolved)
+	}
+	return util.FindRepoRoot(resolved)
+}
+
 func (e *Engine) copyDesiredMode(src string) (os.FileMode, error) {
 	info, err := e.FS.Stat(src)
 	if err != nil {
 		return 0, err
 	}
-	mode := info.Mode().Perm()
+	return normalizedCopyMode(info.Mode()), nil
+}
+
+func normalizedCopyMode(mode os.FileMode) os.FileMode {
+	mode = mode.Perm()
 	if mode&0o111 == 0 {
-		return defaultWriteMode, nil
+		return defaultWriteMode
 	}
-	return mode, nil
+	return mode
 }
 
 // ComputeSettingsDiffs classifies each settings action against on-disk state and the ledger.

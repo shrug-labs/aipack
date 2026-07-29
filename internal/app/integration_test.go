@@ -15,6 +15,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/testutil"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -1987,6 +1988,144 @@ func TestDryRun_ProducesPlanWithoutWriting(t *testing.T) {
 		for path := range files {
 			t.Logf("  unexpected file: %s", path)
 		}
+	}
+}
+
+type invalidCopyPlanHarness struct {
+	src string
+	dst string
+}
+
+func (h invalidCopyPlanHarness) ID() domain.Harness { return domain.HarnessCodex }
+func (h invalidCopyPlanHarness) Layout(domain.Scope, string, string) harness.Layout {
+	return harness.Layout{ValidationRoots: []string{filepath.Dir(h.dst)}}
+}
+func (h invalidCopyPlanHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
+	return domain.Fragment{
+		Copies:  []domain.CopyAction{{Src: h.src, Dst: h.dst, Kind: domain.CopyKindFile, SourcePack: "test-pack"}},
+		Desired: []string{h.dst},
+	}, nil
+}
+func (h invalidCopyPlanHarness) Render(_ context.Context, _ harness.RenderContext) (domain.Fragment, error) {
+	return domain.Fragment{}, nil
+}
+func (h invalidCopyPlanHarness) Capture(_ context.Context, _ harness.CaptureContext) (harness.CaptureResult, error) {
+	return harness.CaptureResult{}, nil
+}
+
+func TestDryRun_RejectsPlanThatApplyCannotClassify(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	projectDir := t.TempDir()
+	h := invalidCopyPlanHarness{src: srcDir, dst: filepath.Join(projectDir, ".codex", "skills", "broken")}
+	reg := harness.NewRegistry(h)
+
+	_, _, err := RunSync(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+		TargetSpec: TargetSpec{
+			Scope:      domain.ScopeProject,
+			ProjectDir: projectDir,
+			Harnesses:  []domain.Harness{domain.HarnessCodex},
+			Home:       t.TempDir(),
+		},
+		DryRun: true,
+		Quiet:  true,
+	}, reg, nil, nil)
+	if err == nil {
+		t.Fatal("dry-run accepted a file copy whose source is a directory")
+	}
+	if !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("RunSync error = %q, want directory read failure", err)
+	}
+	if files := collectFiles(t, projectDir); len(files) != 0 {
+		t.Fatalf("dry-run wrote files: %v", files)
+	}
+}
+
+func TestSync_FollowsNestedDirectorySymlinkAssets(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		namespaced bool
+		rendered   string
+	}{
+		{name: "flat", rendered: "diagnose"},
+		{name: "namespaced", namespaced: true, rendered: "diagnose__aipack__test-pack"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			shared := filepath.Join(repoRoot, "shared-config")
+			if err := os.MkdirAll(shared, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			want := "team = \"example\"\n"
+			if err := os.WriteFile(filepath.Join(shared, "team.toml"), []byte(want), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			packRoot := filepath.Join(repoRoot, "pack")
+			skillDir := filepath.Join(packRoot, "skills", "diagnose")
+			assetsDir := filepath.Join(skillDir, "assets")
+			if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(skillDir, domain.SkillEntryFile), []byte("---\nname: diagnose\ndescription: Diagnose issues\n---\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			testutil.Symlink(t, shared, filepath.Join(assetsDir, "shared-config"))
+
+			profile := domain.Profile{Packs: []domain.Pack{{
+				Name: "test-pack",
+				Root: packRoot,
+				Skills: []domain.Skill{{
+					Name:           "diagnose",
+					DirPath:        skillDir,
+					SourcePack:     "test-pack",
+					SourceBoundary: repoRoot,
+					Assets:         []string{"assets/shared-config/team.toml"},
+				}},
+			}}}
+			projectDir := t.TempDir()
+			home := t.TempDir()
+			reg := testRegistry()
+			req := SyncRequest{
+				TargetSpec: TargetSpec{
+					Scope:      domain.ScopeProject,
+					ProjectDir: projectDir,
+					Harnesses:  []domain.Harness{domain.HarnessCodex},
+					Home:       home,
+					Namespaced: tc.namespaced,
+					Env:        map[string]string{},
+				},
+				DryRun: true,
+				Force:  true,
+				Yes:    true,
+				Quiet:  true,
+			}
+			if _, _, err := RunSync(context.Background(), engine.New(nil, nil), profile, req, reg, nil, nil); err != nil {
+				t.Fatalf("dry-run: %v", err)
+			}
+			if files := collectFiles(t, projectDir); len(files) != 0 {
+				t.Fatalf("dry-run wrote files: %v", files)
+			}
+
+			syncAndApplyWithOptions(t, profile, domain.ScopeProject, projectDir, home, domain.HarnessCodex, reg, syncAndApplyOptions{Namespaced: tc.namespaced})
+			dst := filepath.Join(projectDir, ".codex", "skills", tc.rendered, "assets", "shared-config", "team.toml")
+			got, err := os.ReadFile(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != want {
+				t.Fatalf("rendered asset = %q, want %q", got, want)
+			}
+			if info, err := os.Lstat(filepath.Dir(dst)); err != nil {
+				t.Fatal(err)
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("rendered asset directory is still a symlink: %s", filepath.Dir(dst))
+			}
+		})
 	}
 }
 

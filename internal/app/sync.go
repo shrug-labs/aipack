@@ -365,6 +365,25 @@ func runSyncHarness(ctx context.Context, eng *engine.Engine, profile domain.Prof
 	warnings = append(warnings, plan.Warnings...)
 
 	if req.DryRun {
+		h, _ := reg.Lookup(hid)
+		layout := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home)
+		validationWarnings, validationErr := eng.ApplyPlan(ctx, plan, engine.ApplyRequest{
+			Force:  req.Force,
+			Yes:    req.Yes,
+			DryRun: true,
+			Quiet:  true,
+			Req:    planReq,
+			LabelForPath: func(path string) string {
+				return syncDisplayPath(hid, path)
+			},
+		}, layout.ValidationRoots)
+		warnings = append(warnings, validationWarnings...)
+		if validationErr != nil {
+			if stderr != nil {
+				fmt.Fprintf(stderr, "error: sync: %v\n", validationErr)
+			}
+			return SyncResult{}, warnings, wrapFatalSync("validate dry-run plan", validationErr)
+		}
 		if req.Verbose {
 			summary, err := PlanWithDiffs(ctx, eng, profile, req, reg)
 			if err != nil {
@@ -706,7 +725,9 @@ func stripFuncForOwnedFile(of harness.OwnedFile) func([]byte, domain.Ledger) ([]
 func classifyCopyKind(eng *engine.Engine, cp domain.CopyAction, lg domain.Ledger) domain.DiffKind {
 	switch cp.Kind {
 	case domain.CopyKindDir:
-		fds, err := eng.ClassifyCopy(cp.Src, cp.Dst, cp.SourcePack, lg)
+		fds, err := eng.ClassifyCopyWithOptions(cp.Src, cp.Dst, cp.SourcePack, lg, engine.ClassifyCopyOptions{
+			SourceBoundary: cp.SourceBoundary,
+		})
 		if err != nil {
 			// Can't classify — treat as new copy so it shows up.
 			return domain.DiffCreate
@@ -726,11 +747,10 @@ func classifyCopyKind(eng *engine.Engine, cp domain.CopyAction, lg domain.Ledger
 		}
 		return worst
 	case domain.CopyKindFile:
-		content, err := eng.FS.ReadFile(cp.Src)
-		if err != nil {
-			return domain.DiffCreate
-		}
-		fd, err := eng.ClassifyFile(cp.Dst, content, filepath.Base(cp.Dst), cp.SourcePack, lg)
+		fd, err := eng.ClassifyCopyFileWithOptions(cp.Src, cp.Dst, cp.SourcePack, lg, engine.ClassifyCopyOptions{
+			LabelForPath:   func(string) string { return filepath.Base(cp.Dst) },
+			SourceBoundary: cp.SourceBoundary,
+		})
 		if err != nil {
 			return domain.DiffCreate
 		}

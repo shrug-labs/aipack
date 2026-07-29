@@ -3,6 +3,7 @@ package util
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -313,6 +314,21 @@ func TestFindRepoRoot_NoGit(t *testing.T) {
 	}
 }
 
+func TestFindRepoRoot_WorktreeGitFile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: /tmp/example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "pack", "skills", "diagnose")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindRepoRoot(sub); got != root {
+		t.Fatalf("FindRepoRoot(%q) = %q, want %q", sub, got, root)
+	}
+}
+
 func TestCopyDirResolvingSymlinks_ResolvesFileSymlink(t *testing.T) {
 	// Create a repo-like structure with shared content.
 	root := t.TempDir()
@@ -469,6 +485,83 @@ func TestCopyDirResolvingSymlinks_RejectsDirectorySymlinkCycle(t *testing.T) {
 	if !strings.Contains(err.Error(), "cycle") {
 		t.Errorf("error %q should mention 'cycle'", err)
 	}
+}
+
+func TestWalkFilesResolvingSymlinks_FollowsDirectorySymlink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	shared := filepath.Join(root, "shared-config")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "team.toml"), []byte("team = \"example\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	skillDir := filepath.Join(root, "pack", "skills", "diagnose")
+	assetsDir := filepath.Join(skillDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, shared, filepath.Join(assetsDir, "shared-config"))
+	resolvedShared, err := filepath.EvalSymlinks(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	err = WalkFilesResolvingSymlinks(skillDir, root, func(logicalPath, resolvedPath string, _ os.FileInfo) error {
+		rel, relErr := filepath.Rel(skillDir, logicalPath)
+		if relErr != nil {
+			return relErr
+		}
+		got = append(got, filepath.ToSlash(rel))
+		if resolvedPath != filepath.Join(resolvedShared, "team.toml") {
+			t.Errorf("resolved path = %q, want %q", resolvedPath, filepath.Join(resolvedShared, "team.toml"))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkFilesResolvingSymlinks: %v", err)
+	}
+	if want := []string{"assets/shared-config/team.toml"}; !slices.Equal(got, want) {
+		t.Fatalf("walked files = %v, want %v", got, want)
+	}
+}
+
+func TestWalkFilesResolvingSymlinks_RejectsEscapeAndCycle(t *testing.T) {
+	t.Parallel()
+	t.Run("escape", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		skillDir := filepath.Join(root, "skill")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		testutil.Symlink(t, outside, filepath.Join(skillDir, "escaped"))
+
+		err := WalkFilesResolvingSymlinks(skillDir, root, func(string, string, os.FileInfo) error { return nil })
+		if err == nil || !strings.Contains(err.Error(), "escapes boundary") {
+			t.Fatalf("error = %v, want boundary escape", err)
+		}
+	})
+
+	t.Run("cycle", func(t *testing.T) {
+		root := t.TempDir()
+		skillDir := filepath.Join(root, "skill")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		testutil.Symlink(t, skillDir, filepath.Join(skillDir, "self"))
+
+		err := WalkFilesResolvingSymlinks(skillDir, root, func(string, string, os.FileInfo) error { return nil })
+		if err == nil || !strings.Contains(err.Error(), "cycle") {
+			t.Fatalf("error = %v, want symlink cycle", err)
+		}
+	})
 }
 
 func TestResolveSymlinksInDir(t *testing.T) {

@@ -119,22 +119,18 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, ar ApplyRequest, lg domain
 		switch c.Kind {
 		case domain.CopyKindDir:
 			fds, err := e.ClassifyCopyWithOptions(c.Src, c.Dst, c.SourcePack, lg, ClassifyCopyOptions{
-				LabelForPath: ar.displayLabel,
+				LabelForPath:   ar.displayLabel,
+				SourceBoundary: c.SourceBoundary,
 			})
 			if err != nil {
 				return nil, err
 			}
 			diffs = append(diffs, fds...)
 		case domain.CopyKindFile:
-			content, err := e.FS.ReadFile(c.Src)
-			if err != nil {
-				return nil, err
-			}
-			desiredMode, err := e.copyDesiredMode(c.Src)
-			if err != nil {
-				return nil, err
-			}
-			fd, err := e.classifyCopyFileWithMode(c.Dst, content, desiredMode, ar.displayLabel(c.Dst), c.SourcePack, lg)
+			fd, err := e.ClassifyCopyFileWithOptions(c.Src, c.Dst, c.SourcePack, lg, ClassifyCopyOptions{
+				LabelForPath:   ar.displayLabel,
+				SourceBoundary: c.SourceBoundary,
+			})
 			if err != nil {
 				return nil, err
 			}

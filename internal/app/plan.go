@@ -170,7 +170,8 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 		switch c.Kind {
 		case domain.CopyKindDir:
 			fds, cerr := eng.ClassifyCopyWithOptions(c.Src, c.Dst, c.SourcePack, lg, engine.ClassifyCopyOptions{
-				LabelForPath: labelFor,
+				LabelForPath:   labelFor,
+				SourceBoundary: c.SourceBoundary,
 			})
 			if cerr != nil {
 				summary.Warnings = append(summary.Warnings, domain.Warning{
@@ -182,14 +183,10 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 				appendPlanOpFromFileDiff(&summary, fd, inferContentKind(fd.Dst))
 			}
 		case domain.CopyKindFile:
-			content, cerr := eng.FS.ReadFile(c.Src)
-			if cerr != nil {
-				summary.Warnings = append(summary.Warnings, domain.Warning{
-					Path: c.Src, Message: fmt.Sprintf("read: %v", cerr),
-				})
-				continue
-			}
-			fd, cerr := eng.ClassifyFile(c.Dst, content, labelFor(c.Dst), c.SourcePack, lg)
+			fd, cerr := eng.ClassifyCopyFileWithOptions(c.Src, c.Dst, c.SourcePack, lg, engine.ClassifyCopyOptions{
+				LabelForPath:   labelFor,
+				SourceBoundary: c.SourceBoundary,
+			})
 			if cerr != nil {
 				summary.Warnings = append(summary.Warnings, domain.Warning{
 					Path: c.Dst, Message: fmt.Sprintf("classify: %v", cerr),

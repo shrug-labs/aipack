@@ -52,6 +52,45 @@ func Test_classifyFileKind_Identical(t *testing.T) {
 	}
 }
 
+func TestClassifyCopyWithOptions_FollowsNestedDirectorySymlink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(root, "shared-config")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantContent := "team = \"example\"\n"
+	if err := os.WriteFile(filepath.Join(shared, "team.toml"), []byte(wantContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	skillDir := filepath.Join(root, "pack", "skills", "diagnose")
+	assetsDir := filepath.Join(skillDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, shared, filepath.Join(assetsDir, "shared-config"))
+
+	dst := filepath.Join(t.TempDir(), "diagnose")
+	diffs, err := New(nil, nil).ClassifyCopyWithOptions(skillDir, dst, "test-pack", domain.NewLedger(), ClassifyCopyOptions{})
+	if err != nil {
+		t.Fatalf("ClassifyCopyWithOptions: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("diffs = %d, want 1", len(diffs))
+	}
+	wantDst := filepath.Join(dst, "assets", "shared-config", "team.toml")
+	if diffs[0].Dst != wantDst {
+		t.Fatalf("Dst = %q, want %q", diffs[0].Dst, wantDst)
+	}
+	if string(diffs[0].Desired) != wantContent {
+		t.Fatalf("Desired = %q, want %q", diffs[0].Desired, wantContent)
+	}
+}
+
 func Test_classifyFileKind_Managed(t *testing.T) {
 	t.Parallel()
 	eng := New(nil, nil)

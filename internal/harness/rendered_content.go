@@ -246,10 +246,11 @@ func addSkillAssetCopies(f *domain.Fragment, skill domain.Skill, dstDir string) 
 		src := filepath.Join(skill.DirPath, filepath.FromSlash(rel))
 		dst := filepath.Join(dstDir, filepath.FromSlash(rel))
 		f.Copies = append(f.Copies, domain.CopyAction{
-			Src:        src,
-			Dst:        dst,
-			Kind:       domain.CopyKindFile,
-			SourcePack: skill.SourcePack,
+			Src:            src,
+			Dst:            dst,
+			Kind:           domain.CopyKindFile,
+			SourcePack:     skill.SourcePack,
+			SourceBoundary: skill.SourceBoundary,
 		})
 		f.Desired = append(f.Desired, dst)
 	}

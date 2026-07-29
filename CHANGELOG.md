@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.33.2]
+
+### Fixed
+
+- **Repository-local directory symlinks work inside skill assets.** Sync follows safe nested directory symlinks within the source repository or pack boundary, renders their files at the symlink's logical path, and rejects boundary escapes and cycles. Dry runs now validate the same copy plan as a real sync, so source traversal errors surface before any write.
+
 ## [0.33.1]
 
 ### Fixed

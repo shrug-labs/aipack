@@ -47,10 +47,11 @@ func (w WriteAction) EffectiveMode(defaultMode os.FileMode) os.FileMode {
 
 // CopyAction represents a file or directory to be copied from source to destination.
 type CopyAction struct {
-	Src        string   // source path (pack file or directory)
-	Dst        string   // destination path
-	Kind       CopyKind // file or dir
-	SourcePack string   // pack provenance
+	Src            string   // source path (pack file or directory)
+	Dst            string   // destination path
+	Kind           CopyKind // file or dir
+	SourcePack     string   // pack provenance
+	SourceBoundary string   // repository or pack root allowed for source symlinks
 }
 
 // SettingsAction represents a declarative settings file sync with optional merge mode.

@@ -3,11 +3,13 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/testutil"
 )
 
 func TestParseRules_Basic(t *testing.T) {
@@ -192,6 +194,85 @@ func TestParseSkills_Basic(t *testing.T) {
 	}
 	if skills[0].DirPath != skillDir {
 		t.Errorf("DirPath = %q", skills[0].DirPath)
+	}
+}
+
+func TestParseSkills_ExpandsNestedDirectorySymlinkAssets(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(repoRoot, "shared-config")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "team.toml"), []byte("team = \"example\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packRoot := filepath.Join(repoRoot, "pack")
+	skillDir := filepath.Join(packRoot, "skills", "diagnose")
+	assetsDir := filepath.Join(skillDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, domain.SkillEntryFile), []byte("---\nname: diagnose\ndescription: Diagnose issues\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, shared, filepath.Join(assetsDir, "shared-config"))
+
+	skills, warnings, err := New(nil, nil).parseSkills(config.ResolvedPack{
+		Root: packRoot, Name: "test-pack", Skills: []string{"diagnose"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("skills = %d, want 1", len(skills))
+	}
+	if want := []string{"assets/shared-config/team.toml"}; !slices.Equal(skills[0].Assets, want) {
+		t.Fatalf("Assets = %v, want %v", skills[0].Assets, want)
+	}
+	wantBoundary, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skills[0].SourceBoundary != wantBoundary {
+		t.Fatalf("SourceBoundary = %q, want %q", skills[0].SourceBoundary, wantBoundary)
+	}
+}
+
+func TestParseSkills_RejectsDirectorySymlinkOutsideSourceBoundary(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "team.toml"), []byte("team = \"example\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packRoot := filepath.Join(repoRoot, "pack")
+	skillDir := filepath.Join(packRoot, "skills", "diagnose")
+	assetsDir := filepath.Join(skillDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, domain.SkillEntryFile), []byte("---\nname: diagnose\ndescription: Diagnose issues\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, outside, filepath.Join(assetsDir, "shared-config"))
+
+	_, _, err := New(nil, nil).parseSkills(config.ResolvedPack{
+		Root: packRoot, Name: "test-pack", Skills: []string{"diagnose"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes boundary") {
+		t.Fatalf("parseSkills error = %v, want boundary escape", err)
 	}
 }
 
