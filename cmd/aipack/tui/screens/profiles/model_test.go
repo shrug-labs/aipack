@@ -519,3 +519,62 @@ func TestTreeLayerHitMouseWheelScrollsTree(t *testing.T) {
 		t.Fatalf("wheel up should move tree cursor upward, got %d", got)
 	}
 }
+
+func TestProfilesTreeCursorWrapsAtBothEnds(t *testing.T) {
+	t.Parallel()
+
+	nodes := []treeNode{{kind: nodeCategory, label: "Rules", expanded: true, category: domain.CategoryRules, parentIdx: -1}}
+	for range 8 {
+		nodes = append(nodes, treeNode{
+			kind:      nodeItem,
+			label:     "rule",
+			enabled:   true,
+			category:  domain.CategoryRules,
+			id:        "rule",
+			packIdx:   0,
+			parentIdx: 0,
+			fileSize:  -1,
+		})
+	}
+	lastVisible := len(nodes)
+	nodes = append(nodes,
+		treeNode{kind: nodeCategory, label: "Skills", expanded: false, category: domain.CategorySkills, parentIdx: -1},
+		treeNode{kind: nodeItem, label: "hidden-skill", category: domain.CategorySkills, id: "hidden-skill", packIdx: 0, parentIdx: lastVisible, fileSize: -1},
+	)
+	tree := treeModel{
+		nodes: nodes,
+		packs: []app.ProfilePackInfo{{Index: 0, Name: "core"}},
+	}
+	m := New(context.Background(), nil, "/tmp/config")
+	m.focus = panelTree
+	m.items = []profileItem{{
+		name: "default",
+		cfg:  config.ProfileConfig{Packs: []config.PackEntry{{Name: "core"}}},
+		tree: &tree,
+	}}
+	m = m.SetSize(120, 8).(Model)
+
+	screen, cmd := m.Update(testKeyText("k"))
+	if cmd != nil {
+		t.Fatal("tree cursor motion should not emit a command")
+	}
+	m = screen.(Model)
+	if got, want := m.items[0].tree.cursor, lastVisible; got != want {
+		t.Fatalf("tree cursor = %d, want last visible node at %d", got, want)
+	}
+	if got := m.items[0].tree.offset; got == 0 {
+		t.Fatalf("wrapped tree cursor should move viewport to the bottom, offset = %d", got)
+	}
+
+	screen, cmd = m.Update(testKeyText("j"))
+	if cmd != nil {
+		t.Fatal("tree cursor motion should not emit a command")
+	}
+	m = screen.(Model)
+	if got := m.items[0].tree.cursor; got != 0 {
+		t.Fatalf("tree cursor = %d, want first visible node at 0", got)
+	}
+	if got := m.items[0].tree.offset; got != 0 {
+		t.Fatalf("wrapped tree cursor should move viewport to the top, offset = %d", got)
+	}
+}

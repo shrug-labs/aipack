@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.33.3]
+
+### Fixed
+
+- **The Profiles content cursor wraps at both ends.** Moving above the first visible row jumps to the last visible row, and moving below the last jumps back to the first, while collapsed content remains skipped.
+
 ## [0.33.2]
 
 ### Fixed

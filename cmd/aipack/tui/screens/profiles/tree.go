@@ -224,9 +224,15 @@ func (t *treeModel) toggle() bool {
 
 // moveUp moves the cursor up, skipping hidden nodes.
 func (t *treeModel) moveUp() {
-	for t.cursor > 0 {
-		t.cursor--
-		if t.isVisible(t.cursor) {
+	for i := t.cursor - 1; i >= 0; i-- {
+		if t.isVisible(i) {
+			t.cursor = i
+			return
+		}
+	}
+	for i := len(t.nodes) - 1; i >= 0; i-- {
+		if t.isVisible(i) {
+			t.cursor = i
 			return
 		}
 	}
@@ -234,9 +240,15 @@ func (t *treeModel) moveUp() {
 
 // moveDown moves the cursor down, skipping hidden nodes.
 func (t *treeModel) moveDown() {
-	for t.cursor < len(t.nodes)-1 {
-		t.cursor++
-		if t.isVisible(t.cursor) {
+	for i := t.cursor + 1; i < len(t.nodes); i++ {
+		if t.isVisible(i) {
+			t.cursor = i
+			return
+		}
+	}
+	for i := range t.nodes {
+		if t.isVisible(i) {
+			t.cursor = i
 			return
 		}
 	}
