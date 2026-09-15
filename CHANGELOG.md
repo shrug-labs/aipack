@@ -6,6 +6,14 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-15
+
+### Changed
+
+- Git-backed terminal commands allow native authentication prompts automatically. JSON and background operations remain noninteractive; `--non-interactive` disables Git prompts explicitly.
+- Pack updates stop after failed remote checks instead of attempting another clone.
+- Optional Git cache population no longer opens remote connections.
+
 ## [0.33.3]
 
 ### Fixed

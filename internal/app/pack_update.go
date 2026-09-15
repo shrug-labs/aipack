@@ -443,6 +443,15 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 				}
 				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseCheckingRemote})
 				remoteHash, lsErr := uctx.gitLsRemoteFn(ctx, meta.Origin, ref)
+				if lsErr == nil {
+					lsErr = ctx.Err()
+				}
+				if lsErr != nil {
+					err := fmt.Errorf("checking remote %s: %w", meta.Origin, lsErr)
+					result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+					emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+					return packUpdateOutcome{PackUpdateResult: result}
+				}
 				if lsErr == nil && remoteHash != "" && remoteHash == meta.CommitHash {
 					if uctx.stdout != nil {
 						uctx.stdoutMu.Lock()
@@ -455,7 +464,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 					emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
 					return outcome
 				}
-				// ls-remote failed or returned different hash — fall through to clone.
+				// The remote changed (or did not return a hash); fetch content.
 			}
 		}
 
@@ -489,6 +498,11 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		}
 
 		newHash := resolveGitHash(ctx, tmpDir, uctx.gitHashFn)
+		if err := ctx.Err(); err != nil {
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
+		}
 		if newHash != "" && newHash == meta.CommitHash {
 			// Same hash, but --with may approve previously filtered content.
 			var rawCandidates *BundledCandidates
@@ -562,6 +576,11 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		}
 
 		_ = source.UpdateBareCache(ctx, meta.Origin, tmpDir, source.GitCacheDir(uctx.configDir), uctx.runGitFn)
+		if err := ctx.Err(); err != nil {
+			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+			return packUpdateOutcome{PackUpdateResult: result}
+		}
 
 		if err := util.ReplaceDirAtomic(packDir, staging); err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
@@ -764,6 +783,11 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			return packUpdateOutcome{PackUpdateResult: updateResult}
 		}
 
+		if err := ctx.Err(); err != nil {
+			updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
+			return packUpdateOutcome{PackUpdateResult: updateResult}
+		}
 		if err := util.ReplaceDirAtomic(packDir, result.destDir); err != nil {
 			updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
@@ -1148,50 +1172,55 @@ func archiveUpdateFailure(name, method string, err error, uctx packUpdateContext
 // packReportPinned reports the status of a pinned pack without updating it.
 func packReportPinned(ctx context.Context, name, method string, meta config.InstalledPackMeta, uctx packUpdateContext) packUpdateOutcome {
 	msg := "pinned at " + pinLabel(meta.Ref)
-	hint := pinHint(ctx, meta, source.IsSemverRef(meta.Ref), uctx)
+	hint, err := pinHint(ctx, meta, source.IsSemverRef(meta.Ref), uctx)
+	if err == nil {
+		err = ctx.Err()
+	}
+	status := StatusUpToDate
+	if err != nil {
+		status = StatusError
+		hint = fmt.Sprintf(" (drift check unavailable: %v)", err)
+	}
 	if uctx.stdout != nil {
 		uctx.stdoutMu.Lock()
 		fmt.Fprintf(uctx.stdout, "Pinned (clone): %s %s\n", name, msg+hint)
 		uctx.stdoutMu.Unlock()
 	}
-	result := PackUpdateResult{Name: name, Method: method, Status: StatusUpToDate, Message: msg + hint}
-	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result})
+	result := PackUpdateResult{Name: name, Method: method, Status: status, Message: msg + hint}
+	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 	return packUpdateOutcome{PackUpdateResult: result}
 }
 
 // pinHint returns a human-readable status hint for a pinned pack via one
-// network call. On failure it returns " (drift check unavailable)" so users
-// can distinguish "up-to-date" from "we don't know" — collapsing both to ""
-// would mislead offline runs.
-func pinHint(ctx context.Context, meta config.InstalledPackMeta, semverPin bool, uctx packUpdateContext) string {
+// network call. A failed query remains an error, including for JSON checks.
+func pinHint(ctx context.Context, meta config.InstalledPackMeta, semverPin bool, uctx packUpdateContext) (string, error) {
 	if meta.Origin == "" {
-		return ""
+		return "", nil
 	}
-	const unavailable = " (drift check unavailable)"
 	if semverPin {
 		tags, err := uctx.listRemoteTagsFn(ctx, meta.Origin)
 		if err != nil {
-			return unavailable
+			return "", err
 		}
 		prefix := source.TagPrefixFromRef(meta.Ref)
 		latest := source.LatestSemverTag(source.FilterSemverTags(tags, prefix))
 		if latest == "" {
 			// Not a network failure — remote genuinely has no semver tags.
 			// No useful drift signal; omit the hint.
-			return ""
+			return "", nil
 		}
 		if latest == meta.Ref {
-			return " (up-to-date)"
+			return " (up-to-date)", nil
 		}
 		// Display the semver portion in the drift hint — namespaced pins
 		// strip the prefix so users see "v0.3.1" instead of
 		// "my-pack/v0.3.1", matching the v-prefixed form used elsewhere
 		// (pinLabel, PackShowEntry.PinLabel).
-		return fmt.Sprintf(" (latest: %s)", source.SemverFromRef(latest))
+		return fmt.Sprintf(" (latest: %s)", source.SemverFromRef(latest)), nil
 	}
 	// Commit-hash pin: HEAD ls-remote tells us if the upstream branch moved.
 	if meta.CommitHash == "" {
-		return ""
+		return "", nil
 	}
 	ref := meta.Ref
 	if source.IsCommitHash(ref) {
@@ -1199,16 +1228,16 @@ func pinHint(ctx context.Context, meta config.InstalledPackMeta, semverPin bool,
 	}
 	remoteHash, err := uctx.gitLsRemoteFn(ctx, meta.Origin, ref)
 	if err != nil {
-		return unavailable
+		return "", err
 	}
 	if remoteHash == "" {
 		// Remote responded but returned no ref — degenerate case, omit.
-		return ""
+		return "", nil
 	}
 	if remoteHash == meta.CommitHash {
-		return " (up-to-date)"
+		return " (up-to-date)", nil
 	}
-	return " (remote has moved)"
+	return " (remote has moved)", nil
 }
 
 // buildUpToDateResult constructs a StatusUpToDate result with bundled-content

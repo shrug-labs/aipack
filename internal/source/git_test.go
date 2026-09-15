@@ -586,6 +586,7 @@ func TestEnsureCloneWithRef_NoCacheDir(t *testing.T) {
 // and the clone --bare invocation lets every goroutine fall through to
 // clone, which both wastes work and can corrupt partial state.
 func TestUpdateBareCache_ConcurrentSameKey(t *testing.T) {
+	localSource := fullCacheSeed(t)
 	// Not t.Parallel: manipulates the process-global bareCacheMus via a
 	// unique URL, and we want deterministic counts.
 	cacheDir := filepath.Join(t.TempDir(), "cache")
@@ -616,9 +617,7 @@ func TestUpdateBareCache_ConcurrentSameKey(t *testing.T) {
 	errs := make(chan error, n)
 	for range n {
 		wg.Go(func() {
-			// localSource is empty → mock will actually be invoked with
-			// the URL as the source (we don't care, we only inspect args).
-			errs <- UpdateBareCache(context.Background(), url, "", cacheDir, mock)
+			errs <- UpdateBareCache(context.Background(), url, localSource, cacheDir, mock)
 		})
 	}
 	wg.Wait()
@@ -639,13 +638,7 @@ func TestUpdateBareCache_ConcurrentSameKey(t *testing.T) {
 	}
 }
 
-// TestUpdateBareCache_ShallowLocalSeedSkipped asserts that UpdateBareCache
-// clones from the remote URL (not the local source) when the local source
-// has a .git/shallow file. Seeding from a shallow local produces a bare
-// cache with an incomplete object database that later `clone --reference`
-// calls can't resolve, surfacing as "pack has N unresolved deltas" during
-// a `pack update --version <older-commit>` rollback. Regression guard for
-// finding #1 in projects/aipack-pack-update-bugs-2026-04-14.md.
+// A shallow source must neither seed an incomplete cache nor cause a remote clone.
 func TestUpdateBareCache_ShallowLocalSeedSkipped(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
@@ -682,8 +675,8 @@ func TestUpdateBareCache_ShallowLocalSeedSkipped(t *testing.T) {
 	if err := UpdateBareCache(context.Background(), url, localSource, cacheDir, mock); err != nil {
 		t.Fatalf("UpdateBareCache: %v", err)
 	}
-	if cloneSrc != url {
-		t.Errorf("clone source = %q, want %q (remote URL, not shallow local)", cloneSrc, url)
+	if cloneSrc != "" {
+		t.Errorf("unexpected cache clone from %q for shallow source", cloneSrc)
 	}
 }
 
@@ -728,6 +721,7 @@ func TestUpdateBareCache_NonShallowLocalSeedUsed(t *testing.T) {
 // for different origins do NOT serialize on each other — each origin gets its
 // own mutex and can clone independently.
 func TestUpdateBareCache_ConcurrentDistinctKeys(t *testing.T) {
+	localSource := fullCacheSeed(t)
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 
 	var bareClones int64
@@ -750,7 +744,7 @@ func TestUpdateBareCache_ConcurrentDistinctKeys(t *testing.T) {
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			_ = UpdateBareCache(context.Background(), u, "", cacheDir, mock)
+			_ = UpdateBareCache(context.Background(), u, localSource, cacheDir, mock)
 		}(url)
 	}
 	wg.Wait()

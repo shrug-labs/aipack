@@ -361,6 +361,8 @@ See also: profile list, profile create, pack install`,
 }
 
 func (c *ProfileSetCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, false)
+	defer cancel()
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err

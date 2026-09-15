@@ -633,6 +633,9 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 
 	name := result.name
 	destDir := filepath.Join(packsDir, name)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := util.ReplaceDirAtomic(destDir, result.destDir); err != nil {
 		err = fmt.Errorf("installing pack to %s: %w", destDir, err)
 		if stdout != nil {
@@ -1125,6 +1128,9 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 	}
 
 	commitHash := resolveGitHash(ctx, cloneDir, req.GitHashFn)
+	if err := ctx.Err(); err != nil {
+		return packInstallResult{}, err
+	}
 
 	packRoot := cloneDir
 	if info.SubPath != "" {

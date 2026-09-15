@@ -55,7 +55,9 @@ func (e *updateEnv) update(t *testing.T, name string, opts ...func(*PackUpdateRe
 	t.Helper()
 	req := PackUpdateRequest{
 		ConfigDir: e.configDir, Name: name,
-		NowFn: func() time.Time { return fixedNow },
+		NowFn:            func() time.Time { return fixedNow },
+		GitLsRemoteFn:    func(context.Context, string, string) (string, error) { return fakeHash2, nil },
+		ListRemoteTagsFn: func(context.Context, string) ([]string, error) { return nil, nil },
 	}
 	for _, o := range opts {
 		o(&req)
@@ -1155,7 +1157,7 @@ func TestPackUpdate_Clone_LsRemoteSkipsClone(t *testing.T) {
 	}
 }
 
-func TestPackUpdate_Clone_LsRemoteFails_FallsThrough(t *testing.T) {
+func TestPackUpdate_Clone_LsRemoteFailureStops(t *testing.T) {
 	t.Parallel()
 	e := newUpdateEnv(t)
 	e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
@@ -1174,11 +1176,11 @@ func TestPackUpdate_Clone_LsRemoteFails_FallsThrough(t *testing.T) {
 		}
 		r.GitHashFn = fakeHashFn(fakeHash2) // different hash → update
 	})
-	if !cloned {
-		t.Fatal("expected clone when ls-remote fails")
+	if cloned {
+		t.Fatal("failed probe triggered another Git operation")
 	}
-	if results[0].Status != StatusUpdated {
-		t.Fatalf("status = %q, want updated", results[0].Status)
+	if results[0].Status != StatusError || !strings.Contains(results[0].Message, "network error") {
+		t.Fatalf("expected original probe failure, got %+v", results[0])
 	}
 }
 
@@ -1641,6 +1643,56 @@ func TestPackUpdate_HTTPTarballMigratesToClone(t *testing.T) {
 	}
 }
 
+func TestPackUpdate_CancelledGitHashDoesNotApply(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{config.MethodClone, config.MethodHTTPTarball} {
+		t.Run(method, func(t *testing.T) {
+			e := newUpdateEnv(t)
+			e.addClone(t, "test-pack", fakeCloneGitFn(t, "test-pack"))
+			packDir := filepath.Join(PacksDir(e.configDir), "test-pack")
+			sentinel := filepath.Join(packDir, "keep.txt")
+			if err := os.WriteFile(sentinel, []byte("installed content"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			lfPath := config.LockfilePath(e.configDir)
+			lf, err := config.LoadLockfile(lfPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta := lf.Packs["test-pack"]
+			meta.Method = method
+			lf.Packs["test-pack"] = meta
+			if err := config.SaveLockfile(lfPath, lf); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			results, err := PackUpdate(ctx, PackUpdateRequest{
+				ConfigDir: e.configDir, Name: "test-pack",
+				RunGitFn:      fakeCloneGitFn(t, "test-pack"),
+				GitLsRemoteFn: func(context.Context, string, string) (string, error) { return fakeHash2, nil },
+				GitHashFn: func(context.Context, string) (string, error) {
+					cancel()
+					return fakeHash2, nil
+				},
+			}, &e.out, nil)
+			if err != nil || len(results) != 1 || results[0].Status != StatusError {
+				t.Fatalf("results=%+v err=%v", results, err)
+			}
+			if data, err := os.ReadFile(sentinel); err != nil || string(data) != "installed content" {
+				t.Fatalf("cancelled update replaced installed content: %q, %v", data, err)
+			}
+			after, err := config.LoadLockfile(lfPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := after.Packs["test-pack"]; got.Method != method || got.CommitHash != meta.CommitHash {
+				t.Fatalf("cancelled update changed install coordinates: %+v", got)
+			}
+		})
+	}
+}
+
 func TestPackUpdate_HTTPTarballDryRunDoesNotSeedGitCache(t *testing.T) {
 	t.Parallel()
 	e := newUpdateEnv(t)
@@ -1942,13 +1994,16 @@ func TestPackUpdate_Clone_PinnedDriftCheckUnavailable(t *testing.T) {
 		e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
 		patchLockfileRef(t, e.configDir, "my-pack", "v1.0.0")
 
-		_, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
 			r.ListRemoteTagsFn = func(context.Context, string) ([]string, error) {
 				return nil, fmt.Errorf("simulated network failure")
 			}
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if results[0].Status != StatusError || !strings.Contains(results[0].Message, "simulated network failure") {
+			t.Fatalf("failed pinned check reported %+v", results[0])
 		}
 		if !strings.Contains(e.out.String(), "drift check unavailable") {
 			t.Errorf("expected drift-check-unavailable hint, got: %s", e.out.String())
@@ -1964,13 +2019,16 @@ func TestPackUpdate_Clone_PinnedDriftCheckUnavailable(t *testing.T) {
 		e.addClone(t, "my-pack", fakeCloneGitFn(t, "my-pack"))
 		patchLockfileRef(t, e.configDir, "my-pack", "aabbccdd")
 
-		_, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
+		results, err := e.update(t, "my-pack", func(r *PackUpdateRequest) {
 			r.GitLsRemoteFn = func(context.Context, string, string) (string, error) {
 				return "", fmt.Errorf("simulated network failure")
 			}
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if results[0].Status != StatusError || !strings.Contains(results[0].Message, "simulated network failure") {
+			t.Fatalf("failed pinned check reported %+v", results[0])
 		}
 		if !strings.Contains(e.out.String(), "drift check unavailable") {
 			t.Errorf("expected drift-check-unavailable hint, got: %s", e.out.String())

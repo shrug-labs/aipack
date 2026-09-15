@@ -23,7 +23,8 @@ import (
 
 // cliCore contains commands shared by all builds.
 type cliCore struct {
-	ConfigDir string `help:"Config directory (default: %APPDATA%\\aipack on Windows; ~/.config/aipack elsewhere)" name:"config-dir" type:"path"`
+	NonInteractive bool   `help:"Disable Git authentication prompts" name:"non-interactive"`
+	ConfigDir      string `help:"Config directory (default: %APPDATA%\\aipack on Windows; ~/.config/aipack elsewhere)" name:"config-dir" type:"path"`
 
 	Init   InitCmd   `cmd:"" group:"Setup:" help:"Create default sync-config and profile files"`
 	Doctor DoctorCmd `cmd:"" group:"Setup:" help:"Run preflight checks on config, packs, and MCP servers"`
@@ -57,12 +58,14 @@ type cliCore struct {
 
 // Globals holds injected IO for testability.
 type Globals struct {
-	ConfigDir string
-	Stdout    io.Writer
-	Stderr    io.Writer
-	Stdin     io.Reader
-	StdinTTY  bool
-	Registry  *harness.Registry
+	ConfigDir      string
+	Stdout         io.Writer
+	Stderr         io.Writer
+	Stdin          io.Reader
+	StdinTTY       bool
+	StderrTTY      bool
+	NonInteractive bool
+	Registry       *harness.Registry
 }
 
 // ExitError signals a specific exit code from a Run() method.
@@ -95,10 +98,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool
 	}()
 
 	globals := &Globals{
-		Stdout:   stdout,
-		Stderr:   stderr,
-		Stdin:    stdin,
-		StdinTTY: stdinTTY,
+		Stdout:    stdout,
+		Stderr:    stderr,
+		Stdin:     stdin,
+		StdinTTY:  stdinTTY,
+		StderrTTY: isTerminalWriter(stderr),
 		Registry: harness.NewRegistry(
 			ccharness.Harness{}, clharness.Harness{}, cxharness.Harness{}, ocharness.Harness{},
 		),
@@ -149,6 +153,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stdinTTY bool
 			parser.FatalIfErrorf(err)
 		}
 		globals.ConfigDir = cli.ConfigDir
+		globals.NonInteractive = cli.NonInteractive
 		err = kctx.Run(globals)
 		if err == nil {
 			code = cmdutil.ExitOK

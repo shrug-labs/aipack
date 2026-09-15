@@ -155,6 +155,8 @@ See also: collection show, pack install`
 }
 
 func (c *CollectionInstallCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, false)
+	defer cancel()
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err

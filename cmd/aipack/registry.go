@@ -179,6 +179,8 @@ See also: registry list, registry sources`,
 }
 
 func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, false)
+	defer cancel()
 	// Validate: --path requires git mode.
 	if c.Path != "" && c.URL != "" && !config.IsGitURL(c.URL, c.Ref) {
 		return fmt.Errorf("--path requires a git URL (ending in .git) or --ref")

@@ -1,7 +1,6 @@
 package source
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -137,7 +136,12 @@ func ensureClone(ctx context.Context, repoURL string, dir string, ref string, re
 		if err == nil {
 			return nil
 		}
-		// --branch failed; fall back to default branch + fetch.
+		// Authentication and cancellation must not start another attempt.
+		message := strings.ToLower(err.Error())
+		if ctx.Err() != nil || !(strings.Contains(message, "remote branch") && strings.Contains(message, "not found")) {
+			return err
+		}
+		// Only a missing branch warrants default-branch clone plus fetch.
 		_ = os.RemoveAll(dir)
 		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
 			return mkErr
@@ -193,18 +197,10 @@ func lsRemoteHead(ctx context.Context, repoURL, ref string) (string, error) {
 // expected order — `--tags` and `--heads` are silently mis-parsed as refspec
 // patterns when they appear after the URL.
 //
-// Timeout policy: if ctx already has a deadline (e.g. a TUI path with a
-// short budget), it is honored as-is; otherwise a 30s ceiling is applied so
-// CLI callers don't hang indefinitely on an unreachable remote.
+// The common executor applies the caller's authentication and timeout policy.
 func gitLsRemoteRaw(ctx context.Context, repoURL string, args ...string) ([]byte, error) {
 	if err := CheckGit(); err != nil {
 		return nil, err
-	}
-	tctx := ctx
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		tctx, cancel = context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
 	}
 	var flags, refspecs []string
 	for _, a := range args {
@@ -218,31 +214,7 @@ func gitLsRemoteRaw(ctx context.Context, repoURL string, args ...string) ([]byte
 	cmdArgs = append(cmdArgs, flags...)
 	cmdArgs = append(cmdArgs, repoURL)
 	cmdArgs = append(cmdArgs, refspecs...)
-	cmd := exec.CommandContext(tctx, "git", cmdArgs...)
-	cmd.Env = nonInteractiveGitEnv()
-	stdout, stderr, err := runAndCaptureStderr(cmd)
-	if err != nil {
-		msg := strings.TrimSpace(string(stderr))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, fmt.Errorf("git ls-remote %s: %s", repoURL, msg)
-	}
-	return stdout, nil
-}
-
-// runAndCaptureStderr runs cmd with both stdout and stderr buffered and
-// returns the captured bytes alongside any process error. Used instead of
-// cmd.Output() at every site that cares about the content of stderr — the
-// *exec.ExitError default Error() string is just "exit status N", so the
-// stderr bytes are invisible to downstream error classifiers and log
-// consumers unless explicitly pulled out here.
-func runAndCaptureStderr(cmd *exec.Cmd) (stdout, stderr []byte, err error) {
-	var so, se bytes.Buffer
-	cmd.Stdout = &so
-	cmd.Stderr = &se
-	err = cmd.Run()
-	return so.Bytes(), se.Bytes(), err
+	return runGitCore(ctx, cmdArgs...)
 }
 
 // nonInteractiveGitEnv returns the process environment with every interactive
@@ -340,35 +312,9 @@ func runGit(ctx context.Context, args ...string) error {
 	return err
 }
 
-// runGitCore runs a git command with shared setup (timeout, env, error formatting)
-// and returns stdout bytes. Both runGit and runGitOutput delegate to this.
-//
-// The environment blocks every interactive credential channel (ssh passphrase
-// prompts, GCM GUI popups, askpass dialogs, terminal prompts) so clone/fetch
-// can't hang on a pinentry for a locked SSH key. Non-interactive credential
-// paths — credential helpers returning cached creds, ssh-agent, user-defined
-// silent askpass scripts — are deliberately left intact.
+// runGitCore is the common execution path for clone/fetch and remote queries.
 func runGitCore(ctx context.Context, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = nonInteractiveGitEnv()
-	stdout, stderr, err := runAndCaptureStderr(cmd)
-	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("git %s timed out after 2m", strings.Join(args, " "))
-	}
-	if err != nil {
-		msg := strings.TrimSpace(string(stderr))
-		if msg == "" {
-			msg = strings.TrimSpace(string(stdout))
-		}
-		hint := gitErrorHint(msg, args)
-		if hint != "" {
-			return nil, fmt.Errorf("git %s failed: %s\n\n%s", strings.Join(args, " "), msg, hint)
-		}
-		return nil, fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
-	}
-	return stdout, nil
+	return executeGit(ctx, nil, args...)
 }
 
 // classifyCloneError inspects a git clone failure and, when its stderr
@@ -470,16 +416,24 @@ func CacheRefDir(configDir, repoURL string) string {
 	return filepath.Join(GitCacheDir(configDir), CacheKeyForURL(repoURL))
 }
 
-// UpdateBareCache creates a bare-repo cache for repoURL if one doesn't
-// already exist. When localSource is non-empty and contains a .git directory,
-// it is used as the clone source instead of hitting the remote — avoiding a
-// redundant network round-trip after the caller has already cloned. If the
-// cache already exists, this is a no-op (the cache is a local object store
-// for --reference, not a tracking clone — staleness only means slightly more
-// network transfer on the next clone, not failure).
-// The cache is NOT shallow: git --reference requires a non-shallow repo.
-// Best-effort: errors are returned but callers may choose to ignore them.
+// UpdateBareCache seeds an optional reference cache from a complete local clone.
+// Missing or shallow sources are skipped; this never connects to the remote.
+// Existing caches need no refresh because they are object stores, not tracking
+// clones. Callers may ignore cache errors but must still honor cancellation.
 func UpdateBareCache(ctx context.Context, repoURL, localSource, cacheDir string, runGitFn func(ctx context.Context, args ...string) error) error {
+	ctx = WithoutGitSession(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if localSource == "" {
+		return nil
+	}
+	if info, err := os.Stat(filepath.Join(localSource, ".git")); err != nil || !info.IsDir() {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(localSource, ".git", "shallow")); !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return err
 	}
@@ -494,35 +448,22 @@ func UpdateBareCache(ctx context.Context, repoURL, localSource, cacheDir string,
 	mu := bareCacheMutexFor(key)
 	mu.Lock()
 	defer mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if _, err := os.Stat(filepath.Join(bareDir, "HEAD")); err == nil {
 		return nil // Cache exists — already usable as --reference.
 	}
-	// Seed from local clone when available (avoids redundant network call)
-	// — but only when the local source is non-shallow. A shallow local
-	// produces a bare cache with an incomplete object database; later
-	// `clone --reference` calls fail with "pack has N unresolved deltas"
-	// on any commit that isn't in the shallow pack files. Prefer one
-	// extra network round-trip over poisoning a long-lived cache.
-	src := repoURL
-	if localSource != "" {
-		if _, err := os.Stat(filepath.Join(localSource, ".git")); err == nil {
-			if _, shallowErr := os.Stat(filepath.Join(localSource, ".git", "shallow")); shallowErr != nil {
-				src = localSource
-			}
-		}
-	}
-	if err := runGitFn(ctx, "clone", "--bare", src, bareDir); err != nil {
+	if err := runGitFn(ctx, "clone", "--bare", localSource, bareDir); err != nil {
 		// Clean up partial state so future attempts can retry.
 		_ = os.RemoveAll(bareDir)
 		return err
 	}
-	// Defense-in-depth: if a shallow source slipped past the check above
-	// (e.g. a caller passed a path the stat couldn't reach), strip the
-	// shallow marker so the bare repo at least reports non-shallow to
-	// downstream --reference consumers. Missing objects still fail, but
-	// the check-then-clone guard is the load-bearing fix.
-	_ = os.Remove(filepath.Join(bareDir, "shallow"))
+	// Never advertise an incomplete object store as a full reference cache.
+	if _, err := os.Stat(filepath.Join(bareDir, "shallow")); err == nil {
+		_ = os.RemoveAll(bareDir)
+	}
 	return nil
 }
 

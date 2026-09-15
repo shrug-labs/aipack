@@ -1,14 +1,20 @@
 package main
 
-import "os"
+import (
+	"io"
+	"os"
+
+	"github.com/charmbracelet/x/term"
+)
 
 func isTerminalFile(f *os.File) bool {
 	if f == nil {
 		return false
 	}
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (st.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(f.Fd())
+}
+
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && isTerminalFile(f)
 }

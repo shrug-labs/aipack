@@ -142,6 +142,14 @@ aipack mcp inspect-tools my-server --json
 
 ## Pack lifecycle
 
+### Git authentication
+
+Git-backed commands use your normal Git/SSH authentication when stdin and stderr are terminals. Native prompts remain available when stdout is redirected. Prompt-capable Git operations within a command run one at a time.
+
+JSON output, background operations, and commands without terminal stdin and stderr disable Git authentication prompts. Use `--non-interactive` to disable these prompts explicitly, including in terminal-based automation. This flag does not answer other AIPack confirmations.
+
+AIPack does not store passphrases or modify your SSH configuration. Unattended use requires credentials that work without a prompt, such as an unlocked SSH agent. External credential agents may still request hardware interaction. Separate required Git connections may each need authentication.
+
 Packs are portable, versioned bundles of AI agent configuration installed under `~/.config/aipack/packs/<name>/`. See the [Pack Format Specification](./pack-format.md) for the format itself.
 
 ### pack create

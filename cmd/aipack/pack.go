@@ -507,6 +507,8 @@ func effectiveProfile(explicit, cfgDir string) string {
 }
 
 func (c *PackInstallCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, false)
+	defer cancel()
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
@@ -1214,6 +1216,8 @@ func (c *PackUpdateCmd) Validate() error {
 }
 
 func (c *PackUpdateCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, c.JSON)
+	defer cancel()
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
@@ -1410,6 +1414,8 @@ See also: pack install, registry list, search`
 }
 
 func (c *PackInspectCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, c.JSON)
+	defer cancel()
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
@@ -1512,6 +1518,8 @@ See also: pack install, pack update, pack show`
 }
 
 func (c *PackVersionsCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, c.JSON)
+	defer cancel()
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err

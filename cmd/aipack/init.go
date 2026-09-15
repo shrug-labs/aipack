@@ -36,6 +36,8 @@ See also: doctor, sync`,
 }
 
 func (c *InitCmd) Run(ctx context.Context, g *Globals) error {
+	ctx, cancel := g.gitContext(ctx, false)
+	defer cancel()
 	configDir, err := cmdutil.ResolveConfigDir(g.ConfigDir, config.HomeDir())
 	if err != nil {
 		return err
