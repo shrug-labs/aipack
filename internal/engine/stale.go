@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 
@@ -23,7 +24,7 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 
 	keys := slices.Sorted(maps.Keys(lg.Managed))
 
-	stripLedger := domain.Ledger{Managed: maps.Clone(lg.Managed), UpdatedAt: lg.UpdatedAt}
+	stripLedger := domain.Ledger{Managed: maps.Clone(lg.Managed), NativePlugins: maps.Clone(lg.NativePlugins), UpdatedAt: lg.UpdatedAt}
 
 	var nonInteractiveSkips int
 	cleanup := newEmptyDirCleanup(staleRoots, e.FS)
@@ -60,6 +61,7 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 			DisplayLabelIncludesPath: ar.LabelForPath != nil,
 			Yes:                      ar.Yes,
 			PrevDigest:               lg.PrevDigest(k),
+			Package:                  lg.Managed[k].Package,
 			DryRun:                   ar.DryRun,
 			Apply: func() []domain.Warning {
 				if stripFn, isOwned := ar.StripFuncs[filepath.Clean(k)]; isOwned {
@@ -67,7 +69,9 @@ func (e *Engine) reconcileStaleEntries(ctx context.Context, plan domain.Plan, lg
 						return []domain.Warning{staleWarning(k, "strip managed keys: %v", err)}
 					}
 				} else {
-					_ = e.FS.Remove(k)
+					if err := e.removeStalePath(k, lg.Managed[k].Package); err != nil {
+						return []domain.Warning{staleWarning(k, "remove: %v", err)}
+					}
 					cleanup.MaybeCleanupParents(filepath.Dir(k))
 				}
 				return nil
@@ -136,9 +140,12 @@ func (e *Engine) PruneLedgerManagedPaths(ctx context.Context, ledgerPath string,
 			DisplayLabelIncludesPath: req.LabelForPath != nil,
 			Yes:                      req.Yes,
 			PrevDigest:               lg.PrevDigest(k),
+			Package:                  lg.Managed[k].Package,
 			DryRun:                   req.DryRun,
 			Apply: func() []domain.Warning {
-				_ = e.FS.Remove(k)
+				if err := e.removeStalePath(k, lg.Managed[k].Package); err != nil {
+					return []domain.Warning{staleWarning(k, "remove: %v", err)}
+				}
 				cleanup.MaybeCleanupParents(filepath.Dir(k))
 				return nil
 			},
@@ -174,6 +181,7 @@ type stalePruneAction struct {
 	DisplayLabelIncludesPath bool
 	Yes                      bool
 	PrevDigest               string
+	Package                  bool
 	DryRun                   bool
 	Apply                    func() []domain.Warning
 }
@@ -191,6 +199,7 @@ func (e *Engine) pruneStalePath(ctx context.Context, action stalePruneAction) st
 		DisplayLabelIncludesPath: action.DisplayLabelIncludesPath,
 		Yes:                      action.Yes,
 		PrevDigest:               action.PrevDigest,
+		Package:                  action.Package,
 		DryRun:                   action.DryRun,
 	})
 	if err != nil {
@@ -212,7 +221,18 @@ func (e *Engine) pruneStalePath(ctx context.Context, action stalePruneAction) st
 	if action.Apply != nil {
 		warnings = append(warnings, action.Apply()...)
 	}
-	return stalePruneResult{DeleteLedger: true, Warnings: warnings}
+	return stalePruneResult{DeleteLedger: len(warnings) == 0, Warnings: warnings}
+}
+
+func (e *Engine) removeStalePath(path string, pkg bool) error {
+	if pkg {
+		return e.FS.RemovePackage(path)
+	}
+	err := e.FS.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 // stripOwnedFile reads the file at path, applies stripFn to remove only
@@ -260,19 +280,30 @@ type deleteRequest struct {
 	Yes                      bool
 	PrevDigest               string
 	DryRun                   bool
+	Package                  bool
 }
 
 // shouldDelete decides whether a stale file should be removed.
 // If the file's on-disk digest matches prevDigest, it's safe (managed, unmodified).
 // Otherwise, interactive confirmation is required unless yes or dryRun is set.
 func (e *Engine) shouldDelete(ctx context.Context, req deleteRequest) (DeleteDecision, error) {
-	if req.PrevDigest != "" {
-		d, missing, err := e.pathDigestStatus(req.Path)
-		if missing || (err == nil && d == req.PrevDigest) {
+	if req.Package {
+		manifest, missing, err := e.packageManifestStatus(req.Path)
+		if missing || (err == nil && domain.SingleFileDigest(manifest) == req.PrevDigest) {
 			return DeleteYes, nil
 		}
-	} else if _, missing, err := e.pathDigestStatus(req.Path); missing && err == nil {
-		return DeleteYes, nil
+		if err != nil {
+			return DeleteNo, err
+		}
+	} else {
+		if req.PrevDigest != "" {
+			d, missing, err := e.pathDigestStatus(req.Path)
+			if missing || (err == nil && d == req.PrevDigest) {
+				return DeleteYes, nil
+			}
+		} else if _, missing, err := e.pathDigestStatus(req.Path); missing && err == nil {
+			return DeleteYes, nil
+		}
 	}
 	if req.DryRun {
 		return DeleteYes, nil

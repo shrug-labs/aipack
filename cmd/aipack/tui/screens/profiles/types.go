@@ -1,10 +1,6 @@
 package profiles
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -103,14 +99,9 @@ func loadMCPAvailableToolsWithProbeCache(packRoot, serverName string, probeCache
 }
 
 func loadMCPAvailableTools(packRoot, serverName string) ([]string, error) {
-	path := filepath.Join(packRoot, "mcp", serverName+".json")
-	b, err := os.ReadFile(path)
+	srv, _, _, err := app.LoadMCPServerForProbe(packRoot, serverName)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	var srv domain.MCPServer
-	if err := json.Unmarshal(b, &srv); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, err
 	}
 	out := slices.Clone(srv.AvailableTools)
 	slices.Sort(out)

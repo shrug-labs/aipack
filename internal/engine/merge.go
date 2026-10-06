@@ -62,6 +62,44 @@ func mergeSettingsKeys(existing, prevManaged, newManaged []byte, harness domain.
 	}
 }
 
+// Native activation tables are owned as whole bindings. Portable plugin
+// settings retain their existing additive behavior. The shared merge handles
+// removal for sync, targeted deletion, and clean using ledger ownership.
+func mergeSettingsForAction(existing []byte, ledger domain.Ledger, action domain.SettingsAction) ([]byte, []MergeOp, error) {
+	var removed []MergeOp
+	if (action.Harness == domain.HarnessCodex || action.Harness == domain.HarnessClaudeCode) && !action.AdditiveOnly && len(ledger.NativePlugins) > 0 {
+		parse, marshal, section := parseTOMLMap, marshalTOML, "plugins"
+		if action.Harness == domain.HarnessClaudeCode {
+			parse, marshal, section = parseJSONMap, marshalJSON, "enabledPlugins"
+		}
+		disk, diskErr := parse(existing)
+		next, nextErr := parse(action.Desired)
+		if diskErr == nil && nextErr == nil {
+			plugins, _ := disk[section].(map[string]any)
+			desired, _ := next[section].(map[string]any)
+			for binding, record := range ledger.NativePlugins {
+				if record.SettingsPath != action.Dst || desired[binding] != nil || plugins[binding] == nil {
+					continue
+				}
+				delete(plugins, binding)
+				removed = append(removed, MergeOp{Key: section + "." + binding, Action: MergeRemove})
+			}
+			if len(removed) > 0 {
+				if len(plugins) == 0 {
+					delete(disk, section)
+				}
+				var err error
+				existing, err = marshal(disk)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+		}
+	}
+	merged, ops, err := mergeSettingsKeys(existing, ledger.PrevManagedOverlay(action.Dst), action.Desired, action.Harness, action.AdditiveOnly)
+	return merged, append(removed, ops...), err
+}
+
 func threeWayMergeJSON(onDisk, prevManaged, newManaged []byte, additiveOnly bool) ([]byte, []MergeOp, error) {
 	return threeWayMergeJSONWithOptions(onDisk, prevManaged, newManaged, additiveOnly, mergeOptions{})
 }
@@ -205,8 +243,10 @@ func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ctx mergeC
 			}
 		}
 
-		// Try three-way merge for arrays.
-		if nextArr, ok := nextVal.([]any); ok {
+		// Executable arguments are positional, not additive sets. Replace them
+		// atomically through the scalar ownership rules below.
+		positional := (k == "command" || k == "args") && (strings.HasPrefix(prefix, "mcp.") || strings.HasPrefix(prefix, "mcpServers.") || strings.HasPrefix(prefix, "mcp_servers."))
+		if nextArr, ok := nextVal.([]any); ok && !positional {
 			prevArr, _ := prevVal.([]any)
 			if diskArr, ok := diskVal.([]any); ok {
 				path := prefix + k
@@ -218,8 +258,7 @@ func threeWayMergeMap(disk, prev, next map[string]any, prefix string, ctx mergeC
 				// and the merged result is ordering — without this guard every
 				// sync emits a phantom "update" each time the user reorders a
 				// set-like array (e.g. permissions.allow). The rewrite itself
-				// still happens (positional arrays like command args need
-				// managed-order-first), but the noise on the log is gone.
+				// still happens, but the noise on the log is gone.
 				if !sameElementSetByKey(diskArr, merged, keyer) {
 					*ctx.ops = append(*ctx.ops, MergeOp{Key: path, Action: MergeUpdate})
 				}
@@ -463,8 +502,11 @@ func parseJSONMap(b []byte) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 	m := map[string]any{}
-	if err := json.Unmarshal(b, &m); err != nil {
+	if err := util.UnmarshalJSON(b, &m); err != nil {
 		return nil, err
+	}
+	if m == nil {
+		return nil, fmt.Errorf("JSON settings must be an object")
 	}
 	return m, nil
 }

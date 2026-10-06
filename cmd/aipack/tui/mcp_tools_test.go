@@ -13,6 +13,45 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 )
 
+func TestImportedMCPPickerLoadsSourceAndSavesCache(t *testing.T) {
+	src, cfg := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, ".codex-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		".codex-plugin/plugin.json": `{"name":"probe","version":"1.0.0"}`,
+		".mcp.json":                 `{"mcpServers":{"probe":{"command":"fixture-command","args":["literal argument"]}}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(src, path), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.PackInstall(t.Context(), app.PackInstallRequest{ConfigDir: cfg, PackPath: src}, nil); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(cfg, "packs/probe")
+	server, err := loadExpandedMCPServerForProbe(root, "probe", nil, nil)
+	if err != nil || !slices.Equal(server.Command, []string{"fixture-command", "literal argument"}) {
+		t.Fatalf("picker cannot load imported server: %+v %v", server, err)
+	}
+	before, err := os.ReadFile(filepath.Join(root, "upstream/.mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := saveMCPInventoryToPack(cfg, root, "probe", []string{"owned-tool"})().(mcpInventorySavedMsg)
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	entry, fresh, _ := app.LoadMCPProbeCache(cfg).Get(app.MCPProbeKey{PackRoot: root, Server: "probe"})
+	if !fresh || !slices.Equal(entry.Tools, []string{"owned-tool"}) {
+		t.Fatalf("picker inventory was not cached: %+v", entry)
+	}
+	after, err := os.ReadFile(filepath.Join(root, "upstream/.mcp.json"))
+	if err != nil || string(after) != string(before) {
+		t.Fatal("picker save changed managed source", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // toolPickerItemsForServer
 // ---------------------------------------------------------------------------
@@ -367,14 +406,14 @@ func TestApplyMCPBulkAction_UnknownActionNoop(t *testing.T) {
 
 func TestPickerOutputForSave_CollapsesToSilentYieldsZeroConfig(t *testing.T) {
 	t.Parallel()
-	// The picker save path relies on mcpServerConfigIsZero to detect when
+	// The picker save path relies on MCPServerConfig.IsZero to detect when
 	// the resulting MCPServerConfig should be dropped from the profile map
 	// instead of serialized as an empty block. Pin the end-to-end behavior:
 	// all-ask + no prior disabled-only → nil/nil/nil → isZero → drop entry.
 	available := []string{"a", "b", "c"}
 	allowed, always, disabled := pickerOutputForSave(available, nil, available, config.MCPServerConfig{})
 	cfg := config.MCPServerConfig{AllowedTools: allowed, AlwaysAllowedTools: always, DisabledTools: disabled}
-	if !mcpServerConfigIsZero(cfg) {
+	if !cfg.IsZero() {
 		t.Fatalf("expected zero config after collapse-to-silent; got %+v", cfg)
 	}
 }

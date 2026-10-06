@@ -21,7 +21,7 @@ type SyncCmd struct {
 	ProfilePath  string  `help:"Direct path to a profile YAML file (overrides --profile)" name:"profile-path" type:"path"`
 	Scope        string  `help:"Where to apply: 'project' writes to project directory, 'global' writes to ~/ config locations (default: sync-config defaults.scope, then 'global')" default:"default" enum:"project,global,default"`
 	ProjectDir   *string `help:"Project directory for scope=project (default: current working directory)" name:"project-dir" type:"path"`
-	Harness      string  `help:"Target harness(es): claudecode|cline|codex|opencode|all (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS); each harness syncs independently" name:"harness" predictor:"harness"`
+	Harness      string  `help:"Target harness(es): claudecode|cline|codex|opencode|all; comma-separated names select several (default: sync-config defaults.harnesses, then AIPACK_DEFAULT_HARNESS); each harness syncs independently" name:"harness" predictor:"harness"`
 	Force        bool    `help:"Override file conflicts"`
 	SkipSettings bool    `help:"Skip harness settings file sync (MCP configs still sync)" name:"skip-settings"`
 	Yes          bool    `help:"Auto-confirm deletions and overwrites without prompting"`
@@ -45,18 +45,24 @@ type loadedSyncOptions struct {
 }
 
 func (c *SyncCmd) Help() string {
-	return `Resolves the named profile, plans file writes, directory copies, and settings
-merges for each target harness, then applies them. Every harness syncs
-independently — its own plan, apply, and ledger — with no cross-harness
-aggregation. A ledger tracks which files are managed. On subsequent runs, only
-changed files are updated and files no longer in the profile are removed. Use
---force to override conflicts.
+	return `Syncs the selected profile to one or more assistants. Updates managed content
+and configuration, removes content no longer selected, and preserves user-owned
+settings and local edits. Use --force to override file conflicts.
 
-Profile resolution: --profile-path > --profile > sync-config defaults.profile > "default"
-Scope resolution:   --scope > sync-config defaults.scope > "global"
-Harness resolution: --harness > sync-config defaults.harnesses > AIPACK_DEFAULT_HARNESS
+Defaults:
+  - Profile: --profile-path > --profile > sync-config defaults.profile > "default"
+  - Scope: --scope > sync-config defaults.scope > "global"
+  - Harness: --harness > sync-config defaults.harnesses > AIPACK_DEFAULT_HARNESS
+
 Multiple harnesses (including --harness all) sync one after another; the first
-harness that fails stops the run.
+harness that fails stops the run. For imported plugins, compatibility is checked
+for every requested target before writes. Errors identify unsupported components
+or conflicting installations; unavailable hook events produce warnings.
+
+Codex imports can deliver supported skills, stdio MCP servers and command hooks
+to Claude Code, OpenCode and Cline. Pack inspection shows compatibility, and
+profiles select the components to sync. Reload the assistant after syncing;
+authenticate protected services through that assistant when needed.
 
 Examples:
   # Sync default profile to the configured harness(es) (default: global scope)
@@ -108,12 +114,18 @@ func (c *SyncCmd) Run(ctx context.Context, g *Globals) error {
 	// resolveAndSync performs a single sync iteration (profile load + sync).
 	// Returns the pack source dirs to watch for the next iteration.
 	resolveAndSync := func() ([]string, error) {
-		loaded, exitCode := loadProfile(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
+		configDir := config.FallbackConfigDir(g.ConfigDir, config.HomeDir())
+		syncCtx, unlock, err := app.PrepareSync(ctx, configDir, c.DryRun)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+		loaded, exitCode := loadProfileAllowNoEnabledPacks(c.Profile, c.ProfilePath, g.ConfigDir, g.Stderr)
 		if exitCode >= 0 {
 			return watchDirsForFlags(), ExitError{Code: exitCode}
 		}
 		watchDirs := app.PackSourceDirs(loaded.profile)
-		err := runLoadedSync(ctx, g, loaded, loadedSyncOptions{
+		err = runLoadedSync(syncCtx, g, loaded, loadedSyncOptions{
 			Scope:        c.Scope,
 			ProjectDir:   c.ProjectDir,
 			Harness:      c.Harness,

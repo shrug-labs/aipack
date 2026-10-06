@@ -27,22 +27,22 @@ func loadPacks(configDir string) tea.Cmd {
 // It delegates to app.RunSync — the single source of truth for sync orchestration.
 func runSync(ctx context.Context, eng *engine.Engine, configDir, profileName, profilePath, scope, harnessFlag string, syncCfg config.SyncConfig, reg *harness.Registry) tea.Cmd {
 	return func() tea.Msg {
+		ctx, unlock, err := app.PrepareSync(ctx, configDir, false)
+		if err != nil {
+			return syncDoneMsg{profileName: profileName, err: err}
+		}
+		defer unlock()
 		profileCfg, err := config.LoadProfile(profilePath)
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, err: err}
 		}
-
 		cwd, err := os.Getwd()
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, err: fmt.Errorf("resolving working directory: %w", err)}
 		}
 		resolved, warnings, err := app.ResolveProfile(eng, app.ResolveRequest{
-			ConfigDir:   configDir,
-			ProfilePath: profilePath,
-			ProfileCfg:  profileCfg,
-			SyncCfg:     syncCfg,
-			ProjectDir:  cwd,
-			Home:        config.HomeDir(),
+			ConfigDir: configDir, ProfilePath: profilePath, ProfileCfg: profileCfg,
+			SyncCfg: syncCfg, ProjectDir: cwd, Home: config.HomeDir(),
 		})
 		if err != nil {
 			return syncDoneMsg{profileName: profileName, warnings: warnings, err: err}
@@ -77,15 +77,11 @@ func runSync(ctx context.Context, eng *engine.Engine, configDir, profileName, pr
 			Quiet:      true,
 		}, reg, nil, nil)
 		warnings = append(warnings, syncWarnings...)
-		if err != nil {
-			return syncDoneMsg{profileName: profileName, warnings: warnings, err: err}
-		}
-
 		total := 0
 		for _, result := range results {
 			total += len(result.Plan.Writes) + len(result.Plan.Copies) + len(result.Plan.Settings)
 		}
-		return syncDoneMsg{profileName: profileName, filesWritten: total, warnings: warnings}
+		return syncDoneMsg{profileName: profileName, filesWritten: total, warnings: warnings, err: err}
 	}
 }
 

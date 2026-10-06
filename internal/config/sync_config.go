@@ -18,10 +18,11 @@ const SyncConfigSchemaVersion = 1
 // RegistrySourceEntry describes a remote registry source for fetching.
 // Ref presence implies git-based fetch; otherwise HTTP GET.
 type RegistrySourceEntry struct {
-	Name string `yaml:"name" json:"name"`
-	URL  string `yaml:"url" json:"url"`
-	Ref  string `yaml:"ref,omitempty" json:"ref,omitempty"`   // git ref (branch/tag); presence implies git-based fetch
-	Path string `yaml:"path,omitempty" json:"path,omitempty"` // file path within repo (git only); default: registry.yaml
+	Name   string `yaml:"name" json:"name"`
+	URL    string `yaml:"url" json:"url"`
+	Ref    string `yaml:"ref,omitempty" json:"ref,omitempty"`       // git ref (branch/tag); presence implies git-based fetch
+	Path   string `yaml:"path,omitempty" json:"path,omitempty"`     // file path within repo (git only); default: registry.yaml
+	Format string `yaml:"format,omitempty" json:"format,omitempty"` // optional native marketplace dialect
 }
 
 // Install method constants for InstalledPackMeta.Method.
@@ -30,6 +31,7 @@ const (
 	MethodCopy        = "copy"
 	MethodClone       = "clone"
 	MethodArchive     = "archive"
+	MethodNPM         = "npm"
 	MethodHTTPTarball = "http-tarball"
 	MethodLocal       = "local" // pack already resides in the packs directory; registered in-place
 )
@@ -48,17 +50,22 @@ const (
 // without a v-prefix) or a commit hash represents a pin; anything else
 // (branch name, empty) tracks upstream.
 type InstalledPackMeta struct {
-	Origin        string                         `yaml:"origin"`                    // abs path or URL
-	Method        string                         `yaml:"method"`                    // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodLocal
-	InstalledAt   string                         `yaml:"installed_at"`              // RFC3339; refreshed only when content changes (StatusUpdated path)
-	LastCheckedAt string                         `yaml:"last_checked_at,omitempty"` // RFC3339; refreshed on every probe (StatusUpdated, StatusUpToDate, StatusError) — material evidence the user verified the pack
-	Ref           string                         `yaml:"ref,omitempty"`             // git ref (URL only)
-	SubPath       string                         `yaml:"sub_path,omitempty"`        // subdirectory within cloned repo
-	CommitHash    string                         `yaml:"commit_hash,omitempty"`     // git HEAD SHA at install/update time
-	ContentPaths  map[domain.PackCategory]string `yaml:"content_paths,omitempty"`   // content type -> directory path within clone (nil = standard layout)
-	Approved      []domain.BundledCategory       `yaml:"approved,omitempty"`        // bundled categories the user accepted
-	Declined      []domain.BundledCategory       `yaml:"declined,omitempty"`        // bundled categories the user declined
-	Resolved      *domain.PackInventory          `yaml:"resolved,omitempty"`        // last resolved content inventory (drift detection baseline)
+	Origin             string                         `yaml:"origin"`                    // abs path or URL
+	Method             string                         `yaml:"method"`                    // MethodLink, MethodCopy, MethodClone, MethodArchive, MethodNPM, MethodLocal
+	InstalledAt        string                         `yaml:"installed_at"`              // RFC3339; refreshed only when content changes (StatusUpdated path)
+	LastCheckedAt      string                         `yaml:"last_checked_at,omitempty"` // RFC3339; refreshed on every probe (StatusUpdated, StatusUpToDate, StatusError) — material evidence the user verified the pack
+	Ref                string                         `yaml:"ref,omitempty"`             // Git ref or npm package selector
+	SubPath            string                         `yaml:"sub_path,omitempty"`        // subdirectory within cloned repo
+	CommitHash         string                         `yaml:"commit_hash,omitempty"`     // git HEAD SHA at install/update time
+	ContentPaths       map[domain.PackCategory]string `yaml:"content_paths,omitempty"`   // content type -> directory path within clone (nil = standard layout)
+	Approved           []domain.BundledCategory       `yaml:"approved,omitempty"`        // bundled categories the user accepted
+	Declined           []domain.BundledCategory       `yaml:"declined,omitempty"`        // bundled categories the user declined
+	Resolved           *domain.PackInventory          `yaml:"resolved,omitempty"`        // last resolved content inventory (drift detection baseline)
+	Plugin             *domain.PluginSource           `yaml:"plugin,omitempty"`
+	ConverterVersion   int                            `yaml:"converter_version,omitempty"`
+	MaterializedDigest string                         `yaml:"materialized_digest,omitempty"`
+	PackageVersion     string                         `yaml:"package_version,omitempty"`
+	PackageArchiveHash string                         `yaml:"package_archive_hash,omitempty"`
 
 	// InstallQuiet records whether the pack was installed with `-q` (quiet
 	// by nature). It is the source of truth for "every profile this pack
@@ -139,6 +146,11 @@ func LoadSyncConfig(path string) (SyncConfig, error) {
 	}
 	if cfg.SchemaVersion != SyncConfigSchemaVersion {
 		return SyncConfig{}, fmt.Errorf("unsupported sync-config schema_version %d (expected %d)", cfg.SchemaVersion, SyncConfigSchemaVersion)
+	}
+	for _, src := range cfg.RegistrySources {
+		if err := ValidateMarketplaceFormat(src.Format); err != nil {
+			return SyncConfig{}, fmt.Errorf("registry source %q: %w", src.Name, err)
+		}
 	}
 	// Normalize defaults.
 	cfg.Defaults.Profile = strings.TrimSpace(cfg.Defaults.Profile)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 func RenderHooks(hooks []domain.Hook) (map[string][]any, string, error) {
@@ -106,7 +107,7 @@ func stripManagedHooks(root map[string]any, ctx harness.EditContext) {
 		return
 	}
 	prevRoot := map[string]any{}
-	if err := json.Unmarshal(ctx.PreviousManagedOverlay, &prevRoot); err != nil {
+	if err := util.UnmarshalJSON(ctx.PreviousManagedOverlay, &prevRoot); err != nil {
 		return
 	}
 	prevHooks, ok := prevRoot["hooks"].(map[string]any)

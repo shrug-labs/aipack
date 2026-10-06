@@ -412,15 +412,18 @@ func (m Model) updateTree(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			break
 		}
 		packName := ""
+		var additionalPaths []string
 		if n.packIdx >= 0 && n.packIdx < len(item.tree.packs) {
 			packName = item.tree.packs[n.packIdx].Name
+			additionalPaths = item.tree.packs[n.packIdx].ContentPaths(n.category, n.id)[1:]
 		}
 		return m, func() tea.Msg {
 			return common.PreviewRequestMsg{
-				Title:    n.id,
-				Category: n.category,
-				PackName: packName,
-				FilePath: fp,
+				Title:           n.id,
+				Category:        n.category,
+				PackName:        packName,
+				FilePath:        fp,
+				AdditionalPaths: additionalPaths,
 			}
 		}
 	case "esc", "left", "h":
@@ -520,12 +523,13 @@ func (m Model) ensureTree() Model {
 	}
 
 	// Resolve all packs via app layer.
-	allPacks, errs := app.ResolveProfilePacks(m.configDir, item.cfg.Packs)
+	cfg := item.cfg
+	allPacks, errs := app.ResolveProfilePacks(m.configDir, cfg.Packs)
 
 	// Filter to enabled packs only for the tree.
 	var enabled []app.ProfilePackInfo
 	for _, p := range allPacks {
-		pe := item.cfg.Packs[p.Index]
+		pe := cfg.Packs[p.Index]
 		if pe.Enabled != nil && !*pe.Enabled {
 			continue
 		}
@@ -541,9 +545,9 @@ func (m Model) ensureTree() Model {
 		return m
 	}
 
-	ct := app.BuildContentTree(enabled, item.cfg.Packs)
+	ct := app.BuildContentTree(enabled, cfg.Packs)
 	tree := buildTreeFromContent(ct)
-	tree.mcpCounts = computeMCPCountsWithProbeCache(enabled, item.cfg, m.mcpProbeCache)
+	tree.mcpCounts = computeMCPCountsWithProbeCache(enabled, cfg, m.mcpProbeCache)
 	tree.applyMCPCounts()
 	item.tree = &tree
 	item.treeErr = ""
@@ -876,10 +880,11 @@ func (m Model) viewPackRoster(width, height int) string {
 
 	style := lipgloss.NewStyle().Width(width).Height(height)
 	var sb strings.Builder
+	cfg := item.cfg
 
 	// Pack count header.
 	enabledCount := 0
-	for _, pe := range item.cfg.Packs {
+	for _, pe := range cfg.Packs {
 		if pe.Enabled == nil || *pe.Enabled {
 			enabledCount++
 		}
@@ -888,7 +893,7 @@ func (m Model) viewPackRoster(width, height int) string {
 
 	var lines []string
 	focused := m.focus == panelPacks
-	for i, pe := range item.cfg.Packs {
+	for i, pe := range cfg.Packs {
 		enabled := pe.Enabled == nil || *pe.Enabled
 
 		cursor := "  "
@@ -944,7 +949,7 @@ func (m Model) toggleSettingsDisabled(packName string) Model {
 	}
 	for i := range item.cfg.Packs {
 		if item.cfg.Packs[i].Name == packName {
-			if item.cfg.Packs[i].Settings.Enabled != nil && !*item.cfg.Packs[i].Settings.Enabled {
+			if config.SettingsDisabled(item.cfg.Packs[i].Settings.Enabled) {
 				item.cfg.Packs[i].Settings.Enabled = nil // re-enable (default: contribute)
 			} else {
 				item.cfg.Packs[i].Settings.Enabled = boolPtr(false) // opt out

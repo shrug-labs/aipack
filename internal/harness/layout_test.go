@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -19,6 +20,24 @@ func TestApplyEdit_EmptyJSON(t *testing.T) {
 	}
 	if got["added"] != true {
 		t.Errorf("expected added=true, got %v", got)
+	}
+}
+
+func TestApplyEditRetainsNumberTokens(t *testing.T) {
+	input := []byte(`{"managed":true,"counter":9007199254740993,"nested":[0.12345678901234567890123456789,1e+1000]}`)
+	out, err := ApplyEdit(input, FormatJSON, EditContext{}, func(root map[string]any, _ EditContext) { delete(root, "managed") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"9007199254740993", "0.12345678901234567890123456789", "1e+1000"} {
+		if !bytes.Contains(out, []byte(token)) {
+			t.Fatalf("capture/clean rounded %s: %s", token, out)
+		}
+	}
+	for _, invalid := range []string{"null", "[]", "{} {}"} {
+		if _, err := ApplyEdit([]byte(invalid), FormatJSON, EditContext{}, func(map[string]any, EditContext) { t.Fatal("edit ran on invalid input") }); err == nil {
+			t.Fatalf("edited non-object JSON %q", invalid)
+		}
 	}
 }
 

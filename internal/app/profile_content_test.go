@@ -324,9 +324,6 @@ func writeProfileContentPack(t *testing.T, configDir, name string, manifest conf
 	for _, id := range manifest.Hooks {
 		writeFile(t, filepath.Join(packDir, filepath.FromSlash(domain.CategoryHooks.PrimaryRelPath(id))), "events: []\n")
 	}
-	for _, id := range manifest.Plugins {
-		writeFile(t, filepath.Join(packDir, filepath.FromSlash(domain.CategoryPlugins.PrimaryRelPath(id))), `{"name":"`+id+`"}`)
-	}
 	for _, id := range manifest.MCP {
 		writeFile(t, filepath.Join(packDir, filepath.FromSlash(domain.CategoryMCP.PrimaryRelPath(id))), `{"name":"`+id+`","transport":"stdio","command":["true"]}`)
 	}

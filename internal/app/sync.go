@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -50,6 +51,7 @@ func ResolveProfile(eng *engine.Engine, req ResolveRequest) (SyncContext, []doma
 		CollisionStrategy: req.SyncCfg.Defaults.CollisionStrategy,
 		Namespaced:        req.SyncCfg.Defaults.Namespaced,
 		PrevInventories:   req.PrevInventories,
+		AllowEmpty:        true,
 	})
 	if err != nil {
 		return SyncContext{}, warnings, err
@@ -201,6 +203,7 @@ type TargetSpec struct {
 
 // SyncRequest holds the parameters for a sync operation.
 type SyncRequest struct {
+	nativeOperation *nativeOperation
 	TargetSpec
 	Force        bool
 	SkipSettings bool
@@ -225,6 +228,18 @@ type SyncResult struct {
 func RunSyncEach(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry, stdout, stderr io.Writer) ([]SyncResult, []domain.Warning, error) {
 	if err := ValidateSyncHarnesses(req.Harnesses); err != nil {
 		return nil, nil, wrapFatalSync("validate sync targets", err)
+	}
+	if err := engine.ValidatePluginTargets(profile, req.Harnesses, req.Namespaced); err != nil {
+		return nil, nil, wrapFatalSync("validate plugin targets", err)
+	}
+	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
+	ctx, unlock, err := lockPackMutationContext(ctx, req.ConfigDir, req.DryRun)
+	if err != nil {
+		return nil, nil, wrapFatalSync("lock sync", err)
+	}
+	defer unlock()
+	if recovered, _ := ctx.Value(recoveredPacksKey{}).(bool); recovered {
+		return nil, nil, wrapFatalSync("resolve recovered packs", fmt.Errorf("pack replacement recovered; resolve the profile again before syncing"))
 	}
 	activeHarnesses := append([]domain.Harness{}, req.Harnesses...)
 	req.ActiveHarnesses = activeHarnesses
@@ -266,6 +281,18 @@ func RunSync(ctx context.Context, eng *engine.Engine, profile domain.Profile, re
 	hid, err := SingleSyncHarness(req.Harnesses)
 	if err != nil {
 		return SyncResult{}, warnings, wrapFatalSync("validate sync target", err)
+	}
+	if err := engine.ValidatePluginTargets(profile, req.Harnesses, req.Namespaced); err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("validate plugin target", err)
+	}
+	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
+	ctx, unlock, err := lockPackMutationContext(ctx, req.ConfigDir, req.DryRun)
+	if err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("lock sync", err)
+	}
+	defer unlock()
+	if recovered, _ := ctx.Value(recoveredPacksKey{}).(bool); recovered {
+		return SyncResult{}, warnings, wrapFatalSync("resolve recovered packs", fmt.Errorf("pack replacement recovered; resolve the profile again before syncing"))
 	}
 	req, newInventories, prepWarnings := prepareSyncProfile(eng, profile, req, reg, stdout, stderr)
 	warnings = append(warnings, prepWarnings...)
@@ -322,7 +349,7 @@ func migrateLegacyLedgersForSync(eng *engine.Engine, reg *harness.Registry, req 
 	for _, h := range reg.All() {
 		id := h.ID()
 		migrationHarnesses = append(migrationHarnesses, id)
-		managedRootsMap[id] = h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, id), req.Home).ValidationRoots
+		managedRootsMap[id] = h.Layout(captureContextForHarness(req.TargetSpec, id, nil)).ValidationRoots
 	}
 	n, err := eng.MigrateOldLedgers(req.ConfigDir, req.Scope, req.ProjectDir, migrationHarnesses, managedRootsMap)
 	if err != nil {
@@ -363,10 +390,13 @@ func runSyncHarness(ctx context.Context, eng *engine.Engine, profile domain.Prof
 		return SyncResult{}, warnings, wrapFatalSync("plan sync", err)
 	}
 	warnings = append(warnings, plan.Warnings...)
+	if err := preflightNativePlugins(ctx, eng, plan, req); err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("native plugin ownership", err)
+	}
 
 	if req.DryRun {
 		h, _ := reg.Lookup(hid)
-		layout := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home)
+		layout := h.Layout(captureContextForHarness(req.TargetSpec, hid, nil))
 		validationWarnings, validationErr := eng.ApplyPlan(ctx, plan, engine.ApplyRequest{
 			Force:  req.Force,
 			Yes:    req.Yes,
@@ -394,13 +424,13 @@ func runSyncHarness(ctx context.Context, eng *engine.Engine, profile domain.Prof
 			}
 			printDryRunVerbose(summary, stdout)
 		} else {
-			printDryRun(eng, plan, req, CountProfileContent(profile), stdout)
+			printDryRun(eng, plan, req, CountProfileContent(profile), reg, stdout)
 		}
 		return SyncResult{Harness: hid, Plan: plan}, warnings, nil
 	}
 
 	h, _ := reg.Lookup(hid)
-	layout := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home)
+	layout := h.Layout(captureContextForHarness(req.TargetSpec, hid, nil))
 	managedRoots := layout.ValidationRoots
 	cleanup := staleCleanupContextForHarness(eng, reg, req.TargetSpec, hid, layout, nil)
 	if lg, _, lerr := eng.LoadLedger(plan.Ledger); lerr == nil {
@@ -427,15 +457,47 @@ func runSyncHarness(ctx context.Context, eng *engine.Engine, profile domain.Prof
 		},
 		PruneOnlyStalePaths: cleanup.Protected,
 		StripFuncs:          stripFuncs,
+		ApplyNativePlugins: func(ctx context.Context, actions []domain.NativePluginAction, ledger *domain.Ledger) (func(bool) error, error) {
+			finish, err := applyNativePlugins(ctx, eng, plan, req, ledger, nil)
+			if err == nil {
+				for _, action := range actions {
+					binding := action.Package.Binding()
+					warnings = append(warnings, nativeSetupWarnings(ledger.NativePlugins[binding], binding)...)
+				}
+			}
+			if err == nil && req.nativeOperation != nil {
+				ledger.NativeOperation = req.nativeOperation.ID
+			}
+			return finish, err
+		},
+	}
+	priorLedger, _, err := eng.LoadLedger(plan.Ledger)
+	if err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("load native activation ownership", err)
+	}
+	req.nativeOperation, err = beginNativeOperation(req.ConfigDir, plan, req, priorLedger)
+	if err != nil {
+		return SyncResult{}, warnings, wrapFatalSync("prepare native recovery", err)
+	}
+	if req.nativeOperation != nil {
+		applyReq.OperationID = req.nativeOperation.ID
 	}
 
 	applyWarnings, err := eng.ApplyPlan(ctx, plan, applyReq, managedRoots)
 	warnings = append(warnings, applyWarnings...)
 	if err != nil {
+		if req.nativeOperation != nil {
+			err = errors.Join(err, recoverNativeOperationContext(context.WithoutCancel(ctx), req.ConfigDir))
+		}
 		if stderr != nil {
 			fmt.Fprintf(stderr, "error: sync: %v\n", err)
 		}
 		return SyncResult{}, warnings, wrapFatalSync("apply plan", err)
+	}
+	if req.nativeOperation != nil {
+		if err := util.RemoveOwnedTree(nativeOperationDir(req.ConfigDir)); err != nil {
+			return SyncResult{}, warnings, wrapFatalSync("finish native recovery record", err)
+		}
 	}
 	warnings = append(warnings, newInactiveStaleContext(eng, reg, req.TargetSpec, hid, cleanup.StaleRoots).prune(ctx, engine.PruneLedgerManagedRequest{
 		Yes:    req.Yes,
@@ -452,7 +514,7 @@ func runSyncHarness(ctx context.Context, eng *engine.Engine, profile domain.Prof
 		warnings = append(warnings, reconWarnings...)
 	}
 
-	return SyncResult{Harness: hid, Plan: plan}, warnings, nil
+	return SyncResult{Harness: hid, Plan: plan}, warnings, ctx.Err()
 }
 
 func ValidateSingleSyncHarness(hs []domain.Harness) error {
@@ -606,7 +668,7 @@ func reconcileMCPLedger(ctx context.Context, eng *engine.Engine, plan domain.Pla
 	return nil
 }
 
-func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, counts ContentCounts, stdout io.Writer) {
+func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, counts ContentCounts, reg *harness.Registry, stdout io.Writer) {
 	cfgDir := config.FallbackConfigDir(req.ConfigDir, req.Home)
 
 	hid, ok := FirstSyncHarness(req.Harnesses)
@@ -637,6 +699,14 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, counts C
 	}
 
 	var changes, skips int
+	if ops, err := nativePluginPlanOps(eng, req, plan, lg); err == nil {
+		for _, op := range ops {
+			if stdout != nil {
+				fmt.Fprintf(stdout, "native plugin: %s [%s]\n", op.DisplayDst, op.SourcePack)
+			}
+			changes++
+		}
+	}
 	for _, wr := range plan.Writes {
 		kind, err := classifyWriteKind(eng, wr, lg)
 		if err != nil {
@@ -701,6 +771,12 @@ func printDryRun(eng *engine.Engine, plan domain.Plan, req SyncRequest, counts C
 			changes++
 		}
 	}
+	for _, op := range stalePlanOps(eng, plan, req, reg, lg) {
+		if stdout != nil {
+			fmt.Fprintf(stdout, "stale: %s\n", op.DisplayDst)
+		}
+		changes++
+	}
 	if stdout != nil {
 		fmt.Fprintf(stdout, "plan: %d file ops from %s, %d identical\n", changes, counts.String(), skips)
 	}
@@ -710,8 +786,11 @@ func stripFuncForOwnedFile(of harness.OwnedFile) func([]byte, domain.Ledger) ([]
 	return func(content []byte, lg domain.Ledger) ([]byte, error) {
 		mcpIndex := domain.MCPServerNamesByPath(lg.Managed)
 		ctx := harness.EditContext{
-			ManagedMCPServers:      mcpIndex.ForPath(of.Path),
-			PreviousManagedOverlay: lg.PrevManagedOverlay(of.Path),
+			PreserveNativeMarketplaces: true,
+			NativePlugins:              lg.NativePlugins,
+			ManagedMCPServers:          mcpIndex.ForPath(of.Path),
+			PreviousManagedOverlay:     lg.PrevManagedOverlay(of.Path),
+			PackageOverlays:            lg.PackageOverlays(of.Path),
 		}
 		return harness.ApplyEdit(content, of.Format, ctx, of.Strip)
 	}
@@ -796,12 +875,16 @@ func updateIndex(profile domain.Profile, configDir string) error {
 			for _, w := range pack.Workflows {
 				skip[w.Name] = true
 			}
-			resources = append(resources, indexManifestContent(pack.Name, m, packRoot, skip)...)
-			resources = append(resources, structuredResourcesFromManifestRoot(
-				packRoot,
-				m,
-				domain.CategoryMCP,
-			)...)
+			if m.NativePlugin != nil {
+				resources = append(resources, resourcesFromManifestRoot(pack.Name, packRoot, m)...)
+			} else {
+				resources = append(resources, indexManifestContent(pack.Name, m, packRoot, skip)...)
+				resources = append(resources, structuredResourcesFromManifestRoot(
+					packRoot,
+					m,
+					domain.CategoryMCP,
+				)...)
+			}
 		}
 
 		if err := db.Update(info, resources); err != nil {
@@ -848,26 +931,29 @@ func indexInstalledPack(configDir, packName, packRoot string) error {
 // returns index resources. The skip set excludes IDs already provided by
 // the resolved pack (which has richer parsed data). Pass nil to index everything.
 func indexManifestContent(packName string, m config.PackManifest, packRoot string, skip map[string]bool) []index.Resource {
-	flatPath := func(dir, ext string) func(string) (string, string) {
+	contentPath := func(category domain.PackCategory) func(string) (string, string) {
 		return func(id string) (string, string) {
-			p := filepath.Join(dir, id+ext)
+			p := filepath.Join(packRoot, filepath.FromSlash(m.RelPath(category, id)))
+			if category == domain.CategorySkills || category == domain.CategoryHooks {
+				return p, filepath.Dir(p)
+			}
 			return p, p
 		}
 	}
-	skillPath := func(id string) (string, string) {
-		dir := filepath.Join(packRoot, "skills", id)
-		return filepath.Join(dir, "SKILL.md"), dir
-	}
 
 	var resources []index.Resource
-	resources = append(resources, indexContentFromManifest("rule", diffIDs(m.Rules, skip), flatPath(filepath.Join(packRoot, "rules"), ".md"))...)
-	resources = append(resources, indexContentFromManifest("skill", diffIDs(m.Skills, skip), skillPath)...)
-	resources = append(resources, indexHooksFromManifest(diffIDs(m.Hooks, skip), func(id string) (string, string) {
-		p := filepath.Join(packRoot, filepath.FromSlash(m.RelPath(domain.CategoryHooks, id)))
-		return p, filepath.Dir(p)
-	})...)
-	resources = append(resources, indexContentFromManifest("agent", diffIDs(m.Agents, skip), flatPath(filepath.Join(packRoot, "agents"), ".md"))...)
-	resources = append(resources, indexContentFromManifest("workflow", diffIDs(m.Workflows, skip), flatPath(filepath.Join(packRoot, "workflows"), ".md"))...)
+	resources = append(resources, indexContentFromManifest("rule", diffIDs(m.Rules, skip), contentPath(domain.CategoryRules))...)
+	resources = append(resources, indexContentFromManifest("skill", diffIDs(m.Skills, skip), contentPath(domain.CategorySkills))...)
+	resources = append(resources, indexHooksFromManifest(diffIDs(m.Hooks, skip), contentPath(domain.CategoryHooks))...)
+	for _, id := range diffIDs(m.Agents, skip) {
+		pack := ProfilePackInfo{Root: packRoot, Manifest: m}
+		for _, path := range pack.ContentPaths(domain.CategoryAgents, id) {
+			resources = append(resources, indexContentFromManifest("agent", []string{id}, func(string) (string, string) {
+				return path, path
+			})...)
+		}
+	}
+	resources = append(resources, indexContentFromManifest("workflow", diffIDs(m.Workflows, skip), contentPath(domain.CategoryWorkflows))...)
 
 	for _, pe := range PromptListForPack(packName, m, packRoot) {
 		resources = append(resources, index.PromptResource(
@@ -1025,9 +1111,9 @@ func printDryRunVerbose(summary PlanSummary, stdout io.Writer) {
 		return
 	}
 	if stdout != nil {
-		fmt.Fprintf(stdout, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d hooks, %d settings, %d mcp, %d stale)\n",
+		fmt.Fprintf(stdout, "plan: %d changes (%d rules, %d workflows, %d agents, %d skills, %d hooks, %d plugins, %d settings, %d mcp, %d stale)\n",
 			total, summary.NumRules, summary.NumWorkflows, summary.NumAgents, summary.NumSkills,
-			summary.NumHooks, summary.NumSettings, summary.NumMCP, summary.NumStale)
+			summary.NumHooks, summary.NumPlugins, summary.NumSettings, summary.NumMCP, summary.NumStale)
 	}
 
 	for _, op := range summary.Ops {

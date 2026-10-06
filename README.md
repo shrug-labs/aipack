@@ -14,6 +14,8 @@ The agent ecosystem has a content layer — growing fast — and no infrastructu
 
 aipack is the infrastructure layer. **Packs** are portable, versioned bundles of agent knowledge. **Profiles** compose packs and curate which content and tools are active for a given context. A **sync engine** renders the result into each harness's native format — so the same pack works whether you use Claude Code, Codex, OpenCode, or Cline.
 
+Install existing Claude and Codex marketplace plugins as packs, select their components through a profile, and sync them to supported assistants. See [Installing marketplace plugins](docs/installing-packs.md#installing-marketplace-plugins) for the commands and [Imported plugin support](docs/aipack.md#imported-plugin-support) for compatibility.
+
 ```
 ┌─────────────┐     ┌──────────┐     ┌──────────────┐
 │  Pack A     │     │          │     │ Claude Code  │

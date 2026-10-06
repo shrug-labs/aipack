@@ -8,6 +8,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 type opencodeMCPEntry struct {
@@ -105,8 +106,11 @@ func buildToolsMap(servers []domain.MCPServer) (map[string]bool, []domain.Warnin
 func RenderBytes(base []byte, servers []domain.MCPServer, instr InstructionsSpec, skills SkillsSpec) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
-		if err := json.Unmarshal(base, &root); err != nil {
+		if err := util.UnmarshalJSON(base, &root); err != nil {
 			return nil, nil, err
+		}
+		if root == nil {
+			return nil, nil, fmt.Errorf("settings JSON must be an object")
 		}
 	}
 

@@ -1,15 +1,54 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/testutil"
 )
+
+func TestDoctorOmitsPluginDelivery(t *testing.T) {
+	home, dir, source := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	writeFile(t, filepath.Join(source, ".codex-plugin/plugin.json"), []byte(`{"name":"probe","version":"1.0.0"}`))
+	writeFile(t, filepath.Join(source, "skills/probe/SKILL.md"), []byte("---\nname: probe\ndescription: Owned plugin fixture\n---\nRead only.\n"))
+	writeFile(t, filepath.Join(source, ".mcp.json"), []byte(`{"mcpServers":{"probe":{"command":"false","cwd":"."}}}`))
+	writeFile(t, filepath.Join(source, "hooks/hooks.json"), []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}}`))
+	if err := app.PackInstall(context.Background(), app.PackInstallRequest{ConfigDir: dir, PackPath: source, Name: "alias", Plugin: &domain.PluginSource{Format: plugin.CodexLegacy, Name: "probe", Marketplace: "owned"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "sync-config.yaml"), []byte("schema_version: 1\ndefaults:\n  profile: default\n  scope: global\n  harnesses: [cline]\n"))
+	writeFile(t, filepath.Join(dir, "profiles/default.yaml"), []byte("schema_version: 2\npacks:\n  - name: alias\n    hooks:\n      enabled: false\n"))
+	args := []string{"doctor", "--config-dir", dir}
+	out, diagnostics, code := runApp(t, append(args, "--json")...)
+	var report map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &report); err != nil || code != 0 {
+		t.Fatalf("doctor JSON: %s %s %d %v", out, diagnostics, code, err)
+	}
+	if _, exists := report["plugin_readiness"]; exists {
+		t.Fatalf("doctor JSON includes plugin delivery: %s", out)
+	}
+	out, diagnostics, code = runApp(t, args...)
+	if code != 0 || !strings.Contains(out, "doctor OK") {
+		t.Fatalf("doctor text: %s %s %d", out, diagnostics, code)
+	}
+	for _, unwanted := range []string{"Plugin delivery:", "alias / cline", "available:", "selected:", "execution and login are not tested"} {
+		if strings.Contains(out+diagnostics, unwanted) {
+			t.Fatalf("doctor output includes %q: %s %s", unwanted, out, diagnostics)
+		}
+	}
+}
 
 func TestDoctor_JSON_HappyPath(t *testing.T) {
 	home := t.TempDir()

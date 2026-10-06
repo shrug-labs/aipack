@@ -99,6 +99,10 @@ func (v *packValidator) validateBundledProfiles() {
 }
 
 func (v *packValidator) validateFrontmatter() {
+	if v.manifest.NativePlugin != nil {
+		// Imported definitions obey their source host's authoring contract.
+		return
+	}
 	// Build known-ID sets for cross-reference checks.
 	knownServers := map[string]struct{}{}
 	for _, name := range v.manifest.MCP {

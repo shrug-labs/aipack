@@ -7,7 +7,7 @@ Each harness renders pack content into a coding assistant's native format. Four 
 ```go
 type Harness interface {
     ID() domain.Harness
-    Layout(scope, baseDir, home string) Layout    // filesystem footprint
+    Layout(ctx CaptureContext) Layout           // filesystem footprint
     Plan(ctx engine.SyncContext) (domain.Fragment, error)  // content → harness files
     Render(ctx RenderContext) (domain.Fragment, error)      // portable rendering
     Capture(ctx CaptureContext) (CaptureResult, error)      // harness files → content
@@ -58,8 +58,8 @@ Use `f.MCP` for MCP configs, `f.Settings` for harness settings. `--skip-settings
 Each harness handles scope internally via `Layout()`. Pattern from Claude Code:
 
 ```go
-func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
-    // Single scope switch, returns ValidationRoots + RemovePaths + OwnedFiles
+func (Harness) Layout(ctx harness.CaptureContext) harness.Layout {
+    // Use ctx.TargetBaseDir() and ctx.TargetConfigDir for explicit targeting.
 }
 ```
 
@@ -152,7 +152,7 @@ type stubHarness struct {
     id       domain.Harness
     fragment domain.Fragment
 }
-func (s stubHarness) Layout(domain.Scope, string, string) harness.Layout {
+func (s stubHarness) Layout(harness.CaptureContext) harness.Layout {
     return harness.Layout{}
 }
 func (s stubHarness) Plan(engine.SyncContext) (domain.Fragment, error) {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,55 @@ import (
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 	"github.com/shrug-labs/aipack/internal/config"
 )
+
+func TestRegistryFetchExplicitNativeFormat(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"market","plugins":[{"name":"probe","source":{"source":"npm","package":"probe@1"}}]}`))
+	}))
+	defer server.Close()
+	for _, args := range [][]string{
+		{"registry", "fetch", server.URL + "/catalog.json", "--format", "claude", "--name", "market"},
+		{"registry", "fetch", server.URL + "/catalog.json", "--name", "market"},
+	} {
+		_, stderr, code := runApp(t, append(args, "--config-dir", dir)...)
+		if code != cmdutil.ExitOK {
+			t.Fatalf("fetch exit=%d: %s", code, stderr)
+		}
+	}
+	stdout, stderr, code := runApp(t, "registry", "sources", "--json", "--config-dir", dir)
+	var sources []struct {
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &sources); err != nil || code != cmdutil.ExitOK || len(sources) != 1 || sources[0].Format != "claude" {
+		t.Fatalf("sources format lost: %s %s %v", stdout, stderr, err)
+	}
+	for _, args := range [][]string{
+		{"registry", "fetch", "--format", "claude"},
+		{"registry", "fetch", server.URL, "--format", "typo"},
+	} {
+		if _, stderr, code := runApp(t, append(args, "--config-dir", dir)...); code == cmdutil.ExitOK || !strings.Contains(stderr, "format") {
+			t.Fatalf("invalid format flags accepted: %v exit=%d: %s", args, code, stderr)
+		}
+	}
+}
+
+func TestRegistryFetchLocalDirectoryPath(t *testing.T) {
+	t.Parallel()
+	root, configDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "catalog.json"), []byte(`{"name":"market","plugins":[{"name":"probe","source":"./probe"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := runApp(t, "registry", "fetch", root, "--path", "catalog.json", "--format", "codex-legacy", "--config-dir", configDir)
+	if code != cmdutil.ExitOK {
+		t.Fatalf("directory catalog fetch exit=%d: %s", code, stderr)
+	}
+	sc, err := config.LoadSyncConfig(config.SyncConfigPath(configDir))
+	if err != nil || len(sc.RegistrySources) != 1 || sc.RegistrySources[0].URL != root || sc.RegistrySources[0].Path != "catalog.json" {
+		t.Fatalf("directory source lost coordinates: %+v %v", sc.RegistrySources, err)
+	}
+}
 
 func TestRegistryValidate_JSONValid(t *testing.T) {
 	t.Parallel()

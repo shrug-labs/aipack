@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 
@@ -56,10 +55,6 @@ func loadProfileWithOptions(profileFlag, profilePathFlag, configDirFlag string, 
 	return loadProfileWithSyncConfigOptions(profileFlag, profilePathFlag, configDir, syncCfg, stderr, opts)
 }
 
-func loadProfileWithSyncConfig(profileFlag, profilePathFlag, configDir string, syncCfg config.SyncConfig, stderr io.Writer) (loadedProfile, int) {
-	return loadProfileWithSyncConfigOptions(profileFlag, profilePathFlag, configDir, syncCfg, stderr, loadProfileOptions{})
-}
-
 func loadProfileWithSyncConfigOptions(profileFlag, profilePathFlag, configDir string, syncCfg config.SyncConfig, stderr io.Writer, opts loadProfileOptions) (loadedProfile, int) {
 	profile := cmdutil.ResolveProfileName(profileFlag, syncCfg)
 
@@ -79,17 +74,9 @@ func loadProfileWithSyncConfigOptions(profileFlag, profilePathFlag, configDir st
 		CollisionStrategy: syncCfg.Defaults.CollisionStrategy,
 		Namespaced:        syncCfg.Defaults.Namespaced,
 		PrevInventories:   prevInventories,
+		AllowEmpty:        opts.AllowNoEnabledPacks,
 	})
 	if err != nil {
-		if opts.AllowNoEnabledPacks && errors.Is(err, config.ErrProfileNoEnabledPacks) {
-			return loadedProfile{
-				profileCfg:  profileCfg,
-				profileName: profile,
-				profilePath: path,
-				syncCfg:     syncCfg,
-				configDir:   configDir,
-			}, -1
-		}
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return loadedProfile{}, cmdutil.ExitFail
 	}

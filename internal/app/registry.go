@@ -284,11 +284,18 @@ func PackInstallRequestFromRegistryEntry(configDir, name string, entry config.Re
 		Name:         name,
 		Quiet:        boolPtrIf(entry.Quiet),
 		ContentPaths: maps.Clone(entry.ContentPaths),
+		Plugin:       entry.Plugin,
+		Unsupported:  entry.Unsupported,
 	}
-	if entry.Method == config.MethodArchive {
+	if entry.Method == config.MethodNPM {
+		req.URL = entry.Repo
+	} else if entry.Method == config.MethodArchive {
 		req.URL = entry.URL
 		req.Archive = true
 		req.Ref = ""
+	} else if entry.Method == config.MethodCopy {
+		req.PackPath = registryLocalPath(entry.Repo, entry.Path)
+		req.SubPath = ""
 	} else {
 		req.URL = entry.Repo
 	}
@@ -334,6 +341,7 @@ type RegistrySourceInfo struct {
 	URL    string `json:"url"`
 	Ref    string `json:"ref,omitempty"`
 	Path   string `json:"path,omitempty"`
+	Format string `json:"format,omitempty"`
 	Cached bool   `json:"cached"`
 }
 
@@ -352,6 +360,7 @@ func RegistrySources(configDir string) ([]RegistrySourceInfo, error) {
 			URL:    src.URL,
 			Ref:    src.Ref,
 			Path:   src.Path,
+			Format: src.Format,
 			Cached: statErr == nil,
 		})
 	}
@@ -375,13 +384,11 @@ func RegistryAddSource(req RegistryAddSourceRequest, stdout io.Writer) error {
 		return fmt.Errorf("loading sync-config: %w", err)
 	}
 
-	isGit := config.IsGitURL(req.URL, req.Ref)
+	isGit := config.RegistrySourceUsesGit(config.RegistrySourceEntry{URL: req.URL, Ref: req.Ref, Path: req.Path})
 	ref := req.Ref
 	filePath := req.Path
-	if isGit {
-		if filePath == "" {
-			filePath = config.DefaultRegistryPath
-		}
+	if isGit && filePath == "" {
+		filePath = config.DefaultRegistryPath
 	}
 
 	name := req.Name
@@ -411,8 +418,9 @@ type RegistryFetchRequest struct {
 	ConfigDir string
 	URL       string // explicit URL; empty = fetch all known sources
 	Ref       string // git ref (branch/tag); presence implies git-based fetch
-	Path      string // file path within repo (git only); default: registry.yaml
+	Path      string // explicit file within repository; empty discovers supported entry points
 	Name      string // explicit source name; empty = derive from URL
+	Format    string // native dialect; empty = retain configured choice, auto = clear it
 
 	// FetchFn overrides how bytes are fetched from an HTTP URL (for testing).
 	FetchFn func(url string) ([]byte, error)
@@ -425,6 +433,14 @@ type RegistryFetchRequest struct {
 // With an explicit URL, fetches that single source and saves it to sync-config.
 // Without a URL, fetches all sources in registry_sources (or the compiled-in default).
 func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writer) error {
+	if req.Format != "" && req.URL == "" {
+		return fmt.Errorf("--format requires an explicit registry URL")
+	}
+	if req.Format != "auto" {
+		if err := config.ValidateMarketplaceFormat(req.Format); err != nil {
+			return err
+		}
+	}
 	sc, err := config.LoadSyncConfig(config.SyncConfigPath(req.ConfigDir))
 	if err != nil {
 		return fmt.Errorf("loading sync-config: %w", err)
@@ -468,6 +484,7 @@ func RegistryFetch(ctx context.Context, req RegistryFetchRequest, stdout io.Writ
 			Ref:        src.Ref,
 			Path:       src.Path,
 			Name:       src.Name,
+			Format:     src.Format,
 			FetchFn:    req.FetchFn,
 			GitFetchFn: req.GitFetchFn,
 		}
@@ -605,16 +622,25 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	url := req.URL
 	ref := req.Ref
 	filePath := req.Path
-
-	// Apply defaults for git URLs. For HTTP URLs, ref and filePath stay empty —
-	// the upsert writes them with omitempty, and re-fetch identifies the source
-	// as HTTP because IsGitURL(url, "") returns false.
-	isGit := config.IsGitURL(url, ref)
-	if isGit {
-		if filePath == "" {
-			filePath = config.DefaultRegistryPath
+	if st, err := os.Stat(url); err == nil {
+		if st.IsDir() {
+			absolute, err := filepath.Abs(url)
+			if err != nil {
+				return 0, err
+			}
+			url = absolute
+		} else {
+			local, err := config.LocalRegistrySource(url)
+			if err != nil {
+				return 0, err
+			}
+			url, filePath = local.URL, local.Path
 		}
 	}
+
+	// An explicit repository-relative path declares Git acquisition; standalone
+	// HTTP catalog URLs retain their file-fetch route.
+	isGit := config.RegistrySourceUsesGit(config.RegistrySourceEntry{URL: url, Ref: ref, Path: filePath})
 
 	// Resolve source name.
 	name := req.Name
@@ -630,11 +656,59 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	// Fetch remote registry bytes.
 	var data []byte
 	var err error
+	coordinates := config.RegistrySourceEntry{Name: name, URL: url, Ref: ref, Path: filePath}
+	format := req.Format
+	if format == "auto" {
+		format = ""
+	} else if format == "" {
+		if i := registrySourceIndex(sc.RegistrySources, coordinates); i >= 0 {
+			format = sc.RegistrySources[i].Format
+		}
+	}
 
-	if isGit {
+	var remote config.Registry
+	discovered := false
+	if st, statErr := os.Stat(url); filePath == "" && (isGit || statErr == nil && st.IsDir()) {
+		coordinates.Format = format
+		if statErr == nil && st.IsDir() {
+			remote, err = config.DiscoverRegistrySource(coordinates, func(path string) ([]byte, error) {
+				return config.ReadRepositoryFile(url, path)
+			})
+		} else if req.GitFetchFn != nil {
+			remote, err = config.DiscoverRegistrySource(coordinates, func(path string) ([]byte, error) {
+				return req.GitFetchFn(url, ref, path)
+			})
+		} else {
+			remote, err = config.FetchRepositoryRegistry(ctx, coordinates)
+		}
+		discovered = true
+	} else if st, statErr := os.Stat(url); statErr == nil {
+		localPath := url
+		if st.IsDir() {
+			if filePath == "" {
+				return 0, fmt.Errorf("local registry directory requires --path")
+			}
+			if !filepath.IsLocal(filePath) {
+				return 0, fmt.Errorf("local registry path escapes marketplace root")
+			}
+			localPath = filepath.Join(url, filePath)
+		}
+		if st.IsDir() {
+			data, err = config.ReadRepositoryFile(url, filePath)
+		} else {
+			data, err = os.ReadFile(localPath)
+		}
+		if err == nil {
+			coordinates, err = config.LocalRegistrySource(localPath)
+			if st.IsDir() {
+				coordinates.URL, err = filepath.Abs(url)
+				coordinates.Path = filePath
+			}
+		}
+	} else if isGit {
 		gitFetchFn := req.GitFetchFn
 		if gitFetchFn == nil {
-			if source.SelectFetchStrategy(url) == source.StrategyHTTPTarball {
+			if format == "" && !strings.HasSuffix(filePath, "marketplace.json") && source.SelectFetchStrategy(url) == source.StrategyHTTPTarball {
 				gitFetchFn = func(repo, gitRef, path string) ([]byte, error) {
 					tarballURL, urlErr := source.GitHubTarballURL(repo, gitRef)
 					if urlErr != nil {
@@ -663,9 +737,12 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 	}
 
 	// Parse and validate.
-	remote, err := config.ParseRegistry(data)
-	if err != nil {
-		return 0, fmt.Errorf("parsing remote registry from %s: %w", url, err)
+	coordinates.Format = format
+	if !discovered {
+		remote, err = config.ParseRegistrySource(data, coordinates)
+		if err != nil {
+			return 0, fmt.Errorf("parsing remote registry from %s: %w", url, err)
+		}
 	}
 
 	// Write cache file.
@@ -684,10 +761,11 @@ func registryFetchOne(ctx context.Context, req RegistryFetchRequest, sc *config.
 
 	// Upsert source in sync-config (caller saves).
 	upsertRegistrySource(sc, config.RegistrySourceEntry{
-		Name: name,
-		URL:  url,
-		Ref:  ref,
-		Path: filePath,
+		Name:   name,
+		URL:    coordinates.URL,
+		Ref:    ref,
+		Path:   coordinates.Path,
+		Format: format,
 	})
 
 	// Update search index (best-effort).
@@ -932,11 +1010,27 @@ func deepIndexOnePack(ctx context.Context, configDir, packName string, entry con
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer util.RemoveOwnedTree(tmp)
 
 	packRoot := tmp
 	boundary := tmp
 	switch entry.Method {
+	case config.MethodNPM:
+		if entry.Plugin == nil || entry.Plugin.NPM == nil {
+			return nil, fmt.Errorf("npm registry entry missing package source")
+		}
+		spec := *entry.Plugin.NPM
+		spec.Version = entry.Ref
+		fetch := source.FetchNPM
+		if entry.Plugin.Format == "claude" {
+			fetch = source.FetchClaudeNPM
+		}
+		packRoot, _, _, err = fetch(ctx, spec, tmp)
+		if err != nil {
+			return nil, err
+		}
+	case config.MethodCopy:
+		packRoot, boundary = registryLocalPath(entry.Repo, entry.Path), entry.Repo
 	case config.MethodArchive:
 		if entry.URL == "" {
 			return nil, fmt.Errorf("archive registry entry missing url")
@@ -945,7 +1039,7 @@ func deepIndexOnePack(ctx context.Context, configDir, packName string, entry con
 			return nil, fmt.Errorf("fetching archive %s: %w", entry.URL, err)
 		}
 		var err error
-		if len(entry.ContentPaths) > 0 {
+		if len(entry.ContentPaths) > 0 || entry.Plugin != nil {
 			packRoot, err = resolveArchiveContentRoot(tmp, entry.Path)
 		} else {
 			packRoot, err = resolveArchivePackRoot(tmp, entry.Path)
@@ -957,50 +1051,32 @@ func deepIndexOnePack(ctx context.Context, configDir, packName string, entry con
 		if entry.Repo == "" {
 			return nil, fmt.Errorf("registry entry missing repo")
 		}
-		if err := cloneFn(entry.Repo, tmp, entry.Ref); err != nil {
+		if err := withPluginGitRepository(ctx, configDir, entry.Plugin, entry.Repo, nil, func(actual string) error {
+			return cloneFn(actual, tmp, entry.Ref)
+		}); err != nil {
 			return nil, fmt.Errorf("cloning %s: %w", entry.Repo, err)
 		}
 		if entry.Path != "" {
 			packRoot = filepath.Join(tmp, entry.Path)
 		}
+		if entry.Plugin != nil {
+			entry.Plugin = pluginSourceAtRevision(entry.Plugin, resolveGitHash(ctx, tmp, nil))
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 	}
 
-	staging, manifest, err := extractPackContent(packStagingDir(configDir), packRoot, entry.ContentPaths, packName, boundary)
+	staging, manifest, err := extractPackSource(packStagingDir(configDir), packRoot, entry.ContentPaths, packName, boundary, entry.Plugin)
 	if err != nil {
 		return nil, fmt.Errorf("extracting pack: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	defer util.RemoveOwnedTree(staging)
 
 	if err := config.DiscoverContent(&manifest, staging); err != nil {
 		return nil, fmt.Errorf("discovering content: %w", err)
 	}
 	return resourcesFromManifestRoot(packName, staging, manifest), nil
-}
-
-// extractPluginFromFile parses a plugin descriptor JSON and produces a
-// Resource with Kind="plugin", matching what ExtractFromPack does for installed
-// packs.
-func extractPluginFromFile(path string) (index.Resource, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return index.Resource{}, err
-	}
-	var plugin domain.Plugin
-	if err := json.Unmarshal(data, &plugin); err != nil {
-		return index.Resource{}, err
-	}
-	name := strings.TrimSuffix(filepath.Base(path), ".json")
-	body := plugin.Source
-	if plugin.Marketplace != "" {
-		body += "\n" + plugin.Marketplace
-	}
-	return index.Resource{
-		Kind:        "plugin",
-		Name:        name,
-		Description: plugin.Source,
-		Path:        filepath.Join("plugins", filepath.Base(path)),
-		Body:        body,
-	}, nil
 }
 
 // extractMCPServerFromFile parses an MCP server inventory JSON and produces a

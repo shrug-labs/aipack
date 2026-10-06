@@ -12,6 +12,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -21,16 +22,21 @@ type Harness struct{}
 func (Harness) ID() domain.Harness { return domain.HarnessClaudeCode }
 
 // Layout describes Claude Code's filesystem footprint for a given scope.
-func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
-	paths := PathsForScope(scope)
-	mcpBase := baseDir
-	if scope == domain.ScopeGlobal {
-		mcpBase = home
-	}
-	mcpPath := filepath.Join(mcpBase, paths.MCPFile)
+func (Harness) Layout(ctx harness.CaptureContext) harness.Layout {
+	scope, baseDir, home := ctx.Scope, ctx.TargetBaseDir(), ctx.Home
+	configTarget := ctx.TargetConfigDir
+	paths := PathsForScope(scope, configTarget)
+	mcpPath := filepath.Join(baseDir, paths.MCPFile)
 	settingsPath := filepath.Join(baseDir, paths.SettingsFile)
 	pluginSettingsPath := filepath.Join(baseDir, ".claude", "settings.json")
 	knownMarketplacesPath := filepath.Join(home, ".claude", "plugins", "known_marketplaces.json")
+	if ctx.NativeConfigDir != "" {
+		knownMarketplacesPath = filepath.Join(ctx.NativeConfigDir, "plugins", "known_marketplaces.json")
+	}
+	if configTarget {
+		pluginSettingsPath = settingsPath
+		knownMarketplacesPath = filepath.Join(baseDir, "plugins", "known_marketplaces.json")
+	}
 	pruneMCPServers := func(root map[string]any, ctx harness.EditContext) {
 		harness.PruneMapKeys(root, "mcpServers", ctx.ManagedMCPServers)
 	}
@@ -46,10 +52,12 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 			Strip: func(root map[string]any, ctx harness.EditContext) {
 				stripManagedPermissions(root)
 				stripManagedHooks(root, ctx)
+				stripNativePluginState(root, settingsPath, ctx)
 			},
 			Reset: func(root map[string]any, ctx harness.EditContext) {
 				delete(root, "permissions")
 				stripManagedHooks(root, ctx)
+				stripNativePluginState(root, settingsPath, ctx)
 			},
 		},
 	}
@@ -57,19 +65,27 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 	// both ~/.claude/settings.json. Registering a second OwnedFile for the same
 	// path would clobber the managed strip/reset in sync's path-keyed map (last
 	// entry wins), so only add the plugin OwnedFile when the paths differ. The
-	// managed strip/reset already preserve enabledPlugins (they touch only
-	// permissions and hooks), so the converged single entry is correct.
+	// managed strip/reset already handle native plugin state, so the converged
+	// single entry is correct.
 	if pluginSettingsPath != settingsPath {
 		ownedFiles = append(ownedFiles, harness.OwnedFile{
 			Path: pluginSettingsPath, Format: harness.FormatJSON,
-			Strip: noopJSONEdit,
-			Reset: noopJSONEdit,
+			Strip: func(root map[string]any, ctx harness.EditContext) {
+				stripNativePluginState(root, pluginSettingsPath, ctx)
+			},
+			Reset: func(root map[string]any, ctx harness.EditContext) {
+				stripNativePluginState(root, pluginSettingsPath, ctx)
+			},
 		})
 	}
 	ownedFiles = append(ownedFiles, harness.OwnedFile{
 		Path: knownMarketplacesPath, Format: harness.FormatJSON,
-		Strip: noopJSONEdit,
-		Reset: noopJSONEdit,
+		Strip: func(root map[string]any, ctx harness.EditContext) {
+			stripNativePluginState(root, knownMarketplacesPath, ctx)
+		},
+		Reset: func(root map[string]any, ctx harness.EditContext) {
+			stripNativePluginState(root, knownMarketplacesPath, ctx)
+		},
 	})
 
 	l := harness.Layout{
@@ -94,7 +110,33 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 	return l
 }
 
-func noopJSONEdit(map[string]any, harness.EditContext) {}
+func stripNativePluginState(root map[string]any, configPath string, ctx harness.EditContext) {
+	bindings, markets := map[string]struct{}{}, map[string]struct{}{}
+	for binding, record := range ctx.NativePlugins {
+		if record.Harness != domain.HarnessClaudeCode {
+			continue
+		}
+		if filepath.Clean(record.SettingsPath) == filepath.Clean(configPath) {
+			bindings[binding] = struct{}{}
+		}
+		if filepath.Clean(filepath.Join(record.ConfigHome, "settings.json")) == filepath.Clean(configPath) || filepath.Clean(filepath.Join(record.ConfigHome, "plugins/known_marketplaces.json")) == filepath.Clean(configPath) {
+			if parts := strings.Split(binding, "@"); len(parts) == 2 {
+				markets[parts[1]] = struct{}{}
+			}
+		}
+	}
+	harness.PruneMapKeys(root, "enabledPlugins", bindings)
+	if ctx.PreserveNativeMarketplaces {
+		return
+	}
+	if filepath.Base(configPath) == "known_marketplaces.json" {
+		for market := range markets {
+			delete(root, market)
+		}
+	} else {
+		harness.PruneMapKeys(root, "extraKnownMarketplaces", markets)
+	}
+}
 
 // stripManagedPermissions removes mcp__* entries from permissions.allow and
 // permissions.deny, preserving non-MCP permission entries.
@@ -103,7 +145,11 @@ func stripManagedPermissions(root map[string]any) {
 	if !ok {
 		return
 	}
-	perms["allow"] = filterOutMCPPerms(perms["allow"])
+	allow := filterOutMCPPerms(perms["allow"])
+	if allow == nil {
+		allow = []any{}
+	}
+	perms["allow"] = allow
 	if kept := filterOutMCPPerms(perms["deny"]); len(kept) > 0 {
 		perms["deny"] = kept
 	} else {
@@ -115,7 +161,7 @@ func stripManagedPermissions(root map[string]any) {
 func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment, error) {
 	var f domain.Fragment
 
-	if err := planContent(&f, ctx.TargetDir, ctx.Profile, ctx.Namespaced); err != nil {
+	if err := planContent(&f, ctx.TargetDir, PathsForScope(ctx.Scope, ctx.TargetConfigDir), ctx.Profile, ctx.Namespaced); err != nil {
 		return domain.Fragment{}, err
 	}
 	if err := planMCPAndSettings(&f, ctx); err != nil {
@@ -125,8 +171,7 @@ func (Harness) Plan(_ context.Context, ctx engine.SyncContext) (domain.Fragment,
 	return f, nil
 }
 
-func planContent(f *domain.Fragment, baseDir string, p domain.Profile, namespaced bool) error {
-	paths := ProjectPaths // content paths are the same for both scopes
+func planContent(f *domain.Fragment, baseDir string, paths Paths, p domain.Profile, namespaced bool) error {
 	return harness.PlanStandardContent(f, p, harness.ContentDirs{
 		Rules:     filepath.Join(baseDir, paths.RulesDir),
 		Agents:    filepath.Join(baseDir, paths.AgentsDir),
@@ -145,15 +190,73 @@ func planContent(f *domain.Fragment, baseDir string, p domain.Profile, namespace
 func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	sp := ctx.Profile.SettingsPackName(domain.HarnessClaudeCode)
 
-	paths := PathsForScope(ctx.Scope)
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
 	mcpPath := filepath.Join(ctx.TargetDir, paths.MCPFile)
 	settingsPath := filepath.Join(ctx.TargetDir, paths.SettingsFile)
 	home := ctx.Home
 	if home == "" {
 		home = ctx.TargetDir
 	}
-	pluginSettingsPath := filepath.Join(ctx.TargetDir, ".claude", "settings.json")
-	knownMarketplacesPath := filepath.Join(home, ".claude", "plugins", "known_marketplaces.json")
+	configHome := filepath.Join(home, ".claude")
+	if ctx.NativeConfigDir != "" {
+		configHome = ctx.NativeConfigDir
+	}
+	if ctx.Scope == domain.ScopeGlobal && ctx.TargetConfigDir {
+		configHome = ctx.TargetDir
+	}
+	var nativePlugins []string
+	permissionServers := slices.Clone(ctx.Profile.MCPServers)
+	serverOwners := map[string]string{}
+	for _, server := range permissionServers {
+		name := MCPPermissionName(server.Name)
+		if owner, exists := serverOwners[name]; exists {
+			return fmt.Errorf("claude MCP namespace %q collides between packs %q and %q", name, owner, server.SourcePack)
+		}
+		serverOwners[name] = server.SourcePack
+	}
+	for _, pack := range ctx.Profile.Packs {
+		if pack.NativePlugin == nil {
+			continue
+		}
+		namespace, err := plugin.ClaudeNamespace(*pack.NativePlugin)
+		if err != nil {
+			return fmt.Errorf("native plugin pack %q: %w", pack.Name, err)
+		}
+		var nativeServers []string
+		for server, policy := range pack.NativePlugin.MCPPolicy {
+			name := MCPPermissionName("plugin_" + namespace + "_" + server)
+			if owner, exists := serverOwners[name]; exists {
+				return fmt.Errorf("native Claude MCP namespace %q collides between packs %q and %q", name, owner, pack.Name)
+			}
+			serverOwners[name] = pack.Name
+			nativeServers = append(nativeServers, name)
+			permissionServers = append(permissionServers, domain.MCPServer{Name: name, AllowedTools: policy.AllowedTools,
+				AlwaysAllowedTools: policy.AlwaysAllowedTools, DisabledTools: policy.DisabledTools, SourcePack: pack.Name})
+		}
+		slices.Sort(nativeServers)
+		pkg := pack.NativePlugin.Package
+		var files []domain.NativePluginFile
+		if pkg.Harness == domain.HarnessCodex {
+			files, pkg, err = plugin.RenderCodexForClaude(*pack.NativePlugin)
+		} else {
+			var entry map[string]any
+			files, entry, err = plugin.RenderClaudePackage(*pack.NativePlugin)
+			pkg.MarketplaceEntry = entry
+		}
+		if err != nil {
+			return fmt.Errorf("native plugin pack %q: %w", pack.Name, err)
+		}
+		f.NativePlugins = append(f.NativePlugins, domain.NativePluginAction{
+			Package: pkg, Selection: pack.NativePlugin, Namespace: namespace, Files: files, SourcePack: pack.Name, Scope: ctx.Scope, MCPPolicy: pack.NativePlugin.MCPPolicy,
+			MCPPermissionServers: nativeServers,
+			ConfigHome:           configHome, SettingsPath: settingsPath,
+			MarketplaceDir: domain.NativeMarketplaceDir(ctx.ConfigDir, domain.HarnessClaudeCode, pkg.Marketplace, pkg.RootDirectoryName),
+		})
+		nativePlugins = append(nativePlugins, pack.NativePlugin.Package.Binding())
+	}
+	if err := plugin.RenderClaudeSharedRoots(f.NativePlugins); err != nil {
+		return err
+	}
 
 	if len(ctx.Profile.MCPServers) > 0 {
 		mcpBytes, _, err := RenderMCPBytesFromTyped(ctx.Profile.MCPServers)
@@ -161,7 +264,7 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 			return fmt.Errorf("render MCP bytes: %w", err)
 		}
 		planned := map[string]domain.MCPServer{}
-		parseMCPJSON(planned, mcpBytes)
+		parseMCPJSON(planned, mcpBytes, true)
 		mcpActions, err := domain.BuildMCPActions(
 			mcpPath,
 			domain.HarnessClaudeCode,
@@ -188,7 +291,7 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	}
 
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessClaudeCode, "settings.local.json")
-	hasMCP := len(ctx.Profile.MCPServers) > 0
+	hasMCP := len(permissionServers) > 0
 	hooks := ctx.Profile.AllHooks()
 	renderedHooks, hookSourcePack, err := RenderHooks(hooks)
 	if err != nil {
@@ -199,28 +302,21 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		sp = hookSourcePack
 	}
 	hookTraceRefs := domain.TraceRefsForHooks(hooks)
-	hasManagedKeys := hasMCP || hasHooks
+	if sp == "" && len(nativePlugins) > 0 {
+		sp = compositePluginSourcePack(f.NativePlugins)
+	}
+	hasManagedKeys := hasMCP || hasHooks || len(nativePlugins) > 0
 	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
-	plugins := ctx.Profile.AllPlugins()
 
-	// At global scope settingsPath == pluginSettingsPath (both
-	// ~/.claude/settings.json). When a managed settings action also targets that
-	// file, emitting enabledPlugins as a second same-destination merge would
-	// clobber it (each merge bakes against the pre-write file, so the later write
-	// wins). Fold enabledPlugins into the managed action instead. User-added
-	// plugins survive: the three-way merge preserves enabledPlugins entries that
-	// were never in the managed overlay.
-	foldPlugins := settingsPath == pluginSettingsPath && len(plugins) > 0 &&
-		(decision.EmitSettings || decision.EmitMCP)
 	settingsLabel := filepath.Base(paths.SettingsFile)
 
 	if decision.EmitSettings {
-		out, err := RenderSettingsBytesWithRenderedHooks(base, ctx.Profile.MCPServers, renderedHooks)
+		out, err := RenderSettingsBytesWithRenderedHooks(base, permissionServers, renderedHooks)
 		if err != nil {
 			return fmt.Errorf("render settings bytes: %w", err)
 		}
-		if foldPlugins {
-			if out, err = InjectEnabledPlugins(out, plugins); err != nil {
+		if len(nativePlugins) > 0 {
+			if out, err = InjectEnabledPlugins(out, nativePlugins); err != nil {
 				return fmt.Errorf("inject enabledPlugins: %w", err)
 			}
 		}
@@ -231,12 +327,12 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
 		// Skip base template, render only managed keys (MCP permissions).
-		out, err := RenderSettingsBytesWithRenderedHooks(nil, ctx.Profile.MCPServers, renderedHooks)
+		out, err := RenderSettingsBytesWithRenderedHooks(nil, permissionServers, renderedHooks)
 		if err != nil {
 			return fmt.Errorf("render managed settings bytes: %w", err)
 		}
-		if foldPlugins {
-			if out, err = InjectEnabledPlugins(out, plugins); err != nil {
+		if len(nativePlugins) > 0 {
+			if out, err = InjectEnabledPlugins(out, nativePlugins); err != nil {
 				return fmt.Errorf("inject enabledPlugins: %w", err)
 			}
 		}
@@ -246,54 +342,10 @@ func planMCPAndSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	}
-	if len(plugins) > 0 {
-		if !foldPlugins {
-			out, err := RenderPluginSettingsBytes(plugins)
-			if err != nil {
-				return fmt.Errorf("render plugin settings bytes: %w", err)
-			}
-			f.MCP = append(f.MCP, domain.SettingsAction{
-				Dst:          pluginSettingsPath,
-				Desired:      out,
-				Harness:      domain.HarnessClaudeCode,
-				Label:        "settings.json (plugins)",
-				SourcePack:   compositePluginSourcePack(plugins),
-				MergeMode:    true,
-				AdditiveOnly: true,
-			})
-			f.Desired = append(f.Desired, filepath.Clean(pluginSettingsPath))
-		}
-
-		if hasSourceMarketplace(plugins) {
-			out, err := RenderKnownMarketplacesBytes(home, plugins)
-			if err != nil {
-				return fmt.Errorf("render known marketplaces bytes: %w", err)
-			}
-			f.MCP = append(f.MCP, domain.SettingsAction{
-				Dst:          knownMarketplacesPath,
-				Desired:      out,
-				Harness:      domain.HarnessClaudeCode,
-				Label:        "known_marketplaces.json",
-				SourcePack:   compositePluginSourcePack(plugins),
-				MergeMode:    true,
-				AdditiveOnly: true,
-			})
-			f.Desired = append(f.Desired, filepath.Clean(knownMarketplacesPath))
-		}
-	}
 	return nil
 }
 
-func hasSourceMarketplace(plugins []domain.Plugin) bool {
-	for _, p := range plugins {
-		if p.HasSourceMarketplace() {
-			return true
-		}
-	}
-	return false
-}
-
-func compositePluginSourcePack(plugins []domain.Plugin) string {
+func compositePluginSourcePack(plugins []domain.NativePluginAction) string {
 	if len(plugins) == 0 {
 		return ""
 	}
@@ -324,17 +376,12 @@ func (Harness) Render(_ context.Context, ctx harness.RenderContext) (domain.Frag
 func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.CaptureResult, error) {
 	res := harness.NewCaptureResult()
 
-	paths := PathsForScope(ctx.Scope)
-	var baseDir string
-	if ctx.Scope == domain.ScopeProject {
-		baseDir = ctx.ProjectDir
-	} else {
-		baseDir = ctx.Home
-	}
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
+	baseDir := ctx.TargetBaseDir()
 	mcpPath := filepath.Join(baseDir, paths.MCPFile)
 	settingsPath := filepath.Join(baseDir, paths.SettingsFile)
 
-	captureContent(&res, baseDir, ctx.KnownPacks)
+	captureContent(&res, baseDir, paths, ctx.KnownPacks)
 
 	if err := captureMCPAndSettings(&res, mcpPath, settingsPath); err != nil {
 		return res, err
@@ -344,8 +391,7 @@ func (Harness) Capture(_ context.Context, ctx harness.CaptureContext) (harness.C
 }
 
 // captureContent captures rules, agents, commands, and skills from baseDir/.claude/.
-func captureContent(res *harness.CaptureResult, baseDir string, knownPacks map[string]struct{}) {
-	paths := ProjectPaths // content paths are the same for both scopes
+func captureContent(res *harness.CaptureResult, baseDir string, paths Paths, knownPacks map[string]struct{}) {
 	harness.CaptureContent(res, harness.ContentDirs{
 		Rules:     filepath.Join(baseDir, paths.RulesDir),
 		Agents:    filepath.Join(baseDir, paths.AgentsDir),
@@ -361,7 +407,7 @@ func captureMCPAndSettings(res *harness.CaptureResult, mcpPath, settingsPath str
 	if b, ok, err := util.ReadFileIfExists(mcpPath); err != nil {
 		return fmt.Errorf("capture claudecode MCP config: %w", err)
 	} else if ok {
-		res.Warnings = append(res.Warnings, parseMCPJSON(res.MCPServers, b)...)
+		res.Warnings = append(res.Warnings, parseMCPJSON(res.MCPServers, b, filepath.Base(mcpPath) != ".claude.json")...)
 	}
 
 	if b, ok, err := util.ReadFileIfExists(settingsPath); err != nil {
@@ -376,11 +422,12 @@ func captureMCPAndSettings(res *harness.CaptureResult, mcpPath, settingsPath str
 	return nil
 }
 
-func parseMCPJSON(servers map[string]domain.MCPServer, b []byte) []domain.Warning {
+func parseMCPJSON(servers map[string]domain.MCPServer, b []byte, allowFlat bool) []domain.Warning {
 	var warnings []domain.Warning
 
 	// Claude Code .mcp.json wraps servers in {"mcpServers": {...}}.
-	// Unwrap the envelope; fall back to flat format for tolerance.
+	// Global .claude.json is native state: an absent envelope means no MCP
+	// servers. Project MCP files also accept flat declarations for tolerance.
 	var envelope struct {
 		MCPServers json.RawMessage `json:"mcpServers"`
 	}
@@ -390,6 +437,8 @@ func parseMCPJSON(servers map[string]domain.MCPServer, b []byte) []domain.Warnin
 	serverBytes := b
 	if envelope.MCPServers != nil {
 		serverBytes = envelope.MCPServers
+	} else if !allowFlat {
+		return nil
 	}
 
 	var raw map[string]json.RawMessage
@@ -444,8 +493,16 @@ func parseSettingsPermissions(servers map[string]domain.MCPServer, allowed map[s
 	if root.Permissions == nil {
 		return nil
 	}
+	connectionNames := map[string]string{}
+	for name := range servers {
+		connectionNames[MCPPermissionName(name)] = name
+	}
 	for _, perm := range root.Permissions.Allow {
 		serverName, toolName, ok := parseMCPPermission(perm)
+		if !ok {
+			continue
+		}
+		serverName, ok = connectionNames[serverName]
 		if !ok {
 			continue
 		}
@@ -456,6 +513,10 @@ func parseSettingsPermissions(servers map[string]domain.MCPServer, allowed map[s
 	}
 	for _, perm := range root.Permissions.Deny {
 		serverName, toolName, ok := parseMCPPermission(perm)
+		if !ok {
+			continue
+		}
+		serverName, ok = connectionNames[serverName]
 		if !ok {
 			continue
 		}
@@ -477,7 +538,7 @@ func parseMCPPermission(perm string) (string, string, bool) {
 	if len(parts) != 2 {
 		return "", "", false
 	}
-	serverName := engine.NormalizeServerName(parts[0])
+	serverName := strings.TrimSpace(parts[0])
 	toolName := strings.TrimSpace(parts[1])
 	if serverName == "" || toolName == "" {
 		return "", "", false

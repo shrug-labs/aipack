@@ -125,6 +125,26 @@ func TestRenderPermissions_AllowedTools(t *testing.T) {
 	}
 }
 
+func TestMCPPermissionsUseNativeNames(t *testing.T) {
+	servers := []domain.MCPServer{{Name: "plugin_probe_Probe.with-dots", AllowedTools: []string{"read.item", "query_*"}, DisabledTools: []string{"hidden"}}}
+	allow := RenderPermissions(servers)
+	if len(allow) != 2 || allow[0] != "mcp__plugin_probe_Probe_with-dots__query_*" || allow[1] != "mcp__plugin_probe_Probe_with-dots__read_item" {
+		t.Fatalf("native permission names = %v", allow)
+	}
+	settings, err := RenderSettingsBytes(nil, servers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pruned, changed, err := (Harness{}).PruneMCPServersFromManagedOverlay(settings, map[string]struct{}{servers[0].Name: {}})
+	if err != nil || !changed {
+		t.Fatalf("prune native permissions: %t %v", changed, err)
+	}
+	var root settingsRoot
+	if err := json.Unmarshal(pruned, &root); err != nil || len(root.Permissions.Allow)+len(root.Permissions.Deny) != 0 {
+		t.Fatalf("native permissions survived deletion: %s %v", pruned, err)
+	}
+}
+
 func TestRenderPermissions_UnionsAllowedAndAlwaysAllowed(t *testing.T) {
 	t.Parallel()
 	// Claude Code has no separate visibility gate — permissions.allow
@@ -277,7 +297,7 @@ func TestLayout_StripManaged_AllowOnly(t *testing.T) {
 }`)
 
 	h := Harness{}
-	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: "/proj", Home: "/home"})
 	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
 	out, err := layout.StripManaged(input, settingsPath, harness.EditContext{})
 	if err != nil {
@@ -315,7 +335,7 @@ func TestLayout_StripManaged_StripsDenyEntries(t *testing.T) {
 }`)
 
 	h := Harness{}
-	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: "/proj", Home: "/home"})
 	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
 	out, err := layout.StripManaged(input, settingsPath, harness.EditContext{})
 	if err != nil {
@@ -342,7 +362,7 @@ func TestLayout_StripManaged_RemovesOnlyManagedHookGroups(t *testing.T) {
 	input := []byte(`{
   "hooks": {
     "PreToolUse": [
-      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed", "timeout": 5.00}]},
       {"matcher": "Edit", "hooks": [{"type": "command", "command": "user"}]}
     ]
   }
@@ -350,13 +370,13 @@ func TestLayout_StripManaged_RemovesOnlyManagedHookGroups(t *testing.T) {
 	prev := []byte(`{
   "hooks": {
     "PreToolUse": [
-      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed"}]}
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "managed", "timeout": 5.00}]}
     ]
   }
 }`)
 
 	h := Harness{}
-	layout := h.Layout(domain.ScopeProject, "/proj", "/home")
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: "/proj", Home: "/home"})
 	settingsPath := filepath.Join("/proj", ProjectPaths.SettingsFile)
 	out, err := layout.StripManaged(input, settingsPath, harness.EditContext{PreviousManagedOverlay: prev})
 	if err != nil {

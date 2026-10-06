@@ -7,14 +7,15 @@ import (
 
 // Plan holds all actions to be applied during a sync operation.
 type Plan struct {
-	Writes     []WriteAction
-	Copies     []CopyAction
-	Settings   []SettingsAction
-	MCP        []SettingsAction // MCP-related config files; NOT gated by --skip-settings
-	MCPServers []MCPAction
-	Warnings   []Warning
-	Desired    map[string]struct{}
-	Ledger     string // path to ledger file
+	Writes        []WriteAction
+	Copies        []CopyAction
+	Settings      []SettingsAction
+	MCP           []SettingsAction // MCP-related config files; NOT gated by --skip-settings
+	MCPServers    []MCPAction
+	NativePlugins []NativePluginAction
+	Warnings      []Warning
+	Desired       map[string]struct{}
+	Ledger        string // path to ledger file
 }
 
 // AddDesired marks a path as expected in the plan (for stale-file detection).
@@ -28,13 +29,14 @@ func (p *Plan) AddDesired(path string) {
 // Fragment is a builder for Plan. Each harness contributes a Fragment
 // which is accumulated into the final Plan via Apply.
 type Fragment struct {
-	Writes     []WriteAction
-	Copies     []CopyAction
-	Settings   []SettingsAction
-	MCP        []SettingsAction
-	MCPServers []MCPAction
-	Warnings   []Warning
-	Desired    []string
+	Writes        []WriteAction
+	Copies        []CopyAction
+	Settings      []SettingsAction
+	MCP           []SettingsAction
+	MCPServers    []MCPAction
+	NativePlugins []NativePluginAction
+	Warnings      []Warning
+	Desired       []string
 }
 
 // Apply accumulates fragment actions into the plan.
@@ -44,6 +46,7 @@ func (f Fragment) Apply(plan *Plan) {
 	plan.Settings = append(plan.Settings, f.Settings...)
 	plan.MCP = append(plan.MCP, f.MCP...)
 	plan.MCPServers = append(plan.MCPServers, f.MCPServers...)
+	plan.NativePlugins = append(plan.NativePlugins, f.NativePlugins...)
 	plan.Warnings = append(plan.Warnings, f.Warnings...)
 	for _, d := range f.Desired {
 		plan.AddDesired(d)
@@ -107,6 +110,7 @@ func (f *Fragment) AddSkillCopies(baseDir, subDir string, skills []Skill) {
 			Kind:           CopyKindDir,
 			SourcePack:     s.SourcePack,
 			SourceBoundary: s.SourceBoundary,
+			Category:       CategorySkills,
 		})
 		f.Desired = append(f.Desired, dst)
 		if len(s.Assets) > 0 {

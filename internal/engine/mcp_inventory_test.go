@@ -17,6 +17,25 @@ func writeTestFile(t *testing.T, path string, content string) {
 	}
 }
 
+func TestLoadMCPInventoryForPacks_SkipsNativeDeclarations(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "mcp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "mcp/probe.json"), `{"name":"probe","transport":"stdio","command":["false"]}`)
+	for _, hid := range []domain.Harness{domain.HarnessCodex, domain.HarnessClaudeCode} {
+		packs := []config.ResolvedPack{
+			{Name: "native", Root: t.TempDir(), Manifest: config.PackManifest{NativePlugin: &domain.NativePlugin{Harness: hid}}, MCP: map[string]config.ResolvedMCPServer{"probe": {}}},
+			{Name: "ordinary", Root: root, MCP: map[string]config.ResolvedMCPServer{"probe": {}}},
+		}
+		inventory, err := New(nil, nil).LoadMCPInventoryForPacks(packs)
+		if err != nil || len(inventory) != 1 || inventory["probe"].PackRoot != root {
+			t.Fatalf("native declaration blocked or replaced ordinary inventory: %+v %v", inventory, err)
+		}
+	}
+}
+
 func TestLoadMCPInventoryDir_IgnoresMarkdownFiles(t *testing.T) {
 	eng := New(nil, nil)
 	dir := t.TempDir()

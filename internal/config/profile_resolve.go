@@ -25,20 +25,19 @@ const (
 	capWorkflows = "workflows"
 	capSkills    = "skills"
 	capHooks     = "hooks"
-	capPlugins   = "plugins"
 )
 
 type ResolvedPack struct {
-	Name      string
-	Root      string
-	Manifest  PackManifest
-	Rules     []string
-	Agents    []string
-	Workflows []string
-	Skills    []string
-	Hooks     []string
-	Plugins   []string
-	MCP       map[string]ResolvedMCPServer
+	Name                  string
+	Root                  string
+	Manifest              PackManifest
+	Rules                 []string
+	Agents                []string
+	Workflows             []string
+	Skills                []string
+	Hooks                 []string
+	MCP                   map[string]ResolvedMCPServer
+	NativeSettingsEnabled bool
 }
 
 // ContentIDs returns the resolved id list for the given authored category.
@@ -55,8 +54,6 @@ func (rp ResolvedPack) ContentIDs(cat domain.PackCategory) []string {
 		return rp.Skills
 	case domain.CategoryHooks:
 		return rp.Hooks
-	case domain.CategoryPlugins:
-		return rp.Plugins
 	}
 	return nil
 }
@@ -65,6 +62,7 @@ type ResolvedMCPServer struct {
 	AllowedTools       []string
 	AlwaysAllowedTools []string
 	DisabledTools      []string
+	StartupTimeout     string
 }
 
 // ResolveResult holds the outputs of ResolveProfile.
@@ -72,6 +70,8 @@ type ResolveResult struct {
 	Packs             []ResolvedPack
 	SettingsPacks     []string
 	CollisionWarnings []domain.Warning
+	SkillOverrides    map[string]string // includes native imports for ordinary target projection
+	MCPOverrides      map[string]string
 	// BrokenRefs are profile references that were in a previous pack
 	// inventory (per the lockfile) but are not in the current resolve.
 	// Only populated when prevInventories is supplied.
@@ -82,6 +82,7 @@ type ResolveOptions struct {
 	CollisionStrategy CollisionStrategy
 	Namespaced        bool
 	PrevInventories   map[string]domain.PackInventory
+	AllowEmpty        bool // an empty selection is valid for sync cleanup
 }
 
 // ResolveProfile resolves a profile. When prevInventories is non-nil, an
@@ -102,7 +103,7 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 	if strategy == "" {
 		strategy = CollisionLastWins
 	}
-	if len(cfg.Packs) == 0 {
+	if len(cfg.Packs) == 0 && !opts.AllowEmpty {
 		return ResolveResult{}, ErrProfileNoPacks
 	}
 
@@ -113,6 +114,10 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 	var packs []ResolvedPack
 	var settingsPacks []string
 	seenServers := map[string]string{}
+	seenNative := map[string]string{}
+	nativeSkills := map[string]bool{}
+	skillOverrides := map[string]string{}
+	nativeOverridePacks := map[string]bool{}
 
 	// vectorState tracks seen IDs and override owners for each string-slice
 	// resource vector (rules, agents, workflows, skills). Keyed by label.
@@ -130,18 +135,40 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 		{capWorkflows, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Workflows }, func(pe PackEntry) []string { return pe.Overrides.Workflows }},
 		{capSkills, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Skills }, func(pe PackEntry) []string { return pe.Overrides.Skills }},
 		{capHooks, true, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Hooks }, func(pe PackEntry) []string { return pe.Overrides.Hooks }},
-		{capPlugins, false, map[string]string{}, map[string]string{}, func(p *ResolvedPack) *[]string { return &p.Plugins }, func(pe PackEntry) []string { return pe.Overrides.Plugins }},
 	}
 
 	// Pre-scan: build override owner maps so the declaring pack wins
 	// regardless of pack ordering. Disabled packs are excluded — a
 	// disabled pack should not participate in conflict resolution.
 	overrideOwnerMCP := map[string]string{}
+	manifests := map[string]PackManifest{}
 	for _, pc := range cfg.Packs {
 		if !defaultTrue(pc.Enabled) {
 			continue
 		}
 		name := strings.TrimSpace(pc.Name)
+		for _, id := range pc.Overrides.Skills {
+			skillOverrides[id] = name
+		}
+		m, loaded := manifests[name]
+		if !loaded {
+			if loadedManifest, err := LoadPackManifest(filepath.Join(configDir, "packs", name, "pack.json")); err == nil {
+				m = loadedManifest
+				manifests[name] = m
+			}
+		}
+		if m.NativePlugin != nil {
+			nativeOverridePacks[name] = true
+			for _, v := range vectors {
+				if v.label != capSkills && len(v.overrides(pc)) > 0 {
+					return ResolveResult{}, fmt.Errorf("native plugin pack %q cannot override plugin-scoped %s in another pack", name, v.label)
+				}
+			}
+			if len(pc.Overrides.MCP) > 0 {
+				return ResolveResult{}, fmt.Errorf("native plugin pack %q cannot override plugin-scoped MCP in another pack", name)
+			}
+			continue
+		}
 		for _, v := range vectors {
 			for _, id := range v.overrides(pc) {
 				v.owner[id] = name
@@ -169,9 +196,13 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 		quiet := packCfg.Quiet
 
 		manifestPath := filepath.Join(packRoot, "pack.json")
-		manifest, err := LoadPackManifest(manifestPath)
-		if err != nil {
-			return ResolveResult{}, fmt.Errorf("pack %q manifest: %w", packName, err)
+		manifest, loaded := manifests[packName]
+		if !loaded {
+			var err error
+			manifest, err = LoadPackManifest(manifestPath)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("pack %q manifest: %w", packName, err)
+			}
 		}
 		packRoot = ResolvePackRoot(manifestPath, manifest.Root)
 		if packRoot == "" {
@@ -182,6 +213,13 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 		}
 		if err := validatePackInventory(packName, packRoot, manifest); err != nil {
 			return ResolveResult{}, err
+		}
+		if manifest.NativePlugin != nil {
+			binding := string(manifest.NativePlugin.Harness) + ":" + manifest.NativePlugin.Binding()
+			if prior, exists := seenNative[binding]; exists {
+				return ResolveResult{}, fmt.Errorf("native binding %q is provided by both %q and %q", binding, prior, packName)
+			}
+			seenNative[binding] = packName
 		}
 
 		var prevInv *domain.PackInventory
@@ -217,12 +255,6 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 			}
 			brokenRefs = append(brokenRefs, broken...)
 		}
-		plugins, broken, err := resolveVector(packName, capPlugins, manifest.Plugins, packCfg.Plugins, quiet, prevInv)
-		if err != nil {
-			return ResolveResult{}, err
-		}
-		brokenRefs = append(brokenRefs, broken...)
-
 		packResolved := ResolvedPack{
 			Name:      packName,
 			Root:      packRoot,
@@ -232,7 +264,6 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 			Workflows: workflows,
 			Skills:    skills,
 			Hooks:     hooks,
-			Plugins:   plugins,
 			MCP:       map[string]ResolvedMCPServer{},
 		}
 
@@ -243,32 +274,23 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 		// (slices.DeleteFunc shifts elements, causing the range to skip items).
 		// Instead, collect IDs to strip and apply after the loop.
 		resolveVectorCollision := func(v *vectorState, id, prev string, stripFromCurrent *[]string) bool {
-			owner := v.owner[id]
-			if owner == "" {
-				if opts.Namespaced && v.namespaced {
-					return true
-				}
-				switch strategy {
-				case CollisionFirstWins:
-					*stripFromCurrent = append(*stripFromCurrent, id)
-					collisionWarnings = append(collisionWarnings, domain.Warning{
-						Field:   v.label,
-						Message: fmt.Sprintf("%s %q: %q wins over %q (first-wins)", v.label, id, prev, packName),
-					})
-					return false
-				case CollisionLastWins:
-					stripFromPack(packs, prev, id, v.field)
-					collisionWarnings = append(collisionWarnings, domain.Warning{
-						Field:   v.label,
-						Message: fmt.Sprintf("%s %q: %q wins over %q (last-wins)", v.label, id, packName, prev),
-					})
-					return true
-				default: // CollisionError
-					collisions = append(collisions, collisionInfo{kind: v.label, id: id, packA: prev, packB: packName})
-					return false
-				}
+			// A native skill override applies only where that import becomes
+			// ordinary content. Keep candidates until the target is known.
+			if v.label == capSkills && nativeOverridePacks[skillOverrides[id]] {
+				return true
 			}
-			if owner == packName {
+			winner, warning, err := ResolveContentCollision(v.label, id, prev, packName, v.owner[id], strategy, opts.Namespaced && v.namespaced)
+			if warning != nil {
+				collisionWarnings = append(collisionWarnings, *warning)
+			}
+			if err != nil {
+				collisions = append(collisions, collisionInfo{kind: v.label, id: id, packA: prev, packB: packName})
+				return false
+			}
+			if winner == "" {
+				return true
+			}
+			if winner == packName {
 				stripFromPack(packs, prev, id, v.field)
 				return true
 			}
@@ -276,6 +298,12 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 			return false
 		}
 		for vi := range vectors {
+			if manifest.NativePlugin != nil {
+				for _, id := range skills {
+					nativeSkills[id] = true
+				}
+				break
+			}
 			v := &vectors[vi]
 			var stripFromCurrent []string
 			for _, id := range *v.field(&packResolved) {
@@ -314,12 +342,24 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 			if !defaultTrue(serverCfg.Enabled) {
 				continue
 			}
+			switch serverCfg.StartupTimeout {
+			case "", "strict", "host", "unified":
+			default:
+				return ResolveResult{}, fmt.Errorf("pack %q mcp %q startup_timeout must be strict, host or unified", packName, name)
+			}
+			if serverCfg.StartupTimeout != "" && manifest.NativePlugin == nil {
+				return ResolveResult{}, fmt.Errorf("pack %q mcp %q startup_timeout applies only to imported plugins", packName, name)
+			}
 			entry := ResolvedMCPServer{
 				AllowedTools:       normalizeList(serverCfg.AllowedTools),
 				AlwaysAllowedTools: normalizeList(serverCfg.AlwaysAllowedTools),
 				DisabledTools:      normalizeList(serverCfg.DisabledTools),
+				StartupTimeout:     serverCfg.StartupTimeout,
 			}
 			packResolved.MCP[name] = entry
+			if manifest.NativePlugin != nil {
+				continue
+			}
 			if prev, ok := seenServers[name]; ok {
 				owner := overrideOwnerMCP[name]
 				if owner == "" {
@@ -356,11 +396,9 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 		// opted out. Quiet packs opt out by default — a nil Settings.Enabled
 		// suppresses contribution — but an explicit Settings.Enabled: true
 		// still opts in.
-		contributeSettings := manifest.Configs.HasAnyConfigs() && !settingsDisabled(packCfg.Settings.Enabled)
-		if quiet && packCfg.Settings.Enabled == nil {
-			contributeSettings = false
-		}
-		if contributeSettings {
+		settingsEnabled := !settingsDisabled(packCfg.Settings.Enabled) && (!quiet || packCfg.Settings.Enabled != nil)
+		packResolved.NativeSettingsEnabled = settingsEnabled
+		if manifest.Configs.HasAnyConfigs() && settingsEnabled {
 			settingsPacks = append(settingsPacks, packName)
 		}
 
@@ -371,7 +409,7 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 		return ResolveResult{}, formatCollisionError(collisions)
 	}
 
-	if len(packs) == 0 {
+	if len(packs) == 0 && !opts.AllowEmpty {
 		return ResolveResult{}, ErrProfileNoEnabledPacks
 	}
 
@@ -381,8 +419,15 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 	// drifted out and become BrokenRefs instead of fatal errors.
 	for _, v := range vectors {
 		cat := labelToCategory(v.label)
-		for id, owner := range v.owner {
+		owners := v.owner
+		if v.label == capSkills {
+			owners = skillOverrides
+		}
+		for id, owner := range owners {
 			if _, ok := v.seen[id]; ok {
+				continue
+			}
+			if v.label == capSkills && nativeSkills[id] {
 				continue
 			}
 			if prev, ok := prevInventories[owner]; ok && cat != "" && prev.Contains(cat, id) {
@@ -417,6 +462,8 @@ func ResolveProfileWithOptions(cfg ProfileConfig, profilePath string, configDir 
 		Packs:             packs,
 		SettingsPacks:     settingsPacks,
 		CollisionWarnings: collisionWarnings,
+		SkillOverrides:    skillOverrides,
+		MCPOverrides:      overrideOwnerMCP,
 		BrokenRefs:        brokenRefs,
 	}, nil
 }
@@ -501,8 +548,6 @@ func labelToCategory(label string) domain.PackCategory {
 		return domain.CategorySkills
 	case capHooks:
 		return domain.CategoryHooks
-	case capPlugins:
-		return domain.CategoryPlugins
 	}
 	return ""
 }
@@ -612,6 +657,32 @@ func expandSelectors(packName, label, direction string, selectors, inv []string,
 
 type collisionInfo struct{ kind, id, packA, packB string }
 
+// ResolveContentCollision returns the winning pack, or an empty winner when
+// namespaced content keeps both. Overrides take precedence over the strategy.
+func ResolveContentCollision(kind, id, previous, current, owner string, strategy CollisionStrategy, namespaced bool) (string, *domain.Warning, error) {
+	if owner != "" {
+		if owner == current {
+			return current, nil, nil
+		}
+		return previous, nil, nil
+	}
+	if namespaced {
+		return "", nil, nil
+	}
+	if strategy == "" {
+		strategy = CollisionLastWins
+	}
+	winner, loser := previous, current
+	switch strategy {
+	case CollisionLastWins:
+		winner, loser = current, previous
+	case CollisionFirstWins:
+	default:
+		return "", nil, formatCollisionError([]collisionInfo{{kind: kind, id: id, packA: previous, packB: current}})
+	}
+	return winner, &domain.Warning{Field: kind, Message: fmt.Sprintf("%s %q: %q wins over %q (%s)", kind, id, winner, loser, strategy)}, nil
+}
+
 // formatCollisionError builds a single error listing all content collisions
 // with actionable remediation YAML the user can paste into their profile.
 func formatCollisionError(cc []collisionInfo) error {
@@ -652,7 +723,7 @@ func formatCollisionError(cc []collisionInfo) error {
 		}
 	}
 	buf.WriteString("\nOr set defaults.collision_strategy in sync-config.yaml to first-wins or last-wins.")
-	buf.WriteString("\nFor rule, agent, workflow, skill, and hook collisions, defaults.namespaced: true preserves both packs by rendering provenance-suffixed names; MCP servers, plugins, and settings keys still need a single winner.")
+	buf.WriteString("\nFor rule, agent, workflow, skill, and hook collisions, defaults.namespaced: true preserves both packs by rendering provenance-suffixed names; MCP servers and settings keys still need a single winner.")
 	return errors.New(buf.String())
 }
 

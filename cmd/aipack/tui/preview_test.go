@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/shrug-labs/aipack/cmd/aipack/tui/common"
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
@@ -59,6 +61,38 @@ func TestParseFrontmatter(t *testing.T) {
 				t.Errorf("expected body %q, got %q", tt.wantBody, body)
 			}
 		})
+	}
+}
+
+func TestNativeAgentMultipleSourcePreview(t *testing.T) {
+	root := t.TempDir()
+	first, second := filepath.Join(root, "first.md"), filepath.Join(root, "second.md")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("---\nname: Reviewer\n---\n"+filepath.Base(path)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := newRootModel(context.Background(), RunConfig{})
+	_, cmd := m.Update(common.PreviewRequestMsg{Title: "Reviewer", Category: domain.CategoryAgents, FilePath: first, AdditionalPaths: []string{second}})
+	msg := cmd().(previewLoadedMsg)
+	if msg.Err != nil || msg.FilePath != first || len(msg.Frontmatter) != 0 || !strings.Contains(msg.Body, "chosen source can vary") {
+		t.Fatalf("preview claims a single active agent source: %+v", msg)
+	}
+	for _, path := range []string{first, second} {
+		if !strings.Contains(msg.Body, "## Source: "+path) || !strings.Contains(msg.Body, filepath.Base(path)) {
+			t.Fatal("preview omitted an agent source")
+		}
+		if err := os.WriteFile(path, []byte(strings.Repeat("x", 300*1024)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msg = loadPreview("Reviewer", domain.CategoryAgents, "alias", first, second)().(previewLoadedMsg)
+	if msg.Err != nil || len(msg.Body) > 512*1024+100 || !strings.Contains(msg.Body, "truncated at 512 KB") {
+		t.Fatal("combined candidate preview exceeded its size limit")
+	}
+	msg = loadPreview("Reviewer", domain.CategoryAgents, "alias", first, filepath.Join(root, "missing.md"))().(previewLoadedMsg)
+	if msg.Err == nil {
+		t.Fatal("preview silently omitted a missing agent source")
 	}
 }
 

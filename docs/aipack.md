@@ -83,6 +83,7 @@ Runs diagnostic checks on config, packs, and MCP servers. Overall status fails o
 | Check | Severity | What it does |
 |-------|----------|-------------|
 | `cli_update` | warning | Checks if a newer CLI version is available |
+| `config_mutation` | critical | With `--fix`, reports refusal when another mutation or orphaned native subprocess still holds the configuration lock |
 | `git_available` | warning | Verifies git is installed (needed for registry fetch and pack install) |
 | `profile_validated` | warning | Validates profile YAML structure |
 | `lockfile_migration` | warning | Reports failure if migrating legacy `installed_packs` from `sync-config.yaml` to `aipack.lock` failed |
@@ -104,6 +105,17 @@ aipack doctor --fix       # auto-fix safe issues
 aipack doctor --json      # machine-readable output
 ```
 
+`doctor --fix` recovers interrupted plugin operations before repairs and preserves imported component inventories. If another operation or installer is still running, wait for it to exit and retry.
+
+For imported plugins, `doctor` shows available components, profile selections, delivery status and setup issues. `--harness` and `--scope` use the sync-config defaults; project checks use the current directory. Manage's Sync tab shows the same summary.
+
+```bash
+aipack doctor --profile developer --harness codex,cline --scope global
+aipack doctor --profile developer --harness cline --scope project --json
+```
+
+`doctor OK` means the configuration checks passed. Plugin execution and login are not tested by this command.
+
 ### mcp inspect-tools
 
 Connects to MCP servers and queries their live tool inventories via the MCP protocol (`initialize` → `tools/list`). Compares discovered tools against the static `available_tools` in each pack's `mcp/<server>.json` inventory, reporting additions and removals.
@@ -112,7 +124,7 @@ Without arguments, lists every MCP server found across installed packs with its 
 
 Server names are looked up across all installed packs. When the same name appears in multiple packs, specify `pack/server` to disambiguate. The `--profile` flag selects which profile supplies `{params.*}` values for server commands; the active profile is used by default. All three MCP transports are probed: stdio (subprocess), streamable-http (POST with `application/json` or `text/event-stream` responses), and the legacy HTTP+SSE transport (GET stream + POST). HTTP transports include the status code and response body snippet in error output so auth failures are self-describing.
 
-With `--save`, the discovered tool list replaces `available_tools` in the pack's inventory JSON. All other metadata (`command`, `env`, `links`, `auth`, `notes`) is preserved. This is the recommended way to keep inventories current after a server update — avoids manual JSON editing and ensures the TUI tool picker and tool counts reflect reality. Combine with `--dry-run` to preview the writes without touching disk.
+With `--save`, the discovered tool list replaces `available_tools` in an ordinary pack's inventory JSON. All other metadata (`command`, `env`, `links`, `auth`, `notes`) is preserved. Imported plugin inventories save to the local probe cache; their source files stay unchanged. The TUI tool picker uses the same declarations and cache. Native launcher fields or environment expansion that the probe cannot reproduce are reported explicitly. Combine with `--dry-run` to preview the writes without touching disk.
 
 ```bash
 # List available MCP servers
@@ -142,6 +154,53 @@ aipack mcp inspect-tools my-server --json
 
 ## Pack lifecycle
 
+### Install a plugin once, use it across harnesses
+
+Import a marketplace, install a plugin by name, and select its components through a profile. A Codex import can supply supported skills, stdio MCP servers and command hooks to all four harnesses. Update the import once, then sync each target.
+
+This example selects one skill from the upstream Superpowers Codex plugin:
+
+```bash
+# Register the Codex marketplace.
+aipack registry fetch https://github.com/obra/superpowers.git \
+  --path .agents/plugins/marketplace.json --format codex-legacy \
+  --name superpowers-upstream
+
+# Install into a named profile with content initially unselected.
+aipack profile create debugging
+aipack pack install superpowers --add --quiet --profile debugging
+aipack pack show superpowers
+aipack profile include systematic-debugging --kind skill \
+  --pack superpowers --profile debugging
+
+# Preview and apply the selection to all four harnesses.
+aipack sync --profile debugging --harness codex,claudecode,opencode,cline --dry-run
+aipack sync --profile debugging --harness codex,claudecode,opencode,cline
+```
+
+Reload each target client after sync. Credentials and executable approvals belong to each host. Use separate profiles when targets need different components.
+
+Change the selection or update the source, then preview and sync the affected targets again:
+
+```bash
+aipack profile exclude systematic-debugging --kind skill \
+  --pack superpowers --profile debugging
+aipack pack update superpowers --dry-run
+aipack pack update superpowers
+aipack sync --profile debugging --harness codex,claudecode,opencode,cline --dry-run
+aipack sync --profile debugging --harness codex,claudecode,opencode,cline
+aipack trace skill systematic-debugging --pack superpowers \
+  --profile debugging --harness codex --json
+```
+
+Profile selections survive updates. `profile include` restores excluded content; `aipack manage` provides the same controls interactively. Trace shows the original source and why a component is selected or blocked.
+
+#### Delivery behavior
+
+Compatible skills and stdio MCP servers use ordinary pack delivery on Claude Code, OpenCode and Cline. Claude/OpenCode use plugin delivery where supported native features require it. Source assets and runtime data remain available across selection changes and updates. Ordinary delivery follows the existing [collision and override rules](profiles.md#layering-multiple-packs).
+
+`pack inspect` and `pack show` report component support for each target. Sync checks every requested target before writing; exclude incompatible components or choose a supported target. Unavailable hook events produce warnings automatically. See [imported plugin support](#imported-plugin-support) for limits, authentication and ownership.
+
 ### Git authentication
 
 Git-backed commands use your normal Git/SSH authentication when stdin and stderr are terminals. Native prompts remain available when stdout is redirected. Prompt-capable Git operations within a command run one at a time.
@@ -154,7 +213,7 @@ Packs are portable, versioned bundles of AI agent configuration installed under 
 
 ### pack create
 
-Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `hooks/`, `plugins/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync. `default` is reserved for the user's local default profile and is not a valid pack name.
+Scaffolds a new pack directory with `pack.json` manifest and standard subdirectories (`rules/`, `agents/`, `workflows/`, `skills/`, `hooks/`, `mcp/`, `configs/`), then records it so it is immediately available for profiles and sync. `default` is reserved for the user's local default profile and is not a valid pack name.
 
 By default the pack is created in the current directory and symlinked into the packs directory. Use `--local` to create it directly inside the packs directory instead.
 
@@ -354,6 +413,8 @@ aipack pack versions my-team-pack --json
 
 Deletes an installed pack from disk, removes it from all profiles, clears its lockfile and ledger entries, removes clean rendered harness files that aipack can safely attribute to the pack, and strips pack-managed keys from shared settings files. Files with user modifications, unknown ledger paths, and shared settings user keys are preserved and left unmanaged. Use `--keep-rendered` to stop managing the pack while leaving all rendered harness files in place as unmanaged content.
 
+Shared OpenCode and Cline hook wrappers retain the other packs' handlers when a pack is deleted. Deletion checks recorded destinations before writes and restores shared hook changes if persistence fails. If a shared wrapper containing that pack has local edits, preserve or revert those edits before deletion.
+
 ```bash
 aipack pack delete my-pack
 aipack pack delete my-pack --keep-rendered
@@ -364,6 +425,8 @@ aipack pack delete my-pack --json
 ### pack rename
 
 Renames an installed pack across all configuration: the pack directory, `pack.json` manifest, `sync-config.yaml`, all profiles, and all ledger files.
+
+Imported packs also update managed skill asset paths, hook commands and MCP launchers to the renamed source, including recorded custom config roots whose environment variables are no longer set. Preserve or revert local edits to those references before renaming.
 
 ```bash
 aipack pack rename old-name new-name
@@ -454,7 +517,7 @@ aipack profile show --profile-path /path/to/profile.yaml
 
 ### profile include / profile exclude
 
-Toggles exact content IDs in a profile without hand-editing YAML. Bare IDs are matched across the profile's enabled pack entries for rules, agents, workflows, skills, hooks, plugins, and MCP servers. If a name appears in more than one place, rerun with `--kind` or `--pack` to choose the target. If the only match is in a disabled pack entry, enable the pack first with `aipack pack enable <pack> --profile <profile>`. MCP support is server-level only; keep per-tool allowlists in profile YAML or the TUI tool picker.
+Toggles exact content IDs in a profile without hand-editing YAML. Bare IDs are matched across the profile's enabled pack entries for rules, agents, workflows, skills, hooks, and MCP servers. If a name appears in more than one place, rerun with `--kind` or `--pack` to choose the target. If the only match is in a disabled pack entry, enable the pack first with `aipack pack enable <pack> --profile <profile>`. MCP support is server-level only; keep per-tool allowlists in profile YAML or the TUI tool picker.
 
 ```bash
 aipack profile include jira
@@ -529,7 +592,7 @@ Fetches remote registries and caches them locally. Each source is cached as a se
 
 With an explicit URL, fetches that single source. Without a URL, fetches all configured sources plus any compiled-in default sources. Public builds include the `shrug-labs/packs` registry; distributor builds may prepend one additional default registry.
 
-Git detection: URL ending in `.git` → git mode (defaults: `ref=main`, `path=registry.yaml`). `git@host:path` or `ssh://` → git mode. `--ref` provided → git mode. Otherwise → HTTP GET.
+Git detection: URL ending in `.git`, `git@host:path`, `ssh://`, an explicit `--ref`, or a repository-relative `--path` selects Git acquisition. The default is the remote's default branch and `path=registry.yaml`. Refs accept branches, tags and commit hashes. A standalone HTTP catalog URL uses HTTP GET. Local directories accept `--path` to identify their catalog.
 
 ```bash
 # Fetch from a git repo (HTTPS)
@@ -555,7 +618,7 @@ aipack registry fetch
 aipack registry fetch --deep
 ```
 
-`--deep` shallow-clones each registered pack and indexes resource-level metadata for search. Indexed kinds: rules, agents, workflows, skills, hooks, prompts, plugin descriptors, and MCP server inventories. Already-installed packs are skipped because the installed pack source remains authoritative. Deep-indexed resources show up under `aipack search --status registered` so users can search a registered pack's content before deciding to install.
+`--deep` shallow-clones each registered pack and indexes resource-level metadata for search. Indexed kinds: rules, agents, workflows, skills, hooks, prompts, imported plugin identities, and MCP server inventories. Already-installed packs are skipped because the installed pack source remains authoritative. Deep-indexed resources show up under `aipack search --status registered` so users can search a registered pack's content before deciding to install.
 
 ### registry list
 
@@ -614,6 +677,8 @@ aipack status --json
 
 Traces a single resource through the sync pipeline, showing where it comes from (pack source) and where it would land in each harness location. Useful for debugging why a rule isn't showing up or which harness file contains a given resource.
 
+Trace reports source, selection and delivery state. It does not record execution or count usage.
+
 If the resource name is unique in the active profile, the type can be omitted. If the active profile does not contain the resource, `trace` checks disabled profile packs, excluded profile content, and installed packs that are not in the profile. Inactive resources show no destinations and include exact next commands such as `aipack pack enable`, `aipack profile include`, `aipack pack add`, then `aipack sync`. If multiple active or inactive resources share the same name, `trace` prints the explicit commands to disambiguate.
 
 Valid resource types: `rule`, `agent`, `workflow`, `skill`, `hook`, `plugin`, `mcp`.
@@ -631,12 +696,17 @@ aipack trace skill oncall --scope global
 # Trace an MCP server named "issue-tracker"
 aipack trace mcp issue-tracker
 
+# Resolve an observed OpenCode tool to its original MCP server
+aipack trace mcp issue_tracker_search --tool --harness opencode --json
+
 # Filter to a single harness
 aipack trace rule anti-slop --harness claudecode
 
 # JSON output for tooling
 aipack trace rule anti-slop --json
 ```
+
+MCP tool lookup requires one explicit target: Claude Code, OpenCode or Codex. It reports the original server ID and source pack. If the tool name matches multiple servers, trace reports the ambiguity. Destination states show whether the content is planned or already delivered.
 
 ### search
 
@@ -706,3 +776,57 @@ aipack --version   # same output; -V also works
 ## Per-harness reference
 
 For rendering behavior, rendered content identity, write targets, global config-root environment variables, MCP configuration differences, and harness-specific notes, see the [Harness Reference](./harness-reference.md). Codex skills and promoted workflows render under Codex-owned skill directories (`.codex/skills/` for project scope and `~/.codex/skills/` for default global scope).
+
+### Imported plugin support
+
+| Source | Native target | Other targets |
+| --- | --- | --- |
+| Claude marketplace | Claude Code | Unsupported |
+| Codex legacy marketplace | Codex | Supported skills, stdio MCP servers and synchronous command hooks on Claude Code, OpenCode and Cline |
+| Agent Plugins v1 | Codex | Supported skills and stdio MCP servers on Claude Code, OpenCode and Cline |
+
+Use the component IDs shown by `pack show` for profile selections. The source format determines those IDs, and one selector can cover several source files. Codex 0.159.2 does not activate Agent Plugins v1 hooks, commands or apps.
+
+Cross-harness MCP delivery supports a subset of stdio declarations. Remote transports and unsupported fields require the plugin's native target or exclusion from the profile. Targets use their own startup budget by default; [timeout policies](profiles.md#imported-mcp-startup-timeouts) can adjust separate startup deadlines. Native plugin installation and cross-harness stdio MCP delivery are currently unsupported on Windows.
+
+Codex enforces its source and installation policies. An explicit source-policy refusal includes the generated local marketplace path and administrator allow rule.
+
+#### Authentication
+
+Use the destination assistant's normal login flow for protected services and apps. Sync delivers their configuration; authentication remains with that assistant.
+
+#### Ownership and scopes
+
+Existing native installations remain managed by their assistant. If one conflicts with an import, sync identifies it in the error. Remove the conflicting installation or registration through that assistant before syncing. Renaming a pack keeps its plugin identity.
+
+Shared native installations and overlapping OpenCode scopes use matching sources and component selections. If selections conflict, sync the other scope with the plugin disabled or clean that scope first. Profile edits take effect at sync. Independent installations can use separate AIPack and assistant configuration directories.
+
+#### Command hooks
+
+Imported Codex command hooks use the profile's existing `hooks` selectors. Commands retain their assets, root/data variables and timeouts. OpenCode and Cline stop the shell and its subprocesses when a hook times out. Claude supplies native event input; Codex-only fields such as `turn_id` and per-handler context spilling are unavailable.
+
+OpenCode and Cline map SessionStart, UserPromptSubmit, PreToolUse, PostToolUse and PreCompact to their hook adapters, forwarding supported context and blocking output. Tool names and input come from the destination client. Missing events, non-command handlers, inactive asynchronous handlers and trigger-filtered compaction groups produce warnings. Startup/resume behavior and input fields can differ from Codex; scripts retain their external prerequisites. Cline also requires native hook enablement.
+
+OpenCode and Cline can render imported hooks for Windows. Cline requires Node on `PATH`; commands run in the default shell and retain any Bash or PowerShell dependency. Native Windows execution has not been tested.
+
+Cline's PowerShell wrappers limit each handler's captured stdout to 65,536 characters and stderr to 4,096 characters. Oversized output produces a diagnostic and the handler's JSON result is discarded.
+
+#### Updates and recovery
+
+Updates preserve profile selections and refresh marketplace catalogs. If a selected component disappears, update its selector before syncing; the previous delivery stays active until sync succeeds. Version and commit pins retain their recorded source when the importer is updated. If the catalog changes the plugin's repository or package source, reinstall to use that source.
+
+Customize imports through profiles. Updates protect locally edited imported files and permissions. Save those edits separately and restore the installed source before updating. If the recorded baseline is missing, back up the pack and selections, then delete and reinstall it.
+
+Failed plugin operations restore prior delivery. After an interruption, retry the operation to recover and finish; sync recovers replacements before loading the profile, and dry-run reports pending recovery. If an installer is still running, wait for it to exit. `doctor --fix` can recover interrupted operations and clean staging files. Runtime data survives updates, clean and pack deletion.
+
+Claude sync reports incomplete Node dependency setup and retries it on a later sync with lifecycle scripts disabled. For additional setup required by the plugin author, use the delivered package. Reconnect a repaired server through the assistant.
+
+#### Marketplace sources
+
+`registry fetch <url> --format claude|codex-legacy|agent-plugins` selects a marketplace format when the catalog cannot identify it. The choice survives refreshes; `--format auto` clears it. Codex uses a root Agent Plugins manifest in preference to a legacy manifest. Claude catalogs can describe packages without a plugin manifest.
+
+Local and Git catalogs use the usual pack installation methods and Git credentials. Local catalogs are saved with absolute source paths so refresh works from any directory. Plugin repositories do not need an AIPack manifest. Use a repository-relative `--path` for catalogs in Git URLs without `.git`, and `git-subdir` for Claude plugin subdirectories. Codex relative Git sources require a local or Git-backed parent catalog.
+
+npm sources use normal npm credentials and acquire packages without lifecycle scripts or dependency installation, including on Windows. `pack versions` lists registry package versions; `--ref` selects a version, range or tag, and `--ref latest` resumes tracking. The package version may differ from the plugin version. Claude imports also accept npm aliases and tarball URLs; tarballs refresh their URL and do not support registry version selectors.
+
+If shared Claude catalog metadata changes, update all affected packs before syncing. Conflicting snapshots or selections that would expose excluded content are refused.

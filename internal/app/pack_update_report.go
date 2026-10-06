@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -48,6 +49,7 @@ type PackUpdateBundledState struct {
 // PackOriginCoordinates identify an installed or registry-advertised source.
 // Origin can be a local path, git URL, or archive URL depending on Method.
 type PackOriginCoordinates struct {
+	NPM          *domain.NPMSource              `json:"npm,omitempty"`
 	Method       string                         `json:"method"`
 	Origin       string                         `json:"origin"`
 	Ref          string                         `json:"ref,omitempty"`
@@ -243,6 +245,9 @@ func packOriginMigration(
 		SubPath:      installed.SubPath,
 		ContentPaths: maps.Clone(installed.ContentPaths),
 	}
+	if installed.Plugin != nil {
+		current.NPM = installed.Plugin.NPM
+	}
 	if samePackOrigin(current, candidate) {
 		return nil
 	}
@@ -264,16 +269,25 @@ func registryOriginCoordinates(entry config.RegistryEntry) PackOriginCoordinates
 		origin = entry.URL
 		ref = ""
 	}
-	return PackOriginCoordinates{
+	coordinates := PackOriginCoordinates{
 		Method:       method,
 		Origin:       origin,
 		Ref:          ref,
 		SubPath:      entry.Path,
 		ContentPaths: maps.Clone(entry.ContentPaths),
 	}
+	if entry.Plugin != nil {
+		coordinates.NPM = entry.Plugin.NPM
+	}
+	return coordinates
 }
 
 func samePackOrigin(a, b PackOriginCoordinates) bool {
+	if a.Method == config.MethodCopy && b.Method == config.MethodCopy {
+		a.Origin = canonicalPath(filepath.Join(a.Origin, a.SubPath))
+		b.Origin = canonicalPath(filepath.Join(b.Origin, b.SubPath))
+		a.SubPath, b.SubPath = "", ""
+	}
 	normalizeMethod := func(method string) string {
 		if method == "" {
 			return config.MethodClone
@@ -283,7 +297,15 @@ func samePackOrigin(a, b PackOriginCoordinates) bool {
 	return normalizeMethod(a.Method) == normalizeMethod(b.Method) &&
 		a.Origin == b.Origin &&
 		a.SubPath == b.SubPath &&
+		sameNPMOrigin(a.NPM, b.NPM) &&
 		maps.Equal(a.ContentPaths, b.ContentPaths)
+}
+
+func sameNPMOrigin(a, b *domain.NPMSource) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Package == b.Package && a.Registry == b.Registry
 }
 
 func summarizePackUpdateReport(results []PackUpdateCheckResult) PackUpdateReportSummary {

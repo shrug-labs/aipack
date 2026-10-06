@@ -38,7 +38,7 @@ type PackCmd struct {
 
 func (c *PackCmd) Help() string {
 	return fmt.Sprintf(`Manage installed packs. Packs are portable, versioned bundles of AI agent
-configuration containing rules, agents, workflows, skills, hooks, plugin references,
+configuration containing rules, agents, workflows, skills, hooks,
 MCP server definitions, and harness base configs.
 
 Packs are installed under %s.`,
@@ -295,11 +295,11 @@ func (c *PackCreateCmd) Run(ctx context.Context, g *Globals) error {
 
 type PackInstallCmd struct {
 	Sources  []string `arg:"" optional:"" help:"Local directory path, registry pack name, name@ref, URL, or archive path"`
-	URL      string   `help:"Install pack from a git repository URL or static archive URL/path" name:"url"`
+	URL      string   `help:"Install a pack or plugin from a git repository URL or static archive URL/path" name:"url"`
 	Archive  bool     `help:"Treat source as a static zip/tar archive instead of a git repository; inferred for archive URLs/files" name:"archive"`
-	Ref      string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
-	SubPath  string   `help:"Subdirectory within the repo where the pack lives" name:"path"`
-	Name     string   `help:"Override the pack name from pack.json" name:"name"`
+	Ref      string   `help:"Git ref or npm version selector. Git accepts semver, latest, commit hash, branch or namespaced tag. --version is an alias." name:"ref" aliases:"version"`
+	SubPath  string   `help:"Subdirectory within the repository containing the pack or plugin" name:"path"`
+	Name     string   `help:"Override the installed pack name" name:"name"`
 	Registry string   `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
 	Profile  string   `help:"Profile to add pack to (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	Add      bool     `help:"Add pack to the active profile after installing" name:"add"`
@@ -322,6 +322,13 @@ Local directory packs are symlinked by default; use --copy to make a full
 copy instead. Remote packs are fetched via shallow git clone unless the source
 is a static zip/tar archive or --archive is set. Both HTTPS and SSH URLs are
 supported for git installs.
+
+Local and remote plugin manifests are detected automatically. Local plugins
+are copied rather than linked. Use --path for a plugin
+subdirectory; a colocated marketplace supplies its original identity and policy.
+
+Codex marketplace npm packages use npm pack with lifecycle scripts disabled.
+Their package versions can be selected with --ref and listed with pack versions.
 
 If the positional argument is not a local directory path and not a URL, it
 is treated as a registry pack name. The registry is consulted to resolve the
@@ -366,6 +373,9 @@ Examples:
 
   # Install a pack from a subdirectory within a repo
   aipack pack install --url ssh://git@bb:7999/proj/repo.git --path my-pack
+
+  # Install a plugin directly from its repository
+  aipack pack install https://github.com/org/plugins.git --path plugins/reviewer --add
 
   # Install a pack by registry name
   aipack pack install my-team-pack
@@ -1154,7 +1164,7 @@ func (c *PackDisableCmd) Run(ctx context.Context, g *Globals) error {
 type PackUpdateCmd struct {
 	Name   string   `arg:"" optional:"" help:"Name of the pack to update" predictor:"pack"`
 	All    bool     `help:"Update all installed packs" name:"all"`
-	Ref    string   `help:"Git ref to checkout: semver (1.2.3, v1.2, latest), commit hash, branch, or namespaced tag (my-pack/v1.2.3). --version is an alias." name:"ref" aliases:"version"`
+	Ref    string   `help:"Git ref or npm version selector. Git accepts semver, latest, commit hash, branch or namespaced tag. --version is an alias." name:"ref" aliases:"version"`
 	With   []string `help:"Accept bundled content: profiles(p), registries(r), extras(e), all" short:"w" name:"with" sep:","`
 	DryRun bool     `help:"Preview without changing installed or configured state; archive observations may refresh" name:"dry-run"`
 	JSON   bool     `help:"Emit versioned machine-readable check output" name:"json"`
@@ -1315,7 +1325,8 @@ type PackShowCmd struct {
 func (c *PackShowCmd) Help() string {
 	return `Displays detailed metadata for an installed pack: name, version, path, install
 method, origin URL, git ref, install timestamp, and content inventory (rules,
-agents, workflows, skills, plugins, MCP servers).
+agents, workflows, skills, hooks, MCP servers). Imported plugins also show
+compatibility for all available components. Sync checks the profile's selection.
 
 Examples:
   # Show pack details
@@ -1344,6 +1355,20 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 
 	fmt.Fprintf(g.Stdout, "Name:        %s\n", entry.Name)
 	fmt.Fprintf(g.Stdout, "Version:     %s\n", entry.Version)
+	if entry.NativePlugin != nil {
+		fmt.Fprintf(g.Stdout, "Native:      %s (%s)\n", entry.NativePlugin.Binding(), entry.NativePlugin.Format)
+		fmt.Fprintf(g.Stdout, "Converter:   %d\n", entry.NativePlugin.ConverterVersion)
+		fmt.Fprintln(g.Stdout, "Compatibility (all components):")
+		for _, target := range entry.Compatibility {
+			fmt.Fprintf(g.Stdout, "  %s\n", target.Summary())
+		}
+		if entry.PluginSource != nil && entry.PluginSource.MarketplaceURL != "" {
+			fmt.Fprintf(g.Stdout, "Catalog:     %s\n", entry.PluginSource.MarketplaceURL)
+			if entry.PluginSource.MarketplacePath != "" {
+				fmt.Fprintf(g.Stdout, "Catalog path: %s\n", entry.PluginSource.MarketplacePath)
+			}
+		}
+	}
 	if pin := entry.PinLabel(); pin != "" {
 		fmt.Fprintf(g.Stdout, "Pin:         %s\n", pin)
 	}
@@ -1352,17 +1377,28 @@ func (c *PackShowCmd) Run(ctx context.Context, g *Globals) error {
 	if entry.Origin != "" {
 		fmt.Fprintf(g.Stdout, "Origin:      %s\n", entry.Origin)
 	}
+	if entry.SubPath != "" {
+		fmt.Fprintf(g.Stdout, "Subpath:     %s\n", entry.SubPath)
+	}
 	if entry.Ref != "" {
 		fmt.Fprintf(g.Stdout, "Ref:         %s\n", entry.Ref)
 	}
 	if entry.CommitHash != "" {
 		fmt.Fprintf(g.Stdout, "Commit:      %s\n", entry.CommitHash)
 	}
+	if entry.PackageVersion != "" {
+		fmt.Fprintf(g.Stdout, "Package:     %s\n", entry.PackageVersion)
+	}
 	if entry.InstalledAt != "" {
 		fmt.Fprintf(g.Stdout, "Installed:   %s\n", entry.InstalledAt)
 	}
 	printContentList(g.Stdout, "Rules", entry.Rules)
 	printContentList(g.Stdout, "Agents", entry.Agents)
+	for _, id := range entry.Agents {
+		if paths := entry.ContentPaths(domain.CategoryAgents, id); len(paths) > 1 {
+			printContentList(g.Stdout, "Sources ("+id+")", paths)
+		}
+	}
 	printContentList(g.Stdout, "Workflows", entry.Workflows)
 	printContentList(g.Stdout, "Skills", entry.Skills)
 	printContentList(g.Stdout, "Hooks", entry.Hooks)
@@ -1386,7 +1422,7 @@ type PackInspectCmd struct {
 	Input    string `arg:"" optional:"" help:"Pack name, local path, or URL to inspect" predictor:"pack"`
 	URL      string `help:"Inspect a git repository URL or static archive URL/path" name:"url"`
 	Archive  bool   `help:"Treat --url/input as a static zip/tar archive; inferred for archive URLs/files" name:"archive"`
-	Ref      string `help:"Git ref to inspect" name:"ref" aliases:"version"`
+	Ref      string `help:"Git ref or npm version selector to inspect" name:"ref" aliases:"version"`
 	SubPath  string `help:"Subdirectory within the repo/archive where pack.json lives" name:"path"`
 	Name     string `help:"Override pack name for content_paths sources" name:"name"`
 	Registry string `help:"Path to registry YAML file (for registry name lookups)" name:"registry" type:"path"`
@@ -1398,9 +1434,12 @@ type PackInspectCmd struct {
 func (c *PackInspectCmd) Help() string {
 	return `Inspects a local path, registry pack name, git URL, or archive URL/path without
 installing it. Inspected resources are added to the search index with status
-"inspected" so they can be searched before trust/install decisions. Inspected
+"inspected" so they can be searched before installation. Inspected
 rows older than 30 days are dropped automatically on the next inspect; use
 --clear to wipe them on demand.
+
+Imported plugins show compatibility for all available components on each target.
+Sync checks the components selected by the profile.
 
 Examples:
   aipack pack inspect ./my-pack
@@ -1465,6 +1504,13 @@ func (c *PackInspectCmd) Run(ctx context.Context, g *Globals) error {
 		fmt.Fprintf(g.Stdout, "Version:     %s\n", result.Version)
 	}
 	fmt.Fprintf(g.Stdout, "Source:      %s\n", result.Source)
+	if result.NativePlugin != nil {
+		fmt.Fprintf(g.Stdout, "Native:      %s (%s)\n", result.NativePlugin.Binding(), result.NativePlugin.Format)
+		fmt.Fprintln(g.Stdout, "Compatibility (all components; profile selection checked at sync):")
+		for _, target := range result.Compatibility {
+			fmt.Fprintf(g.Stdout, "  %s\n", target.Summary())
+		}
+	}
 	fmt.Fprintf(g.Stdout, "Status:      inspected\n")
 	if result.Method != "" {
 		fmt.Fprintf(g.Stdout, "Method:      %s\n", result.Method)
@@ -1497,11 +1543,11 @@ type PackVersionsCmd struct {
 }
 
 func (c *PackVersionsCmd) Help() string {
-	return `Lists available semver versions for a pack by querying the remote git
-repository's tags. Resolves the pack's origin URL from the lockfile (if
+	return `Lists available semver versions from Git tags or npm package metadata.
+Resolves the pack's source from the lockfile (if
 installed) or from the registry (if not installed).
 
-Only tags that parse as valid semver are shown. The currently installed
+Only versions that parse as valid semver are shown. The currently installed
 version is marked with a star when applicable.
 
 Examples:
@@ -1545,7 +1591,7 @@ func (c *PackVersionsCmd) Run(ctx context.Context, g *Globals) error {
 	fmt.Fprintln(g.Stdout)
 
 	if len(result.Versions) == 0 {
-		fmt.Fprintln(g.Stdout, "No semver tags found in remote.")
+		fmt.Fprintln(g.Stdout, "No semver versions found in remote.")
 		return nil
 	}
 

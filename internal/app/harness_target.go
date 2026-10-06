@@ -20,6 +20,10 @@ func targetForHarness(spec TargetSpec, hid domain.Harness) HarnessTarget {
 		return HarnessTarget{Dir: spec.ProjectDir}
 	}
 	switch hid {
+	case domain.HarnessClaudeCode:
+		if dir := envPathFromSpec(spec, "CLAUDE_CONFIG_DIR"); dir != "" {
+			return HarnessTarget{Dir: dir, IsConfigDir: true}
+		}
 	case domain.HarnessCodex:
 		if dir := envPathFromSpec(spec, "CODEX_HOME"); dir != "" {
 			return HarnessTarget{Dir: dir, IsConfigDir: true}
@@ -30,10 +34,6 @@ func targetForHarness(spec TargetSpec, hid domain.Harness) HarnessTarget {
 		}
 	}
 	return HarnessTarget{Dir: spec.Home}
-}
-
-func targetDirForHarness(spec TargetSpec, hid domain.Harness) string {
-	return targetForHarness(spec, hid).Dir
 }
 
 // envPathFromSpec resolves an environment variable by name, preferring an
@@ -66,6 +66,14 @@ func planRequestForHarness(req SyncRequest, hid domain.Harness) engine.PlanReque
 
 func planRequestForTarget(spec TargetSpec, configDir string, skipSettings bool, hid domain.Harness) engine.PlanRequest {
 	target := targetForHarness(spec, hid)
+	var nativeConfigDir string
+	if hid == domain.HarnessCodex {
+		nativeConfigDir = envPathFromSpec(spec, "CODEX_HOME")
+	} else if hid == domain.HarnessClaudeCode {
+		nativeConfigDir = envPathFromSpec(spec, "CLAUDE_CONFIG_DIR")
+	} else if hid == domain.HarnessOpenCode {
+		nativeConfigDir = envPathFromSpec(spec, "OPENCODE_CONFIG_DIR")
+	}
 	return engine.PlanRequest{
 		ConfigDir:       configDir,
 		Scope:           spec.Scope,
@@ -74,6 +82,7 @@ func planRequestForTarget(spec TargetSpec, configDir string, skipSettings bool, 
 		Home:            spec.Home,
 		TargetDir:       target.Dir,
 		TargetConfigDir: target.IsConfigDir,
+		NativeConfigDir: nativeConfigDir,
 		SkipSettings:    skipSettings,
 		Namespaced:      spec.Namespaced,
 	}
@@ -88,5 +97,6 @@ func captureContextForHarness(spec TargetSpec, hid domain.Harness, knownPacks ma
 		TargetDir:       target.Dir,
 		TargetConfigDir: target.IsConfigDir,
 		KnownPacks:      knownPacks,
+		NativeConfigDir: planRequestForTarget(spec, spec.ConfigDir, false, hid).NativeConfigDir,
 	}
 }

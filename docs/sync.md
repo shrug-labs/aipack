@@ -58,7 +58,7 @@ Auto sync is intentionally active-profile only. Commands that mutate an inactive
 | `--dry-run` | Preview planned destination changes without writing |
 | `--verbose` / `-v` | With `--dry-run`, show source packs and content diffs for changed files |
 | `--force` | Override file conflicts (see below) |
-| `--skip-settings` | Skip base harness settings files; still syncs MCP configs, plugin references, and rendered hooks |
+| `--skip-settings` | Skip base harness settings files; still syncs MCP configs, imported plugins, drop-in files, and rendered hooks |
 | `--watch` | Re-sync automatically when pack sources or config files change |
 | `--json` | Machine-readable output |
 | `--yes` | Auto-confirm deletions and overwrites |
@@ -78,13 +78,15 @@ All managed files — content and config — go through unified diff classificat
 
 `--force` controls conflict resolution. Stale managed files (no longer in the profile) are removed from the current harness's owned roots and from cleanup-only stale roots declared by that harness. Stale roots exist for migrations, not current write ownership. When a stale root overlaps another active harness's current root, that active harness's ledger entries are protected; inactive ledger-managed entries under the stale root may be pruned so migrations converge without manual cleanup. User-modified stale files prompt for confirmation (or require `--yes`).
 
-Config files are computed from pack base configs. String values in harness settings expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. Settings merge preserves user-only keys. For scalar key collisions, aipack updates the value only when the on-disk value still matches the previous managed value; first-sync collisions and locally edited scalars are preserved. Hook descriptor command strings expand `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references before native hook rendering. `--skip-settings` skips base harness settings files but first-class plugin references, drop-in plugin files (e.g., `oh-my-opencode.json`), rendered hooks (Claude Code native hooks, OpenCode generated plugin, Codex `.codex/hooks.json` plus managed trust state, and Cline generated wrappers), and generated MCP configs (e.g., Cline) still sync.
+Both ordinary and verbose dry-runs list stale cleanup candidates as `stale:` entries and include them in the planned operation count. Previewing does not delete files or change the ledger. This includes content left after `pack remove` or `pack disable`, even when no packs remain enabled.
+
+Config files are computed from pack base configs. String values in harness settings expand `{env:*}`, `{params.*}`, and `{pack:root}` references before merge. Settings merge preserves user-only keys. For scalar key collisions, aipack updates the value only when the on-disk value still matches the previous managed value; first-sync collisions and locally edited scalars are preserved. Hook descriptor command strings expand `{hook:root}`, `{pack:root}`, `{params.*}`, and `{env:*}` references before native hook rendering. `--skip-settings` skips base harness settings files but imported plugin delivery, drop-in plugin files (e.g., `oh-my-opencode.json`), rendered hooks (Claude Code native hooks, OpenCode generated plugin, Codex `.codex/hooks.json` plus managed trust state, and Cline generated wrappers), and generated MCP configs (e.g., Cline) still sync.
 
 Skill assets may contain file or directory symlinks whose resolved targets stay within the source repository. For sources without a repository marker, targets must stay within the pack root. Sync follows those links while preserving their logical paths in the rendered skill. Targets that escape the boundary, traverse `.git`, or form a directory cycle are rejected. Dry runs traverse and classify the same source files as real syncs, but do not write destinations or state.
 
-For global-scope sync, aipack honors harness-native config-root environment variables where the harness defines them: `CODEX_HOME` for Codex, `OPENCODE_CONFIG_DIR` for OpenCode, and `CLINE_DIR` / `CLINE_DATA_DIR` for Cline. Cline global hook wrappers are an exception: they use `~/Documents/Cline/Hooks/`, not the Cline env-var roots.
+For global-scope sync, aipack honors the assistant's config-directory environment variables: `CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex, `OPENCODE_CONFIG_DIR` for OpenCode, and `CLINE_DIR` / `CLINE_DATA_DIR` for Cline. Cline global hook wrappers use `~/Documents/Cline/Hooks/`.
 
-Plugin references are additive-only in v1. Sync writes the enablement entries required by supported harnesses, but removing a plugin from a profile or pack does not disable or uninstall it from the harness.
+Imported marketplace plugins use the pack lifecycle: selection changes update managed components, and `pack delete` removes managed installations while retaining runtime data. Existing native installations follow [ownership and scopes](aipack.md#ownership-and-scopes).
 
 The ledger records which pack contributed each managed file (`source_pack` field), enabling save round-trips.
 

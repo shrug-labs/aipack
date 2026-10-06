@@ -226,11 +226,7 @@ func codexHookTrustedEntry(keySource string, spec codexHookEventSpec, groupIndex
 		identity["matcher"] = *matcher
 	}
 	hash := codexHookHash(identity)
-	// Key off the content hash rather than the positional (groupIndex, handlerIndex)
-	// pair so reordering events in HOOK.yaml — or composing earlier-pack hooks
-	// that share an event — doesn't shift every later key and leave orphaned
-	// trust entries in config.toml. Identical hooks always map to the same key.
-	key := fmt.Sprintf("%s:%s:%s", keySource, spec.stateLabel, hash)
+	key := fmt.Sprintf("%s:%s:%d:%d", keySource, spec.stateLabel, groupIndex, handlerIndex)
 	return key, hash, true, nil
 }
 

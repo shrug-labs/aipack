@@ -25,7 +25,7 @@ type MCPInspectToolsCmd struct {
 	Profile     string `help:"Profile to source {params.*} from (default: sync-config default profile)" name:"profile" predictor:"profile"`
 	ProfilePath string `help:"Explicit path to a profile YAML (wins over --profile)" name:"profile-path" type:"path"`
 	Timeout     int    `help:"Per-server timeout in seconds" name:"timeout" default:"30"`
-	Save        bool   `help:"Write discovered tools back to pack inventory JSON" name:"save"`
+	Save        bool   `help:"Save discovered tools to pack inventory JSON, or the probe cache for imported plugins" name:"save"`
 	DryRun      bool   `help:"Preview --save without writing (requires --save)" name:"dry-run"`
 	JSON        bool   `help:"Emit machine-readable JSON output" name:"json"`
 }
@@ -56,7 +56,9 @@ multiple packs, specify pack/server to disambiguate:
 
   aipack mcp inspect-tools my-team-pack/my-server
 
-With --save, write the discovered tools back to the pack's mcp/<server>.json.
+With --save, write discovered tools to an ordinary pack's mcp/<server>.json.
+Imported plugin inventories save to the local probe cache; source files stay
+unchanged. Native fields requiring the assistant's launcher are reported.
 Combine with --dry-run to preview which inventories would be written and
 what changed, without touching disk. Profile params (--profile) are used
 to resolve {params.*} refs in server commands; the default is the active

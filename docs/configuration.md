@@ -11,6 +11,9 @@ What aipack puts on your machine, how to configure it, and how to manage it. For
 ├── sync-config.yaml          # root configuration — defaults, registry sources
 ├── .env                      # local values for {env:*} expansion; created empty by init
 ├── aipack.lock                # installed pack state (machine-managed; do not edit)
+├── native-setup.json           # shared native plugin setup status (machine-managed)
+├── rendered-plugins/           # selected native marketplace views (machine-managed)
+├── plugin-data/                # retained Cline imported-plugin data, keyed by binding
 ├── profiles/                  # profile YAML files
 │   ├── default.yaml
 │   └── oncall.yaml
@@ -40,6 +43,8 @@ Project-scope state for the current directory also appears locally:
 ```
 
 Directories are created with mode `0700`, files with `0600`.
+
+Imported plugin sources and revisions live in `aipack.lock`; selected marketplace content lives under `rendered-plugins/`. Use `pack show` for source details and `trace` for delivery paths. Shared installations follow [ownership and scopes](aipack.md#ownership-and-scopes).
 
 ### Per-platform locations
 
@@ -152,6 +157,9 @@ Each entry is a remote registry that `registry fetch` retrieves and caches.
 | `url` | string | Git repository URL |
 | `ref` | string | Git ref (branch or tag). Empty = git's default branch. |
 | `path` | string | File path within the repo (default: `registry.yaml`) |
+| `format` | string | Optional native marketplace dialect: `claude`, `codex-legacy`, or `agent-plugins` (v1). Omit for automatic detection. |
+
+`registry fetch <url> --format` saves a native catalog dialect and takes precedence over filename detection. `--format auto` clears the choice. Ordinary AIPack registries do not accept a native format.
 
 Sources are added automatically by `registry fetch <url>` and deleted by `registry delete`. `registry fetch` (bare) refreshes all configured sources plus compiled-in defaults. Public builds include the `shrug-labs/packs` registry by default. Distributors can prepend one additional default source by setting `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryName` and `github.com/shrug-labs/aipack/internal/config.AdditionalDefaultRegistryURL` with Go ldflags. If a later distributor build changes that additional default's URL or path but keeps the same source name, bare `registry fetch` replaces the old configured source with the new compiled default.
 
@@ -183,12 +191,14 @@ packs:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `origin` | string | Absolute local path or remote URL |
-| `method` | string | `link`, `copy`, `clone`, `archive`, or `local`. Legacy `http-tarball` entries are migrated to `clone` on next update. |
+| `origin` | string | Absolute local path, remote URL, or `npm:<package>` |
+| `method` | string | `link`, `copy`, `clone`, `archive`, `npm`, or `local`. Legacy `http-tarball` entries are migrated to `clone` on next update. |
 | `installed_at` | string | RFC 3339 timestamp |
 | `ref` | string | Git ref at install time (remote only). A semver tag (`v1.2.3`), namespaced tag (`my-pack/v1.2.3`), or commit hash marks the pack as **pinned** and is preserved across `pack update`; a branch name or empty value tracks upstream. The raw remote spelling is stored unchanged so the ref can be checked out directly. `pack install --ref 1.2.3` (and its alias `--version 1.2.3`) resolve to the matching remote tag and record it here — pin state is derived from the ref's shape, not a separate field. |
 | `sub_path` | string | Subdirectory within the repo (remote only) |
 | `commit_hash` | string | Git HEAD SHA at install time (remote only). Enables fast-path update detection via `git ls-remote`. |
+| `package_version` / `package_archive_hash` | string | Resolved npm package version and SHA-256 of its archive. The plugin manifest version can differ from the npm package version. |
+| `plugin.npm` | object | Original npm package, version selector, and optional registry coordinates. For npm installs, `ref` records the active selector; an empty selector follows the latest registry tag. |
 | `content_paths` | map | Maps content types to directory paths within the clone (see [Content path remapping](./pack-format.md#94-content-path-remapping)) |
 | `approved` / `declined` | list | Bundled content categories the user accepted or declined at install time |
 
@@ -206,6 +216,7 @@ Packs live under `~/.config/aipack/packs/<name>/`. Four install methods produce 
 | `copy` | Full copy from local path | No — edits are local only | Re-copies from recorded origin |
 | `clone` | Content-extracted from git clone | No — installed content is a static snapshot | Re-clones from origin, re-extracts content |
 | `archive` | Content-extracted from zip/tar URL or file | No — installed content is a static snapshot | Re-fetches origin, full-replaces content |
+| `npm` | Complete marketplace plugin package | No — installed content is a static snapshot | Re-fetches the selected package version without lifecycle scripts or dependency installation |
 | `local` | Pack already in packs directory | Yes — it's the source | Registered in-place, no fetch |
 
 `link` is the default for local directory installs and is the best choice for pack development — you edit the source and `sync --watch` picks up changes automatically. `clone` is the default for remote git installs (SSH and HTTPS); `archive` is selected by registry entries with `method: archive`, direct installs with `--archive`, or direct `.zip`, `.tar`, `.tar.gz`, and `.tgz` sources.
@@ -267,7 +278,7 @@ Each entry in the ledger records a content digest (SHA256), the sync timestamp, 
 
 Each time `aipack sync` writes a settings file, it first snapshots the existing content into a `presync/` directory alongside the ledger. This enables `aipack restore` to undo the last sync's settings changes.
 
-Cache files are keyed by `<harness>--<filename>` (for example, `claudecode--settings.local.json` for project Claude settings or `claudecode--settings.json` for global Claude settings). An `index.json` manifest maps cache keys to their original file paths. Only settings and drop-in plugin files are cached — content files (rules, agents, workflows, skills, hooks, plugin descriptors) are not.
+Cache files are keyed by `<harness>--<filename>` (for example, `claudecode--settings.local.json` for project Claude settings or `claudecode--settings.json` for global Claude settings). An `index.json` manifest maps cache keys to their original file paths. Only settings and drop-in plugin files are cached — content files (rules, agents, workflows, skills, hooks) are not.
 
 The cache is overwritten on every sync. `--dry-run` does not write cache files. `aipack restore --dry-run` previews what would be recovered.
 

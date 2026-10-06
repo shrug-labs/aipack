@@ -135,25 +135,27 @@ func (c *RegistryListCmd) Run(ctx context.Context, g *Globals) error {
 // --- registry fetch ---
 
 type RegistryFetchCmd struct {
-	URL  string `arg:"" optional:"" help:"URL to fetch registry from (git repo or HTTP)"`
-	Ref  string `help:"Git ref (branch/tag) — implies git-based fetch" name:"ref"`
-	Path string `help:"File path within git repo (default: registry.yaml)" name:"path"`
-	Name string `help:"Source name for caching (default: derived from URL)" name:"name"`
-	Deep bool   `help:"Clone each registry pack and index resource-level frontmatter for search" name:"deep"`
+	URL    string `arg:"" optional:"" help:"Pack, registry or marketplace source (Git, HTTP, or local path)"`
+	Ref    string `help:"Git ref (branch/tag/commit) — implies git-based fetch" name:"ref"`
+	Path   string `help:"File path within repository (default: discover registry.yaml, pack.json and marketplace catalogs)" name:"path"`
+	Name   string `help:"Source name for caching (default: derived from URL)" name:"name"`
+	Format string `help:"Marketplace format: claude, codex-legacy, agent-plugins; auto clears the saved choice" name:"format"`
+	Deep   bool   `help:"Fetch each registered pack and index its content for search" name:"deep"`
 }
 
 func (c *RegistryFetchCmd) Help() string {
-	return fmt.Sprintf(`Fetches a remote registry and caches it locally. Each source is cached as a
+	return fmt.Sprintf(`Fetches a registry or marketplace catalog and caches it locally. Each source is cached as a
 separate file in %s and saved to sync-config for
 future fetches.
 
-With an explicit URL, fetches that single source. Without a URL, fetches all
+With an explicit source, fetches that source. Without one, fetches all
 sources in registry_sources (or the compiled-in default).
 
-Git detection:
-  - URL ending in .git → git mode (defaults: ref=main, path=registry.yaml)
+Source detection:
+  - Local file → read that file
+  - Local directory or repository URL → discover registry.yaml, pack.json and marketplace catalogs
   - git@host:path or ssh:// → git mode
-  - --ref provided → git mode
+  - --ref or --path provided → git mode
   - Otherwise → HTTP GET
 
 Examples:
@@ -170,6 +172,9 @@ Examples:
   # Fetch from an HTTP URL
   aipack registry fetch https://example.com/registry.yaml
 
+  # Declare an ambiguous native catalog's format (saved for future fetches)
+  aipack registry fetch https://example.com/catalog.json --format claude
+
   # Fetch all configured sources
   aipack registry fetch
 
@@ -178,14 +183,19 @@ See also: registry list, registry sources`,
 	)
 }
 
+func (c *RegistryFetchCmd) Validate() error {
+	if c.Format != "" && c.URL == "" {
+		return fmt.Errorf("--format requires an explicit registry or marketplace source")
+	}
+	if c.Format == "auto" {
+		return nil
+	}
+	return config.ValidateMarketplaceFormat(c.Format)
+}
+
 func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 	ctx, cancel := g.gitContext(ctx, false)
 	defer cancel()
-	// Validate: --path requires git mode.
-	if c.Path != "" && c.URL != "" && !config.IsGitURL(c.URL, c.Ref) {
-		return fmt.Errorf("--path requires a git URL (ending in .git) or --ref")
-	}
-
 	cfgDir, err := cmdutil.EnsureConfigDir(g.ConfigDir, config.HomeDir(), g.Stderr)
 	if err != nil {
 		return err
@@ -197,6 +207,7 @@ func (c *RegistryFetchCmd) Run(ctx context.Context, g *Globals) error {
 		Ref:       c.Ref,
 		Path:      c.Path,
 		Name:      c.Name,
+		Format:    c.Format,
 	}, g.Stdout); err != nil {
 		return err
 	}
@@ -296,6 +307,9 @@ func (c *RegistrySourcesCmd) Run(ctx context.Context, g *Globals) error {
 		}
 		if src.Path != "" {
 			details = append(details, "path: "+src.Path)
+		}
+		if src.Format != "" {
+			details = append(details, "format: "+src.Format)
 		}
 		fmt.Fprintf(g.Stdout, "    %s\n", strings.Join(details, ", "))
 	}

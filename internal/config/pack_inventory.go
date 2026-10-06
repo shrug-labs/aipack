@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +49,8 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 	if err := validatePackList(packName, "prompts", manifest.Prompts); err != nil {
 		return err
 	}
-	if err := validatePackList(packName, "plugins", manifest.Plugins); err != nil {
-		return err
+	if manifest.NativePlugin != nil {
+		return validateNativePluginInventory(packName, packRoot, manifest)
 	}
 
 	for _, id := range manifest.Rules {
@@ -65,7 +67,6 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 		{capWorkflows, manifest.Workflows},
 		{capSkills, manifest.Skills},
 		{capHooks, manifest.Hooks},
-		{capPlugins, manifest.Plugins},
 	} {
 		for _, id := range label.ids {
 			if strings.ContainsRune(id, '/') {
@@ -103,9 +104,6 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 			return fmt.Errorf("pack %q prompts %q missing: %w", packName, id, err)
 		}
 	}
-	if err := validateManifestContent(packName, packRoot, manifest, domain.CategoryPlugins, manifest.Plugins); err != nil {
-		return err
-	}
 	for _, name := range manifest.MCP {
 		path := filepath.Join(packRoot, "mcp", filepath.FromSlash(name)+".json")
 		if err := requireFile(path); err != nil {
@@ -121,6 +119,116 @@ func validatePackInventory(packName string, packRoot string, manifest PackManife
 	}
 	if err := validateConfigFileMap(packName, "harness_plugins", packRoot, manifest.Configs.HarnessPlugins); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateNativePluginInventory(packName, root string, manifest PackManifest) error {
+	p := manifest.NativePlugin
+	codex := p.Format == "codex-legacy" && p.Harness == domain.HarnessCodex && p.Manifest == ".codex-plugin/plugin.json"
+	agent := p.Format == "agent-plugins" && p.Harness == domain.HarnessCodex && p.Manifest == "plugin.json"
+	claude := p.Format == "claude" && p.Harness == domain.HarnessClaudeCode && (p.Manifest == ".claude-plugin/plugin.json" || p.Manifest == "")
+	if (!codex && !agent && !claude) || p.ConverterVersion < 1 {
+		return fmt.Errorf("pack %q has an unsupported native plugin descriptor", packName)
+	}
+	for _, name := range []string{p.Name, p.Marketplace} {
+		if !domain.ValidNativeName(name) {
+			return fmt.Errorf("pack %q has an invalid native plugin identity", packName)
+		}
+	}
+	upstream := filepath.Join(root, "upstream")
+	if p.Manifest != "" {
+		if err := requireFile(filepath.Join(upstream, p.Manifest)); err != nil {
+			return err
+		}
+	} else if p.MarketplaceEntry["name"] != p.Name {
+		return fmt.Errorf("pack %q has no catalog manifest identity", packName)
+	} else if _, err := os.Lstat(filepath.Join(upstream, ".claude-plugin/plugin.json")); !errors.Is(err, fs.ErrNotExist) {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("pack %q catalog manifest descriptor conflicts with its payload manifest", packName)
+	}
+	for _, rel := range p.SettingsFiles {
+		if !filepath.IsLocal(rel) {
+			return fmt.Errorf("pack %q native settings path escapes payload", packName)
+		}
+		path := filepath.Join(upstream, rel)
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+		realRoot, err := filepath.EvalSymlinks(upstream)
+		relReal, relErr := filepath.Rel(realRoot, real)
+		if err != nil || relErr != nil || !filepath.IsLocal(relReal) {
+			return fmt.Errorf("pack %q native settings path escapes payload", packName)
+		}
+		if err := requireFile(path); err != nil {
+			return err
+		}
+	}
+	for cat, entries := range p.Components {
+		switch cat {
+		case domain.CategorySkills, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategoryHooks, domain.CategoryMCP:
+		default:
+			return fmt.Errorf("pack %q has unsupported native category %q", packName, cat)
+		}
+		if len(entries) != len(manifest.ContentIDs(cat)) {
+			return fmt.Errorf("pack %q native %s inventory disagrees with descriptors", packName, cat)
+		}
+		for _, id := range manifest.ContentIDs(cat) {
+			paths := entries[id]
+			if len(paths) == 0 {
+				return fmt.Errorf("pack %q native %s %q has no source paths", packName, cat, id)
+			}
+			for _, rel := range paths {
+				if rel == "" && claude {
+					key, item := "commands", id
+					if cat == domain.CategoryHooks {
+						key, item = "hooks", p.HookEvents[id]
+					} else if cat == domain.CategoryMCP && p.Manifest == "" {
+						key = "mcpServers"
+					} else if cat != domain.CategoryWorkflows {
+						return fmt.Errorf("pack %q has an invalid inline catalog category", packName)
+					}
+					entries, _ := p.MarketplaceEntry[key].(map[string]any)
+					if entries[item] == nil {
+						return fmt.Errorf("pack %q native %s %q has no inline catalog declaration", packName, cat, id)
+					}
+					continue
+				}
+				if !filepath.IsLocal(rel) {
+					return fmt.Errorf("pack %q native path %q escapes payload", packName, rel)
+				}
+				path := filepath.Join(upstream, filepath.FromSlash(rel))
+				if err := requireFile(path); err != nil {
+					return err
+				}
+				real, err := filepath.EvalSymlinks(path)
+				if err != nil {
+					return err
+				}
+				realRoot, err := filepath.EvalSymlinks(upstream)
+				if err != nil {
+					return err
+				}
+				relReal, err := filepath.Rel(realRoot, real)
+				if err != nil || !filepath.IsLocal(relReal) {
+					return fmt.Errorf("pack %q native path %q escapes payload", packName, rel)
+				}
+			}
+			if cat == domain.CategoryHooks && p.HookEvents[id] == "" {
+				return fmt.Errorf("pack %q native hook %q has no event", packName, id)
+			}
+		}
+	}
+	for _, cat := range []domain.PackCategory{domain.CategorySkills, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategoryHooks, domain.CategoryMCP} {
+		if len(manifest.ContentIDs(cat)) != len(p.Components[cat]) {
+			return fmt.Errorf("pack %q native %s inventory has no descriptors", packName, cat)
+		}
+	}
+	if len(manifest.Rules)+len(manifest.Prompts) > 0 || (!claude && len(manifest.Agents) > 0) || manifest.Configs.HasAnyConfigs() {
+		return fmt.Errorf("pack %q mixes unsupported portable content with a native plugin", packName)
 	}
 	return nil
 }

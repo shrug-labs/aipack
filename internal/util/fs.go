@@ -3,6 +3,7 @@ package util
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -48,25 +49,95 @@ func WriteFileAtomicWithPerms(path string, content []byte, dirPerm os.FileMode, 
 // is renamed to a randomized backup first; on failure the backup is restored
 // so the caller never ends up with a missing directory.
 func ReplaceDirAtomic(destDir, staging string) error {
+	backup, err := ReplaceDirKeepingBackup(destDir, staging)
+	if err != nil {
+		return err
+	}
+	if backup != "" {
+		return RemoveOwnedTree(backup)
+	}
+	return nil
+}
+
+// RemoveOwnedTree removes a caller-verified owned tree, retrying read-only
+// payloads with owner permissions. Symlink targets outside the tree are untouched.
+func RemoveOwnedTree(path string) error {
+	err := os.RemoveAll(path)
+	if err == nil {
+		return nil
+	}
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		return errors.Join(err, statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(path)
+	}
+	// Go 1.25 can report a link error before the read-only directory error.
+	root, openErr := os.OpenRoot(path)
+	if openErr != nil {
+		return errors.Join(err, openErr)
+	}
+	defer root.Close()
+	if walkErr := fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm() | 0o600
+		if d.IsDir() {
+			mode |= 0o100
+		}
+		return root.Chmod(name, mode)
+	}); walkErr != nil {
+		return errors.Join(err, walkErr)
+	}
+	return os.RemoveAll(path)
+}
+
+// ReplaceDirKeepingBackup retains the previous generation until the caller's
+// metadata persistence succeeds. An empty backup means there was no old tree.
+func ReplaceDirKeepingBackup(destDir, staging string) (string, error) {
 	_, err := os.Lstat(destDir)
 	if errors.Is(err, os.ErrNotExist) {
-		return os.Rename(staging, destDir)
+		return "", os.Rename(staging, destDir)
 	}
 	if err != nil {
-		return fmt.Errorf("stat %s: %w", destDir, err)
+		return "", fmt.Errorf("stat %s: %w", destDir, err)
 	}
 	backup := filepath.Join(
 		filepath.Dir(destDir),
 		fmt.Sprintf(".%s.bak-%s-%08x", filepath.Base(destDir), time.Now().UTC().Format("20060102T150405Z"), rand.Uint32()),
 	)
-	if err := os.Rename(destDir, backup); err != nil {
-		return fmt.Errorf("backing up %s: %w", destDir, err)
+	if err := ReplaceDirWithBackup(destDir, staging, backup); err != nil {
+		return "", err
+	}
+	return backup, nil
+}
+
+// ReplaceDirWithBackup uses a caller-owned backup path recorded before the
+// replacement, allowing interrupted operations to reconcile on the next run.
+func ReplaceDirWithBackup(destDir, staging, backup string) error {
+	if backup != "" {
+		if _, err := os.Lstat(backup); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("backup path already exists or cannot be checked: %s", backup)
+		}
+		if err := os.Rename(destDir, backup); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(staging, destDir); err != nil {
-		_ = os.Rename(backup, destDir)
+		if backup != "" {
+			return errors.Join(err, os.Rename(backup, destDir))
+		}
 		return err
 	}
-	_ = os.RemoveAll(backup)
 	return nil
 }
 

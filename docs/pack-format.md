@@ -26,8 +26,6 @@ my-pack/
 │   └── deploy-checklist.md
 ├── agents/                # scoped sub-personas
 │   └── investigator.md
-├── plugins/               # Harness plugin references
-│   └── linear.json
 ├── mcp/                   # MCP server configurations
 │   └── my-server.json
 ├── hooks/                 # portable hook descriptors
@@ -87,7 +85,6 @@ A formal JSON Schema is available at [`pack.schema.json`](../schemas/pack.schema
 | `skills` | string[] | Explicit skill IDs (flat — no slashes or `__aipack__`). Auto-discovered from `skills/**/SKILL.md`; the immediate parent directory's name is the id. |
 | `hooks` | string[] | Explicit hook IDs (flat — no slashes or `__aipack__`). Auto-discovered from `hooks/**/HOOK.yaml`; the immediate parent directory's name is the id. See [Section 9](#9-hooks). |
 | `prompts` | string[] | Local prompt library IDs. Not synced to harnesses — used for pack-internal prompt management only. Auto-discovered from `prompts/**/*.md`. |
-| `plugins` | string[] | Harness plugin reference IDs (flat — no slashes). Auto-discovered from `plugins/**/*.json`; the file basename is the id. See [Section 7](#7-plugin-references). |
 | `mcp` | string[] | Explicit MCP server IDs. Auto-discovered from `mcp/**/*.json`. See [Section 6](#6-mcp-servers). |
 | `configs` | object | Harness settings and drop-in plugin inventory (see [Section 8](#8-configurations)) |
 | `profiles` | string[] | Profile IDs. Auto-discovered from `profiles/**/*.yaml`; `default` is reserved and invalid in packs. |
@@ -100,7 +97,7 @@ When a content vector field is **empty** — omitted, null, or an empty array �
 
 Minimal packs need only a `pack.json` with name and schema version — the directory structure is the inventory.
 
-**Subdirectories are allowed everywhere.** For rules they're part of the id (`rules/team-a/style.md` → `team-a/style`); the harness filename encodes `/` as `__` (`team-a__style.md`). For agents, workflows, skills, hooks, and plugins the subdirectory is authoring organization only — the id is always the file basename (or entry directory name). Two same-leaf entries within one pack collide; rename one. Cross-pack same-leaf goes through the configured collision behavior, or through namespaced rendered IDs (`<id>__aipack__<pack>`) when `defaults.namespaced: true`.
+**Subdirectories are allowed everywhere.** For rules they're part of the id (`rules/team-a/style.md` → `team-a/style`); the harness filename encodes `/` as `__` (`team-a__style.md`). For agents, workflows, skills, and hooks the subdirectory is authoring organization only — the id is always the file basename (or entry directory name). Two same-leaf entries within one pack collide; rename one. Cross-pack same-leaf goes through the configured collision behavior, or through namespaced rendered IDs (`<id>__aipack__<pack>`) when `defaults.namespaced: true`.
 
 The literal `__aipack__` sentinel is reserved for rendered identity. Existing packs that used `__aipack__` in a pack name, agent ID, workflow ID, skill ID, or hook ID must rename those entries before validation or sync. Rule IDs use `/` for authored nesting; their harness filenames may contain generated `__` escapes, but authored rule IDs cannot contain literal `__`.
 
@@ -409,43 +406,9 @@ Tool permissions are configured in profiles, not the manifest. See [Profiles —
 
 A silent profile (no `allowed_tools`, `always_allowed_tools`, or `disabled_tools` entries for a server) maps to "no allow list emitted" at the harness — the harness's native default (ask per call) applies. Packs that want to ship opinionated defaults do so through a named bundled profile such as `profiles/team.yaml`, not the manifest. Do not use `profiles/default.yaml`; `default` is reserved for the user's local default profile.
 
-## 7. Plugin References
+## 7. Marketplace Plugins
 
-The `plugins/` directory contains JSON descriptors for harness plugins. A pack carries a reference to a marketplace plugin; it does not vendor plugin code.
-
-```json
-{
-  "source": "github:linear/linear-codex-plugin"
-}
-```
-
-The plugin id comes from the descriptor filename: `plugins/linear.json` declares plugin id `linear`. Descriptor fields are intentionally small:
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `source` | string | Yes | Human-readable plugin source reference. |
-| `marketplace` | string | No | Omitted means the harness default marketplace. Bare names are used as-is. Source-prefixed values such as `github:obra/superpowers-marketplace` derive the marketplace name from the path leaf. |
-
-Sync is additive-only in v1. aipack adds or updates plugin enablement in harness config, but removing a descriptor from a pack or profile does not disable or uninstall a plugin from the harness.
-
-Codex writes declarative plugin stanzas to `config.toml`:
-
-```toml
-[plugins."linear@openai-curated"]
-enabled = true
-```
-
-Claude Code writes `enabledPlugins` in `.claude/settings.json`. Source-prefixed marketplaces also add a registration to `~/.claude/plugins/known_marketplaces.json`.
-
-```json
-{
-  "enabledPlugins": {
-    "linear@claude-plugins-official": true
-  }
-}
-```
-
-Codex source-prefixed marketplaces must already be known to the local Codex installation. aipack does not run marketplace install commands.
+Install marketplace plugins from their original catalog or source through the pack lifecycle. AIPack imports their manifests and assets and exposes supported components to profile selectors. See [installing marketplace plugins](installing-packs.md#installing-marketplace-plugins) and [imported native packages](#imported-native-packages).
 
 ## 8. Configurations
 
@@ -481,9 +444,19 @@ The manifest declares which files are settings (merged with engine-managed keys)
 
 **Settings** are base templates containing non-managed user preferences (theme, editor config, non-MCP permissions). String values in settings templates may use `{env:*}`, `{params.*}`, and `{pack:root}` references; aipack expands them before merging. The sync engine then merges settings with computed managed keys (MCP configs, tool permissions, content paths). Multiple packs can contribute settings for the same harness — they are deep-merged in profile order, with the first pack winning at leaf value conflicts. Both the expansion and the merge parse and re-marshal the file, so comments and source key ordering are not preserved in the rendered output.
 
-**Drop-in harness plugins** are pure copies — synced as-is regardless of `--skip-settings`. Template references are not expanded in these files; if you need `{env:*}` or `{pack:root}` substitution, declare the file under `harness_settings` instead. Same-name plugin files from different packs produce an error. This is separate from first-class `plugins/<id>.json` marketplace references.
+**Drop-in harness plugins** are pure copies — synced as-is regardless of `--skip-settings`. Template references are not expanded in these files; if you need `{env:*}` or `{pack:root}` substitution, declare the file under `harness_settings` instead. Same-name plugin files from different packs produce an error. Marketplace imports use the pack lifecycle separately.
+
+### Imported native packages
+
+Marketplace imports retain the complete source tree under `upstream/`. The generated `native_plugin` descriptor records the source format, plugin identity, manifest and selectable components. Each component ID maps to its source paths; repeated native names share one selector. Claude catalogs can supply metadata for packages without a plugin manifest.
+
+Agent Plugins v1 imports use `format: "agent-plugins"`, `harness: "codex"` and `manifest: "plugin.json"`. They discover skills in direct child directories of `skills/` and MCP declarations in `mcp.json`.
+
+Use `pack show` to find component IDs and profiles to customize selection. Imported descriptors and source files are machine-managed. See [imported plugin support](aipack.md#imported-plugin-support) for delivery limits.
 
 ## 9. Hooks
+
+Imported plugins use their original hook declarations and scripts; they do not require `HOOK.yaml`. Profile hook selectors control delivery, and unavailable target events produce warnings. See [command hooks](aipack.md#command-hooks).
 
 The `hooks/` directory contains portable AIPack hook descriptors. Each hook is a directory with a required `HOOK.yaml` entry point. Handler scripts and supporting files live beside the descriptor and can be referenced with `{hook:root}`:
 
@@ -573,6 +546,8 @@ For Cline targets, sync writes one generated wrapper per native event in `.cline
 ## 10. Composition
 
 Packs compose through **profiles** — YAML files that declare which packs to load, how to filter their content, and what parameters to expand. For the full specification including profile structure, vector selectors, layering, overrides, quiet packs, and MCP server configuration, see [Profiles](./profiles.md).
+
+Profiles also support imported MCP [startup timeout policies](profiles.md#imported-mcp-startup-timeouts).
 
 ## 11. Distribution
 

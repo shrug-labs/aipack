@@ -33,6 +33,9 @@ type clineHookHandler struct {
 	CommandWindows string `json:"commandWindows,omitempty"`
 	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
 	Label          string `json:"label"`
+	PluginEvent    string `json:"pluginEvent,omitempty"`
+	PluginRoot     string `json:"pluginRoot,omitempty"`
+	PluginData     string `json:"pluginData,omitempty"`
 }
 
 func RenderHookWrappers(hooks []domain.Hook) (map[string][]byte, string, []domain.Warning, error) {
@@ -116,6 +119,9 @@ func clineNativeHookHandler(hook domain.Hook, event domain.HookEvent, handler do
 		CommandWindows: normalized.CommandWindows,
 		TimeoutSeconds: normalized.TimeoutSeconds,
 		Label:          normalized.Label,
+		PluginEvent:    handler.PluginEvent,
+		PluginRoot:     handler.PluginRoot,
+		PluginData:     handler.PluginData,
 	}, nil
 }
 
@@ -144,19 +150,31 @@ func renderClineHookWrapper(handlers []clineHookHandler) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("#!/usr/bin/env node\n")
 	b.WriteString("const { spawn } = require(\"node:child_process\");\n\n")
+	b.WriteString("const { mkdirSync } = require(\"node:fs\");\n\n")
 	b.WriteString("const handlers = ")
 	b.Write(handlerJSON)
 	b.WriteString(";\n\n")
+	b.WriteString(harness.PluginHookRuntime)
 	b.WriteString(clineNodeWrapperRuntime)
 	return []byte(b.String()), nil
 }
 
 func renderClinePowerShellWrapper(handlerJSON []byte) string {
 	encoded := base64.StdEncoding.EncodeToString(handlerJSON)
-	return strings.ReplaceAll(clinePowerShellWrapperRuntime, "__AIPACK_HANDLERS_BASE64__", encoded)
+	node := `const {spawn} = require("node:child_process"); const {mkdirSync} = require("node:fs"); const handlers = [JSON.parse(process.env.AIPACK_IMPORTED_HOOK_HANDLER)];` + harness.PluginHookRuntime + clineNodeWrapperRuntime
+	content := strings.ReplaceAll(clinePowerShellWrapperRuntime, "__AIPACK_HANDLERS_BASE64__", encoded)
+	return strings.ReplaceAll(content, "__AIPACK_IMPORTED_NODE_BASE64__", base64.StdEncoding.EncodeToString([]byte(node)))
 }
 
-const clineNodeWrapperRuntime = `function parsePayload(raw) {
+const clineNodeWrapperRuntime = `const activeCommands = new Set();
+process.once("exit", () => {
+  for (const child of activeCommands) stopHookCommand(child);
+});
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  process.once(signal, () => process.exit(code));
+}
+
+function parsePayload(raw) {
   if (!raw.trim()) return {};
   try {
     return JSON.parse(raw);
@@ -260,6 +278,18 @@ function mergeHookOutputs(outputs) {
     .filter((text) => text)
     .join("\n");
   if (errorMessage) result.errorMessage = errorMessage;
+  // Extension hooks discard SDK-only fields, so these requests must also cancel.
+  if (outputs.some(output => output?.review === true)) {
+    result.cancel = true;
+    result.review = true;
+    result.errorMessage = [result.errorMessage, "Imported hook requests permission review; approve through the client before retrying"].filter(Boolean).join("\n");
+  }
+  const override = outputs.findLast(output => output?.overrideInput !== undefined);
+  if (override) {
+    result.cancel = true;
+    result.overrideInput = override.overrideInput;
+    result.errorMessage = [result.errorMessage, "Imported hook requires changed tool input; apply those changes before retrying"].filter(Boolean).join("\n");
+  }
   return result;
 }
 
@@ -267,7 +297,8 @@ async function runCommand(handler, rawPayload) {
   const command = process.platform === "win32" && handler.commandWindows ? handler.commandWindows : handler.command;
   if (!command) return null;
   return await new Promise((resolve) => {
-    const child = spawn(command, { shell: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, pluginHookOptions(handler));
+    activeCommands.add(child);
     let done = false;
     let stdout = "";
     let stderr = "";
@@ -279,7 +310,7 @@ async function runCommand(handler, rawPayload) {
       resolve(output);
     };
     const timer = handler.timeoutSeconds > 0 ? setTimeout(() => {
-      child.kill();
+      stopHookCommand(child);
       finish("[aipack hooks] " + handler.label + " timed out after " + handler.timeoutSeconds + "s");
     }, handler.timeoutSeconds * 1000) : null;
     child.stdout.on("data", (chunk) => {
@@ -291,8 +322,13 @@ async function runCommand(handler, rawPayload) {
       if (stderr.length > 4096) stderr = stderr.slice(-4096);
     });
     child.stdin.on("error", () => {});
-    child.on("error", (error) => finish("[aipack hooks] " + handler.label + " failed to start: " + error.message));
+    child.on("error", (error) => {
+      activeCommands.delete(child);
+      finish("[aipack hooks] " + handler.label + " failed to start: " + error.message);
+    });
     child.on("close", (code, signal) => {
+      activeCommands.delete(child);
+      if (handler.pluginEvent) return finish(null, pluginHookOutput(handler, stdout, stderr, code));
       const output = parseHookOutput(stdout);
       if (output) {
         if (code !== 0) {
@@ -306,7 +342,7 @@ async function runCommand(handler, rawPayload) {
       finish("[aipack hooks] " + handler.label + " exited " + (signal || code) + suffix);
     });
     try {
-      child.stdin.end(rawPayload);
+      child.stdin.end(handler.pluginEvent ? JSON.stringify(pluginHookInput(handler, JSON.parse(rawPayload), process.cwd())) : rawPayload);
     } catch {
       finish("[aipack hooks] " + handler.label + " failed to receive stdin payload");
     }
@@ -336,6 +372,8 @@ main().catch((error) => {
 `
 
 const clinePowerShellWrapperRuntime = `$ErrorActionPreference = "Continue"
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $handlersJson = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("__AIPACK_HANDLERS_BASE64__"))
 $handlers = $handlersJson | ConvertFrom-Json
 $rawPayload = [Console]::In.ReadToEnd()
@@ -394,6 +432,11 @@ function Test-AipackHookOutput($value) {
     if ($value.errorMessage -isnot [string]) { return $null }
     $result.errorMessage = [string]$value.errorMessage
   }
+  if ($props -contains "review") {
+    if ($value.review -isnot [bool]) { return $null }
+    $result.review = $value.review
+  }
+  if ($props -contains "overrideInput") { $result.overrideInput = $value.overrideInput }
   return [pscustomobject]$result
 }
 
@@ -444,6 +487,8 @@ function Merge-AipackHookOutputs($outputs) {
   foreach ($output in $outputs) {
     if ($null -eq $output) { continue }
     if ($output.cancel -eq $true) { $result.cancel = $true }
+    if ($output.review -eq $true) { $result.review = $true }
+    if ($output.PSObject.Properties.Name -contains "overrideInput") { $result.overrideInput = $output.overrideInput }
     if ($output.PSObject.Properties.Name -contains "contextModification") {
       $text = ([string]$output.contextModification).Trim()
       if ($text) { $contexts.Add($text) }
@@ -458,47 +503,75 @@ function Merge-AipackHookOutputs($outputs) {
   return [pscustomobject]$result
 }
 
+Add-Type -TypeDefinition @'
+public static class AipackHookOutputReader {
+  public static async System.Threading.Tasks.Task<string> ReadAsync(System.IO.StreamReader reader, int limit, string stream) {
+    var output = new System.Text.StringBuilder();
+    var buffer = new char[4096];
+    bool exceeded = false;
+    int count;
+    while ((count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0) {
+      if (count > limit - output.Length) exceeded = true;
+      if (!exceeded) output.Append(buffer, 0, count);
+    }
+    if (exceeded) throw new System.InvalidOperationException("hook " + stream + " exceeded " + limit + " characters");
+    return output.ToString();
+  }
+}
+'@
+
 function Invoke-AipackHookCommand($handler, $rawPayload) {
   $command = $handler.command
   if ($handler.commandWindows) { $command = $handler.commandWindows }
   if ([string]::IsNullOrWhiteSpace($command)) { return }
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
   $process = New-Object System.Diagnostics.Process
-  $process.StartInfo.FileName = "powershell.exe"
-  $process.StartInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+  if ($handler.pluginEvent) {
+    $process.StartInfo.FileName = "node"
+    $process.StartInfo.Arguments = '-e "eval(Buffer.from(process.env.AIPACK_IMPORTED_HOOK_RUNTIME,''base64'').toString())"'
+    $process.StartInfo.EnvironmentVariables["AIPACK_IMPORTED_HOOK_RUNTIME"] = "__AIPACK_IMPORTED_NODE_BASE64__"
+    $process.StartInfo.EnvironmentVariables["AIPACK_IMPORTED_HOOK_HANDLER"] = ($handler | ConvertTo-Json -Compress -Depth 100)
+  } else {
+    $process.StartInfo.FileName = "powershell.exe"
+    $process.StartInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+  }
   $process.StartInfo.UseShellExecute = $false
   $process.StartInfo.RedirectStandardInput = $true
   $process.StartInfo.RedirectStandardOutput = $true
   $process.StartInfo.RedirectStandardError = $true
-  $stdout = New-Object System.Text.StringBuilder
-  $stderr = New-Object System.Text.StringBuilder
-  $process.add_OutputDataReceived({ if ($_.Data) { [void]$stdout.AppendLine($_.Data) } })
-  $process.add_ErrorDataReceived({ if ($_.Data) { [void]$stderr.AppendLine($_.Data) } })
   try {
     [void]$process.Start()
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
+    # Drain both streams concurrently even after a limit, so neither pipe blocks the command.
+    $stdoutTask = [AipackHookOutputReader]::ReadAsync($process.StandardOutput, 65536, "stdout")
+    $stderrTask = [AipackHookOutputReader]::ReadAsync($process.StandardError, 4096, "stderr")
     $process.StandardInput.Write($rawPayload)
     $process.StandardInput.Close()
     $timeout = 0
     if ($handler.timeoutSeconds) { $timeout = [int]$handler.timeoutSeconds * 1000 }
+    # The Node bridge owns the command deadline; allow time for process cleanup.
+    if ($timeout -gt 0 -and $handler.pluginEvent) { $timeout = [Math]::Min([long]$timeout + 1000, [int]::MaxValue) }
     $finished = if ($timeout -gt 0) { $process.WaitForExit($timeout) } else { $process.WaitForExit(); $true }
     if (-not $finished) {
-      try { $process.Kill() } catch {}
+      try {
+        if ($env:OS -eq "Windows_NT") { & taskkill.exe /PID $process.Id /T /F | Out-Null }
+        else { $process.Kill() }
+      } catch {}
       Write-Error "[aipack hooks] $($handler.label) timed out after $($handler.timeoutSeconds)s"
       return $null
     }
     $process.WaitForExit()
-    $parsed = ConvertFrom-AipackHookOutput $stdout.ToString()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $parsed = ConvertFrom-AipackHookOutput $stdout
     if ($null -ne $parsed) {
       if ($process.ExitCode -ne 0) {
-        $suffix = $stderr.ToString().Trim()
+        $suffix = $stderr.Trim()
         if ($suffix) { Write-Error "[aipack hooks] $($handler.label) exited $($process.ExitCode) but returned valid JSON: $suffix" }
         else { Write-Error "[aipack hooks] $($handler.label) exited $($process.ExitCode) but returned valid JSON" }
       }
       return $parsed
     } elseif ($process.ExitCode -ne 0) {
-      $suffix = $stderr.ToString().Trim()
+      $suffix = $stderr.Trim()
       if ($suffix) { Write-Error "[aipack hooks] $($handler.label) exited $($process.ExitCode): $suffix" }
       else { Write-Error "[aipack hooks] $($handler.label) exited $($process.ExitCode)" }
     }
@@ -517,5 +590,5 @@ foreach ($handler in $handlers) {
   if ($null -ne $output) { [void]$outputs.Add($output) }
 }
 
-[Console]::Out.WriteLine((Merge-AipackHookOutputs $outputs | ConvertTo-Json -Compress))
+[Console]::Out.WriteLine((Merge-AipackHookOutputs $outputs | ConvertTo-Json -Compress -Depth 100))
 `

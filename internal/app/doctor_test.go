@@ -12,7 +12,99 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/plugin"
+	"github.com/shrug-labs/aipack/internal/util"
 )
+
+func TestBuildEcosystemStatusCountsNativeComponents(t *testing.T) {
+	t.Parallel()
+	profile := domain.Profile{
+		Packs: []domain.Pack{
+			{Name: "ordinary", Rules: []domain.Rule{{Name: "rule"}}, Agents: []domain.Agent{{Name: "agent"}}, Workflows: []domain.Workflow{{Name: "workflow"}}, Skills: []domain.Skill{{Name: "skill"}}, Hooks: []domain.Hook{{Name: "hook"}}},
+			{Name: "native", NativePlugin: &domain.NativePluginSelection{Selected: map[domain.PackCategory][]string{
+				domain.CategorySkills: {"first", "second"}, domain.CategoryAgents: {"agent"},
+				domain.CategoryWorkflows: {"workflow"}, domain.CategoryHooks: {"hook"}, domain.CategoryMCP: {"server"},
+			}}},
+		},
+		MCPServers: []domain.MCPServer{{Name: "ordinary-server", SourcePack: "ordinary"}},
+	}
+	status := BuildEcosystemStatus(profile, config.ProfileConfig{}, "default", "", "")
+	wantPacks := []PackStatus{
+		{Name: "ordinary", Rules: 1, Agents: 1, Workflows: 1, Skills: 1, Hooks: 1, MCPServers: 1},
+		{Name: "native", Agents: 1, Workflows: 1, Skills: 2, Hooks: 1, Plugins: 1, MCPServers: 1},
+	}
+	for i, want := range wantPacks {
+		if status.Packs[i] != want {
+			t.Fatalf("pack status = %+v, want %+v", status.Packs[i], want)
+		}
+	}
+	got := ContentCounts{Rules: status.TotalRules, Agents: status.TotalAgents, Workflows: status.TotalWorkflows, Skills: status.TotalSkills, Hooks: status.TotalHooks, Plugins: status.TotalPlugins, MCP: status.TotalMCP}
+	want := ContentCounts{Rules: 1, Agents: 2, Workflows: 2, Skills: 3, Hooks: 2, Plugins: 1, MCP: 2}
+	if got != want || got != CountProfileContent(profile) {
+		t.Fatalf("status totals = %+v, want %+v", got, want)
+	}
+}
+
+func TestDoctorFixPreservesImportedInventory(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{plugin.Claude, plugin.CodexLegacy, plugin.AgentPlugins} {
+		t.Run(format, func(t *testing.T) {
+			src, dir, home := t.TempDir(), t.TempDir(), t.TempDir()
+			manifest := ".codex-plugin/plugin.json"
+			body := `{"name":"probe","version":"1.0.0"}`
+			if format == plugin.Claude {
+				manifest = ".claude-plugin/plugin.json"
+			} else if format == plugin.AgentPlugins {
+				manifest, body = "plugin.json", `{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"probe","version":"1.0.0"}`
+			}
+			writeFile(t, filepath.Join(src, manifest), body)
+			writeFile(t, filepath.Join(src, "skills/probe/SKILL.md"), "---\nname: probe\ndescription: Imported fixture\n---\nRead only.\n")
+			ctx := context.Background()
+			if err := PackInstall(ctx, PackInstallRequest{ConfigDir: dir, PackPath: src, Name: "alias", Plugin: &domain.PluginSource{Format: format, Name: "probe", Marketplace: "owned"}}, nil); err != nil {
+				t.Fatal(err)
+			}
+			writeTestSyncConfig(t, dir)
+			cfg := config.ProfileConfig{Packs: []config.PackEntry{{Name: "alias"}}}
+			writeProfileContentProfile(t, dir, "default", cfg)
+			path := filepath.Join(dir, "packs/alias/pack.json")
+			before := string(mustRead(t, path))
+			eng := engine.New(nil, nil)
+			report := RunDoctor(ctx, eng, DoctorRequest{ConfigDir: dir, Home: home, Fix: true})
+			found := false
+			for _, check := range report.Checks {
+				if check.Name == "manifest_drift" {
+					found = true
+					if !check.OK || check.Fixed {
+						t.Fatalf("valid imported inventory reported as drift: %+v", check)
+					}
+				}
+			}
+			if !found || string(mustRead(t, path)) != before {
+				t.Fatalf("doctor did not preserve imported manifest: %+v", report)
+			}
+			if _, _, err := eng.Resolve(cfg, "", dir, config.CollisionError, nil); err != nil {
+				t.Fatalf("doctor broke imported resolution: %v", err)
+			}
+		})
+	}
+}
+
+func TestDoctorFixRefusesConcurrentMutation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestSyncConfig(t, dir)
+	stage := filepath.Join(packStagingDir(dir), "archive-in-progress")
+	writeFile(t, filepath.Join(stage, "payload"), "in progress")
+	unlock, err := util.LockConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	rep := RunDoctor(context.Background(), engine.New(nil, nil), DoctorRequest{ConfigDir: dir, Fix: true})
+	if rep.OK || len(rep.Checks) != 2 || rep.Checks[1].Name != "config_mutation" || !strings.Contains(rep.Checks[1].Message, "another AIPack mutation is running") || string(mustRead(t, filepath.Join(stage, "payload"))) != "in progress" {
+		t.Fatalf("doctor repaired concurrently owned files: %+v", rep)
+	}
+}
 
 func TestDoctorRequiredMCPRefs_EnvAndParams(t *testing.T) {
 	envKey := "AIPACK_TEST_DOCTOR_REQUIRED_REF"
@@ -373,6 +465,8 @@ func TestDoctorCheckStaleBackups_Fix(t *testing.T) {
 	stagingDir := filepath.Join(dir, ".tmp", "pack-staging")
 	cloneDir := filepath.Join(stagingDir, "clone-99999")
 	os.MkdirAll(cloneDir, 0o755)
+	readOnlyNativeAsset(t, bakDir)
+	readOnlyNativeAsset(t, cloneDir)
 
 	cr := doctorCheckStaleBackups(dir, true)
 	if cr.Status != "fixed" {
@@ -956,37 +1050,6 @@ func TestDoctorCheckManifestDrift_Undeclared(t *testing.T) {
 	}
 	if cr.Status != "warn" {
 		t.Errorf("Status = %q, want warn", cr.Status)
-	}
-}
-
-func TestDoctorCheckManifestDrift_UndeclaredPlugin(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	packRoot := filepath.Join(dir, "packs", "mypack")
-	if err := os.MkdirAll(filepath.Join(packRoot, "plugins"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packRoot, "plugins", "linear.json"), []byte(`{"source":"github:linear/linear-codex-plugin"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	packs := []config.ResolvedPack{{
-		Name: "mypack",
-		Root: packRoot,
-		Manifest: config.PackManifest{
-			Plugins: []string{}, // linear is on disk but not declared
-		},
-	}}
-	cr := doctorCheckManifestDrift(dir, packs, false)
-	if cr.OK {
-		t.Fatal("OK = true, want false for undeclared plugin descriptor")
-	}
-	drift, ok := cr.Details["drift"].([]driftItem)
-	if !ok {
-		t.Fatalf("drift details missing or wrong type: %+v", cr.Details)
-	}
-	if len(drift) != 1 || drift[0].Kind != "plugins" || drift[0].ID != "linear" || drift[0].DriftType != "undeclared" {
-		t.Fatalf("drift = %+v, want undeclared plugins/linear", drift)
 	}
 }
 

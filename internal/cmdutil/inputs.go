@@ -86,7 +86,7 @@ func ResolveScopeDefault(flagValue, syncCfgScope string) (domain.Scope, error) {
 func ResolveHarnessesDefault(flagValue string, syncCfgHarnesses []string) ([]domain.Harness, error) {
 	var raw []string
 	if strings.TrimSpace(flagValue) != "" {
-		raw = append(raw, flagValue)
+		raw = strings.Split(flagValue, ",")
 	} else {
 		raw = syncCfgHarnesses
 	}
@@ -104,7 +104,7 @@ func ResolveHarnessesDefault(flagValue string, syncCfgHarnesses []string) ([]dom
 func ResolveHarnessesOptional(flagValue string, syncCfgHarnesses []string) ([]domain.Harness, error) {
 	var raw []string
 	if strings.TrimSpace(flagValue) != "" {
-		raw = append(raw, flagValue)
+		raw = strings.Split(flagValue, ",")
 	} else {
 		raw = syncCfgHarnesses
 	}

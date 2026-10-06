@@ -28,19 +28,6 @@ func ExtractFromPack(pack domain.Pack) (PackInfo, []Resource) {
 	for _, h := range pack.Hooks {
 		resources = append(resources, ResourceFromMetadata("hook", h.ID, h.Description, h.SourcePath, nil, h.Description))
 	}
-	for _, p := range pack.Plugins {
-		body := p.Source
-		if p.Marketplace != "" {
-			body += "\n" + p.Marketplace
-		}
-		resources = append(resources, Resource{
-			Kind:        "plugin",
-			Name:        p.Name,
-			Description: p.Source,
-			Path:        p.SourcePath,
-			Body:        body,
-		})
-	}
 	return info, resources
 }
 

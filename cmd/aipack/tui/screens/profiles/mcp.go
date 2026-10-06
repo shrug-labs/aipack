@@ -142,7 +142,7 @@ func (m Model) MutateCurrentMCPServer(mutator func(config.MCPServerConfig) (conf
 	if err != nil || !applied {
 		return m, nil, err
 	}
-	if mcpServerConfigIsZero(updated) {
+	if updated.IsZero() {
 		delete(pe.MCP, n.id)
 	} else {
 		if pe.MCP == nil {
@@ -158,11 +158,4 @@ func (m Model) MutateCurrentMCPServer(mutator func(config.MCPServerConfig) (conf
 	}
 	m.dirty = true
 	return m, Save(m.configDir, item.name, item.cfg), nil
-}
-
-func mcpServerConfigIsZero(c config.MCPServerConfig) bool {
-	return c.Enabled == nil &&
-		len(c.AllowedTools) == 0 &&
-		len(c.AlwaysAllowedTools) == 0 &&
-		len(c.DisabledTools) == 0
 }

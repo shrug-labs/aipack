@@ -33,6 +33,33 @@ type staleCleanupContext struct {
 	Protected  map[string]struct{}
 }
 
+func stalePlanOps(eng *engine.Engine, plan domain.Plan, req SyncRequest, reg *harness.Registry, lg domain.Ledger) []PlanOp {
+	hid, ok := FirstSyncHarness(req.Harnesses)
+	if !ok {
+		return nil
+	}
+	h, err := reg.Lookup(hid)
+	if err != nil {
+		return nil
+	}
+	layout := h.Layout(captureContextForHarness(req.TargetSpec, hid, nil))
+	cleanup := staleCleanupContextForHarness(eng, reg, req.TargetSpec, hid, layout, nil)
+	var ops []PlanOp
+	if candidates, err := eng.StaleCandidatesWithLedger(plan, cleanup.Roots, lg); err == nil {
+		cleanup = staleCleanupContextForHarness(eng, reg, req.TargetSpec, hid, layout, candidates)
+		for _, path := range candidates {
+			if _, protected := cleanup.Protected[filepath.Clean(path)]; protected {
+				continue
+			}
+			ops = append(ops, PlanOp{Kind: PlanOpStale, Dst: path, DisplayDst: syncDisplayPath(hid, path)})
+		}
+	}
+	for _, candidate := range newInactiveStaleContext(eng, reg, req.TargetSpec, hid, cleanup.StaleRoots).candidates() {
+		ops = append(ops, PlanOp{Kind: PlanOpStale, Dst: candidate.Path, DisplayDst: syncDisplayPath(candidate.Harness, candidate.Path)})
+	}
+	return ops
+}
+
 func staleCleanupContextForHarness(eng *engine.Engine, reg *harness.Registry, spec TargetSpec, hid domain.Harness, layout harness.Layout, currentCandidates []string) staleCleanupContext {
 	staleRoots := cloneStaleRoots(layout)
 	return staleCleanupContext{
@@ -61,7 +88,7 @@ func protectedStalePathsForHarness(eng *engine.Engine, reg *harness.Registry, sp
 		if _, ok := active[otherID]; !ok {
 			continue
 		}
-		layout := h.Layout(spec.Scope, targetDirForHarness(spec, otherID), spec.Home)
+		layout := h.Layout(captureContextForHarness(spec, otherID, nil))
 		if !rootsOverlapAny(staleRoots, layout.ValidationRoots) {
 			continue
 		}
@@ -196,7 +223,7 @@ func (ctx inactiveStaleContext) owners() []inactiveStaleLedgerOwner {
 		if _, ok := ctx.active[otherID]; ok {
 			continue
 		}
-		layout := h.Layout(ctx.spec.Scope, targetDirForHarness(ctx.spec, otherID), ctx.spec.Home)
+		layout := h.Layout(captureContextForHarness(ctx.spec, otherID, nil))
 		if !rootsOverlapAny(ctx.staleRoots, layout.ValidationRoots) {
 			continue
 		}

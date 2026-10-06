@@ -44,7 +44,7 @@ type ProfileIncludeCmd struct {
 	IDs     []string `arg:"" name:"id" help:"Exact content ID(s) to include" predictor:"resource"`
 	Profile string   `help:"Profile to edit (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	Pack    string   `help:"Limit matching to one installed pack" name:"pack" predictor:"pack"`
-	Kind    string   `help:"Limit matching to one kind: rule|agent|workflow|skill|hook|plugin|mcp" name:"kind" predictor:"kind"`
+	Kind    string   `help:"Limit matching to one kind: rule|agent|workflow|skill|hook|mcp" name:"kind" predictor:"kind"`
 }
 
 func (c *ProfileIncludeCmd) Help() string {
@@ -72,7 +72,7 @@ type ProfileExcludeCmd struct {
 	IDs     []string `arg:"" name:"id" help:"Exact content ID(s) to exclude" predictor:"resource"`
 	Profile string   `help:"Profile to edit (default: sync-config defaults.profile, then 'default')" name:"profile" predictor:"profile"`
 	Pack    string   `help:"Limit matching to one installed pack" name:"pack" predictor:"pack"`
-	Kind    string   `help:"Limit matching to one kind: rule|agent|workflow|skill|hook|plugin|mcp" name:"kind" predictor:"kind"`
+	Kind    string   `help:"Limit matching to one kind: rule|agent|workflow|skill|hook|mcp" name:"kind" predictor:"kind"`
 }
 
 func (c *ProfileExcludeCmd) Help() string {
@@ -152,11 +152,11 @@ func parseProfileContentKind(raw string) (domain.PackCategory, error) {
 	if cat, ok := domain.ParseSingularLabel(raw); ok {
 		switch cat {
 		case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows,
-			domain.CategorySkills, domain.CategoryHooks, domain.CategoryPlugins, domain.CategoryMCP:
+			domain.CategorySkills, domain.CategoryHooks, domain.CategoryMCP:
 			return cat, nil
 		}
 	}
-	return "", fmt.Errorf("unsupported content kind %q (use rule, agent, workflow, skill, hook, plugin, or mcp)", raw)
+	return "", fmt.Errorf("unsupported content kind %q (use rule, agent, workflow, skill, hook, or mcp)", raw)
 }
 
 func printProfileContentResult(w io.Writer, result app.ProfileContentResult) {
@@ -421,7 +421,7 @@ type ProfileShowCmd struct {
 
 func (c *ProfileShowCmd) Help() string {
 	return `Loads and fully resolves a profile, displaying its sources, packs (with content
-lists for rules, agents, workflows, skills, hooks, plugins, MCP servers), and harness
+lists for rules, agents, workflows, skills, hooks, MCP servers), and harness
 settings preferences.
 
 Profile name resolution: positional argument > sync-config defaults.profile > "default"
@@ -475,12 +475,17 @@ func (c *ProfileShowCmd) Run(ctx context.Context, g *Globals) error {
 		fmt.Fprintln(g.Stdout, "\nPacks:")
 		for _, p := range loaded.profile.Packs {
 			fmt.Fprintf(g.Stdout, "  %s\n", p.Name)
+			if p.NativePlugin != nil {
+				for _, cat := range []domain.PackCategory{domain.CategorySkills, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategoryHooks, domain.CategoryMCP} {
+					printProfileContentList(g.Stdout, cat.Label(), domain.SortedCopy(p.NativePlugin.Selected[cat]))
+				}
+				continue
+			}
 			printProfileContentList(g.Stdout, "Rules", namesOf(p.Rules, func(r domain.Rule) string { return r.Name }))
 			printProfileContentList(g.Stdout, "Agents", namesOf(p.Agents, func(a domain.Agent) string { return a.Name }))
 			printProfileContentList(g.Stdout, "Workflows", namesOf(p.Workflows, func(w domain.Workflow) string { return w.Name }))
 			printProfileContentList(g.Stdout, "Skills", namesOf(p.Skills, func(s domain.Skill) string { return s.Name }))
 			printProfileContentList(g.Stdout, "Hooks", namesOf(p.Hooks, func(h domain.Hook) string { return h.Name }))
-			printProfileContentList(g.Stdout, "Plugins", namesOf(p.Plugins, func(plugin domain.Plugin) string { return plugin.Name }))
 			printProfileContentList(g.Stdout, "MCP Servers", mcpByPack[p.Name])
 		}
 

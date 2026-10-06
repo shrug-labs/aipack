@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/shrug-labs/aipack/internal/engine"
 	harnesspkg "github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 func (Harness) EmptyManagedOverlay() []byte {
@@ -18,7 +18,7 @@ func (Harness) PruneMCPServersFromManagedOverlay(overlay []byte, serverNames map
 		return overlay, false, nil
 	}
 	root := map[string]any{}
-	if err := json.Unmarshal(overlay, &root); err != nil {
+	if err := util.UnmarshalJSON(overlay, &root); err != nil {
 		return nil, false, fmt.Errorf("parse managed overlay JSON: %w", err)
 	}
 	changed := harnesspkg.DeleteMapKeys(root, "mcpServers", serverNames)
@@ -38,7 +38,7 @@ func (Harness) RetainMCPServersInManagedOverlay(overlay []byte, serverNames map[
 		return []byte("{}\n"), nil
 	}
 	root := map[string]any{}
-	if err := json.Unmarshal(overlay, &root); err != nil {
+	if err := util.UnmarshalJSON(overlay, &root); err != nil {
 		return nil, fmt.Errorf("parse managed overlay JSON: %w", err)
 	}
 	out := map[string]any{}
@@ -129,7 +129,7 @@ func retainMCPPermissionItems(value any, serverNames map[string]struct{}) []any 
 
 func isMCPPermissionForServer(permission string, serverNames map[string]struct{}) bool {
 	for name := range serverNames {
-		prefix := "mcp__" + engine.NormalizeServerName(name) + "__"
+		prefix := "mcp__" + MCPPermissionName(strings.TrimSpace(name)) + "__"
 		if strings.HasPrefix(permission, prefix) {
 			return true
 		}

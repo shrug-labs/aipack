@@ -1,13 +1,73 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/cmdutil"
 )
+
+func TestImportedMCPInspectToolsCLI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage
+			Method string
+		}
+		if json.NewDecoder(r.Body).Decode(&request) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if request.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		result := map[string]any{"tools": []map[string]any{{"name": "owned-tool", "inputSchema": map[string]any{"type": "object"}}}}
+		if request.Method == "initialize" {
+			result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "fixture", "version": "1"}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+	}))
+	defer api.Close()
+	src, cfg := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, ".claude-plugin/plugin.json"), []byte(`{"name":"probe","version":"1.0.0"}`))
+	writeFile(t, filepath.Join(src, ".mcp.json"), []byte(`{"mcpServers":{"probe":{"type":"http","url":"`+api.URL+`"}}}`))
+	run := func(args ...string) string {
+		t.Helper()
+		args = append(args, "--config-dir", cfg)
+		if binary := os.Getenv("AIPACK_TEST_BINARY"); binary != "" {
+			out, err := exec.Command(binary, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v: %v: %s", args, err, out)
+			}
+			return string(out)
+		}
+		out, stderr, code := runApp(t, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit=%d: %s %s", args, code, out, stderr)
+		}
+		return out
+	}
+	run("pack", "install", src)
+	var report app.MCPInspectToolsResult
+	if err := json.Unmarshal([]byte(run("mcp", "inspect-tools", "probe/probe", "--save", "--dry-run", "--json")), &report); err != nil || !report.OK || !report.Results[0].WouldSave {
+		t.Fatalf("dry-run failed: %+v %v", report, err)
+	}
+	if _, err := os.Stat(app.MCPProbeCachePath(cfg)); !os.IsNotExist(err) {
+		t.Fatal("dry-run wrote probe cache", err)
+	}
+	if err := json.Unmarshal([]byte(run("mcp", "inspect-tools", "probe/probe", "--save", "--json")), &report); err != nil || !report.OK || !report.Results[0].Saved || report.Results[0].InventoryPath != app.MCPProbeCachePath(cfg) || report.Results[0].ToolCount != 1 {
+		t.Fatalf("probe/cache failed: %+v %v", report, err)
+	}
+}
 
 func TestMCPInspectTools_HelpReturnsOK(t *testing.T) {
 	t.Parallel()

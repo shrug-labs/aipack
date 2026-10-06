@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/index"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -26,34 +28,37 @@ type PackInspectRequest struct {
 	Ref          string
 	SubPath      string
 	ContentPaths map[domain.PackCategory]string
+	Plugin       *domain.PluginSource
 	RunGitFn     func(ctx context.Context, args ...string) error
 }
 
 // PackInspectResult describes a pack source without installing it.
 type PackInspectResult struct {
-	Name       string               `json:"name"`
-	Version    string               `json:"version,omitempty"`
-	Path       string               `json:"path,omitempty"`
-	Source     string               `json:"source"`
-	SourceType string               `json:"source_type"`
-	Status     string               `json:"status"`
-	Method     string               `json:"method,omitempty"`
-	Ref        string               `json:"ref,omitempty"`
-	SubPath    string               `json:"path_in_source,omitempty"`
-	Counts     ContentCounts        `json:"counts"`
-	Rules      []string             `json:"rules"`
-	Agents     []string             `json:"agents"`
-	Workflows  []string             `json:"workflows"`
-	Skills     []string             `json:"skills"`
-	Hooks      []string             `json:"hooks"`
-	Plugins    []string             `json:"plugins"`
-	Prompts    []string             `json:"prompts"`
-	MCPServers []string             `json:"mcp_servers"`
-	Profiles   []string             `json:"profiles,omitempty"`
-	Registries []string             `json:"registries,omitempty"`
-	Extras     []string             `json:"extras,omitempty"`
-	Warnings   []string             `json:"warnings,omitempty"`
-	Registry   *PackInspectRegistry `json:"registry,omitempty"`
+	Compatibility []plugin.TargetCompatibility `json:"compatibility,omitempty"`
+	Name          string                       `json:"name"`
+	Version       string                       `json:"version,omitempty"`
+	Path          string                       `json:"path,omitempty"`
+	Source        string                       `json:"source"`
+	SourceType    string                       `json:"source_type"`
+	Status        string                       `json:"status"`
+	Method        string                       `json:"method,omitempty"`
+	Ref           string                       `json:"ref,omitempty"`
+	SubPath       string                       `json:"path_in_source,omitempty"`
+	Counts        ContentCounts                `json:"counts"`
+	Rules         []string                     `json:"rules"`
+	Agents        []string                     `json:"agents"`
+	Workflows     []string                     `json:"workflows"`
+	Skills        []string                     `json:"skills"`
+	Hooks         []string                     `json:"hooks"`
+	Plugins       []string                     `json:"plugins"`
+	Prompts       []string                     `json:"prompts"`
+	MCPServers    []string                     `json:"mcp_servers"`
+	Profiles      []string                     `json:"profiles,omitempty"`
+	Registries    []string                     `json:"registries,omitempty"`
+	Extras        []string                     `json:"extras,omitempty"`
+	Warnings      []string                     `json:"warnings,omitempty"`
+	Registry      *PackInspectRegistry         `json:"registry,omitempty"`
+	NativePlugin  *domain.NativePlugin         `json:"native_plugin,omitempty"`
 }
 
 type PackInspectRegistry struct {
@@ -120,12 +125,20 @@ func PackInspect(ctx context.Context, req PackInspectRequest) (PackInspectResult
 	if len(req.ContentPaths) == 0 {
 		req.ContentPaths = entry.ContentPaths
 	}
+	if entry.Unsupported != "" {
+		return PackInspectResult{}, fmt.Errorf("plugin %q: %s", input, entry.Unsupported)
+	}
+	req.Plugin = entry.Plugin
+	if entry.Method == config.MethodNPM {
+		req.URL = entry.Repo
+		return inspectArchive(ctx, req, "registry", registryInfo)
+	}
 	if entry.Method == config.MethodArchive {
 		req.URL = entry.URL
 		req.Archive = true
 		return inspectURL(ctx, req, "registry", registryInfo)
 	}
-	if pathLooksLocal(entry.Repo) {
+	if pathLooksLocal(entry.Repo) && !relativePluginGitSource(entry.Plugin, entry.Repo) {
 		return inspectPath(req, registryLocalPath(entry.Repo, entry.Path), "registry", registryInfo)
 	}
 	req.URL = entry.Repo
@@ -148,35 +161,49 @@ func inspectPath(req PackInspectRequest, rawPath, sourceType string, registry *P
 	if boundary == "" {
 		boundary = packDir
 	}
+	if req.Plugin == nil && req.ContentPaths == nil {
+		req.Plugin, err = discoverLocalPackPlugin(packDir)
+		if err != nil {
+			return PackInspectResult{}, err
+		}
+	}
 	if err := os.MkdirAll(packStagingDir(req.ConfigDir), 0o700); err != nil {
 		return PackInspectResult{}, fmt.Errorf("creating staging dir: %w", err)
 	}
-	staging, manifest, err := extractPackContent(packStagingDir(req.ConfigDir), packDir, req.ContentPaths, req.Name, boundary)
+	staging, manifest, err := extractPackSource(packStagingDir(req.ConfigDir), packDir, req.ContentPaths, req.Name, boundary, req.Plugin)
 	if err != nil {
 		return PackInspectResult{}, fmt.Errorf("extracting pack: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	defer util.RemoveOwnedTree(staging)
 	return finishPackInspect(req, staging, manifest, sourceType, packPath, config.MethodLocal, registry)
 }
 
 func inspectURL(ctx context.Context, req PackInspectRequest, sourceType string, registry *PackInspectRegistry) (PackInspectResult, error) {
-	if req.Archive {
+	if req.Archive || req.Plugin != nil && req.Plugin.NPM != nil {
 		return inspectArchive(ctx, req, sourceType, registry)
 	}
 	return inspectClone(ctx, req, sourceType, registry)
 }
 
 func inspectArchive(ctx context.Context, req PackInspectRequest, sourceType string, registry *PackInspectRegistry) (PackInspectResult, error) {
+	if req.Plugin != nil && req.Plugin.NPM != nil {
+		result, err := packFetchArchive(ctx, PackInstallRequest{ConfigDir: req.ConfigDir, URL: req.URL, Name: req.Name, Ref: req.Ref, SubPath: req.SubPath, Plugin: req.Plugin, ContentPaths: req.ContentPaths}, nil)
+		if err != nil {
+			return PackInspectResult{}, err
+		}
+		defer util.RemoveOwnedTree(result.destDir)
+		return finishPackInspect(req, result.destDir, result.manifest, sourceType, req.URL, result.method, registry)
+	}
 	archiveDir, err := makePackTempDir(req.ConfigDir, "inspect-archive-*")
 	if err != nil {
 		return PackInspectResult{}, fmt.Errorf("creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(archiveDir)
+	defer util.RemoveOwnedTree(archiveDir)
 	if err := source.FetchArchive(ctx, req.URL, archiveDir, source.HTTPArchiveOptions{}); err != nil {
 		return PackInspectResult{}, fmt.Errorf("fetching archive %s: %w", req.URL, err)
 	}
 	var packRoot string
-	if req.ContentPaths != nil {
+	if req.ContentPaths != nil || req.Plugin != nil {
 		packRoot, err = resolveArchiveContentRoot(archiveDir, req.SubPath)
 	} else {
 		packRoot, err = resolveArchivePackRoot(archiveDir, req.SubPath)
@@ -184,17 +211,17 @@ func inspectArchive(ctx context.Context, req PackInspectRequest, sourceType stri
 	if err != nil {
 		return PackInspectResult{}, err
 	}
-	staging, manifest, err := extractPackContent(packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, archiveDir)
+	staging, manifest, err := extractPackSource(packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, archiveDir, req.Plugin)
 	if err != nil {
 		return PackInspectResult{}, fmt.Errorf("extracting pack: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	defer util.RemoveOwnedTree(staging)
 	return finishPackInspect(req, staging, manifest, sourceType, req.URL, config.MethodArchive, registry)
 }
 
 func inspectClone(ctx context.Context, req PackInspectRequest, sourceType string, registry *PackInspectRegistry) (PackInspectResult, error) {
 	info := source.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
-	if req.SubPath == "" && req.Ref == "" && !config.IsGitURL(req.URL, "") {
+	if req.Plugin == nil && req.SubPath == "" && req.Ref == "" && !config.IsGitURL(req.URL, "") {
 		probed, err := source.ProbePackURL(req.URL)
 		if err != nil {
 			return PackInspectResult{}, fmt.Errorf("probing URL: %w", err)
@@ -208,23 +235,35 @@ func inspectClone(ctx context.Context, req PackInspectRequest, sourceType string
 	if err != nil {
 		return PackInspectResult{}, fmt.Errorf("creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(cloneDir)
+	defer util.RemoveOwnedTree(cloneDir)
 	gitFn := req.RunGitFn
 	if gitFn == nil {
 		gitFn = source.RunGit
 	}
-	if err := source.EnsureCloneWithRef(ctx, info.RepoURL, cloneDir, info.Ref, source.CacheRefDir(req.ConfigDir, info.RepoURL), gitFn); err != nil {
+	if err := clonePluginGitRepository(ctx, req.ConfigDir, req.Plugin, info.RepoURL, cloneDir, info.Ref, gitFn); err != nil {
 		return PackInspectResult{}, fmt.Errorf("cloning %s: %w", info.RepoURL, err)
 	}
 	packRoot := cloneDir
 	if info.SubPath != "" {
 		packRoot = filepath.Join(cloneDir, info.SubPath)
 	}
-	staging, manifest, err := extractPackContent(packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, cloneDir)
+	if req.Plugin == nil && req.ContentPaths == nil {
+		req.Plugin, err = discoverPackPlugin(cloneDir, info.SubPath, config.RegistrySourceEntry{URL: info.RepoURL, Ref: info.Ref})
+		if err != nil {
+			return PackInspectResult{}, err
+		}
+	}
+	if req.Plugin != nil {
+		req.Plugin = pluginSourceAtRevision(req.Plugin, resolveGitHash(ctx, cloneDir, nil))
+		if err := ctx.Err(); err != nil {
+			return PackInspectResult{}, err
+		}
+	}
+	staging, manifest, err := extractPackSource(packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, cloneDir, req.Plugin)
 	if err != nil {
 		return PackInspectResult{}, fmt.Errorf("extracting pack: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	defer util.RemoveOwnedTree(staging)
 	req.Ref = info.Ref
 	req.SubPath = info.SubPath
 	return finishPackInspect(req, staging, manifest, sourceType, info.RepoURL, config.MethodClone, registry)
@@ -255,7 +294,7 @@ func finishPackInspect(req PackInspectRequest, staging string, manifest config.P
 	if err := indexInspectedPack(req.ConfigDir, info, resources); err != nil {
 		return PackInspectResult{}, err
 	}
-	return PackInspectResult{
+	result := PackInspectResult{
 		Name:       name,
 		Version:    manifest.Version,
 		Path:       sourceValue,
@@ -271,24 +310,30 @@ func finishPackInspect(req PackInspectRequest, staging string, manifest config.P
 			Hooks:     len(manifest.Hooks),
 			Workflows: len(manifest.Workflows),
 			Agents:    len(manifest.Agents),
-			Plugins:   len(manifest.Plugins),
 			Prompts:   len(manifest.Prompts),
 			MCP:       len(manifest.MCP),
 		},
-		Rules:      nonNilStrings(manifest.Rules),
-		Agents:     nonNilStrings(manifest.Agents),
-		Workflows:  nonNilStrings(manifest.Workflows),
-		Skills:     nonNilStrings(manifest.Skills),
-		Hooks:      nonNilStrings(manifest.Hooks),
-		Plugins:    nonNilStrings(manifest.Plugins),
-		Prompts:    nonNilStrings(manifest.Prompts),
-		MCPServers: nonNilStrings(manifest.MCP),
-		Profiles:   manifest.Profiles,
-		Registries: manifest.Registries,
-		Extras:     manifest.Extras,
-		Warnings:   inspectWarnings(manifest),
-		Registry:   registry,
-	}, nil
+		Rules:        nonNilStrings(manifest.Rules),
+		Agents:       nonNilStrings(manifest.Agents),
+		Workflows:    nonNilStrings(manifest.Workflows),
+		Skills:       nonNilStrings(manifest.Skills),
+		Hooks:        nonNilStrings(manifest.Hooks),
+		Plugins:      []string{},
+		Prompts:      nonNilStrings(manifest.Prompts),
+		MCPServers:   nonNilStrings(manifest.MCP),
+		Profiles:     manifest.Profiles,
+		Registries:   manifest.Registries,
+		Extras:       manifest.Extras,
+		Warnings:     inspectWarnings(manifest),
+		Registry:     registry,
+		NativePlugin: manifest.NativePlugin,
+	}
+	if manifest.NativePlugin != nil {
+		result.Compatibility = plugin.InventoryCompatibility(staging, *manifest.NativePlugin)
+		result.Plugins = []string{manifest.NativePlugin.Binding()}
+		result.Counts.Plugins = 1
+	}
+	return result, nil
 }
 
 func nonNilStrings(values []string) []string {
@@ -348,10 +393,37 @@ func PackInspectClear(req PackInspectClearRequest) (PackInspectClearResult, erro
 
 func resourcesFromManifestRoot(packName, root string, manifest config.PackManifest) []index.Resource {
 	resources := indexManifestContent(packName, manifest, root, nil)
+	if manifest.NativePlugin != nil {
+		p := manifest.NativePlugin
+		manifestPath := filepath.Join(root, "upstream", p.Manifest)
+		body, _ := os.ReadFile(manifestPath)
+		resourcePath := filepath.ToSlash(filepath.Join("upstream", p.Manifest))
+		if p.Manifest == "" {
+			body, _ = json.Marshal(p.MarketplaceEntry)
+			resourcePath = "pack.json"
+		}
+		var metadata struct {
+			Description string `json:"description"`
+		}
+		_ = json.Unmarshal(body, &metadata)
+		resources = append(resources, index.Resource{Kind: "plugin", Name: p.Binding(), Description: metadata.Description, Path: resourcePath, Body: string(body)})
+		for _, id := range manifest.MCP {
+			rel := manifest.RelPath(domain.CategoryMCP, id)
+			entry, err := plugin.MCPEntry(root, *p, id)
+			if err != nil {
+				continue
+			}
+			definition, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			resources = append(resources, index.Resource{Kind: "mcp", Name: id, Description: "Native plugin MCP server", Path: rel, Body: string(definition)})
+		}
+		return resources
+	}
 	resources = append(resources, structuredResourcesFromManifestRoot(
 		root,
 		manifest,
-		domain.CategoryPlugins,
 		domain.CategoryMCP,
 	)...)
 	return resources
@@ -362,8 +434,6 @@ func structuredResourcesFromManifestRoot(root string, manifest config.PackManife
 	for _, category := range categories {
 		var extract func(string) (index.Resource, error)
 		switch category {
-		case domain.CategoryPlugins:
-			extract = extractPluginFromFile
 		case domain.CategoryMCP:
 			extract = extractMCPServerFromFile
 		default:

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -76,9 +75,6 @@ func (e *Engine) loadHarnessFileBundleWithEnv(
 	pluginsFor func(config.PackManifest, string) []string,
 	label string,
 ) (domain.SettingsBundle, []domain.Warning, error) {
-	if len(packs) == 0 {
-		return nil, nil, errors.New("no packs resolved")
-	}
 	if len(settingsPacks) == 0 {
 		return nil, nil, nil
 	}

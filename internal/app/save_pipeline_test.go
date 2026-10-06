@@ -23,7 +23,7 @@ type pipelineStub struct {
 }
 
 func (s pipelineStub) ID() domain.Harness { return s.id }
-func (s pipelineStub) Layout(domain.Scope, string, string) harness.Layout {
+func (s pipelineStub) Layout(harness.CaptureContext) harness.Layout {
 	return harness.Layout{ValidationRoots: s.roots}
 }
 func (s pipelineStub) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {

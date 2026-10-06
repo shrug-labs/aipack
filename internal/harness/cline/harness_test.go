@@ -1,16 +1,20 @@
 package cline
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
@@ -745,7 +749,7 @@ func TestLayout_StripManaged_RemovesMCPServers(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	h := Harness{}
-	layout := h.Layout(domain.ScopeGlobal, home, home)
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeGlobal, Home: home})
 	if len(layout.OwnedFiles) == 0 {
 		t.Skip("no owned files on this platform")
 	}
@@ -1073,7 +1077,7 @@ func TestCapture_Global_Agents(t *testing.T) {
 func TestLayout_IncludesHooksValidationButDoesNotRemoveHooks(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
-	layout := Harness{}.Layout(domain.ScopeProject, projectDir, t.TempDir())
+	layout := Harness{}.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: t.TempDir()})
 	hooksDir := filepath.Join(projectDir, ".clinerules", "hooks")
 	if !containsString(layout.ValidationRoots, hooksDir) {
 		t.Fatalf("validation roots should include hooks dir %q: %v", hooksDir, layout.ValidationRoots)
@@ -1168,6 +1172,120 @@ func TestRenderHookWrappers_NodeWrapperMergesHandlerJSONOutput(t *testing.T) {
 	}
 }
 
+func TestImportedHookPermissionRequestsCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("node wrapper is not used on Windows")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	for _, response := range []struct {
+		name    string
+		json    string
+		message string
+	}{
+		{"review", `{"hookSpecificOutput":{"permissionDecision":"ask"}}`, "permission review"},
+		{"rewrite", `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"path":"safe"}}}`, "changed tool input"},
+	} {
+		t.Run(response.name, func(t *testing.T) {
+			body, err := renderClineHookWrapper([]clineHookHandler{{
+				Event: "tool.before", PluginEvent: "PreToolUse", PluginData: t.TempDir(),
+				Label: "probe", Command: "printf '%s' '" + response.json + "'", TimeoutSeconds: 5,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "PreToolUse")
+			if err := os.WriteFile(path, body, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, node, path)
+			cmd.Stdin = strings.NewReader(`{"preToolUse":{"toolName":"write_to_file","parameters":{}}}`)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The extension only consumes these fields; SDK-only fields cannot block it.
+			var result struct {
+				Cancel       bool   `json:"cancel"`
+				ErrorMessage string `json:"errorMessage"`
+			}
+			if err := json.Unmarshal(out, &result); err != nil {
+				t.Fatal(err)
+			}
+			if !result.Cancel || !strings.Contains(result.ErrorMessage, response.message) {
+				t.Fatalf("permission request failed open: %s", out)
+			}
+		})
+	}
+}
+
+func TestHookWrapperTerminationStopsCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process-group termination")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	for _, imported := range []bool{false, true} {
+		for _, signal := range []os.Signal{os.Interrupt, syscall.SIGTERM} {
+			t.Run(fmt.Sprintf("imported=%t/%s", imported, signal), func(t *testing.T) {
+				root := t.TempDir()
+				asset := filepath.Join(root, "handler.js")
+				script := `const fs = require('fs'); fs.writeFileSync('started', 'yes'); setTimeout(() => fs.writeFileSync('late-write', 'yes'), 700);`
+				if err := os.WriteFile(asset, []byte(script), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				handler := clineHookHandler{Event: "run.start", Label: "probe", Command: `node "` + asset + `" & wait`, TimeoutSeconds: 5}
+				if imported {
+					handler.PluginEvent, handler.PluginData = "SessionStart", filepath.Join(root, "data")
+				}
+				body, err := renderClineHookWrapper([]clineHookHandler{handler})
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(root, "TaskStart")
+				if err := os.WriteFile(path, body, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, node, path)
+				cmd.Dir, cmd.Stdin = root, strings.NewReader(`{}`)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(3 * time.Second)
+				for {
+					if _, err := os.Stat(filepath.Join(root, "started")); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						_ = cmd.Process.Kill()
+						_ = cmd.Wait()
+						t.Fatal("handler failed to start")
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				if err := cmd.Process.Signal(signal); err != nil {
+					t.Fatal(err)
+				}
+				if err := cmd.Wait(); err == nil {
+					t.Fatal("interrupted wrapper exited successfully")
+				}
+				time.Sleep(time.Second)
+				if _, err := os.Stat(filepath.Join(root, "late-write")); !os.IsNotExist(err) {
+					t.Fatalf("hook command survived wrapper termination: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestRenderClinePowerShellWrapperMergesHandlerJSONOutput(t *testing.T) {
 	t.Parallel()
 	content := renderClinePowerShellWrapper([]byte(`[{"command":"echo ok","label":"hooks-pack/audit"}]`))
@@ -1179,6 +1297,135 @@ func TestRenderClinePowerShellWrapperMergesHandlerJSONOutput(t *testing.T) {
 	} {
 		if !strings.Contains(content, needle) {
 			t.Fatalf("PowerShell wrapper missing %q:\n%s", needle, content)
+		}
+	}
+}
+
+func TestImportedPowerShellHookLifecycle(t *testing.T) {
+	program := os.Getenv("AIPACK_TEST_POWERSHELL")
+	if program == "" {
+		if runtime.GOOS != "windows" {
+			t.Skip("set AIPACK_TEST_POWERSHELL to execute the Windows wrapper on another platform")
+		}
+		program = "powershell.exe"
+	}
+	root := t.TempDir()
+	program, err := exec.LookPath(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(program, filepath.Join(root, "powershell.exe")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asset := filepath.Join(root, "owned asset.js")
+	data := filepath.Join(root, "retained data")
+	script := `const fs = require('node:fs');
+const path = require('node:path');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'owned_tool') throw Error('lost event input');
+for (const prefix of ['PLUGIN','CODEX_PLUGIN','CLAUDE_PLUGIN']) {
+  if (!fs.existsSync(process.env[prefix+'_ROOT']) || !fs.existsSync(process.env[prefix+'_DATA'])) throw Error('lost root/data');
+  if (process.env[prefix+'_ROOT'] !== process.env.PLUGIN_ROOT || process.env[prefix+'_DATA'] !== process.env.PLUGIN_DATA) throw Error('lost alias');
+}
+fs.appendFileSync(path.join(process.env.PLUGIN_DATA, 'events'), input.session_id+'\n');
+if (input.tool_input.mode === 'timeout') { setTimeout(() => fs.writeFileSync(path.join(process.env.PLUGIN_DATA, 'late'), 'unexpected'), 2000); return; }
+if (input.tool_input.mode === 'deny') { console.error('OWNED_DENIAL'); process.exit(2); }
+if (input.tool_input.mode === 'review') console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'ask'}}));
+else if (input.tool_input.mode === 'rewrite') console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow',updatedInput:{nested:{values:{text:input.tool_input.text}}}}}));
+else console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow',additionalContext:'OWNED_PS_V1'}}));
+`
+	if err := os.WriteFile(asset, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition := []clineHookHandler{{Event: "tool.before", Command: `node "` + asset + `"`, TimeoutSeconds: 5, Label: "owned", PluginEvent: "PreToolUse", PluginRoot: root, PluginData: data}}
+	handlers, _ := json.Marshal(definition)
+	wrapper := filepath.Join(root, "PreToolUse.ps1")
+	if err := os.WriteFile(wrapper, []byte(renderClinePowerShellWrapper(handlers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var diagnostics string
+	run := func(mode string) map[string]any {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, program, "-NoProfile", "-File", wrapper)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"))
+		payload, _ := json.Marshal(map[string]any{"taskId": "owned-session", "workspaceRoots": []string{root}, "preToolUse": map[string]any{"toolName": "owned_tool", "parameters": map[string]any{"mode": mode, "text": "Unicode Ω survives"}}})
+		cmd.Stdin = bytes.NewReader(payload)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		diagnostics = stderr.String()
+		if err != nil {
+			t.Fatalf("PowerShell dispatch: %v %s %s", err, out, stderr.String())
+		}
+		var result map[string]any
+		if err := json.Unmarshal(out, &result); err != nil {
+			t.Fatalf("PowerShell output: %v %s", err, out)
+		}
+		return result
+	}
+	if out := run("context"); out["contextModification"] != "OWNED_PS_V1" || out["cancel"] != false {
+		t.Fatalf("lost context: %+v", out)
+	}
+	if out := run("rewrite"); out["cancel"] != true || !strings.Contains(fmt.Sprint(out["errorMessage"]), "changed tool input") {
+		t.Fatalf("input rewrite failed open: %+v", out)
+	} else {
+		encoded, _ := json.Marshal(out["overrideInput"])
+		if !bytes.Contains(encoded, []byte("Unicode Ω survives")) {
+			t.Fatalf("lost nested input/Unicode: %s", encoded)
+		}
+	}
+	if out := run("deny"); out["cancel"] != true || out["errorMessage"] != "OWNED_DENIAL" {
+		t.Fatalf("lost blocking result: %+v", out)
+	}
+	if out := run("review"); out["review"] != true || out["cancel"] != true || !strings.Contains(fmt.Sprint(out["errorMessage"]), "permission review") {
+		t.Fatalf("permission review failed open: %+v", out)
+	}
+	if err := os.WriteFile(asset, []byte(strings.ReplaceAll(script, "V1", "V2")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("context"); out["contextModification"] != "OWNED_PS_V2" {
+		t.Fatalf("source refresh did not reach Windows wrapper: %+v", out)
+	}
+	definition = append(definition, clineHookHandler{Event: "tool.before", CommandWindows: `Write-Output '{"contextModification":"OWNED_ORDINARY_PS"}'`, TimeoutSeconds: 5, Label: "ordinary"})
+	handlers, _ = json.Marshal(definition)
+	if err := os.WriteFile(wrapper, []byte(renderClinePowerShellWrapper(handlers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("context"); out["contextModification"] != "OWNED_PS_V2\n\nOWNED_ORDINARY_PS" && out["contextModification"] != "OWNED_PS_V2\r\n\r\nOWNED_ORDINARY_PS" {
+		t.Fatalf("ordinary/imported composition lost output: %+v", out)
+	}
+	definition = definition[:1]
+	definition[0].TimeoutSeconds = 1
+	handlers, _ = json.Marshal(definition)
+	if err := os.WriteFile(wrapper, []byte(renderClinePowerShellWrapper(handlers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("timeout"); out["contextModification"] != nil || out["cancel"] != false {
+		t.Fatalf("timeout published successful output: %+v", out)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(data, "late")); !os.IsNotExist(err) {
+		t.Fatal("timed-out command kept running", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(data, "events")); err != nil || bytes.Count(got, []byte("owned-session")) != 7 {
+		t.Fatalf("runtime data not retained: %q %v", got, err)
+	}
+	for _, stream := range []string{"stdout", "stderr"} {
+		command := `[Console]::Out.Write(('x' * 65537)); Write-Output '{"cancel":true}'`
+		if stream == "stderr" {
+			command = `[Console]::Error.Write(('x' * 4097)); Write-Output '{"cancel":true}'`
+		}
+		handlers, _ := json.Marshal([]clineHookHandler{{CommandWindows: command, TimeoutSeconds: 5, Label: "oversized"}})
+		if err := os.WriteFile(wrapper, []byte(renderClinePowerShellWrapper(handlers)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out := run("context"); out["cancel"] != false || !strings.Contains(diagnostics, "hook "+stream+" exceeded") {
+			t.Fatalf("oversized %s output was accepted without a diagnostic: %+v %s", stream, out, diagnostics)
 		}
 	}
 }

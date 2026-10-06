@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,81 @@ import (
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
+
+func TestJSONNumbersThroughSyncCaptureClean(t *testing.T) {
+	for _, hid := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode, domain.HarnessCline} {
+		t.Run(string(hid), func(t *testing.T) {
+			home, project, configDir := t.TempDir(), t.TempDir(), t.TempDir()
+			p := domain.Profile{Packs: []domain.Pack{{Name: "fixture"}}, SettingsPacks: []string{"fixture"}, MCPServers: []domain.MCPServer{{Name: "fixture", Command: []string{"echo"}, SourcePack: "fixture"}}}
+			filename := "settings.local.json"
+			if hid == domain.HarnessOpenCode {
+				filename = "opencode.json"
+			}
+			p.BaseSettings = domain.SettingsBundle{hid: {{Filename: filename, Content: []byte(`{"templateNumber":1208925819614629174706177}`), SourcePack: "fixture"}}}
+			eng, reg := engine.New(nil, nil), testRegistry()
+			req := SyncRequest{TargetSpec: TargetSpec{ConfigDir: configDir, Home: home, ProjectDir: project, Scope: domain.ScopeProject, Harnesses: []domain.Harness{hid}, Env: map[string]string{}}, Yes: true, Quiet: true, DryRun: true}
+			preview, _, err := RunSync(context.Background(), eng, p, req, reg, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actions := append(slices.Clone(preview.Plan.Settings), preview.Plan.MCP...)
+			if len(actions) == 0 {
+				t.Fatal("no JSON settings action")
+			}
+			path := actions[0].Dst
+			writeFile(t, path, `{"counter":9007199254740993,"nested":[0.12345678901234567890123456789,1e+1000]}`)
+			check := func(body []byte) {
+				t.Helper()
+				for _, token := range []string{"9007199254740993", "0.12345678901234567890123456789", "1e+1000"} {
+					if !bytes.Contains(body, []byte(token)) {
+						t.Fatalf("lost exact number %s: %s", token, body)
+					}
+				}
+			}
+			req.DryRun = false
+			result, _, err := RunSync(context.Background(), eng, p, req, reg, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(mustRead(t, path))
+			if hid != domain.HarnessCline && !bytes.Contains(mustRead(t, path), []byte("1208925819614629174706177")) {
+				t.Fatal("settings renderer rounded template number")
+			}
+			h, err := reg.Lookup(hid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			captureCtx := captureContextForHarness(req.TargetSpec, hid, nil)
+			captured, err := h.Capture(context.Background(), captureCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ledger, _, err := eng.LoadLedger(result.Plan.Ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, write := range captured.Writes {
+				if write.Src != path {
+					continue
+				}
+				found = true
+				stripped, err := h.Layout(captureCtx).StripManaged(write.Content, path, harness.EditContext{PreviousManagedOverlay: ledger.PrevManagedOverlay(path)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				check(stripped)
+			}
+			if !found {
+				t.Fatal("settings not captured")
+			}
+			if err := RunClean(context.Background(), eng, CleanRequest{TargetSpec: req.TargetSpec, Yes: true}, reg); err != nil {
+				t.Fatal(err)
+			}
+			check(mustRead(t, path))
+		})
+	}
+}
 
 // testProfile builds a non-trivial profile with content in every vector.
 // The pack root is created on disk so that skill copy sources exist.
@@ -192,7 +268,7 @@ func assertPlanWithinRoots(t *testing.T, profile domain.Profile, reg *harness.Re
 	if err != nil {
 		t.Fatal(err)
 	}
-	layout := h.Layout(scope, baseDir, home)
+	layout := h.Layout(harness.CaptureContext{Scope: scope, ProjectDir: baseDir, TargetDir: baseDir, Home: home})
 
 	planners, err := reg.AsPlanners([]domain.Harness{hid})
 	if err != nil {
@@ -297,7 +373,7 @@ func TestSyncThenClean_ReturnsToBaseline(t *testing.T) {
 			// Build set of OwnedFile paths — these are partially managed and
 			// survive clean (they get reset, not deleted).
 			h, _ := reg.Lookup(hid)
-			layout := h.Layout(domain.ScopeProject, projectDir, home)
+			layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: home})
 			ownedPaths := map[string]struct{}{}
 			for _, of := range layout.OwnedFiles {
 				rel, err := filepath.Rel(projectDir, of.Path)
@@ -607,7 +683,7 @@ func TestSubtraction_RemovedContentCleaned(t *testing.T) {
 			// full set and verify that files containing removed content names
 			// are no longer present (excluding ledger and owned settings files).
 			h, _ := reg.Lookup(hid)
-			layout := h.Layout(domain.ScopeProject, projectDir, home)
+			layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: home})
 			ownedPaths := map[string]struct{}{}
 			for _, of := range layout.OwnedFiles {
 				rel, err := filepath.Rel(projectDir, of.Path)
@@ -838,7 +914,7 @@ func TestConvergence_ManualEditsOverwritten(t *testing.T) {
 			// Build set of owned-file paths (settings/MCP config) that use
 			// merge semantics — corrupting them tests a different property.
 			h, _ := reg.Lookup(hid)
-			layout := h.Layout(domain.ScopeProject, projectDir, home)
+			layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: home})
 			ownedPaths := map[string]struct{}{}
 			for _, of := range layout.OwnedFiles {
 				rel, err := filepath.Rel(projectDir, of.Path)
@@ -970,7 +1046,7 @@ func TestCrossHarnessIsolation(t *testing.T) {
 	// is under A's validation roots should be unchanged after B synced.
 	for i, a := range harnesses {
 		ha, _ := reg.Lookup(a)
-		layoutA := ha.Layout(domain.ScopeProject, projectDir, home)
+		layoutA := ha.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: home})
 
 		for j := i + 1; j < len(harnesses); j++ {
 			b := harnesses[j]
@@ -1801,78 +1877,6 @@ func TestMCPOnly_SyncsWithoutContentFiles(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Plugins: end-to-end sync renders enabledPlugins / [plugins] tables
-//
-// Story: "A pack declares plugin descriptors, and after sync the harness
-// reads its native plugin config." Default-marketplace plugins go in via the
-// harness default; source-marketplace plugins also register the marketplace
-// (Claude Code's known_marketplaces.json).
-// ---------------------------------------------------------------------------
-
-func TestPlugins_RenderedPerHarness(t *testing.T) {
-	t.Parallel()
-
-	packRoot := t.TempDir()
-	reg := testRegistry()
-
-	profile := profileWith(packRoot)
-	profile.Packs[0].Plugins = []domain.Plugin{
-		{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "test-pack"},
-		{Name: "superpowers", Source: "github:obra/superpowers", Marketplace: "github:obra/superpowers-marketplace", SourcePack: "test-pack"},
-	}
-
-	// Claude Code and Codex render plugin references natively. Cline and
-	// OpenCode do not have a plugin surface today; skip them.
-	for _, hid := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessCodex} {
-		t.Run(string(hid), func(t *testing.T) {
-			t.Parallel()
-			projectDir := t.TempDir()
-			home := t.TempDir()
-
-			syncAndApply(t, profile, domain.ScopeProject, projectDir, home, hid, reg)
-			projectFiles := collectFiles(t, projectDir)
-			homeFiles := collectFiles(t, home)
-
-			joined := func(files map[string]string) string {
-				var b strings.Builder
-				for _, content := range files {
-					b.WriteString(content)
-				}
-				return b.String()
-			}
-
-			projectBlob := joined(projectFiles)
-			homeBlob := joined(homeFiles)
-
-			// Both bindings must appear in the rendered settings (settings.json
-			// for Claude Code, config.toml for Codex). The marketplace name is
-			// derived from Plugin.Marketplace ("source:owner/repo" → "repo").
-			for _, want := range []string{"linear@", "superpowers@superpowers-marketplace"} {
-				if !strings.Contains(projectBlob, want) {
-					t.Errorf("%s: missing plugin binding %q in project files; got files=%v", hid, want, keys(projectFiles))
-				}
-			}
-
-			// Source-marketplace plugins must register their marketplace.
-			// Claude Code writes to home (~/.claude/plugins/known_marketplaces.json);
-			// Codex inlines marketplace metadata in config.toml.
-			combined := projectBlob + homeBlob
-			if !strings.Contains(combined, "superpowers-marketplace") {
-				t.Errorf("%s: missing source-marketplace registration for superpowers-marketplace", hid)
-			}
-		})
-	}
-}
-
-func keys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
-// ---------------------------------------------------------------------------
 // Test 21: Skill nested subdirectories preserved
 //
 // Story: "My skill has helper subdirectories — they survive the copy to
@@ -1997,7 +2001,7 @@ type invalidCopyPlanHarness struct {
 }
 
 func (h invalidCopyPlanHarness) ID() domain.Harness { return domain.HarnessCodex }
-func (h invalidCopyPlanHarness) Layout(domain.Scope, string, string) harness.Layout {
+func (h invalidCopyPlanHarness) Layout(harness.CaptureContext) harness.Layout {
 	return harness.Layout{ValidationRoots: []string{filepath.Dir(h.dst)}}
 }
 func (h invalidCopyPlanHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
@@ -2715,7 +2719,7 @@ func TestLayoutContract_StructuralInvariants(t *testing.T) {
 			name := string(h.ID()) + "/" + string(scope)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				l := h.Layout(scope, baseDir, home)
+				l := h.Layout(harness.CaptureContext{Scope: scope, ProjectDir: baseDir, TargetDir: baseDir, Home: home})
 
 				// ValidationRoots must be non-empty — every harness writes somewhere.
 				if len(l.ValidationRoots) == 0 {

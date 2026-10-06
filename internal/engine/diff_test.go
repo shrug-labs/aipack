@@ -918,6 +918,24 @@ func TestComputeSettingsDiffs_MergeMode_PreservesRemovedPluginEntries(t *testing
 	}
 }
 
+func TestComputeSettingsDiffs_RemovesOnlyOwnedNativeBinding(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "config.toml")
+	onDisk := []byte("[plugins.\"owned@market\"]\nenabled = true\n[plugins.\"user@market\"]\nenabled = false\n")
+	if err := os.WriteFile(dst, onDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lg := domain.NewLedger()
+	lg.Record(dst, onDisk, "pack", onDisk, time.Now())
+	lg.NativePlugins = map[string]domain.NativePluginRecord{"owned@market": {SettingsPath: dst}}
+	diffs, err := New(nil, nil).ComputeSettingsDiffs([]domain.SettingsAction{{Dst: dst, Desired: []byte(""), Harness: domain.HarnessCodex, MergeMode: true}}, lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 || strings.Contains(string(diffs[0].Desired), "owned@market") || !strings.Contains(string(diffs[0].Desired), "user@market") || !strings.Contains(string(diffs[0].Desired), "enabled = false") {
+		t.Fatalf("native removal must preserve unrelated plugin settings: %+v", diffs)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstring(s, sub))
 }

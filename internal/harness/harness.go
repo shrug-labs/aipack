@@ -25,7 +25,7 @@ type Harness interface {
 	// Layout describes the harness's filesystem footprint for a given scope:
 	// which paths it owns, which files it partially manages, and how to
 	// strip or reset its managed content.
-	Layout(scope domain.Scope, baseDir, home string) Layout
+	Layout(ctx CaptureContext) Layout
 
 	// Plan produces a Fragment of writes/copies/settings from typed content.
 	// Satisfies engine.Planner.
@@ -100,6 +100,11 @@ type EditContext struct {
 	// the prior sync. Shared settings that contain object arrays can use this
 	// to remove only aipack-managed objects during save and clean.
 	PreviousManagedOverlay []byte
+	PackageOverlays        [][]byte
+	NativePlugins          map[string]domain.NativePluginRecord
+	// Sync/clean delegate registration removal to the native lifecycle, which
+	// knows the other scope owners. Capture still strips these host-only keys.
+	PreserveNativeMarketplaces bool
 }
 
 // OwnedFile describes a file where the harness manages specific keys.
@@ -119,13 +124,14 @@ type RenderContext struct {
 	Profile domain.Profile
 }
 
-// CaptureContext provides context for reverse capture (save).
+// CaptureContext provides targeting and provenance for layout and capture.
 type CaptureContext struct {
 	Scope           domain.Scope
 	ProjectDir      string
 	Home            string
 	TargetDir       string
 	TargetConfigDir bool
+	NativeConfigDir string
 	// KnownPacks is the installed/profile pack-name set. Capture only strips
 	// rendered <id>__aipack__<pack> identities when the pack is present here.
 	KnownPacks map[string]struct{}
@@ -320,7 +326,7 @@ func ValidationRoots(r *Registry, scope domain.Scope, baseDir, home string, ids 
 		if err != nil {
 			continue
 		}
-		roots = append(roots, h.Layout(scope, baseDir, home).ValidationRoots...)
+		roots = append(roots, h.Layout(CaptureContext{Scope: scope, ProjectDir: baseDir, TargetDir: baseDir, Home: home}).ValidationRoots...)
 	}
 	return roots
 }
@@ -491,7 +497,7 @@ func BuildRootsIndexWithBaseDir(reg *Registry, scope domain.Scope, home string, 
 		if baseDirFor != nil {
 			baseDir = baseDirFor(h.ID())
 		}
-		for _, root := range h.Layout(scope, baseDir, home).ValidationRoots {
+		for _, root := range h.Layout(CaptureContext{Scope: scope, ProjectDir: baseDir, TargetDir: baseDir, Home: home, TargetConfigDir: scope == domain.ScopeGlobal && baseDir != home}).ValidationRoots {
 			entries = append(entries, rootEntry{root: filepath.Clean(root), id: h.ID()})
 		}
 	}

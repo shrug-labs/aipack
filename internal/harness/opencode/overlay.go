@@ -7,6 +7,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/engine"
 	harnesspkg "github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 func (Harness) EmptyManagedOverlay() []byte {
@@ -18,7 +19,7 @@ func (Harness) PruneMCPServersFromManagedOverlay(overlay []byte, serverNames map
 		return overlay, false, nil
 	}
 	root := map[string]any{}
-	if err := json.Unmarshal(overlay, &root); err != nil {
+	if err := util.UnmarshalJSON(overlay, &root); err != nil {
 		return nil, false, fmt.Errorf("parse managed overlay JSON: %w", err)
 	}
 	changed := harnesspkg.DeleteMapKeys(root, "mcp", serverNames)
@@ -38,7 +39,7 @@ func (Harness) RetainMCPServersInManagedOverlay(overlay []byte, serverNames map[
 		return []byte("{}\n"), nil
 	}
 	root := map[string]any{}
-	if err := json.Unmarshal(overlay, &root); err != nil {
+	if err := util.UnmarshalJSON(overlay, &root); err != nil {
 		return nil, fmt.Errorf("parse managed overlay JSON: %w", err)
 	}
 	out := map[string]any{}

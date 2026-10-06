@@ -96,6 +96,24 @@ func TestBuildPackUpdateReport_BundledStateOriginMigrationAndSummary(t *testing.
 	}
 }
 
+func TestPackOriginCopySubdirectory(t *testing.T) {
+	root := t.TempDir()
+	a := PackOriginCoordinates{Method: config.MethodCopy, Origin: filepath.Join(root, "plugins", "probe")}
+	b := PackOriginCoordinates{Method: config.MethodCopy, Origin: root, SubPath: "./plugins/probe"}
+	if !samePackOrigin(a, b) {
+		t.Fatal("matching copied plugin reported source migration")
+	}
+	b.SubPath = "./plugins/other"
+	if samePackOrigin(a, b) {
+		t.Fatal("different copied source was hidden")
+	}
+	a.Method, b.Method = config.MethodClone, config.MethodClone
+	b.SubPath = "./plugins/probe"
+	if samePackOrigin(a, b) {
+		t.Fatal("Git repository and subdirectory coordinates were collapsed")
+	}
+}
+
 func TestBuildPackUpdateReport_DoesNotReportMatchingOrigin(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -12,7 +12,102 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/plugin"
 )
+
+func TestPlanNativeMCPPolicy(t *testing.T) {
+	source, root := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".claude-plugin/plugin.json"), []byte(`{"name":"probe","version":"1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".mcp.json"), []byte(`{"mcpServers":{"Probe.with-dots":{"command":"echo"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := plugin.MaterializeClaude(source, root, "alias", domain.PluginSource{Marketplace: "market"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.NativePlugin.Name = "catalog-probe"
+	p := domain.Profile{Packs: []domain.Pack{{Name: "alias", NativePlugin: &domain.NativePluginSelection{
+		Package: *m.NativePlugin, Root: root, Selected: map[domain.PackCategory][]string{domain.CategoryMCP: m.MCP},
+		MCPPolicy: map[string]domain.NativeMCPPolicy{"Probe.with-dots": {AllowedTools: []string{"observe"}, DisabledTools: []string{"hidden"}}},
+	}}}}
+	ctx := engine.SyncContext{Profile: p, Scope: domain.ScopeGlobal, TargetDir: t.TempDir(), Home: t.TempDir(), ConfigDir: t.TempDir()}
+	for _, skip := range []bool{false, true} {
+		ctx.SkipSettings = skip
+		f, err := (Harness{}).Plan(context.Background(), ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f.NativePlugins) != 1 || len(f.MCPServers) != 0 {
+			t.Fatal("native connection was flattened or delivery omitted")
+		}
+		if f.NativePlugins[0].Package.Binding() != "catalog-probe@market" {
+			t.Fatal("component namespace replaced native installation identity")
+		}
+		if f.NativePlugins[0].Selection != p.Packs[0].NativePlugin {
+			t.Fatal("native planning lost source and profile selection inputs")
+		}
+		actions := f.Settings
+		if skip {
+			actions = f.MCP
+		}
+		if len(actions) != 1 || !strings.Contains(string(actions[0].Desired), "mcp__plugin_probe_Probe_with-dots__observe") || !strings.Contains(string(actions[0].Desired), "mcp__plugin_probe_Probe_with-dots__hidden") {
+			t.Fatalf("native permissions missing with skip-settings=%t: %+v", skip, actions)
+		}
+	}
+	ctx.Profile.MCPServers = []domain.MCPServer{{Name: "plugin_probe_Probe.with-dots", SourcePack: "ordinary"}}
+	if _, err := (Harness{}).Plan(context.Background(), ctx); err == nil || !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("ordinary/native namespace collision accepted: %v", err)
+	}
+	ctx.Profile.MCPServers = nil
+	other := *p.Packs[0].NativePlugin
+	other.Package.Name = "another-binding"
+	other.Package.Marketplace = "other-market"
+	ctx.Profile.Packs = append(ctx.Profile.Packs, domain.Pack{Name: "other", NativePlugin: &other})
+	if _, err := (Harness{}).Plan(context.Background(), ctx); err == nil || !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("cross-market namespace collision accepted: %v", err)
+	}
+}
+
+func TestCaptureMCPPermissionsRequireConnection(t *testing.T) {
+	servers := map[string]domain.MCPServer{"Probe.with-dots": {Name: "Probe.with-dots", Command: []string{"echo"}}}
+	allowed := map[string][]string{}
+	warnings := parseSettingsPermissions(servers, allowed, []byte(`{"permissions":{"allow":["mcp__Probe_with-dots__observe","mcp__plugin_probe_Probe__observe"],"deny":["mcp__Probe_with-dots__hidden","mcp__plugin_probe_Probe__hidden"]}}`))
+	if len(warnings) != 0 || len(servers) != 1 || len(allowed) != 1 || len(allowed["Probe.with-dots"]) != 1 || len(servers["Probe.with-dots"].DisabledTools) != 1 {
+		t.Fatalf("capture renamed ordinary connections or flattened native permissions: %+v %+v %+v", servers, allowed, warnings)
+	}
+}
+
+func TestPlanRejectsOrdinaryMCPNamespaceCollisions(t *testing.T) {
+	t.Parallel()
+	ctx := engine.SyncContext{Home: t.TempDir(), TargetDir: t.TempDir(), Scope: domain.ScopeProject,
+		Profile: domain.Profile{MCPServers: []domain.MCPServer{
+			{Name: "service.a", SourcePack: "trusted", Command: []string{"true"}, AlwaysAllowedTools: []string{"execute"}},
+			{Name: "service_a", SourcePack: "imported", Command: []string{"false"}},
+		}}}
+	if _, err := (Harness{}).Plan(t.Context(), ctx); err == nil || !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("accepted colliding approval namespaces: %v", err)
+	}
+	ctx.Profile.MCPServers[1].Name = "other"
+	if _, err := (Harness{}).Plan(t.Context(), ctx); err != nil {
+		t.Fatalf("rejected distinct namespaces: %v", err)
+	}
+}
+
+func TestCaptureGlobalStateWithoutMCPServers(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"firstStartTime":"owned","migrationVersion":14,"hasReset":true,"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Harness{}).Capture(context.Background(), harness.CaptureContext{Scope: domain.ScopeGlobal, Home: home})
+	if err != nil || len(got.Warnings) != 0 || len(got.MCPServers) != 0 {
+		t.Fatalf("ordinary native state was treated as MCP configuration: %+v (%v)", got, err)
+	}
+}
 
 func TestPlan_Project_Rules(t *testing.T) {
 	t.Parallel()
@@ -301,67 +396,20 @@ func TestRenderHooks_WildcardMatcherOmitted(t *testing.T) {
 	}
 }
 
-func TestPlan_Project_PluginsSettings(t *testing.T) {
+func TestPlan_Global_SettingsToSettingsJSON_FoldsNativePlugins(t *testing.T) {
 	t.Parallel()
-	projectDir := t.TempDir()
 	home := t.TempDir()
-	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: projectDir,
-		Home:      home,
-		Profile: domain.Profile{
-			Packs: []domain.Pack{{
-				Plugins: []domain.Plugin{
-					{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "pack-a"},
-					{Name: "superpowers", Source: "github:obra/superpowers", Marketplace: "github:obra/superpowers-marketplace", SourcePack: "pack-a"},
-				},
-			}},
-		},
+	source, packRoot := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	f, err := Harness{}.Plan(context.Background(), ctx)
+	if err := os.WriteFile(filepath.Join(source, ".claude-plugin/plugin.json"), []byte(`{"name":"linear","version":"1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := plugin.MaterializeClaude(source, packRoot, "p", domain.PluginSource{Marketplace: "market"})
 	if err != nil {
-		t.Fatalf("Plan: %v", err)
+		t.Fatal(err)
 	}
-
-	settingsPath := filepath.Join(projectDir, ".claude", "settings.json")
-	knownPath := filepath.Join(home, ".claude", "plugins", "known_marketplaces.json")
-	var settings, known *domain.SettingsAction
-	for i := range f.MCP {
-		if f.MCP[i].Dst == settingsPath {
-			settings = &f.MCP[i]
-		}
-		if f.MCP[i].Dst == knownPath {
-			known = &f.MCP[i]
-		}
-	}
-	if settings == nil {
-		t.Fatalf("missing plugin settings action for %s; got %+v", settingsPath, f.MCP)
-	}
-	var root map[string]map[string]bool
-	if err := json.Unmarshal(settings.Desired, &root); err != nil {
-		t.Fatalf("unmarshal settings: %v\n%s", err, settings.Desired)
-	}
-	enabled := root["enabledPlugins"]
-	if !enabled["linear@claude-plugins-official"] || !enabled["superpowers@superpowers-marketplace"] {
-		t.Fatalf("enabledPlugins = %v", enabled)
-	}
-
-	if known == nil {
-		t.Fatalf("missing known marketplace action for %s; got %+v", knownPath, f.MCP)
-	}
-	var knownRoot map[string]any
-	if err := json.Unmarshal(known.Desired, &knownRoot); err != nil {
-		t.Fatalf("unmarshal known marketplaces: %v\n%s", err, known.Desired)
-	}
-	if _, ok := knownRoot["superpowers-marketplace"]; !ok {
-		t.Fatalf("known marketplace missing superpowers-marketplace: %v", knownRoot)
-	}
-}
-
-func TestPlan_Global_SettingsToSettingsJSON_FoldsPlugins(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
 	ctx := engine.SyncContext{
 		Scope:     domain.ScopeGlobal,
 		TargetDir: home,
@@ -382,8 +430,9 @@ func TestPlan_Global_SettingsToSettingsJSON_FoldsPlugins(t *testing.T) {
 						},
 					}},
 				}},
-				Plugins: []domain.Plugin{
-					{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "p"},
+				NativePlugin: &domain.NativePluginSelection{
+					Package: *manifest.NativePlugin,
+					Root:    packRoot,
 				},
 			}},
 		},
@@ -434,7 +483,7 @@ func TestPlan_Global_SettingsToSettingsJSON_FoldsPlugins(t *testing.T) {
 		t.Errorf("managed settings missing hooks: %v", root)
 	}
 	enabled, ok := root["enabledPlugins"].(map[string]any)
-	if !ok || enabled["linear@claude-plugins-official"] != true {
+	if !ok || enabled["linear@market"] != true {
 		t.Errorf("managed settings missing folded enabledPlugins: %v", root["enabledPlugins"])
 	}
 }

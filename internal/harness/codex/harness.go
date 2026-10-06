@@ -14,6 +14,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -23,8 +24,9 @@ type Harness struct{}
 func (Harness) ID() domain.Harness { return domain.HarnessCodex }
 
 // Layout describes Codex's filesystem footprint for a given scope.
-func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
-	targetConfigDir := layoutTargetConfigDir(scope, baseDir, home)
+func (Harness) Layout(ctx harness.CaptureContext) harness.Layout {
+	scope, baseDir := ctx.Scope, ctx.TargetBaseDir()
+	targetConfigDir := ctx.TargetConfigDir
 	paths := PathsForScope(scope, targetConfigDir)
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
 	hooksPath := filepath.Join(baseDir, paths.HooksFile)
@@ -56,11 +58,13 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 				harness.PruneMapKeys(root, "mcp_servers", ctx.ManagedMCPServers)
 				delete(root, "agents")
 				stripManagedHookState(root, hooksPath)
+				stripNativePluginState(root, configPath, ctx)
 			},
 			Reset: func(root map[string]any, ctx harness.EditContext) {
 				harness.PruneMapKeys(root, "mcp_servers", ctx.ManagedMCPServers)
 				delete(root, "agents")
 				stripManagedHookState(root, hooksPath)
+				stripNativePluginState(root, configPath, ctx)
 				pruneLegacyMCPServers(root, ctx.ManagedMCPServers)
 			},
 		}}
@@ -68,10 +72,22 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 	return l
 }
 
-func layoutTargetConfigDir(scope domain.Scope, baseDir, home string) bool {
-	return scope == domain.ScopeGlobal &&
-		strings.TrimSpace(home) != "" &&
-		filepath.Clean(baseDir) != filepath.Clean(home)
+func stripNativePluginState(root map[string]any, configPath string, ctx harness.EditContext) {
+	bindings, markets := map[string]struct{}{}, map[string]struct{}{}
+	for binding, record := range ctx.NativePlugins {
+		if filepath.Clean(record.SettingsPath) == filepath.Clean(configPath) {
+			bindings[binding] = struct{}{}
+		}
+		if filepath.Clean(filepath.Join(record.ConfigHome, "config.toml")) == filepath.Clean(configPath) {
+			if parts := strings.Split(binding, "@"); len(parts) == 2 {
+				markets[parts[1]] = struct{}{}
+			}
+		}
+	}
+	harness.PruneMapKeys(root, "plugins", bindings)
+	if !ctx.PreserveNativeMarketplaces {
+		harness.PruneMapKeys(root, "marketplaces", markets)
+	}
 }
 
 func pruneLegacyMCPServers(root map[string]any, names map[string]struct{}) {
@@ -120,6 +136,28 @@ func planGlobal(f *domain.Fragment, ctx engine.SyncContext) error {
 // overrideBase is where AGENTS.override.md lives; skillsBase is where Codex skills live.
 func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsBase, settingsPath string) error {
 	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
+	for _, pack := range ctx.Profile.Packs {
+		if pack.NativePlugin == nil {
+			continue
+		}
+		files, err := plugin.RenderCodex(*pack.NativePlugin)
+		if err != nil {
+			return fmt.Errorf("native plugin pack %q: %w", pack.Name, err)
+		}
+		configHome := filepath.Join(ctx.Home, ".codex")
+		if ctx.Scope == domain.ScopeGlobal && ctx.TargetConfigDir {
+			configHome = ctx.TargetDir
+		}
+		if ctx.NativeConfigDir != "" {
+			configHome = ctx.NativeConfigDir
+		}
+		f.NativePlugins = append(f.NativePlugins, domain.NativePluginAction{
+			Package: pack.NativePlugin.Package, Selection: pack.NativePlugin, Files: files,
+			MarketplaceDir: filepath.Join(ctx.ConfigDir, "rendered-plugins", "codex", pack.NativePlugin.Package.Marketplace),
+			ConfigHome:     configHome, SettingsPath: settingsPath, SourcePack: pack.Name,
+			Scope: ctx.Scope, MCPPolicy: pack.NativePlugin.MCPPolicy,
+		})
+	}
 	skillsSubDir := paths.SkillsDir
 
 	if rules := ctx.Profile.AllRules(); len(rules) > 0 {
@@ -168,8 +206,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	sp := ctx.Profile.SettingsPackName(domain.HarnessCodex)
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 	hasAgents := len(agentRegs) > 0
-	plugins := ctx.Profile.AllPlugins()
-	hasPlugins := len(plugins) > 0
+	hasPlugins := len(f.NativePlugins) > 0
 	hooksPath := filepath.Join(skillsBase, paths.HooksFile)
 	hooks := ctx.Profile.AllHooks()
 	renderedHooks, err := RenderHooksJSON(hooks, hooksPath)
@@ -198,11 +235,11 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 	var mcpRendered []byte
 	if decision.EmitSettings {
 		out, _, err := RenderBytesWithOptions(RenderOptions{
-			Base:      base,
-			Servers:   ctx.Profile.MCPServers,
-			AgentRegs: agentRegs,
-			Plugins:   plugins,
-			HookState: renderedHooks.TrustState,
+			Base:          base,
+			Servers:       ctx.Profile.MCPServers,
+			AgentRegs:     agentRegs,
+			HookState:     renderedHooks.TrustState,
+			NativePlugins: f.NativePlugins,
 		})
 		if err != nil {
 			return err
@@ -214,7 +251,7 @@ func planCodex(f *domain.Fragment, ctx engine.SyncContext, overrideBase, skillsB
 		})
 		f.Desired = append(f.Desired, filepath.Clean(settingsPath))
 	} else if decision.EmitMCP {
-		managed, _, err := RenderManagedKeysOnlyWithPluginsAndHookState(ctx.Profile.MCPServers, agentRegs, plugins, renderedHooks.TrustState)
+		managed, _, err := RenderBytesWithOptions(RenderOptions{Servers: ctx.Profile.MCPServers, AgentRegs: agentRegs, HookState: renderedHooks.TrustState, NativePlugins: f.NativePlugins})
 		if err != nil {
 			return err
 		}

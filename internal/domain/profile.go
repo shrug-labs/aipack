@@ -20,6 +20,10 @@ type Profile struct {
 	Packs        []Pack
 	MCPServers   []MCPServer
 	BaseSettings SettingsBundle
+	// Collision policy is reapplied when imports become ordinary content.
+	CollisionStrategy   string
+	SkillOverrideOwners map[string]string
+	MCPOverrideOwners   map[string]string
 
 	// SettingsPacks lists packs that contribute base settings, in profile order.
 	// All packs with config files contribute by default; set settings.enabled: false to opt out.
@@ -34,16 +38,16 @@ type Profile struct {
 
 // Pack is a resolved pack within a profile, carrying fully-typed content.
 type Pack struct {
-	Name       string
-	Version    string
-	Root       string // absolute path to pack directory
-	Rules      []Rule
-	Agents     []Agent
-	Workflows  []Workflow
-	Skills     []Skill
-	Hooks      []Hook
-	Plugins    []Plugin
-	Registries []string // registry IDs (files live at registries/<id>.yaml)
+	Name         string
+	Version      string
+	Root         string // absolute path to pack directory
+	Rules        []Rule
+	Agents       []Agent
+	Workflows    []Workflow
+	Skills       []Skill
+	Hooks        []Hook
+	Registries   []string // registry IDs (files live at registries/<id>.yaml)
+	NativePlugin *NativePluginSelection
 }
 
 // AllRules returns all rules across all packs, in pack order.
@@ -91,15 +95,6 @@ func (p Profile) AllHooks() []Hook {
 	return out
 }
 
-// AllPlugins returns all plugin references across all packs, in pack order.
-func (p Profile) AllPlugins() []Plugin {
-	var out []Plugin
-	for _, pk := range p.Packs {
-		out = append(out, pk.Plugins...)
-	}
-	return out
-}
-
 // SettingsPackName returns a label for the settings source. If exactly one
 // pack contributes, returns its name. If multiple, returns "(composite)".
 // The harness parameter is accepted for call-site compatibility but ignored.
@@ -117,7 +112,10 @@ func (p Profile) SettingsPackName(_ Harness) string {
 // HasContent reports whether the profile has any rules, agents, workflows, or skills.
 func (p Profile) HasContent() bool {
 	for _, pk := range p.Packs {
-		if len(pk.Rules) > 0 || len(pk.Agents) > 0 || len(pk.Workflows) > 0 || len(pk.Skills) > 0 || len(pk.Hooks) > 0 || len(pk.Plugins) > 0 {
+		if pk.NativePlugin != nil {
+			return true
+		}
+		if len(pk.Rules) > 0 || len(pk.Agents) > 0 || len(pk.Workflows) > 0 || len(pk.Skills) > 0 || len(pk.Hooks) > 0 {
 			return true
 		}
 	}

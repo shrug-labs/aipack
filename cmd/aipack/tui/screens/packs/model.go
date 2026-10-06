@@ -279,7 +279,7 @@ func (m Model) versionsEligible(li *packListItem) bool {
 	}
 	if li.installed {
 		if item := m.currentItem(); item != nil {
-			return item.entry.Method == config.MethodClone
+			return item.entry.Method == config.MethodClone || item.entry.Method == config.MethodNPM
 		}
 		return false
 	}
@@ -895,10 +895,11 @@ func (m Model) updatePreviewPanel(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			if fp != "" {
 				return m, func() tea.Msg {
 					return common.PreviewRequestMsg{
-						Title:    ci.id,
-						Category: ci.category,
-						PackName: item.entry.Name,
-						FilePath: fp,
+						Title:           ci.id,
+						Category:        ci.category,
+						PackName:        item.entry.Name,
+						FilePath:        fp,
+						AdditionalPaths: item.entry.ContentPaths(ci.category, ci.id)[1:],
 					}
 				}
 			}
@@ -925,10 +926,11 @@ func (m Model) currentContentPreviewCmd() tea.Cmd {
 	}
 	return func() tea.Msg {
 		return common.PreviewRequestMsg{
-			Title:    ci.id,
-			Category: ci.category,
-			PackName: item.entry.Name,
-			FilePath: fp,
+			Title:           ci.id,
+			Category:        ci.category,
+			PackName:        item.entry.Name,
+			FilePath:        fp,
+			AdditionalPaths: item.entry.ContentPaths(ci.category, ci.id)[1:],
 		}
 	}
 }
@@ -1056,6 +1058,7 @@ func buildContentItemsFromIndexed(resources []app.IndexedPackResource) []content
 	}
 	for category := range byCategory {
 		slices.Sort(byCategory[category])
+		byCategory[category] = slices.Compact(byCategory[category])
 	}
 
 	var items []contentItem
@@ -1119,7 +1122,7 @@ func (m Model) contentFilePath(ci contentItem) string {
 	if item == nil || item.entry.Path == "" {
 		return ""
 	}
-	return item.entry.ContentPath(ci.category, ci.id)
+	return item.entry.ContentPaths(ci.category, ci.id)[0]
 }
 
 func (m Model) currentContentItem() *contentItem {
@@ -1160,7 +1163,7 @@ func (m *Model) loadInlinePreview() tea.Cmd {
 	m.previewData = previewLoadedMsg{}
 	m.previewState = asyncLoading
 	m.previewOffset = 0
-	return common.LoadPreview(ci.id, ci.category, item.entry.Name, filePath)
+	return common.LoadPreview(ci.id, ci.category, item.entry.Name, filePath, item.entry.ContentPaths(ci.category, ci.id)[1:]...)
 }
 
 // --- View ---
@@ -1384,8 +1387,19 @@ func (m Model) viewPackInfoPanel(width, height int) string {
 	}
 
 	if item := m.currentItem(); item != nil {
+		if native := item.entry.NativePlugin; native != nil {
+			sb.WriteString(infoField("Plugin", native.Binding(), labelW, innerW) + "\n")
+			sb.WriteString(infoField("Converter", fmt.Sprintf("%d (%s)", native.ConverterVersion, native.Format), labelW, innerW) + "\n")
+			for _, target := range item.entry.Compatibility {
+				summary := fmt.Sprintf("%s: %s (%d supported, %d unsupported)", target.Target, target.Delivery, len(target.Supported), len(target.Unsupported))
+				sb.WriteString(infoField("All content", summary, labelW, innerW) + "\n")
+			}
+		}
 		if item.entry.Version != "" {
 			sb.WriteString(infoField("Version", "v"+item.entry.Version, labelW, innerW) + "\n")
+		}
+		if item.entry.PackageVersion != "" {
+			sb.WriteString(infoField("Package", item.entry.PackageVersion, labelW, innerW) + "\n")
 		}
 		// Pin/Ref/Commit surface the v0.21 lockfile state. Pin wins over
 		// Ref because it carries the same information plus the "(pinned)"
@@ -1429,6 +1443,12 @@ func (m Model) viewPackInfoPanel(width, height int) string {
 			src = style.Render(src)
 		}
 		sb.WriteString(infoField("Source", src, labelW, innerW) + "\n")
+		if item.entry.SubPath != "" {
+			sb.WriteString(infoField("Subpath", item.entry.SubPath, labelW, innerW) + "\n")
+		}
+		if source := item.entry.PluginSource; source != nil && source.MarketplaceURL != "" {
+			sb.WriteString(infoField("Catalog", source.MarketplaceURL, labelW, innerW) + "\n")
+		}
 	} else {
 		sb.WriteString(common.DimStyle.Render("Not installed locally.") + "\n")
 		if detail, ok := m.currentIndexedDetail(); ok {
@@ -1500,7 +1520,7 @@ func (m Model) viewPackInfoPanel(width, height int) string {
 // the newest tag. The hint is intentionally cheap — it's a drift signal, not
 // a full version list (the registry block has the full list when applicable).
 func (m Model) installedLatestHint(name string, entry app.PackShowEntry) string {
-	if entry.Method != config.MethodClone {
+	if entry.Method != config.MethodClone && entry.Method != config.MethodNPM {
 		return ""
 	}
 	cached, ok := m.versionsCacheEntry(name)
@@ -1518,6 +1538,9 @@ func (m Model) installedLatestHint(name string, entry app.PackShowEntry) string 
 	current := source.SemverFromRef(entry.Pin)
 	if current == "" {
 		current = entry.Version
+	}
+	if entry.Method == config.MethodNPM {
+		current = entry.PackageVersion
 	}
 	if current != "" && source.StripVersionPrefix(current) == source.StripVersionPrefix(latest) {
 		return ""
@@ -1628,7 +1651,7 @@ func (m Model) recoveryHintForCurrent() string {
 // only a fallback for old metadata that lacks an origin.
 func sourceForMethod(method, origin, installPath string) string {
 	switch method {
-	case config.MethodLink, config.MethodCopy, config.MethodLocal, config.MethodClone, config.MethodArchive, config.MethodHTTPTarball:
+	case config.MethodLink, config.MethodCopy, config.MethodLocal, config.MethodClone, config.MethodArchive, config.MethodNPM, config.MethodHTTPTarball:
 		if origin != "" {
 			return tuiutil.ShortPath(origin)
 		}
@@ -1649,7 +1672,7 @@ func methodDisplay(method string) (string, lipgloss.Style) {
 		return "link", lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
 	case config.MethodCopy, config.MethodLocal:
 		return "local", lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	case config.MethodClone, config.MethodArchive:
+	case config.MethodClone, config.MethodArchive, config.MethodNPM:
 		return "remote", lipgloss.NewStyle().Foreground(lipgloss.Color("114"))
 	default:
 		return method, common.DimStyle

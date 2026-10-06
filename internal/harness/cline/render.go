@@ -1,7 +1,7 @@
 package cline
 
 import (
-	"encoding/json"
+	"fmt"
 	"maps"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -30,8 +30,11 @@ var clineMCPTransport = harnesspkg.MCPTransportCodec{StreamableHTTP: clineTransp
 func RenderBytes(base []byte, servers []domain.MCPServer) ([]byte, []domain.Warning, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
-		if err := json.Unmarshal(base, &root); err != nil {
+		if err := util.UnmarshalJSON(base, &root); err != nil {
 			return nil, nil, err
+		}
+		if root == nil {
+			return nil, nil, fmt.Errorf("settings JSON must be an object")
 		}
 	}
 

@@ -1,6 +1,11 @@
 package domain
 
-import "os"
+import (
+	"cmp"
+	"encoding/json"
+	"os"
+	"slices"
+)
 
 // WriteAction represents a file to be written with in-memory content.
 type WriteAction struct {
@@ -10,6 +15,11 @@ type WriteAction struct {
 	Src        string // set by Capture (abs path read from); empty for Plan writes
 	Category   PackCategory
 	TraceRefs  []TraceRef // embedded resources represented by this generated file
+
+	// PackageFiles replaces a complete payload tree atomically. A non-nil
+	// empty slice represents an empty package; nil remains a regular file.
+	PackageFiles []NativePluginFile
+	Delivery     *PackageDelivery
 
 	// DesiredMode optionally sets the generated file's permission bits.
 	// Zero preserves the engine default for ordinary generated files.
@@ -27,14 +37,56 @@ type WriteAction struct {
 	SourceDigest string
 }
 
+// PackageDelivery associates a portable payload with its activation overlay
+// and retained runtime data. It does not represent a native installation.
+type PackageDelivery struct {
+	Binding        string `json:"binding"`
+	Generation     string `json:"generation"`
+	Home           string `json:"home,omitempty"`
+	ConfigHome     string `json:"config_home,omitempty"`
+	ProjectDir     string `json:"project_dir,omitempty"`
+	DataDir        string `json:"data_dir"`
+	SettingsPath   string `json:"settings_path"`
+	ManagedOverlay []byte `json:"managed_overlay"`
+}
+
 // EffectiveDigest returns the digest to use for ledger tracking. For content
 // writes with a SourceDigest, it returns SourceDigest (the on-disk promoted
 // file hash). Otherwise it hashes Content directly.
 func (w WriteAction) EffectiveDigest() string {
+	if w.PackageFiles != nil {
+		return SingleFileDigest(PackageManifest(w.PackageFiles))
+	}
 	if w.IsContent && w.SourceDigest != "" {
 		return w.SourceDigest
 	}
 	return SingleFileDigest(w.Content)
+}
+
+// PackageManifest records paths, modes, link targets and content hashes without
+// embedding executable payload bytes in the ledger or sync preview.
+func PackageManifest(files []NativePluginFile) []byte {
+	type entry struct {
+		Path   string      `json:"path"`
+		Mode   os.FileMode `json:"mode"`
+		Link   string      `json:"link,omitempty"`
+		Digest string      `json:"digest,omitempty"`
+	}
+	entries := make([]entry, 0, len(files))
+	for _, file := range files {
+		item := entry{Path: file.Path, Mode: file.Mode, Link: file.Link}
+		if file.Mode&os.ModeSymlink != 0 {
+			// Link permissions are fixed by the OS; the target has its own mode.
+			item.Mode = os.ModeSymlink
+		}
+		if file.Mode.IsRegular() {
+			item.Digest = SingleFileDigest(file.Content)
+		}
+		entries = append(entries, item)
+	}
+	slices.SortFunc(entries, func(a, b entry) int { return cmp.Compare(a.Path, b.Path) })
+	out, _ := json.MarshalIndent(entries, "", "  ")
+	return out
 }
 
 // EffectiveMode returns the mode to use when writing this action.
@@ -52,6 +104,7 @@ type CopyAction struct {
 	Kind           CopyKind // file or dir
 	SourcePack     string   // pack provenance
 	SourceBoundary string   // repository or pack root allowed for source symlinks
+	Category       PackCategory
 }
 
 // SettingsAction represents a declarative settings file sync with optional merge mode.

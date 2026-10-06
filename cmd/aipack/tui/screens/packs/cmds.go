@@ -340,6 +340,13 @@ func formatInspectPreview(result app.PackInspectResult) string {
 		fmt.Fprintf(&sb, "Version: %s\n", result.Version)
 	}
 	fmt.Fprintf(&sb, "Source: %s\n", result.Source)
+	if result.NativePlugin != nil {
+		fmt.Fprintf(&sb, "Native: %s (%s)\n", result.NativePlugin.Binding(), result.NativePlugin.Format)
+		fmt.Fprintln(&sb, "Compatibility (all components):")
+		for _, target := range result.Compatibility {
+			fmt.Fprintf(&sb, "  %s\n", target.Summary())
+		}
+	}
 	fmt.Fprintln(&sb, "Status: inspected")
 	if result.Method != "" {
 		fmt.Fprintf(&sb, "Method: %s\n", result.Method)
@@ -364,7 +371,7 @@ func formatInspectPreview(result app.PackInspectResult) string {
 	appendPreviewList(&sb, "Extras", result.Extras)
 	appendPreviewList(&sb, "Warnings", result.Warnings)
 	fmt.Fprintln(&sb)
-	fmt.Fprintln(&sb, "Preview only. No pack files, profiles, lockfile, or harness files were changed.")
+	fmt.Fprintln(&sb, "Preview only. Nothing was installed or synced.")
 	return sb.String()
 }
 
@@ -393,7 +400,7 @@ func formatUpdatePreview(stdout string, results []app.PackUpdateResult) string {
 		}
 	}
 	fmt.Fprintln(&sb)
-	fmt.Fprintln(&sb, "Preview only. This dry-run did not change pack files, bundled content, the lockfile, profiles, or harness files.")
+	fmt.Fprintln(&sb, "Preview only (dry-run). Installed packs and assistant configuration are unchanged.")
 	return sb.String()
 }
 

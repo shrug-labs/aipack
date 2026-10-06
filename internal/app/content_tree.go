@@ -27,19 +27,36 @@ func (p ProfilePackInfo) ContentPath(category domain.PackCategory, id string) st
 	return filepath.Join(p.Root, filepath.FromSlash(p.Manifest.RelPath(category, id)))
 }
 
+// ContentPaths includes every declared source for a colliding native agent.
+func (p ProfilePackInfo) ContentPaths(category domain.PackCategory, id string) []string {
+	if category == domain.CategoryAgents {
+		if paths := nativeAgentContentPaths(p.Root, p.Manifest.NativePlugin, id); len(paths) > 0 {
+			return paths
+		}
+	}
+	return []string{p.ContentPath(category, id)}
+}
+
 // ContentSize returns the on-disk size of a content item, or -1 on error.
 func (p ProfilePackInfo) ContentSize(category domain.PackCategory, id string) int64 {
-	fp := p.ContentPath(category, id)
-	kind := domain.CopyKindFile
-	if category == domain.CategorySkills || category == domain.CategoryHooks {
-		fp = filepath.Dir(fp)
-		kind = domain.CopyKindDir
+	return contentPathsSize(category, p.ContentPaths(category, id))
+}
+
+func contentPathsSize(category domain.PackCategory, paths []string) int64 {
+	var total int64
+	for _, path := range paths {
+		kind := domain.CopyKindFile
+		if category == domain.CategorySkills || category == domain.CategoryHooks {
+			path = filepath.Dir(path)
+			kind = domain.CopyKindDir
+		}
+		size, err := fileOrDirSize(path, kind)
+		if err != nil {
+			return -1
+		}
+		total += size
 	}
-	size, err := fileOrDirSize(fp, kind)
-	if err != nil {
-		return -1
-	}
-	return size
+	return total
 }
 
 // ContentItem represents a single content item (rule, agent, etc.) with its
@@ -309,12 +326,12 @@ func ApplyContentTree(tree ContentTree, entries []config.PackEntry) {
 			}
 		}
 
-		// MCP servers — preserve existing tool allowlists from the profile.
+		// MCP servers — preserve existing policies from the profile.
 		if len(p.Manifest.MCP) > 0 {
 			enabledServers := cats[domain.CategoryMCP]
 			existingTools := map[string][]string{}
 			existingAlwaysTools := map[string][]string{}
-			existingDisabledTools := map[string][]string{}
+			existing := pe.MCP
 			for name, cfg := range pe.MCP {
 				if cfg.AllowedTools != nil {
 					existingTools[name] = cfg.AllowedTools
@@ -322,14 +339,12 @@ func ApplyContentTree(tree ContentTree, entries []config.PackEntry) {
 				if cfg.AlwaysAllowedTools != nil {
 					existingAlwaysTools[name] = cfg.AlwaysAllowedTools
 				}
-				if cfg.DisabledTools != nil {
-					existingDisabledTools[name] = cfg.DisabledTools
-				}
 			}
 			pe.MCP = config.MCPToConfig(p.Manifest.MCP, enabledServers, existingTools, existingAlwaysTools)
-			for name, disabled := range existingDisabledTools {
+			for name, previous := range existing {
 				if cfg, ok := pe.MCP[name]; ok {
-					cfg.DisabledTools = append([]string{}, disabled...)
+					cfg.DisabledTools = append([]string{}, previous.DisabledTools...)
+					cfg.StartupTimeout = previous.StartupTimeout
 					pe.MCP[name] = cfg
 				}
 			}

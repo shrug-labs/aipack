@@ -15,11 +15,11 @@
       "enum": [1, 2]
     },
     "name": {
-      "$ref": "#/definitions/packName"
-    },
-    "version": {
       "type": "string",
       "minLength": 1
+    },
+    "version": {
+      "type": "string"
     },
     "description": {
       "type": "string"
@@ -28,30 +28,30 @@
       "type": "string",
       "minLength": 1
     },
+    "native_plugin": {
+      "$ref": "#/definitions/nativePlugin"
+    },
     "rules": {
       "$ref": "#/definitions/nullableContentSlashedIDs"
     },
     "agents": {
-      "$ref": "#/definitions/nullableContentLeafIDs"
+      "$ref": "#/definitions/nullableStringList"
     },
     "workflows": {
-      "$ref": "#/definitions/nullableContentLeafIDs"
+      "$ref": "#/definitions/nullableStringList"
     },
     "skills": {
-      "$ref": "#/definitions/nullableContentLeafIDs"
+      "$ref": "#/definitions/nullableStringList"
     },
     "prompts": {
       "$ref": "#/definitions/nullableSlashedIDs"
-    },
-    "plugins": {
-      "$ref": "#/definitions/nullableLeafIDs"
     },
     "mcp": true,
     "configs": {
       "$ref": "#/definitions/nullableConfigs"
     },
     "hooks": {
-      "$ref": "#/definitions/nullableContentLeafIDs"
+      "$ref": "#/definitions/nullableStringList"
     },
     "profiles": {
       "$ref": "#/definitions/nullableYAMLRefs"
@@ -122,7 +122,8 @@
             "const": 2
           }
         },
-        "required": ["schema_version"]
+        "required": ["schema_version"],
+        "not": { "required": ["native_plugin"] }
       },
       "then": {
         "properties": {
@@ -131,9 +132,92 @@
           }
         }
       }
+    },
+    {
+      "if": { "required": ["native_plugin"] },
+      "then": {
+        "properties": {
+          "name": {
+            "allOf": [
+              { "$ref": "#/definitions/nativeName" },
+              { "not": { "pattern": "__aipack__|\\.\\." } }
+            ]
+          },
+          "mcp": { "$ref": "#/definitions/nullableStringList" }
+        }
+      },
+      "else": {
+        "properties": {
+          "name": { "$ref": "#/definitions/packName" },
+          "version": { "type": "string", "minLength": 1 },
+          "agents": { "$ref": "#/definitions/nullableContentLeafIDs" },
+          "workflows": { "$ref": "#/definitions/nullableContentLeafIDs" },
+          "skills": { "$ref": "#/definitions/nullableContentLeafIDs" },
+          "hooks": { "$ref": "#/definitions/nullableContentLeafIDs" }
+        }
+      }
     }
   ],
   "definitions": {
+    "nativeName": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+    },
+    "nativeComponentMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "oneOf": [{ "$ref": "#/definitions/relativePath" }, { "const": "" }]
+        }
+      }
+    },
+    "nativePlugin": {
+      "description": "Generated descriptor for a complete native package retained under upstream/. Native executable trust remains with its host.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "harness", "name", "marketplace", "manifest", "converter_version", "components"],
+      "properties": {
+        "format": { "enum": ["codex-legacy", "claude", "agent-plugins"] },
+        "harness": { "enum": ["codex", "claudecode"] },
+        "name": { "$ref": "#/definitions/nativeName" },
+        "marketplace": { "$ref": "#/definitions/nativeName" },
+        "manifest": { "enum": [".codex-plugin/plugin.json", ".claude-plugin/plugin.json", "plugin.json", ""] },
+        "converter_version": { "type": "integer", "minimum": 1 },
+        "copied_source": { "type": "boolean" },
+        "cache_version": { "type": "string", "pattern": "^(unknown|[0-9a-f]{12}(-[0-9a-f]{8})?)$" },
+        "root_directory_name": { "type": "string", "not": { "enum": [".", ".."] }, "pattern": "^[^/\\\\\u0000]*$" },
+        "components": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "skills": { "$ref": "#/definitions/nativeComponentMap" },
+            "agents": { "$ref": "#/definitions/nativeComponentMap" },
+            "workflows": { "$ref": "#/definitions/nativeComponentMap" },
+            "hooks": { "$ref": "#/definitions/nativeComponentMap" },
+            "mcp": { "$ref": "#/definitions/nativeComponentMap" }
+          }
+        },
+        "hook_events": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "settings_files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/relativePath" }
+        },
+        "marketplace_entry": { "type": "object" },
+        "catalog_command_order": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "marketplace_metadata": { "type": "object" }
+      }
+    },
     "packName": {
       "allOf": [
         {
@@ -190,6 +274,11 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "nullableStringList": {
+      "type": ["array", "null"],
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
     },
     "leafIDs": {
       "type": "array",

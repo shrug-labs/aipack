@@ -1,15 +1,161 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/cmdutil"
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/plugin"
 )
+
+func TestSyncRecoversReplacementBeforeLoadingProfile(t *testing.T) {
+	for _, candidate := range []string{"uncommitted rule body", "invalid manifest"} {
+		t.Run(candidate, func(t *testing.T) {
+			home, cfg, project := writeSyncFixture(t)
+			t.Setenv("HOME", home)
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			t.Chdir(project)
+			pack := filepath.Join(cfg, "packs/demo")
+			backup := filepath.Join(cfg, "packs/.demo.pending-old")
+			if err := os.Rename(pack, backup); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(pack, "rules"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			manifest := `{"schema_version":2,"name":"demo","root":"."}`
+			if candidate == "invalid manifest" {
+				manifest = "{"
+			}
+			if err := os.WriteFile(filepath.Join(pack, "pack.json"), []byte(manifest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(pack, "rules/sample.md"), []byte("uncommitted rule body"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			op := map[string]any{"name": "demo", "stage": filepath.Join(cfg, ".tmp/pack-staging/interrupted"), "digest": strings.Repeat("0", 64), "had_previous": true}
+			body, err := json.Marshal(op)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(cfg, ".tmp/pack-operations")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "demo.json"), body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			files, err := plugin.ReadFiles(pack)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hash := sha256.Sum256(raw)
+			op["digest"] = hex.EncodeToString(hash[:])
+			body, err = json.Marshal(op)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "demo.json"), body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, stderr, code := runApp(t, "sync", "--yes", "--config-dir", cfg)
+			if code != 0 {
+				t.Fatalf("sync: exit=%d %s %s", code, out, stderr)
+			}
+			delivered, err := os.ReadFile(filepath.Join(project, ".claude/rules/sample.md"))
+			if err != nil || strings.Contains(string(delivered), "uncommitted") || !strings.Contains(string(delivered), "body") {
+				t.Fatalf("delivered stale profile: %s %v", delivered, err)
+			}
+		})
+	}
+}
+
+func TestRunSync_DryRunShowsRemovedAndDisabledContent(t *testing.T) {
+	for _, hid := range domain.AllHarnesses() {
+		for _, scope := range []domain.Scope{domain.ScopeProject, domain.ScopeGlobal} {
+			for _, action := range []string{"remove", "disable"} {
+				for _, autoSync := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/%s/%s/auto=%t", hid, scope, action, autoSync), func(t *testing.T) {
+						home, cfg, project := writeSyncFixture(t)
+						t.Setenv("HOME", home)
+						for _, key := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG_DIR", "CLINE_DIR", "CLINE_DATA_DIR"} {
+							t.Setenv(key, "")
+						}
+						t.Chdir(project)
+						sc, err := config.LoadSyncConfig(config.SyncConfigPath(cfg))
+						if err != nil {
+							t.Fatal(err)
+						}
+						sc.Defaults.Scope, sc.Defaults.Harnesses, sc.Defaults.AutoSync = string(scope), []string{string(hid)}, autoSync
+						if err := config.SaveSyncConfig(config.SyncConfigPath(cfg), sc); err != nil {
+							t.Fatal(err)
+						}
+						run := func(args ...string) string {
+							t.Helper()
+							out, stderr, code := runApp(t, append(args, "--config-dir", cfg)...)
+							if code != 0 {
+								t.Fatalf("%v: exit=%d %s %s", args, code, out, stderr)
+							}
+							return out
+						}
+						run("sync", "--yes")
+						run("pack", action, "demo")
+						base := project
+						if scope == domain.ScopeGlobal {
+							base = home
+						}
+						rel := map[domain.Harness]string{domain.HarnessClaudeCode: ".claude/rules/sample.md", domain.HarnessOpenCode: ".opencode/rules/sample.md", domain.HarnessCodex: "AGENTS.override.md", domain.HarnessCline: ".clinerules/sample.md"}[hid]
+						if scope == domain.ScopeGlobal {
+							rel = map[domain.Harness]string{domain.HarnessClaudeCode: ".claude/rules/sample.md", domain.HarnessOpenCode: ".config/opencode/rules/sample.md", domain.HarnessCodex: ".codex/AGENTS.override.md", domain.HarnessCline: "Documents/Cline/Rules/sample.md"}[hid]
+						}
+						path := filepath.Join(base, rel)
+						ledger := engine.LedgerPath(cfg, scope, project, hid)
+						before, err := os.ReadFile(ledger)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, flags := range [][]string{{"--dry-run"}, {"--dry-run", "--verbose"}} {
+							out := run(append([]string{"sync"}, flags...)...)
+							if !autoSync && (!strings.Contains(out, "stale: ") || !strings.Contains(out, filepath.Base(path))) {
+								t.Fatalf("%v omitted the pending stale deletion: %s", flags, out)
+							}
+							if autoSync && strings.Contains(out, "stale: ") {
+								t.Fatalf("auto-sync left pending cleanup: %s", out)
+							}
+							after, err := os.ReadFile(ledger)
+							if err != nil || string(after) != string(before) {
+								t.Fatalf("preview changed the ledger: %v", err)
+							}
+							if _, err := os.Stat(path); !autoSync && err != nil {
+								t.Fatalf("preview deleted rendered content: %v", err)
+							}
+						}
+						run("sync", "--yes")
+						if _, err := os.Stat(path); !os.IsNotExist(err) {
+							t.Fatalf("sync retained removed content: %v", err)
+						}
+						if out := run("sync", "--dry-run"); strings.Contains(out, "stale:") {
+							t.Fatalf("cleanup did not converge: %s", out)
+						}
+					})
+				}
+			}
+		}
+	}
+}
 
 func TestRunSync_DryRunVerboseDoesNotAppendZeroSummary(t *testing.T) {
 	home, configDir, projectDir := writeSyncFixture(t)

@@ -38,7 +38,12 @@ func maybeAutoSyncProfileWithOptions(ctx context.Context, g *Globals, cfgDir, pr
 	if profileName != active {
 		return nil
 	}
-	loaded, exitCode := loadProfileWithSyncConfig("", "", cfgDir, syncCfg, g.Stderr)
+	ctx, unlock, err := app.PrepareSync(ctx, cfgDir, false)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	loaded, exitCode := loadProfileWithSyncConfigOptions("", "", cfgDir, syncCfg, g.Stderr, loadProfileOptions{AllowNoEnabledPacks: true})
 	if exitCode >= 0 {
 		return ExitError{Code: exitCode}
 	}
@@ -87,7 +92,12 @@ func maybeAutoSyncAfterPackUpdate(ctx context.Context, g *Globals, cfgDir string
 		return nil
 	}
 
-	loaded, exitCode := loadProfileWithSyncConfig("", "", cfgDir, syncCfg, g.Stderr)
+	ctx, unlock, err := app.PrepareSync(ctx, cfgDir, false)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	loaded, exitCode := loadProfileWithSyncConfigOptions("", "", cfgDir, syncCfg, g.Stderr, loadProfileOptions{AllowNoEnabledPacks: true})
 	if exitCode >= 0 {
 		return ExitError{Code: exitCode}
 	}

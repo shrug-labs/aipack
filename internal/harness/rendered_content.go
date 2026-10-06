@@ -196,17 +196,21 @@ func workflowSourceID(w domain.Workflow) string {
 }
 
 func AddRenderedSkillCopies(f *domain.Fragment, baseDir, subDir string, namespaced bool, skills []domain.Skill) {
-	if !namespaced {
-		f.AddSkillCopies(baseDir, subDir, skills)
-		return
-	}
 	for _, s := range skills {
+		if !namespaced && s.Raw == nil {
+			f.AddSkillCopies(baseDir, subDir, []domain.Skill{s})
+			continue
+		}
 		renderedName := ContentName(namespaced, s.SourcePack, s.Name)
 		dstDir := filepath.Join(baseDir, subDir, renderedName)
 		f.Desired = append(f.Desired, dstDir)
 
 		entryPath := filepath.Join(s.DirPath, domain.SkillEntryFile)
-		raw, err := os.ReadFile(entryPath)
+		raw := s.Raw
+		var err error
+		if raw == nil {
+			raw, err = os.ReadFile(entryPath)
+		}
 		if err != nil {
 			f.Warnings = append(f.Warnings, domain.Warning{
 				Path:    entryPath,
@@ -251,6 +255,7 @@ func addSkillAssetCopies(f *domain.Fragment, skill domain.Skill, dstDir string) 
 			Kind:           domain.CopyKindFile,
 			SourcePack:     skill.SourcePack,
 			SourceBoundary: skill.SourceBoundary,
+			Category:       domain.CategorySkills,
 		})
 		f.Desired = append(f.Desired, dst)
 	}

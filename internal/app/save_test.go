@@ -229,8 +229,8 @@ type stubHarness struct {
 	capture harness.CaptureResult
 }
 
-func (s stubHarness) ID() domain.Harness                                 { return s.id }
-func (s stubHarness) Layout(domain.Scope, string, string) harness.Layout { return harness.Layout{} }
+func (s stubHarness) ID() domain.Harness                           { return s.id }
+func (s stubHarness) Layout(harness.CaptureContext) harness.Layout { return harness.Layout{} }
 func (s stubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }

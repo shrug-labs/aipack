@@ -11,8 +11,104 @@ import (
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/testutil"
 )
+
+func TestImportedMCPToolDiscoveryAndCache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX probe fixture")
+	}
+	for _, format := range []string{plugin.CodexLegacy, plugin.AgentPlugins, plugin.Claude, "claude-catalog"} {
+		t.Run(format, func(t *testing.T) {
+			src, cfg := t.TempDir(), t.TempDir()
+			writeTestSyncConfig(t, cfg)
+			manifest, mcpPath := ".codex-plugin/plugin.json", ".mcp.json"
+			manifestBody := `{"name":"probe","version":"1.0.0"}`
+			entry := map[string]any{"command": "sh", "args": []string{"scripts/server.sh", "literal; touch unexpected"}, "cwd": "."}
+			if format == plugin.AgentPlugins {
+				manifest, mcpPath = "plugin.json", "mcp.json"
+				entry["type"], entry["cwd"] = "stdio", "${PLUGIN_ROOT}"
+				manifestBody = `{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"probe","version":"1.0.0"}`
+			} else if strings.HasPrefix(format, "claude") {
+				manifest = ".claude-plugin/plugin.json"
+			}
+			declarations := map[string]any{"mcpServers": map[string]any{"probe": entry}}
+			if format == plugin.AgentPlugins {
+				declarations["$schema"] = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+			}
+			body, err := json.Marshal(declarations)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(src, mcpPath), string(body))
+			writeFile(t, filepath.Join(src, "marker"), "owned")
+			writeFile(t, filepath.Join(src, "scripts/server.sh"), "test -f marker && test \"$1\" = 'literal; touch unexpected' || exit 1\n"+mcpTestServerScript())
+			spec := &domain.PluginSource{Format: format, Name: "probe", Marketplace: "owned"}
+			if format == "claude-catalog" {
+				spec.Format = plugin.Claude
+				spec.Entry = map[string]any{"name": "probe", "source": "./", "mcpServers": map[string]any{"probe": entry}}
+			} else {
+				writeFile(t, filepath.Join(src, manifest), manifestBody)
+			}
+			if err := PackInstall(t.Context(), PackInstallRequest{ConfigDir: cfg, PackPath: src, Plugin: spec}, nil); err != nil {
+				t.Fatal(err)
+			}
+			packRoot := filepath.Join(cfg, "packs/probe")
+			before, err := packTreeDigest(packRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			listing := RunMCPInspectTools(t.Context(), MCPInspectToolsRequest{ConfigDir: cfg})
+			if !listing.OK || len(listing.Servers) != 1 || listing.Servers[0].ServerName != "probe" || len(listing.Warnings) != 0 {
+				t.Fatalf("imported server missing: %+v", listing)
+			}
+			result := RunMCPInspectTools(t.Context(), MCPInspectToolsRequest{ConfigDir: cfg, ServerRef: "probe/probe", Save: true, Timeout: 5 * time.Second})
+			if !result.OK || len(result.Results) != 1 || !result.Results[0].Saved || result.Results[0].ToolCount != 2 || result.Results[0].InventoryPath != MCPProbeCachePath(cfg) {
+				t.Fatalf("imported tool probe/cache failed: %+v", result)
+			}
+			listing = RunMCPInspectTools(t.Context(), MCPInspectToolsRequest{ConfigDir: cfg})
+			if listing.Servers[0].ToolCount != 2 {
+				t.Fatalf("listing lost cached inventory: %+v", listing)
+			}
+			after, err := packTreeDigest(packRoot)
+			if err != nil || after != before {
+				t.Fatalf("probe changed managed source: %s -> %s (%v)", before, after, err)
+			}
+			if err := os.Remove(MCPProbeCachePath(cfg)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(MCPProbeCachePath(cfg), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			var observed MCPInspectToolsServerResult
+			result = RunMCPInspectTools(t.Context(), MCPInspectToolsRequest{ConfigDir: cfg, ServerRef: "probe/probe", Save: true, Timeout: 5 * time.Second,
+				OnResult: func(r MCPInspectToolsServerResult) { observed = r }})
+			if result.OK || result.Results[0].Saved || observed.Status != InspectStatusError || !strings.Contains(observed.Error, "save probe cache") {
+				t.Fatalf("cache failure was hidden: %+v %+v", result, observed)
+			}
+		})
+	}
+}
+
+func TestImportedMCPUnsupportedDeclarationsRemainDiscoverable(t *testing.T) {
+	t.Parallel()
+	src, cfg := t.TempDir(), t.TempDir()
+	writeTestSyncConfig(t, cfg)
+	writeFile(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"probe","version":"1"}`)
+	writeFile(t, filepath.Join(src, ".mcp.json"), `{"mcpServers":{"probe":{"type":"http","url":"https://example.invalid","oauth":{}}}}`)
+	if err := PackInstall(t.Context(), PackInstallRequest{ConfigDir: cfg, PackPath: src}, nil); err != nil {
+		t.Fatal(err)
+	}
+	listing := RunMCPInspectTools(t.Context(), MCPInspectToolsRequest{ConfigDir: cfg})
+	if !listing.OK || len(listing.Servers) != 1 || len(listing.Warnings) != 1 {
+		t.Fatalf("unsupported server disappeared: %+v", listing)
+	}
+	result := RunMCPInspectTools(t.Context(), MCPInspectToolsRequest{ConfigDir: cfg, ServerRef: "probe"})
+	if result.OK || result.InputError || len(result.Results) != 1 || result.Results[0].Status != InspectStatusSkipped || !strings.Contains(result.Results[0].Error, "oauth") {
+		t.Fatalf("unsupported native setup was not reported: %+v", result)
+	}
+}
 
 func TestResolveServerRef(t *testing.T) {
 	t.Parallel()

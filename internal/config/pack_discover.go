@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -193,11 +194,49 @@ func DiscoverEntryDirs(rootDir, dirName, entryFile, label string) ([]string, map
 //
 //   - rules, prompts, mcp, profiles, registries: id preserves the slashed
 //     relative path (the directory structure is part of the id).
-//   - agents, workflows, skills, hooks, plugins: id is the leaf only (subdirectories are
+//   - agents, workflows, skills, hooks: id is the leaf only (subdirectories are
 //     authoring organization). Same-leaf collisions within one pack are an
 //     error. The actual on-disk path is recorded via SetResolvedPath so
 //     downstream callers (parse, validation, save round-trip) find the file.
 func DiscoverContent(m *PackManifest, packRoot string) error {
+	if m.NativePlugin != nil {
+		// Imported inventories are mapped to upstream paths by the converter.
+		// Auto-discovery would reinterpret native payload as portable pack content.
+		return nil
+	}
+	legacyRoot, err := resolveWalkRoot(filepath.Join(packRoot, "plugins"))
+	if err != nil {
+		return err
+	}
+	if legacyRoot != "" {
+		if err := filepath.WalkDir(legacyRoot, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				for _, manifest := range []string{"plugin.json", ".codex-plugin/plugin.json", ".claude-plugin/plugin.json"} {
+					data, err := os.ReadFile(filepath.Join(path, manifest))
+					if os.IsNotExist(err) {
+						continue
+					}
+					if err != nil {
+						return err
+					}
+					var header struct{ Name string }
+					if json.Unmarshal(data, &header) == nil && domain.ValidNativeName(header.Name) {
+						return filepath.SkipDir
+					}
+				}
+				return nil
+			}
+			if strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+				return fmt.Errorf("plugins/<id>.json references are no longer supported; import the original marketplace plugin as a pack instead")
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	type slashedSpec struct {
 		field  *[]string
 		dir    string
@@ -230,7 +269,6 @@ func DiscoverContent(m *PackManifest, packRoot string) error {
 	for _, s := range []leafSpec{
 		{field: &m.Agents, dir: "agents", suffix: ".md", dirName: "agents", cat: domain.CategoryAgents},
 		{field: &m.Workflows, dir: "workflows", suffix: ".md", dirName: "workflows", cat: domain.CategoryWorkflows},
-		{field: &m.Plugins, dir: "plugins", suffix: ".json", dirName: "plugins", cat: domain.CategoryPlugins},
 	} {
 		ids, paths, err := DiscoverIDsByLeaf(filepath.Join(packRoot, s.dir), s.dirName, s.suffix)
 		if err != nil {

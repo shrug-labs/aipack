@@ -115,6 +115,7 @@ func (m *Model) BuildItems() []Item {
 		{app.PlanOpAgent, "Agents", opAgentStyle},
 		{app.PlanOpSkill, "Skills", opSkillStyle},
 		{app.PlanOpHook, "Hooks", opHookStyle},
+		{app.PlanOpPlugin, "Plugins", opSettingsStyle},
 		{app.PlanOpSettings, "Settings", opSettingsStyle},
 		{app.PlanOpMCP, "MCP", opMCPStyle},
 		{app.PlanOpStale, "Stale", opStaleStyle},

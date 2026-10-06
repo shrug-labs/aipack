@@ -7,10 +7,11 @@ import (
 )
 
 type PreviewRequestMsg struct {
-	Title    string
-	Category domain.PackCategory
-	PackName string
-	FilePath string
+	Title           string
+	Category        domain.PackCategory
+	PackName        string
+	FilePath        string
+	AdditionalPaths []string
 }
 
 type LayerHitMsg struct {

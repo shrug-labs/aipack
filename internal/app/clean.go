@@ -72,12 +72,34 @@ func RunClean(ctx context.Context, eng *engine.Engine, req CleanRequest, reg *ha
 			return fmt.Errorf("unknown harness: %s", h)
 		}
 	}
+	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, home)
+	ctx, unlock, err := lockPackMutationContext(ctx, req.ConfigDir, req.DryRun)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	ct := cleanTarget{
 		eng: eng, configDir: req.ConfigDir, scope: req.Scope,
 		home: home, projectDir: req.ProjectDir, harnesses: hs,
 		wipeLedger: req.WipeLedger, wipeCache: req.WipeCache, reg: reg,
 		env: req.TargetSpec.Env,
+	}
+	for _, hid := range hs {
+		if hid != domain.HarnessOpenCode {
+			continue
+		}
+		ledgerPath := engine.LedgerPath(req.ConfigDir, req.Scope, req.ProjectDir, hid)
+		ledger, warnings, err := eng.LoadLedger(ledgerPath)
+		if err != nil {
+			return err
+		}
+		if len(warnings) > 0 {
+			return fmt.Errorf("cannot determine portable clean ownership: %s", warnings[0])
+		}
+		if err := preflightPortablePlugins(eng, domain.Plan{Ledger: ledgerPath}, ledger, req.ConfigDir); err != nil {
+			return err
+		}
 	}
 
 	if req.DryRun {
@@ -139,7 +161,7 @@ func (o removePathOp) run(ctx context.Context, rctx cleanRunContext) error {
 			return nil
 		}
 	}
-	return os.RemoveAll(o.Path)
+	return util.RemoveOwnedTree(o.Path)
 }
 
 type editFileOp struct {
@@ -147,6 +169,50 @@ type editFileOp struct {
 	Format   harness.FileFormat
 	Context  harness.EditContext
 	Edit     func(root map[string]any, ctx harness.EditContext)
+}
+
+type nativePluginCleanOp struct {
+	Engine     *engine.Engine
+	ConfigDir  string
+	LedgerPath string
+}
+
+func (o nativePluginCleanOp) path() string { return o.LedgerPath + ":native-plugins" }
+func (o nativePluginCleanOp) run(ctx context.Context, rctx cleanRunContext) error {
+	if !rctx.Yes {
+		ok, err := cleanPromptYesNo(ctx, rctx.Stdin, rctx.Stderr, "Remove AIPack plugin activations (retain runtime data)? [y/N]: ")
+		if err != nil || !ok {
+			return err
+		}
+	}
+	ledger, warnings, err := o.Engine.LoadLedger(o.LedgerPath)
+	if err != nil {
+		return err
+	}
+	if len(warnings) > 0 {
+		return fmt.Errorf("native clean ownership: %s", warnings[0])
+	}
+	finish, _, err := removePackNativePlugins(packDeleteLedgerCleanRequest{ctx: ctx, eng: o.Engine, configDir: o.ConfigDir, path: o.LedgerPath}, &ledger)
+	if err != nil {
+		return err
+	}
+	portableFinish, _, err := removePackPortablePlugins(packDeleteLedgerCleanRequest{ctx: ctx, eng: o.Engine, configDir: o.ConfigDir, path: o.LedgerPath}, &ledger)
+	if err != nil {
+		return err
+	}
+	if portableFinish != nil {
+		finish = portableFinish
+	}
+	if err := o.Engine.SaveLedger(o.LedgerPath, ledger, false); err != nil {
+		if finish != nil {
+			err = errors.Join(err, finish(false))
+		}
+		return err
+	}
+	if finish != nil {
+		return finish(true)
+	}
+	return nil
 }
 
 func (o editFileOp) path() string { return o.FilePath }
@@ -175,7 +241,11 @@ func (o editFileOp) run(ctx context.Context, rctx cleanRunContext) error {
 			return nil
 		}
 	}
-	return util.WriteFileAtomic(o.FilePath, out)
+	info, err := os.Stat(o.FilePath)
+	if err != nil {
+		return err
+	}
+	return util.WriteFileAtomicWithPerms(o.FilePath, out, 0o755, info.Mode().Perm())
 }
 
 // cleanTarget bundles the resolved inputs for buildCleanOps.
@@ -215,10 +285,17 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 			Home:            home,
 			Env:             t.env,
 		}
-		layout := h.Layout(scope, targetDirForHarness(spec, hid), home)
+		layout := h.Layout(captureContextForHarness(spec, hid, nil))
 
 		ledgerPath := engine.LedgerPath(configDir, scope, projectDir, hid)
 		lg, _, lgErr := t.eng.LoadLedger(ledgerPath)
+		hasPackages := false
+		for _, entry := range lg.Managed {
+			hasPackages = hasPackages || entry.Package || entry.Delivery != nil
+		}
+		if lgErr == nil && (len(lg.NativePlugins) > 0 || hasPackages) {
+			ops = append(ops, nativePluginCleanOp{Engine: t.eng, ConfigDir: configDir, LedgerPath: ledgerPath})
+		}
 
 		// OwnedFiles are partially owned — reset managed keys, not delete.
 		// Bind the file's managed MCP server names so reset prunes only
@@ -234,8 +311,11 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 				FilePath: of.Path,
 				Format:   of.Format,
 				Context: harness.EditContext{
-					ManagedMCPServers:      mcpIndex.ForPath(of.Path),
-					PreviousManagedOverlay: lg.PrevManagedOverlay(of.Path),
+					PreserveNativeMarketplaces: true,
+					NativePlugins:              lg.NativePlugins,
+					ManagedMCPServers:          mcpIndex.ForPath(of.Path),
+					PreviousManagedOverlay:     lg.PrevManagedOverlay(of.Path),
+					PackageOverlays:            lg.PackageOverlays(of.Path),
 				},
 				Edit: of.Reset,
 			})
@@ -260,14 +340,20 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 		}
 		cleanup := staleCleanupContextForHarness(t.eng, t.reg, spec, hid, layout, nil)
 		var trackedCleanupPaths []string
-		for trackedPath := range lg.Managed {
+		for trackedPath, entry := range lg.Managed {
+			if domain.IsMCPLedgerKey(trackedPath) || entry.Package || entry.Delivery != nil {
+				continue // Complete packages are handled by the recoverable operation.
+			}
 			cleanPath := filepath.Clean(trackedPath)
 			if domain.IsUnderAny(cleanPath, cleanup.Roots) {
 				trackedCleanupPaths = append(trackedCleanupPaths, cleanPath)
 			}
 		}
 		cleanup = staleCleanupContextForHarness(t.eng, t.reg, spec, hid, layout, trackedCleanupPaths)
-		for trackedPath := range lg.Managed {
+		for trackedPath, entry := range lg.Managed {
+			if domain.IsMCPLedgerKey(trackedPath) || entry.Package || entry.Delivery != nil {
+				continue
+			}
 			cleanPath := filepath.Clean(trackedPath)
 			if !domain.IsUnderAny(cleanPath, cleanup.Roots) {
 				continue
@@ -301,6 +387,15 @@ func buildCleanOps(t cleanTarget) []cleanOp {
 	}
 
 	slices.SortStableFunc(ops, func(a, b cleanOp) int {
+		// Native removal needs its ownership ledger before any wipe operation.
+		_, aNative := a.(nativePluginCleanOp)
+		_, bNative := b.(nativePluginCleanOp)
+		if aNative != bNative {
+			if aNative {
+				return -1
+			}
+			return 1
+		}
 		return cmp.Compare(a.path(), b.path())
 	})
 

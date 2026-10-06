@@ -22,8 +22,9 @@ type Harness struct{}
 func (Harness) ID() domain.Harness { return domain.HarnessOpenCode }
 
 // Layout describes OpenCode's filesystem footprint for a given scope.
-func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
-	paths := PathsForScope(scope, layoutTargetConfigDir(scope, baseDir, home))
+func (Harness) Layout(ctx harness.CaptureContext) harness.Layout {
+	baseDir := ctx.TargetBaseDir()
+	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
 	configPath := filepath.Join(baseDir, paths.SettingsFile)
 	return harness.Layout{
 		ValidationRoots: []string{
@@ -38,25 +39,17 @@ func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
 		OwnedFiles: []harness.OwnedFile{{
 			Path: configPath, Format: harness.FormatJSON,
 			Strip: func(root map[string]any, ctx harness.EditContext) {
+				stripImportedOverlays(root, ctx.PackageOverlays)
 				harness.PruneMapKeys(root, "mcp", ctx.ManagedMCPServers)
-				delete(root, "tools")
-				delete(root, "instructions")
-				delete(root, "skills")
+				stripManagedReferences(root, ctx, false)
 			},
 			Reset: func(root map[string]any, ctx harness.EditContext) {
+				stripImportedOverlays(root, ctx.PackageOverlays)
 				harness.PruneMapKeys(root, "mcp", ctx.ManagedMCPServers)
-				root["tools"] = map[string]any{}
-				delete(root, "instructions")
-				delete(root, "skills")
+				stripManagedReferences(root, ctx, true)
 			},
 		}},
 	}
-}
-
-func layoutTargetConfigDir(scope domain.Scope, baseDir, home string) bool {
-	return scope == domain.ScopeGlobal &&
-		strings.TrimSpace(home) != "" &&
-		filepath.Clean(baseDir) != filepath.Clean(home)
 }
 
 // Plan produces a Fragment from typed content.
@@ -102,6 +95,10 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 	paths := PathsForScope(ctx.Scope, ctx.TargetConfigDir)
 	configPath := filepath.Join(ctx.TargetDir, paths.SettingsFile)
 	configBase := filepath.Join(ctx.TargetDir, paths.ConfigBase)
+	portable, refs, err := planImportedPlugins(f, ctx, configBase, configPath)
+	if err != nil {
+		return err
+	}
 
 	// Point instructions/skills at the managed rendered directories, not at
 	// pack source, so profile enable/disable takes effect at runtime.
@@ -122,7 +119,7 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 
 	hasMCP := len(ctx.Profile.MCPServers) > 0
 	base := ctx.Profile.BaseSettings.FileBytes(domain.HarnessOpenCode, BaseSettingsFile)
-	hasManagedKeys := hasMCP || instr.Manage || skills.Manage
+	hasManagedKeys := hasMCP || instr.Manage || skills.Manage || len(portable) > 0
 	decision := engine.ClassifySettings(hasManagedKeys, len(base) > 0, ctx.SkipSettings)
 	var mcpRendered []byte
 	if decision.EmitSettings {
@@ -130,11 +127,16 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		if err != nil {
 			return fmt.Errorf("render opencode settings: %w", err)
 		}
+		out, err = mergeImportedSettings(out, portable)
+		if err != nil {
+			return err
+		}
 		f.Warnings = append(f.Warnings, renderWarnings...)
 		mcpRendered = out
 		f.Settings = append(f.Settings, domain.SettingsAction{
 			Dst: configPath, Desired: out, Harness: domain.HarnessOpenCode,
 			Label: BaseSettingsFile, SourcePack: sp, MergeMode: true,
+			TraceRefs: refs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(configPath))
 	} else if decision.EmitMCP {
@@ -142,11 +144,16 @@ func planSettings(f *domain.Fragment, ctx engine.SyncContext) error {
 		if err != nil {
 			return fmt.Errorf("render opencode managed keys: %w", err)
 		}
+		managed, err = mergeImportedSettings(managed, portable)
+		if err != nil {
+			return err
+		}
 		f.Warnings = append(f.Warnings, renderWarnings...)
 		mcpRendered = managed
 		f.MCP = append(f.MCP, domain.SettingsAction{
 			Dst: configPath, Desired: managed, Harness: domain.HarnessOpenCode,
 			Label: BaseSettingsFile + " (managed keys)", SourcePack: sp, MergeMode: decision.MergeMode,
+			TraceRefs: refs,
 		})
 		f.Desired = append(f.Desired, filepath.Clean(configPath))
 	}

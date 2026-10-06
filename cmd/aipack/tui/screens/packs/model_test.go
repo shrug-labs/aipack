@@ -15,6 +15,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/app"
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 )
 
 func newTestPacksModel(items []packItemDetail) Model {
@@ -30,6 +31,40 @@ func newTestPacksModel(items []packItemDetail) Model {
 	}
 	m.rebuildList()
 	return m
+}
+
+func TestPacksModel_NativeAgentSourcePreviews(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "upstream"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"first.md", "second.md"} {
+		if err := os.WriteFile(filepath.Join(root, "upstream", path), []byte("AGENT_"+path), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	native := &domain.NativePlugin{Components: map[domain.PackCategory]map[string][]string{domain.CategoryAgents: {"Reviewer": {"first.md", "second.md"}}}}
+	m := newTestPacksModel([]packItemDetail{{entry: app.PackShowEntry{Name: "alias", Path: root, Agents: []string{"Reviewer"}, NativePlugin: native}}})
+	m, cmd := updateTestModel(t, m, testKeyCode(tea.KeyEnter))
+	if len(m.contentItems) != 2 {
+		t.Fatal("native agent sources became separate selectors")
+	}
+	preview := cmd().(common.PreviewLoadedMsg)
+	if preview.Err != nil || !strings.Contains(preview.Body, "AGENT_first.md") || !strings.Contains(preview.Body, "AGENT_second.md") {
+		t.Fatalf("inline preview lost a source: %+v", preview)
+	}
+	for _, focus := range []packPanel{packPanelContent, packPanelPreview} {
+		m.focus = focus
+		_, cmd := updateTestModel(t, m, testKeyCode(tea.KeyEnter))
+		req := cmd().(common.PreviewRequestMsg)
+		if req.FilePath != filepath.Join(root, "upstream/first.md") || len(req.AdditionalPaths) != 1 || req.AdditionalPaths[0] != filepath.Join(root, "upstream/second.md") {
+			t.Fatal("overlay request lost a candidate source")
+		}
+	}
+	items := buildContentItemsFromIndexed([]app.IndexedPackResource{{Kind: "agent", Name: "Reviewer"}, {Kind: "agent", Name: "Reviewer"}})
+	if len(items) != 2 {
+		t.Fatal("indexed candidate rows duplicated the native selector")
+	}
 }
 
 func TestPacksModel_EnterOpensContentPanel(t *testing.T) {
@@ -694,6 +729,47 @@ func TestPacksModel_DetailsPanelShowsRemoteOriginAsSource(t *testing.T) {
 	}
 }
 
+func TestPacksModel_NativeProvenanceDetails(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{{entry: app.PackShowEntry{
+		Name: "alias", Origin: "https://example.com/plugins.git", Method: config.MethodClone,
+		SubPath: "plugins/probe", CommitHash: "0123456789abcdef",
+		NativePlugin: &domain.NativePlugin{Name: "probe", Marketplace: "market", Format: "codex-legacy", ConverterVersion: 20},
+		PluginSource: &domain.PluginSource{MarketplaceURL: "https://example.com/catalog.git"},
+	}}})
+	view := stripSGR(m.viewPackInfoPanel(100, 30))
+	for _, value := range []string{"probe@market", "20 (codex-legacy)", "plugins/probe", "https://example.com/plugins.git", "https://example.com/catalog.git", "0123456"} {
+		if !strings.Contains(view, value) {
+			t.Fatalf("native details omit %q: %s", value, view)
+		}
+	}
+}
+
+func TestPacksModel_NativeCompatibilityDetails(t *testing.T) {
+	t.Parallel()
+	compatibility := []plugin.TargetCompatibility{
+		{Target: domain.HarnessCodex, Delivery: "native", Supported: []string{"skills/probe", "mcp/probe"}},
+		{Target: domain.HarnessClaudeCode, Delivery: "portable", Supported: []string{"skills/probe"}, Unsupported: []string{"mcp/probe (translation is not supported)"}},
+		{Target: domain.HarnessOpenCode, Delivery: "unsupported", Unsupported: []string{"skills/probe (translation is not supported)", "mcp/probe (translation is not supported)"}},
+	}
+	m := newTestPacksModel([]packItemDetail{{entry: app.PackShowEntry{
+		Name: "alias", Origin: "https://example.com/plugins.git", Method: config.MethodClone,
+		NativePlugin: &domain.NativePlugin{Name: "probe", Marketplace: "market"}, Compatibility: compatibility,
+	}}})
+	view := stripSGR(m.viewPackInfoPanel(100, 30))
+	for _, phrase := range []string{"All content", "codex: native (2 supported, 0 unsupported)", "claudecode: portable (1 supported, 1 unsupported)", "opencode: unsupported (0 supported, 2 unsupported)", "https://example.com/plugins.git"} {
+		if !strings.Contains(view, phrase) {
+			t.Fatalf("pack details omit %q: %s", phrase, view)
+		}
+	}
+	preview := formatInspectPreview(app.PackInspectResult{Name: "probe", NativePlugin: &domain.NativePlugin{Name: "probe", Marketplace: "market"}, Compatibility: compatibility})
+	for _, phrase := range []string{"all components", "claudecode: portable skills/probe", "exclude mcp/probe (translation is not supported)", "opencode: unsupported"} {
+		if !strings.Contains(preview, phrase) {
+			t.Fatalf("inspection preview omits %q: %s", phrase, preview)
+		}
+	}
+}
+
 func TestWrapWords(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -929,6 +1005,20 @@ func TestPacksModel_DetailsPanelHidesLatestWhenOnNewest(t *testing.T) {
 	// No drift signal — Latest row would just be noise.
 	if strings.Contains(view, "Latest") {
 		t.Fatalf("expected no Latest row when on newest version, got:\n%s", view)
+	}
+}
+
+func TestPacksModel_NPMPackageVersion(t *testing.T) {
+	t.Parallel()
+	m := newTestPacksModel([]packItemDetail{{entry: app.PackShowEntry{Name: "npm-pack", Path: "/tmp/npm-pack", Method: config.MethodNPM, Version: "1.0.0", PackageVersion: "2.0.0"}}})
+	m.width, m.height = 120, 30
+	m.versionsCache["npm-pack"] = packVersionsCacheEntry{state: asyncLoaded, versions: []app.PackVersion{{Version: "2.0.0"}, {Version: "1.0.0"}}}
+	if !m.versionsEligible(m.currentListItem()) {
+		t.Fatal("installed npm pack cannot select package versions")
+	}
+	view := m.viewPackInfoPanel(50, 24)
+	if !strings.Contains(view, "Package") || !strings.Contains(view, "2.0.0") || strings.Contains(view, "Latest") {
+		t.Fatalf("npm package metadata produced a false version drift: %s", view)
 	}
 }
 

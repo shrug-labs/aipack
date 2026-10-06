@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 )
 
 // env sets up configDir + sync-config for update tests.
@@ -578,6 +580,142 @@ func TestPackUpdate_Archive_DryRunMakesNoMutations(t *testing.T) {
 	}
 }
 
+func TestPackUpdate_NativeArchiveDirectoryChanges(t *testing.T) {
+	t.Parallel()
+	e := newUpdateEnv(t)
+	manifest := fmt.Sprintf(`{"schema_version":2,"name":"probe","version":"1.0.0","root":".","native_plugin":{"format":"codex-legacy","harness":"codex","name":"probe","marketplace":"market","manifest":".codex-plugin/plugin.json","converter_version":%d,"components":{}}}`, plugin.ConverterVersion)
+	files := map[string]string{
+		"repo/pack.json": manifest,
+		"repo/upstream/.codex-plugin/plugin.json": `{"name":"probe","version":"1.0.0"}`,
+		"repo/upstream/original-assets/":          "",
+	}
+	source := filepath.Join(t.TempDir(), "probe.zip")
+	if err := os.WriteFile(source, buildPackZip(t, files), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PackInstall(context.Background(), PackInstallRequest{ConfigDir: e.configDir, URL: source, Archive: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []struct {
+		directory string
+		add       bool
+	}{{"new-assets", true}, {"original-assets", false}} {
+		t.Run(change.directory, func(t *testing.T) {
+			entry := "repo/upstream/" + change.directory + "/"
+			if change.add {
+				files[entry] = ""
+			} else {
+				delete(files, entry)
+			}
+			if err := os.WriteFile(source, buildPackZip(t, files), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(PacksDir(e.configDir), "probe/upstream", change.directory)
+			for _, dryRun := range []bool{true, false} {
+				results, err := e.update(t, "probe", func(req *PackUpdateRequest) { req.DryRun = dryRun })
+				if err != nil || len(results) != 1 || results[0].Status != StatusUpdated {
+					t.Fatalf("directory update (dry-run=%t): %+v %v", dryRun, results, err)
+				}
+				_, statErr := os.Stat(path)
+				wantPresent := change.add != dryRun
+				if wantPresent && statErr != nil || !wantPresent && !os.IsNotExist(statErr) {
+					t.Fatalf("directory state (dry-run=%t, want present=%t): %v", dryRun, wantPresent, statErr)
+				}
+			}
+			results, err := e.update(t, "probe")
+			if err != nil || len(results) != 1 || results[0].Status != StatusUpToDate {
+				t.Fatalf("unchanged directory tree: %+v %v", results, err)
+			}
+		})
+	}
+}
+
+func TestPackUpdate_NativeArchiveFileOnlyBaseline(t *testing.T) {
+	t.Parallel()
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed=%t", changed), func(t *testing.T) {
+			e := newUpdateEnv(t)
+			manifest := fmt.Sprintf(`{"schema_version":2,"name":"probe","version":"1.0.0","root":".","native_plugin":{"format":"codex-legacy","harness":"codex","name":"probe","marketplace":"market","manifest":".codex-plugin/plugin.json","converter_version":%d,"components":{}}}`, plugin.ConverterVersion)
+			files := map[string]string{
+				"repo/pack.json": manifest,
+				"repo/upstream/.codex-plugin/plugin.json": `{"name":"probe","version":"1.0.0"}`,
+			}
+			archive := buildPackZip(t, files)
+			current := false
+			var mu sync.Mutex
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				etag := `"v1"`
+				if current {
+					etag = `"v2"`
+				}
+				w.Header().Set("ETag", etag)
+				if req.Header.Get("If-None-Match") == etag {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				_, _ = w.Write(archive)
+			}))
+			defer srv.Close()
+			if err := PackInstall(context.Background(), PackInstallRequest{ConfigDir: e.configDir, URL: srv.URL + "/probe.zip", Archive: true}, nil); err != nil {
+				t.Fatal(err)
+			}
+			packDir := filepath.Join(PacksDir(e.configDir), "probe")
+			baseline, err := loadIntegrity(packDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for path := range baseline.Files {
+				info, err := os.Stat(filepath.Join(packDir, path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.IsDir() {
+					delete(baseline.Files, path)
+				}
+			}
+			if err := saveIntegrityManifest(packDir, baseline); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			if changed {
+				files["repo/upstream/new-assets/"] = ""
+				archive = buildPackZip(t, files)
+			}
+			current = true
+			mu.Unlock()
+			// Model an older checker caching a no-op after fetching the current archive.
+			observation, ok := loadArchiveObservation(e.configDir, "probe")
+			if !ok {
+				t.Fatal("missing installed archive observation")
+			}
+			digest, err := integrityDigest(baseline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation.Key.InstalledIntegrity, observation.CandidateIntegrity = digest, digest
+			observation.Validator.ETag = `"v2"`
+			observation.Semantic.Status = StatusUpToDate
+			if err := saveArchiveObservation(e.configDir, "probe", observation); err != nil {
+				t.Fatal(err)
+			}
+			results, err := e.update(t, "probe")
+			want := StatusUpToDate
+			if changed {
+				want = StatusUpdated
+			}
+			if err != nil || len(results) != 1 || results[0].Status != want {
+				t.Fatalf("old baseline/cache update: %+v %v; want %s", results, err, want)
+			}
+			_, statErr := os.Stat(filepath.Join(packDir, "upstream/new-assets"))
+			if changed && statErr != nil || !changed && !os.IsNotExist(statErr) {
+				t.Fatalf("updated directory tree: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestPackUpdate_Archive_RepackedIdenticalContentIsUpToDate(t *testing.T) {
 	t.Parallel()
 	e := newUpdateEnv(t)
@@ -911,12 +1049,14 @@ func TestPackUpdate_Clone_SubPath(t *testing.T) {
 		return nil
 	}
 	e.out.Reset()
-	PackInstall(context.Background(), PackInstallRequest{
+	if err := PackInstall(context.Background(), PackInstallRequest{
 		URL:       "https://github.com/example/repo/blob/main/packs/team/pack.json",
 		ConfigDir: e.configDir, RunGitFn: installGit,
 		URLOKFn: func(context.Context, string) (bool, error) { return true, nil },
 		NowFn:   func() time.Time { return fixedNow },
-	}, &e.out)
+	}, &e.out); err != nil {
+		t.Fatal(err)
+	}
 
 	// Update — new content replaces old.
 	packCloneCalls := 0

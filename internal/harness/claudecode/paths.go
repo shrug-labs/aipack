@@ -41,10 +41,19 @@ var GlobalPaths = Paths{
 	MCPFile:      ".claude.json",
 }
 
+// GlobalConfigPaths are relative to CLAUDE_CONFIG_DIR itself.
+var GlobalConfigPaths = Paths{
+	RulesDir: "rules", AgentsDir: "agents", WorkflowsDir: "commands",
+	SkillsDir: "skills", SettingsFile: "settings.json", MCPFile: ".claude.json",
+}
+
 // PathsForScope returns the Paths for the given scope.
-func PathsForScope(scope domain.Scope) Paths {
+func PathsForScope(scope domain.Scope, targetConfigDir bool) Paths {
 	if scope == domain.ScopeProject {
 		return ProjectPaths
+	}
+	if targetConfigDir {
+		return GlobalConfigPaths
 	}
 	return GlobalPaths
 }

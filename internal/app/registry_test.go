@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -314,6 +315,136 @@ packs:
     description: Epsilon runbooks
 `
 
+func TestRegistryFetchNativeFormatPersists(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	url := "https://example.invalid/catalog.json"
+	req := RegistryFetchRequest{ConfigDir: dir, URL: url, Name: "market", Format: "claude", FetchFn: func(u string) ([]byte, error) {
+		if u != url {
+			return []byte(testRemoteRegistryYAML), nil
+		}
+		return []byte(`{"name":"market","plugins":[{"name":"probe","source":{"source":"npm","package":"probe@1"}}]}`), nil
+	}, GitFetchFn: func(string, string, string) ([]byte, error) { return []byte(testRemoteRegistryYAML), nil }}
+	for _, step := range []struct{ format, url, want string }{
+		{"claude", url, "claude"}, {"", url, "claude"}, {"", "", "claude"}, {"auto", url, ""}, {"", "", ""}, {"codex-legacy", url, "codex-legacy"}, {"agent-plugins", url, "agent-plugins"},
+	} {
+		req.Format, req.URL = step.format, step.url
+		if err := RegistryFetch(context.Background(), req, nil); err != nil {
+			t.Fatal(err)
+		}
+		sources, err := RegistrySources(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		for _, src := range sources {
+			if src.URL == url {
+				found = true
+				if src.Format != step.want {
+					t.Fatalf("saved format=%q want=%q", src.Format, step.want)
+				}
+			}
+		}
+		reg, err := config.LoadRegistry(config.SourceCachePath(dir, "market"))
+		if !found || err != nil || reg.Packs["probe"].Plugin.Format != step.want || (reg.Packs["probe"].Unsupported == "") != (step.want == "claude") {
+			t.Fatalf("format lost in cache/source: %+v %v", reg.Packs, err)
+		}
+	}
+	req.URL, req.Format = url, "typo"
+	req.FetchFn = func(string) ([]byte, error) { t.Fatal("invalid format fetched bytes"); return nil, nil }
+	if err := RegistryFetch(context.Background(), req, nil); err == nil {
+		t.Fatal("invalid format accepted")
+	}
+}
+
+func TestRegistryFetchNativeFormatLocalAndGit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	body := `{"name":"market","plugins":[{"name":"probe","source":{"source":"npm","package":"probe@1"}}]}`
+	path := filepath.Join(root, "catalog.json")
+	writeFile(t, path, body)
+	for _, req := range []RegistryFetchRequest{
+		{URL: path},
+		{URL: "https://example.invalid/market.git", Path: "catalog.json", GitFetchFn: func(string, string, string) ([]byte, error) { return []byte(body), nil }},
+	} {
+		req.ConfigDir, req.Name, req.Format = t.TempDir(), "market", "claude"
+		for range 2 {
+			if err := RegistryFetch(context.Background(), req, nil); err != nil {
+				t.Fatal(err)
+			}
+			entry, err := RegistryLookup(RegistryListRequest{ConfigDir: req.ConfigDir}, "probe")
+			if err != nil || entry.Unsupported != "" || entry.Plugin.Format != "claude" || entry.Ref != "1" {
+				t.Fatalf("local/Git format lost: %+v %v", entry, err)
+			}
+			req.Format = ""
+		}
+	}
+}
+
+func TestRegistryFetchExplicitLocalCatalogContainment(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires symlink creation privileges")
+	}
+	root := t.TempDir()
+	inside := filepath.Join(root, "inside.yaml")
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	writeFile(t, inside, testRegistryYAML)
+	writeFile(t, outside, testRegistryYAML)
+	for _, tc := range []struct {
+		name, target string
+		wantError    bool
+	}{{"inside", inside, false}, {"outside", outside, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "alias-" + tc.name + ".yaml"
+			if err := os.Symlink(tc.target, filepath.Join(root, path)); err != nil {
+				t.Fatal(err)
+			}
+			err := RegistryFetch(context.Background(), RegistryFetchRequest{ConfigDir: t.TempDir(), URL: root, Path: path}, io.Discard)
+			if (err != nil) != tc.wantError || (err != nil && !strings.Contains(err.Error(), "escapes repository")) {
+				t.Fatalf("catalog containment error=%v wantError=%v", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestRegistryFetchLocalSourceSurvivesDirectoryChange(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		t.Run(fmt.Sprint("directory=", directory), func(t *testing.T) {
+			work, dir := t.TempDir(), t.TempDir()
+			catalog := ".agents/plugins/marketplace.json"
+			writeFile(t, filepath.Join(work, "market", catalog), `{"name":"owned","plugins":[{"name":"probe","source":"./probe"}]}`)
+			t.Chdir(work)
+			req := RegistryFetchRequest{ConfigDir: dir, URL: filepath.Join("market", catalog), Format: "codex-legacy"}
+			if directory {
+				req.URL, req.Path = "market", catalog
+			}
+			for range 2 {
+				if err := RegistryFetch(context.Background(), req, nil); err != nil {
+					t.Fatal(err)
+				}
+				req.Format = ""
+			}
+			sc, err := config.LoadSyncConfig(config.SyncConfigPath(dir))
+			if err != nil || len(sc.RegistrySources) != 1 {
+				t.Fatalf("local source registration duplicated: %+v %v", sc.RegistrySources, err)
+			}
+			src := sc.RegistrySources[0]
+			if src.URL != filepath.Join(work, "market") || src.Path != catalog || src.Format != "codex-legacy" {
+				t.Fatalf("local source coordinates not retained: %+v", src)
+			}
+			t.Chdir(t.TempDir())
+			if err := RegistryFetch(context.Background(), RegistryFetchRequest{ConfigDir: dir, URL: src.URL, Path: src.Path, Name: src.Name}, nil); err != nil {
+				t.Fatalf("refresh from another directory: %v", err)
+			}
+			entry, err := RegistryLookup(RegistryListRequest{ConfigDir: dir}, "probe")
+			if err != nil || entry.Repo != src.URL || entry.Plugin.Format != src.Format {
+				t.Fatalf("refreshed local source changed: %+v %v", entry, err)
+			}
+		})
+	}
+}
+
 func fakeFetchFn(data string) func(string) ([]byte, error) {
 	return func(url string) ([]byte, error) {
 		return []byte(data), nil
@@ -611,6 +742,9 @@ func TestRegistryFetch_GitAutoDetect(t *testing.T) {
 		URL:       "https://github.com/org/my-packs.git",
 		// No --ref or --path: should auto-detect git and use defaults.
 		GitFetchFn: func(repo, ref, path string) ([]byte, error) {
+			if path != "registry.yaml" {
+				return nil, os.ErrNotExist
+			}
 			capturedRef = ref
 			capturedPath = path
 			return []byte(testRemoteRegistryYAML), nil
@@ -1507,7 +1641,7 @@ func TestDeepIndexOnePack_RespectsPackJsonRoot(t *testing.T) {
 	}
 }
 
-func TestDeepIndexOnePack_IndexesPromptsPluginsAndMCPServers(t *testing.T) {
+func TestDeepIndexOnePack_IndexesPromptsAndMCPServers(t *testing.T) {
 	t.Parallel()
 
 	cloneFn := func(repo, dir, ref string) error {
@@ -1529,10 +1663,6 @@ func TestDeepIndexOnePack_IndexesPromptsPluginsAndMCPServers(t *testing.T) {
 		mkdir(filepath.Join(dir, "prompts"))
 		writePackJSON(filepath.Join(dir, "prompts", "smoke.md"),
 			"---\ndescription: Quick smoke check\n---\nSmoke prompt body.\n")
-
-		mkdir(filepath.Join(dir, "plugins"))
-		writePackJSON(filepath.Join(dir, "plugins", "linear.json"),
-			`{"source": "github:linear/linear-codex-plugin", "marketplace": "openai-curated"}`)
 
 		mkdir(filepath.Join(dir, "mcp"))
 		writePackJSON(filepath.Join(dir, "mcp", "example-server.json"),
@@ -1557,9 +1687,6 @@ func TestDeepIndexOnePack_IndexesPromptsPluginsAndMCPServers(t *testing.T) {
 	}
 	if r, ok := byKindName["prompt/smoke"]; !ok || !strings.Contains(r.Description, "Quick smoke check") {
 		t.Fatalf("expected prompt 'smoke' with description, got %+v", byKindName)
-	}
-	if r, ok := byKindName["plugin/linear"]; !ok || !strings.Contains(r.Body, "openai-curated") {
-		t.Fatalf("expected plugin 'linear' with marketplace in body, got %+v", byKindName)
 	}
 	if r, ok := byKindName["mcp/example-server"]; !ok {
 		t.Fatalf("expected mcp 'example-server', got %+v", byKindName)

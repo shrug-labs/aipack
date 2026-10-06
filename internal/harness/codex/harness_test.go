@@ -227,86 +227,6 @@ func TestPlan_Global_UsesCODEXHOMEAsRoot(t *testing.T) {
 	}
 }
 
-func TestPlan_Project_PluginsConfig(t *testing.T) {
-	t.Parallel()
-	projectDir := t.TempDir()
-	ctx := engine.SyncContext{
-		Scope:     domain.ScopeProject,
-		TargetDir: projectDir,
-		Profile: domain.Profile{
-			Packs: []domain.Pack{{
-				Plugins: []domain.Plugin{
-					{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "pack-a"},
-					{Name: "superpowers", Source: "github:obra/superpowers", Marketplace: "github:obra/superpowers-marketplace", SourcePack: "pack-a"},
-				},
-			}},
-		},
-	}
-
-	f, err := Harness{}.Plan(context.Background(), ctx)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	if len(f.Settings) != 1 {
-		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
-	}
-	var root map[string]any
-	if err := toml.Unmarshal(f.Settings[0].Desired, &root); err != nil {
-		t.Fatalf("unmarshal config.toml: %v\n%s", err, f.Settings[0].Desired)
-	}
-	plugins, ok := root["plugins"].(map[string]any)
-	if !ok {
-		t.Fatalf("plugins table missing in:\n%s", f.Settings[0].Desired)
-	}
-	for _, key := range []string{"linear@openai-curated", "superpowers@superpowers-marketplace"} {
-		entry, ok := plugins[key].(map[string]any)
-		if !ok {
-			t.Fatalf("plugins.%q missing in %v", key, plugins)
-		}
-		if entry["enabled"] != true {
-			t.Fatalf("plugins.%q.enabled = %v, want true", key, entry["enabled"])
-		}
-	}
-}
-
-func TestPlan_Project_PluginsIgnoreSkipSettings(t *testing.T) {
-	t.Parallel()
-	projectDir := t.TempDir()
-	ctx := engine.SyncContext{
-		Scope:        domain.ScopeProject,
-		TargetDir:    projectDir,
-		SkipSettings: true,
-		Profile: domain.Profile{
-			Packs: []domain.Pack{{
-				Plugins: []domain.Plugin{{Name: "linear", Source: "github:linear/linear-codex-plugin", SourcePack: "pack-a"}},
-			}},
-		},
-	}
-
-	f, err := Harness{}.Plan(context.Background(), ctx)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	if len(f.Settings) != 0 {
-		t.Fatalf("settings actions = %d, want 0 with skip settings", len(f.Settings))
-	}
-	if len(f.MCP) != 1 {
-		t.Fatalf("MCP/plugin actions = %d, want 1", len(f.MCP))
-	}
-	var root map[string]any
-	if err := toml.Unmarshal(f.MCP[0].Desired, &root); err != nil {
-		t.Fatalf("unmarshal managed config: %v\n%s", err, f.MCP[0].Desired)
-	}
-	plugins, ok := root["plugins"].(map[string]any)
-	if !ok {
-		t.Fatalf("plugins table missing from skip-settings action:\n%s", f.MCP[0].Desired)
-	}
-	entry, ok := plugins["linear@openai-curated"].(map[string]any)
-	if !ok || entry["enabled"] != true {
-		t.Fatalf("plugins.linear@openai-curated = %v, want enabled=true", plugins["linear@openai-curated"])
-	}
-}
-
 func TestPlan_Project_CodexHooksJSONAndTrustState(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
@@ -373,13 +293,10 @@ func TestPlan_Project_CodexHooksJSONAndTrustState(t *testing.T) {
 		t.Fatalf("settings actions = %d, want 1", len(f.Settings))
 	}
 	state := codexHookStateFromTOML(t, f.Settings[0].Desired)
-	// Trust-state keys are content-derived (hooksPath:event:contentHash) so
-	// they remain stable across reordering. Look up by prefix rather than an
-	// exact positional match.
-	prefix := hooksPath + ":post_tool_use:"
-	entry, ok := codexHookStateEntryByPrefix(state, prefix)
+	key := hooksPath + ":post_tool_use:0:0"
+	entry, ok := state[key].(map[string]any)
 	if !ok {
-		t.Fatalf("hook state with prefix %q missing in %v", prefix, state)
+		t.Fatalf("native hook state key %q missing in %v", key, state)
 	}
 	if got, _ := entry["trusted_hash"].(string); !strings.HasPrefix(got, "sha256:") {
 		t.Fatalf("trusted_hash = %v, want sha256", entry["trusted_hash"])
@@ -764,6 +681,16 @@ func TestRenderBytes_MergesBase(t *testing.T) {
 	}
 }
 
+func TestRenderBytes_OmitsEmptyMCP(t *testing.T) {
+	t.Parallel()
+	for _, base := range [][]byte{nil, []byte("foo = 'bar'\n[mcp_servers]\n")} {
+		out, _, err := RenderBytes(base, nil, nil)
+		if err != nil || strings.Contains(string(out), "mcp_servers") || (len(base) > 0 && !strings.Contains(string(out), "foo")) {
+			t.Fatalf("empty MCP rendering changed unrelated base keys or left scaffolding: %s %v", out, err)
+		}
+	}
+}
+
 func TestRenderBytes_AlwaysAllowedToolsRendersApprovalMode(t *testing.T) {
 	t.Parallel()
 	// AlwaysAllowedTools should emit a [mcp_servers.<name>.tools.<tool>]
@@ -1094,7 +1021,7 @@ func TestLayout_ProjectSkillsUseCodexRootWithLegacyStaleRoot(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 
-	layout := Harness{}.Layout(domain.ScopeProject, projectDir, projectDir)
+	layout := Harness{}.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: projectDir})
 	currentSkills := filepath.Join(projectDir, ".codex", "skills")
 	legacySkills := filepath.Join(projectDir, ".agents", "skills")
 
@@ -1113,7 +1040,7 @@ func TestLayout_StripManaged_RemovesMCPServersAndAgents(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 	h := Harness{}
-	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: projectDir})
 	if len(layout.OwnedFiles) == 0 {
 		t.Fatal("expected at least one owned file")
 	}
@@ -1162,7 +1089,7 @@ func TestLayout_StripManaged_RemovesOnlyAIPackHookState(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 	h := Harness{}
-	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: projectDir})
 	hooksPath := filepath.Join(projectDir, ".codex", "hooks.json")
 	otherPath := filepath.Join(projectDir, ".codex", "other-hooks.json")
 	input, err := toml.Marshal(map[string]any{

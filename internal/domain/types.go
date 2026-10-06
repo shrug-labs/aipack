@@ -95,7 +95,7 @@ func AuthoredCategories() []PackCategory {
 
 // SelectableCategories returns categories controlled by profile vector selectors.
 func SelectableCategories() []PackCategory {
-	return []PackCategory{CategoryAgents, CategoryHooks, CategoryPlugins, CategoryRules, CategorySkills, CategoryWorkflows}
+	return []PackCategory{CategoryAgents, CategoryHooks, CategoryRules, CategorySkills, CategoryWorkflows}
 }
 
 // IsAuthored returns true for categories with authored markdown+frontmatter files.

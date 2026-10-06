@@ -20,16 +20,16 @@ import (
 const PackSchemaVersion = 2
 
 type PackManifest struct {
-	SchemaVersion int      `json:"schema_version"`
-	Name          string   `json:"name"`
-	Version       string   `json:"version"`
-	Root          string   `json:"root"`
-	Rules         []string `json:"rules,omitempty"`
-	Agents        []string `json:"agents,omitempty"`
-	Workflows     []string `json:"workflows,omitempty"`
-	Skills        []string `json:"skills,omitempty"`
-	Prompts       []string `json:"prompts,omitempty"`
-	Plugins       []string `json:"plugins,omitempty"`
+	NativePlugin  *domain.NativePlugin `json:"native_plugin,omitempty"`
+	SchemaVersion int                  `json:"schema_version"`
+	Name          string               `json:"name"`
+	Version       string               `json:"version"`
+	Root          string               `json:"root"`
+	Rules         []string             `json:"rules,omitempty"`
+	Agents        []string             `json:"agents,omitempty"`
+	Workflows     []string             `json:"workflows,omitempty"`
+	Skills        []string             `json:"skills,omitempty"`
+	Prompts       []string             `json:"prompts,omitempty"`
 	// MCP holds server IDs — the runtime never sees v1's nested shape.
 	// parseV1Manifest extracts server keys from the legacy object into this
 	// slice so downstream code has a single representation to work with.
@@ -74,6 +74,18 @@ type PackManifest struct {
 // DiscoverContent has recorded the actual path, it wins. Otherwise the
 // canonical PackCategory.PrimaryRelPath is returned.
 func (m PackManifest) RelPath(cat domain.PackCategory, id string) string {
+	if m.NativePlugin != nil {
+		paths := m.NativePlugin.Components[cat][id]
+		if cat == domain.CategoryPlugins {
+			paths = []string{m.NativePlugin.Manifest}
+		}
+		if len(paths) > 0 {
+			if paths[0] == "" {
+				return "pack.json"
+			}
+			return filepath.ToSlash(filepath.Join("upstream", paths[0]))
+		}
+	}
 	if m.resolvedPaths != nil {
 		if catMap, ok := m.resolvedPaths[cat]; ok {
 			if p, ok := catMap[id]; ok {
@@ -135,8 +147,6 @@ func (m *PackManifest) ContentIDsPtr(cat domain.PackCategory) *[]string {
 		return &m.Prompts
 	case domain.CategoryMCP:
 		return &m.MCP
-	case domain.CategoryPlugins:
-		return &m.Plugins
 	}
 	return nil
 }
@@ -163,8 +173,6 @@ func (pe *PackEntry) VectorSelectorFor(cat domain.PackCategory) *VectorSelector 
 		return &pe.Skills
 	case domain.CategoryHooks:
 		return &pe.Hooks.VectorSelector
-	case domain.CategoryPlugins:
-		return &pe.Plugins
 	}
 	return nil
 }
@@ -184,9 +192,15 @@ func LoadPackManifest(path string) (PackManifest, error) {
 // is rejected at parse time rather than silently coerced.
 func ParsePackManifest(data []byte) (PackManifest, error) {
 	var probe struct {
-		SchemaVersion int `json:"schema_version"`
+		SchemaVersion int               `json:"schema_version"`
+		Plugins       []json.RawMessage `json:"plugins"`
 	}
-	_ = json.Unmarshal(data, &probe)
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return PackManifest{}, err
+	}
+	if len(probe.Plugins) > 0 {
+		return PackManifest{}, fmt.Errorf("pack manifest plugins references are no longer supported; import the original marketplace plugin as a pack instead")
+	}
 
 	var (
 		m   PackManifest
@@ -241,7 +255,7 @@ func parseV1Manifest(data []byte) (PackManifest, error) {
 		MCP v1MCP `json:"mcp"`
 	}
 	var w v1Wrapper
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := util.UnmarshalJSON(data, &w); err != nil {
 		return PackManifest{}, err
 	}
 	m := w.PackManifest
@@ -262,7 +276,7 @@ func parseV2Manifest(data []byte) (PackManifest, error) {
 		return PackManifest{}, err
 	}
 	var m PackManifest
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := util.UnmarshalJSON(data, &m); err != nil {
 		return PackManifest{}, err
 	}
 	return m, nil
@@ -326,6 +340,9 @@ func normalizeIDs(entries []string, ext string) []string {
 // relative to the pack root. Skills use trailing "/" to indicate directories.
 // Always includes "pack.json" itself.
 func (m PackManifest) ContentPaths() []string {
+	if m.NativePlugin != nil {
+		return []string{"pack.json", "upstream/"}
+	}
 	paths := []string{"pack.json"}
 
 	for _, id := range m.Rules {
@@ -345,9 +362,6 @@ func (m PackManifest) ContentPaths() []string {
 	}
 	for _, id := range m.Prompts {
 		paths = append(paths, filepath.ToSlash(filepath.Join("prompts", id+".md")))
-	}
-	for _, id := range m.Plugins {
-		paths = append(paths, m.RelPath(domain.CategoryPlugins, id))
 	}
 	for _, name := range m.MCP {
 		paths = append(paths, filepath.ToSlash(filepath.Join("mcp", name+".json")))

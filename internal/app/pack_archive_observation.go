@@ -2,8 +2,6 @@ package app
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"maps"
 	"os"
@@ -75,8 +73,7 @@ func newArchiveObservation(
 }
 
 func archiveObservationPath(configDir, name string) string {
-	sum := sha256.Sum256([]byte(name))
-	return filepath.Join(configDir, ".cache", "archive-observations", hex.EncodeToString(sum[:])+".json")
+	return filepath.Join(configDir, ".cache", "archive-observations", util.ContentDigest([]byte(name))+".json")
 }
 
 func loadArchiveObservation(configDir, name string) (archiveObservation, bool) {

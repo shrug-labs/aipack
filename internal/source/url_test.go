@@ -8,6 +8,23 @@ import (
 	"testing"
 )
 
+func TestIsRepositoryURL(t *testing.T) {
+	t.Parallel()
+	for input, want := range map[string]bool{
+		"https://github.com/team/repo":                               true,
+		"https://github.oci.oraclecorp.com/team/repo/":               true,
+		"https://bitbucket.org/team/repo":                            true,
+		"https://github.com/team/repo/blob/main/registry.yaml":       false,
+		"https://raw.githubusercontent.com/team/repo/main/pack.json": false,
+		"https://example.com/catalog.json":                           false,
+		"https://github.example.com/":                                false,
+	} {
+		if got := IsRepositoryURL(input); got != want {
+			t.Errorf("IsRepositoryURL(%q) = %v, want %v", input, got, want)
+		}
+	}
+}
+
 func TestProbePackURL_GitHubRepo(t *testing.T) {
 	t.Parallel()
 	info, err := ProbePackURL("https://github.com/acme/my-pack")

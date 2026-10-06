@@ -1,7 +1,7 @@
 package harness
 
 import (
-	"encoding/json"
+	"fmt"
 	"path/filepath"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -30,8 +30,11 @@ func ApplyEdit(content []byte, format FileFormat, ctx EditContext, edit func(roo
 		if len(content) == 0 {
 			content = []byte("{}")
 		}
-		if err := json.Unmarshal(content, &root); err != nil {
+		if err := util.UnmarshalJSON(content, &root); err != nil {
 			return nil, err
+		}
+		if root == nil {
+			return nil, fmt.Errorf("JSON settings must be an object")
 		}
 		edit(root, ctx)
 		out, err := util.MarshalPrettyJSON(root)

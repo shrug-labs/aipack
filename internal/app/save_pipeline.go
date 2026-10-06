@@ -64,7 +64,7 @@ func DetectHarnessesWithContent(scope domain.Scope, projectDir, home string, env
 	var result []domain.Harness
 	for _, h := range reg.All() {
 		spec := TargetSpec{Scope: scope, ProjectDir: projectDir, Home: home, Env: env}
-		roots := h.Layout(scope, targetDirForHarness(spec, h.ID()), home).ValidationRoots
+		roots := h.Layout(captureContextForHarness(spec, h.ID(), nil)).ValidationRoots
 		for _, r := range roots {
 			if _, err := os.Stat(r); err == nil {
 				result = append(result, h.ID())
@@ -285,6 +285,9 @@ func RunSavePipeline(eng *engine.Engine, req SavePipelineRequest, reg *harness.R
 	manifest, err := config.LoadPackManifest(manifestPath)
 	if err != nil {
 		return result, fmt.Errorf("loading pack manifest: %w", err)
+	}
+	if manifest.NativePlugin != nil {
+		return result, fmt.Errorf("cannot save captured content into plugin-derived pack %q; update it from its upstream source", req.PackName)
 	}
 	resolvedRoot := ResolvePackRootWithFallback(manifestPath, manifest, packRoot)
 

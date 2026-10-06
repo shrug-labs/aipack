@@ -117,7 +117,7 @@ func CheckSyncStatus(ctx context.Context, eng *engine.Engine, configDir, profile
 			TargetSpec: resolved.TargetSpec,
 		}, reg)
 		if err != nil {
-			return SyncStatusMsg{ProfileName: profileName, Warnings: warnings, Err: err}
+			return SyncStatusMsg{ProfileName: profileName, Target: planSummaryToTarget(resolved, summary), Warnings: warnings, Err: err}
 		}
 		warnings = append(warnings, summary.Warnings...)
 

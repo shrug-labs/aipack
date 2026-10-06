@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -30,6 +31,31 @@ func TestMergeSettingsKeys_JSON_AddKeys(t *testing.T) {
 		t.Errorf("managed_key not added: %v", m)
 	}
 	assertOp(t, ops, "managed_key", MergeAdd)
+}
+
+func TestJSONMergeRetainsExactNumbersAndDistinctValues(t *testing.T) {
+	for _, hid := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode, domain.HarnessCline} {
+		input := []byte(`{"user":9007199254740993,"fraction":0.12345678901234567890123456789,"items":[9007199254740993,9007199254740992]}`)
+		previous := []byte(`{"items":[9007199254740992]}`)
+		next := []byte(`{"items":[9007199254740994],"managed":1e+1000}`)
+		out, _, err := mergeSettingsKeys(input, previous, next, hid, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := parseJSONMap(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items := root["items"].([]any)
+		if root["user"] != json.Number("9007199254740993") || root["fraction"] != json.Number("0.12345678901234567890123456789") || root["managed"] != json.Number("1e+1000") || len(items) != 3 || items[0] != json.Number("9007199254740994") || items[1] != json.Number("9007199254740993") || items[2] != json.Number("9007199254740992") {
+			t.Fatalf("%s rounded or conflated numbers: %s", hid, out)
+		}
+		for _, invalid := range []string{"null", "[]", "{} {}"} {
+			if _, err := parseJSONMap([]byte(invalid)); err == nil {
+				t.Fatalf("accepted non-object JSON %q", invalid)
+			}
+		}
+	}
 }
 
 func TestMergeSettingsKeys_JSON_RemoveKeys(t *testing.T) {
@@ -109,6 +135,65 @@ func TestMergeSettingsKeys_JSON_ArrayMerge(t *testing.T) {
 		}
 	}
 	assertOp(t, ops, "items", MergeUpdate)
+}
+
+func TestMergeSettingsKeys_MCPArgumentsRemainPositional(t *testing.T) {
+	t.Parallel()
+	for _, hid := range []domain.Harness{domain.HarnessOpenCode, domain.HarnessClaudeCode, domain.HarnessCline, domain.HarnessCodex} {
+		t.Run(string(hid), func(t *testing.T) {
+			section, field := "mcpServers", "args"
+			if hid == domain.HarnessOpenCode {
+				section, field = "mcp", "command"
+			} else if hid == domain.HarnessCodex {
+				section = "mcp_servers"
+			}
+			encode := func(args []string) []byte {
+				root := map[string]any{section: map[string]any{"probe": map[string]any{field: args}}}
+				if hid == domain.HarnessCodex {
+					body, err := marshalTOML(root)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return body
+				}
+				body, err := json.Marshal(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return body
+			}
+			old := encode([]string{"launch", "root", "root", "old"})
+			next := encode([]string{"launch", "new-root", "new-root", "new"})
+			for _, check := range []struct {
+				name                   string
+				disk, prev, next, want []byte
+			}{
+				{"repeat", old, old, old, old},
+				{"update", old, old, next, next},
+				{"first-collision", old, nil, next, old},
+				{"local-edit", next, old, old, next},
+			} {
+				t.Run(check.name, func(t *testing.T) {
+					got, _, err := mergeSettingsKeys(check.disk, check.prev, check.next, hid, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					parse := parseJSONMap
+					if hid == domain.HarnessCodex {
+						parse = parseTOMLMap
+					}
+					actual, err := parse(got)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want, err := parse(check.want)
+					if err != nil || !reflect.DeepEqual(actual, want) {
+						t.Fatalf("argument sequence changed: %s; want %s; %v", got, check.want, err)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestMergeSettingsKeys_JSON_ArrayPreservesManagedOrder(t *testing.T) {

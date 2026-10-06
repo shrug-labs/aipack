@@ -54,7 +54,7 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 	}
 
 	// Verify all vector dirs exist.
-	for _, sub := range []string{"rules", "agents", "workflows", "skills", "hooks", "plugins", "prompts", "mcp", "configs", "profiles"} {
+	for _, sub := range []string{"rules", "agents", "workflows", "skills", "hooks", "prompts", "mcp", "configs", "profiles"} {
 		d := filepath.Join(packDir, sub)
 		st, err := os.Stat(d)
 		if err != nil {
@@ -66,6 +66,9 @@ func TestPackCreate_Local_ScaffoldsValidPack(t *testing.T) {
 	}
 
 	// Verify starter profile exists and is referenced in manifest.
+	if _, err := os.Stat(filepath.Join(packDir, "plugins")); !os.IsNotExist(err) {
+		t.Fatalf("retired plugins directory was scaffolded: %v", err)
+	}
 	if len(m.Profiles) != 1 || m.Profiles[0] != "my-pack" {
 		t.Fatalf("Profiles = %v, want [my-pack]", m.Profiles)
 	}

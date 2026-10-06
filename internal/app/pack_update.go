@@ -8,12 +8,14 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/source"
 	"github.com/shrug-labs/aipack/internal/util"
 )
@@ -134,6 +136,7 @@ type packUpdateOutcome struct {
 	updatedMeta   *config.InstalledPackMeta
 	effective     domain.BundledSet // merged approval set (carried-forward + explicit --with)
 	explicitPrefs bool              // true when sync-config had non-empty Approved/Declined
+	replacement   *packReplacement
 }
 
 type packUpdateContext struct {
@@ -231,6 +234,11 @@ func PackUpdateWithState(ctx context.Context, req PackUpdateRequest, stdout io.W
 	if req.ConfigDir == "" {
 		return PackUpdateExecution{}, fmt.Errorf("config dir is required")
 	}
+	ctx, unlock, lockErr := lockPackMutationContext(ctx, req.ConfigDir, req.DryRun)
+	if lockErr != nil {
+		return PackUpdateExecution{}, lockErr
+	}
+	defer unlock()
 
 	lfPath := config.LockfilePath(req.ConfigDir)
 	var lf config.Lockfile
@@ -304,6 +312,13 @@ func PackUpdateWithState(ctx context.Context, req PackUpdateRequest, stdout io.W
 	for i, o := range outcomes {
 		results[i] = o.PackUpdateResult
 		if o.updatedMeta != nil {
+			if o.replacement != nil {
+				o.updatedMeta.MaterializedDigest = o.replacement.Digest
+			}
+			if o.manifest != nil {
+				o.updatedMeta.Plugin = installedPluginSource(o.updatedMeta.Plugin, *o.manifest)
+				o.updatedMeta.ConverterVersion = nativeConverterVersion(*o.manifest)
+			}
 			lf.Packs[o.Name] = *o.updatedMeta
 			metaChanged = true
 		}
@@ -319,11 +334,30 @@ func PackUpdateWithState(ctx context.Context, req PackUpdateRequest, stdout io.W
 				metaChanged = true
 			}
 		}
-		// Bundled-content install is a real mutation (writes profiles/
-		// registries into configDir). Skip in dry-run; the report's
-		// BundledCandidates already tells the user what would land.
+	}
+	if metaChanged && !req.DryRun {
+		if err := config.SaveLockfile(lfPath, lf); err != nil {
+			err = errors.Join(err, recoverPackReplacements(req.ConfigDir))
+			for i, o := range outcomes {
+				if o.replacement != nil {
+					results[i].Status = StatusError
+					results[i].Message = "metadata persistence failed; previous package retained"
+				}
+			}
+			prior, loadErr := config.LoadLockfile(lfPath)
+			return PackUpdateExecution{Results: results, Installed: maps.Clone(prior.Packs)}, errors.Join(fmt.Errorf("saving updated pack metadata: %w", err), loadErr)
+		}
+		if err := recoverPackReplacements(req.ConfigDir); err != nil {
+			return PackUpdateExecution{Results: results, Installed: maps.Clone(lf.Packs)}, err
+		}
+	}
+	for _, o := range outcomes {
+		// Deliver approved bundled content only after package metadata persists.
 		if !req.DryRun && (o.Status == StatusUpdated || o.Status == StatusUpToDate) && o.manifest != nil {
 			packDir := filepath.Join(uctx.packsDir, o.Name)
+			if err := indexInstalledPack(uctx.configDir, o.Name, packDir); err != nil && stdout != nil {
+				fmt.Fprintf(stdout, "Warning: search index for %s was not refreshed: %v\n", o.Name, err)
+			}
 			// Auto-install bundled profiles/registries from the carried-forward
 			// approval set when the user has expressed preferences (used --with
 			// at least once). Pre-preference installs only apply on explicit
@@ -333,11 +367,6 @@ func PackUpdateWithState(ctx context.Context, req PackUpdateRequest, stdout io.W
 				bundledWith = o.effective
 			}
 			installBundledContent(uctx.configDir, packDir, *o.manifest, bundledWith, stdout)
-		}
-	}
-	if metaChanged && !req.DryRun {
-		if err := config.SaveLockfile(lfPath, lf); err != nil {
-			return PackUpdateExecution{Results: results, Installed: maps.Clone(lf.Packs)}, fmt.Errorf("saving updated pack metadata: %w", err)
 		}
 	}
 	return PackUpdateExecution{Results: results, Installed: maps.Clone(lf.Packs)}, nil
@@ -373,9 +402,19 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 
 	emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseStarting})
 
+	if err := verifyImportedPackUnmodified(packDir, meta); err != nil {
+		result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error(), DryRun: uctx.dryRun}
+		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+		return packUpdateOutcome{PackUpdateResult: result}
+	}
+
 	switch method {
+	case config.MethodNPM:
+		return packUpdateNPM(ctx, name, meta, packDir, uctx, hasExplicitPrefs)
 	case config.MethodClone:
 		ref := meta.Ref
+		converterChanged := meta.Plugin != nil && meta.ConverterVersion != plugin.ConverterVersion
+		separateCatalog := meta.Plugin != nil && meta.Plugin.MarketplaceURL != "" && meta.Plugin.MarketplaceURL != meta.Origin
 
 		// Auto-prepend the installed prefix when the user passes a bare
 		// semver spec to a pack that was installed under a namespaced tag
@@ -391,7 +430,10 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 
 		switch refClass.Kind {
 		case source.RefSemver, source.RefPartialSemver:
-			resolved, err := resolveSemverRef(ctx, meta.Origin, uctx.ref, refClass, uctx.listRemoteTagsFn, uctx.lockedStdout())
+			listTags := func(ctx context.Context, repo string) ([]string, error) {
+				return pluginGitTags(ctx, uctx.configDir, meta.Plugin, repo, uctx.runGitFn, uctx.listRemoteTagsFn)
+			}
+			resolved, err := resolveSemverRef(ctx, meta.Origin, uctx.ref, refClass, listTags, uctx.lockedStdout())
 			if err != nil {
 				result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
@@ -409,7 +451,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		case source.RefLiteral:
 			ref = refClass.Spec
 		case source.RefEmpty:
-			if isPinned(meta) {
+			if isPinned(meta) && !converterChanged {
 				return packReportPinned(ctx, name, method, meta, uctx)
 			}
 		}
@@ -419,12 +461,23 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		// Without this, the fast paths below would print "up-to-date" and
 		// silently drop the new ref/version.
 		pinMoved := uctx.ref != "" && ref != meta.Ref
+		catalogChanged := false
+		if separateCatalog {
+			prior := meta.Plugin
+			meta, err = refreshPluginCatalog(ctx, meta, "", ref, uctx)
+			if err != nil {
+				result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
+				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
+				return packUpdateOutcome{PackUpdateResult: result}
+			}
+			catalogChanged = !reflect.DeepEqual(prior, meta.Plugin)
+		}
 
 		// Fast path: use ls-remote to check if the remote hash changed before
 		// doing the expensive clone. Skip when --with adds new bundled
 		// categories (need the clone to extract previously-filtered content),
 		// and skip when the user is explicitly moving the pin.
-		if meta.CommitHash != "" && !pinMoved {
+		if meta.CommitHash != "" && !pinMoved && !converterChanged && !catalogChanged {
 			needsReExtract := false
 			if uctx.with != nil {
 				approved := metaApprovedSet(meta)
@@ -442,7 +495,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 					uctx.stdoutMu.Unlock()
 				}
 				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseCheckingRemote})
-				remoteHash, lsErr := uctx.gitLsRemoteFn(ctx, meta.Origin, ref)
+				remoteHash, lsErr := pluginGitHead(ctx, uctx.configDir, meta.Plugin, meta.Origin, ref, uctx.runGitFn, uctx.gitLsRemoteFn)
 				if lsErr == nil {
 					lsErr = ctx.Err()
 				}
@@ -478,15 +531,14 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
-		defer os.RemoveAll(tmpDir)
-		cacheRefDir := source.CacheRefDir(uctx.configDir, meta.Origin)
+		defer util.RemoveOwnedTree(tmpDir)
 		if !uctx.quiet && uctx.stdout != nil {
 			uctx.stdoutMu.Lock()
 			fmt.Fprintf(uctx.stdout, "Cloning %s from %s\n", name, meta.Origin)
 			uctx.stdoutMu.Unlock()
 		}
 		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseCloning})
-		if err := source.EnsureCloneWithRef(ctx, meta.Origin, tmpDir, ref, cacheRefDir, uctx.runGitFn); err != nil {
+		if err := clonePluginGitRepository(ctx, uctx.configDir, meta.Plugin, meta.Origin, tmpDir, ref, uctx.runGitFn); err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
@@ -503,7 +555,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
-		if newHash != "" && newHash == meta.CommitHash {
+		if newHash != "" && newHash == meta.CommitHash && !converterChanged && !catalogChanged {
 			// Same hash, but --with may approve previously filtered content.
 			var rawCandidates *BundledCandidates
 			var srcManifest config.PackManifest
@@ -521,7 +573,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 				}
 				outcome := buildUpToDateResult(name, method,
 					"already at "+util.ShortHash(newHash),
-					filepath.Join(srcRoot, "pack.json"), packDir, ref, newHash, meta, uctx, hasExplicitPrefs, pinMoved)
+					filepath.Join(packDir, "pack.json"), packDir, ref, newHash, meta, uctx, hasExplicitPrefs, pinMoved)
 				emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
 				return outcome
 			}
@@ -533,13 +585,19 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			uctx.stdoutMu.Unlock()
 		}
 		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Phase: PackUpdatePhaseExtracting})
-		staging, newManifest, err := extractPackContent(uctx.tempDir, srcRoot, meta.ContentPaths, name, tmpDir)
+		if !separateCatalog {
+			meta, err = refreshPluginCatalog(ctx, meta, tmpDir, ref, uctx)
+		}
+		if err != nil {
+			return packUpdateOutcome{PackUpdateResult: PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}}
+		}
+		staging, newManifest, err := extractPackSource(uctx.tempDir, srcRoot, meta.ContentPaths, name, tmpDir, pluginSourceAtRevision(meta.Plugin, newHash))
 		if err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
-		defer os.RemoveAll(staging)
+		defer util.RemoveOwnedTree(staging)
 
 		candidates, effective, err := applyPreferenceFilter(staging, &newManifest, meta, uctx.with)
 		if err != nil {
@@ -559,7 +617,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		if uctx.dryRun {
 			// Dry-run: skip atomic move, integrity write, resolved inventory,
 			// and updatedMeta entirely — staging dir is cleaned up by deferred
-			// RemoveAll. Caller still gets candidate counts via BundledCandidates.
+			// cleanup. Caller still gets candidate counts via BundledCandidates.
 			changes := dryRunIntegrityDiffText(packDir, staging, oldIntegrity)
 			if uctx.stdout != nil {
 				uctx.stdoutMu.Lock()
@@ -575,14 +633,17 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
-		_ = source.UpdateBareCache(ctx, meta.Origin, tmpDir, source.GitCacheDir(uctx.configDir), uctx.runGitFn)
+		if !relativePluginGitSource(meta.Plugin, meta.Origin) {
+			_ = source.UpdateBareCache(ctx, meta.Origin, tmpDir, source.GitCacheDir(uctx.configDir), uctx.runGitFn)
+		}
 		if err := ctx.Err(); err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
-		if err := util.ReplaceDirAtomic(packDir, staging); err != nil {
+		replacement, err := beginPackReplacement(uctx.configDir, name, staging)
+		if err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
@@ -603,11 +664,13 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		outcome := packUpdateOutcome{
 			PackUpdateResult: result,
 			manifest:         &newManifest,
+			replacement:      replacement,
 			effective:        effective,
 			explicitPrefs:    hasExplicitPrefs,
 			updatedMeta: refreshedInstalledPackMeta(meta, meta.Origin, method, now.UTC().Format(time.RFC3339),
 				ref, meta.SubPath, newHash, meta.ContentPaths, aList, dList, resolved),
 		}
+		outcome.updatedMeta.ConverterVersion = nativeConverterVersion(newManifest)
 		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &outcome.PackUpdateResult})
 		return outcome
 
@@ -623,13 +686,23 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
 		oldIntegrity, _ := loadIntegrity(packDir)
-		staging, copyManifest, err := extractLocalPackToStaging(uctx.configDir, origin)
+		var staging string
+		var copyManifest config.PackManifest
+		var err error
+		if meta.Plugin != nil {
+			meta, err = refreshPluginCatalog(ctx, meta, origin, "", uctx)
+			if err == nil {
+				staging, copyManifest, err = extractPackSource(uctx.tempDir, origin, meta.ContentPaths, name, origin, meta.Plugin)
+			}
+		} else {
+			staging, copyManifest, err = extractLocalPackToStaging(uctx.configDir, origin)
+		}
 		if err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
-		defer os.RemoveAll(staging)
+		defer util.RemoveOwnedTree(staging)
 		candidates, effective, err := applyPreferenceFilter(staging, &copyManifest, meta, uctx.with)
 		if err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
@@ -653,7 +726,8 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			return packUpdateOutcome{PackUpdateResult: result}
 		}
 
-		if err := util.ReplaceDirAtomic(packDir, staging); err != nil {
+		replacement, err := beginPackReplacement(uctx.configDir, name, staging)
+		if err != nil {
 			result := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result, Err: err})
 			return packUpdateOutcome{PackUpdateResult: result}
@@ -671,6 +745,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		outcome := packUpdateOutcome{
 			PackUpdateResult: result,
 			manifest:         &copyManifest,
+			replacement:      replacement,
 			effective:        effective,
 			explicitPrefs:    hasExplicitPrefs,
 			updatedMeta: refreshedInstalledPackMeta(meta, origin, method, now.UTC().Format(time.RFC3339),
@@ -756,7 +831,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
 			return packUpdateOutcome{PackUpdateResult: updateResult}
 		}
-		defer os.RemoveAll(result.destDir)
+		defer util.RemoveOwnedTree(result.destDir)
 
 		// Filter staged content before installing to the final location.
 		candidates, effective, err := applyPreferenceFilter(result.destDir, &result.manifest, meta, uctx.with)
@@ -788,7 +863,8 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
 			return packUpdateOutcome{PackUpdateResult: updateResult}
 		}
-		if err := util.ReplaceDirAtomic(packDir, result.destDir); err != nil {
+		replacement, err := beginPackReplacement(uctx.configDir, name, result.destDir)
+		if err != nil {
 			updateResult := PackUpdateResult{Name: name, Method: method, Status: StatusError, Message: err.Error()}
 			emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &updateResult, Err: err})
 			return packUpdateOutcome{PackUpdateResult: updateResult}
@@ -806,6 +882,7 @@ func packUpdateOne(ctx context.Context, name string, uctx packUpdateContext) pac
 		outcome := packUpdateOutcome{
 			PackUpdateResult: updateResult,
 			manifest:         &result.manifest,
+			replacement:      replacement,
 			effective:        effective,
 			explicitPrefs:    hasExplicitPrefs,
 			updatedMeta: refreshedInstalledPackMeta(meta, origin, config.MethodClone, now.UTC().Format(time.RFC3339),
@@ -913,7 +990,7 @@ func packUpdateArchive(
 	if replayed != nil {
 		return *replayed
 	}
-	defer os.RemoveAll(fetched.destDir)
+	defer util.RemoveOwnedTree(fetched.destDir)
 
 	comparison, err := compareArchiveUpdateCandidate(fetched, meta, preparation, uctx)
 	if err != nil {
@@ -930,7 +1007,9 @@ func prepareArchiveUpdate(
 	hasExplicitPrefs bool,
 ) (archiveUpdatePreparation, error) {
 	oldIntegrity, err := loadIntegrity(packDir)
-	if err != nil || len(oldIntegrity.Files) == 0 {
+	// Imported trees are verified before update. Refresh their baseline so older
+	// file-only inventories and cached checks cannot hide directory changes.
+	if err != nil || len(oldIntegrity.Files) == 0 || meta.Plugin != nil || meta.ConverterVersion != 0 {
 		oldIntegrity, err = computeIntegrity(packDir)
 	}
 	if err != nil {
@@ -946,7 +1025,7 @@ func prepareArchiveUpdate(
 	}
 	key := makeArchiveObservationKey(meta.Origin, meta.SubPath, meta.ContentPaths, selectionDigest, installedDigest)
 	observation, ok := loadArchiveObservation(uctx.configDir, name)
-	ok = ok && archiveObservationMatches(observation, key)
+	ok = ok && archiveObservationMatches(observation, key) && (meta.Plugin == nil || meta.ConverterVersion == plugin.ConverterVersion)
 	return archiveUpdatePreparation{
 		origin:           meta.Origin,
 		oldIntegrity:     oldIntegrity,
@@ -1016,6 +1095,7 @@ func probeArchiveUpdate(
 		SubPath:      meta.SubPath,
 		Name:         name,
 		ContentPaths: meta.ContentPaths,
+		Plugin:       meta.Plugin,
 	}
 	options := source.HTTPArchiveOptions{}
 	if source.IsHTTPURL(preparation.origin) && preparation.hasObservation {
@@ -1085,18 +1165,20 @@ func applyArchiveUpdate(
 ) packUpdateOutcome {
 	if !comparison.diff.HasChanges() {
 		result := PackUpdateResult{
-			Name: name, Method: config.MethodArchive, Status: StatusUpToDate,
-			Message:           "archive content unchanged at " + preparation.origin,
+			Name: name, Method: fetched.method, Status: StatusUpToDate,
+			Message:           fetched.method + " content unchanged at " + preparation.origin,
 			BundledCandidates: comparison.candidates,
 		}
 		if uctx.stdout != nil {
-			fmt.Fprintf(uctx.lockedStdout(), "Up to date (archive): %s from %s\n", name, preparation.origin)
+			fmt.Fprintf(uctx.lockedStdout(), "Up to date (%s): %s from %s\n", fetched.method, name, preparation.origin)
 			if uctx.dryRun {
 				fmt.Fprint(uctx.lockedStdout(), "Changes: none\n")
 			}
 		}
-		_ = saveArchiveObservation(uctx.configDir, name,
-			newArchiveObservation(preparation.observationKey, fetched.archiveFetch, comparison.candidateDigest, result))
+		if fetched.method == config.MethodArchive {
+			_ = saveArchiveObservation(uctx.configDir, name,
+				newArchiveObservation(preparation.observationKey, fetched.archiveFetch, comparison.candidateDigest, result))
+		}
 		outcome := packUpdateOutcome{
 			PackUpdateResult: result,
 			manifest:         &fetched.manifest,
@@ -1109,52 +1191,58 @@ func applyArchiveUpdate(
 
 	if uctx.dryRun {
 		if uctx.stdout != nil {
-			fmt.Fprintf(uctx.lockedStdout(), "Would update (archive): %s from %s\n", name, preparation.origin)
+			fmt.Fprintf(uctx.lockedStdout(), "Would update (%s): %s from %s\n", fetched.method, name, preparation.origin)
 			fmt.Fprint(uctx.lockedStdout(), integrityDiffText(comparison.diff))
 		}
 		result := PackUpdateResult{
-			Name: name, Method: config.MethodArchive, Status: StatusUpdated, DryRun: true,
+			Name: name, Method: fetched.method, Status: StatusUpdated, DryRun: true,
 			Message: "re-fetch from " + preparation.origin, BundledCandidates: comparison.candidates,
 		}
-		_ = saveArchiveObservation(uctx.configDir, name,
-			newArchiveObservation(preparation.observationKey, fetched.archiveFetch, comparison.candidateDigest, result))
+		if fetched.method == config.MethodArchive {
+			_ = saveArchiveObservation(uctx.configDir, name,
+				newArchiveObservation(preparation.observationKey, fetched.archiveFetch, comparison.candidateDigest, result))
+		}
 		emitPackUpdateEvent(uctx.events, PackUpdateEvent{Pack: name, Result: &result})
 		return packUpdateOutcome{PackUpdateResult: result}
 	}
 
-	if err := util.ReplaceDirAtomic(packDir, fetched.destDir); err != nil {
-		return archiveUpdateFailure(name, config.MethodArchive, err, uctx)
+	replacement, err := beginPackReplacement(uctx.configDir, name, fetched.destDir)
+	if err != nil {
+		return archiveUpdateFailure(name, fetched.method, err, uctx)
 	}
 	if err := saveIntegrityManifest(packDir, comparison.candidateIntegrity); err != nil && uctx.stdout != nil {
 		fmt.Fprintf(uctx.lockedStdout(), "Warning: failed to record integrity: %v\n", err)
 	}
 	if uctx.stdout != nil {
 		fmt.Fprintf(uctx.lockedStdout(), "Changes:\n%s", formatIntegrityDiff(comparison.diff))
-		fmt.Fprintf(uctx.lockedStdout(), "Updated (archive): %s from %s\n", name, preparation.origin)
+		fmt.Fprintf(uctx.lockedStdout(), "Updated (%s): %s from %s\n", fetched.method, name, preparation.origin)
 	}
 	approved, declined := buildPrefsLists(comparison.effective)
 	now := uctx.nowFn()
 	result := PackUpdateResult{
-		Name: name, Method: config.MethodArchive, Status: StatusUpdated,
+		Name: name, Method: fetched.method, Status: StatusUpdated,
 		Message: "re-fetched from " + preparation.origin, BundledCandidates: comparison.candidates,
 	}
 	current := PackUpdateResult{
-		Name: name, Method: config.MethodArchive, Status: StatusUpToDate,
-		Message: "archive content unchanged at " + preparation.origin, BundledCandidates: comparison.candidates,
+		Name: name, Method: fetched.method, Status: StatusUpToDate,
+		Message: fetched.method + " content unchanged at " + preparation.origin, BundledCandidates: comparison.candidates,
 	}
 	currentKey := makeArchiveObservationKey(
 		preparation.origin, meta.SubPath, meta.ContentPaths,
 		preparation.selectionDigest, comparison.candidateDigest,
 	)
-	_ = saveArchiveObservation(uctx.configDir, name,
-		newArchiveObservation(currentKey, fetched.archiveFetch, comparison.candidateDigest, current))
+	if fetched.method == config.MethodArchive {
+		_ = saveArchiveObservation(uctx.configDir, name,
+			newArchiveObservation(currentKey, fetched.archiveFetch, comparison.candidateDigest, current))
+	}
 	outcome := packUpdateOutcome{
 		PackUpdateResult: result,
 		manifest:         &fetched.manifest,
+		replacement:      replacement,
 		effective:        comparison.effective,
 		explicitPrefs:    preparation.hasExplicitPrefs,
 		updatedMeta: refreshedInstalledPackMeta(
-			meta, preparation.origin, config.MethodArchive, now.UTC().Format(time.RFC3339),
+			meta, preparation.origin, fetched.method, now.UTC().Format(time.RFC3339),
 			"", meta.SubPath, "", meta.ContentPaths, approved, declined,
 			buildResolvedInventory(uctx.configDir, name, packDir, "", now, uctx.lockedStdout()),
 		),
@@ -1198,7 +1286,7 @@ func pinHint(ctx context.Context, meta config.InstalledPackMeta, semverPin bool,
 		return "", nil
 	}
 	if semverPin {
-		tags, err := uctx.listRemoteTagsFn(ctx, meta.Origin)
+		tags, err := pluginGitTags(ctx, uctx.configDir, meta.Plugin, meta.Origin, uctx.runGitFn, uctx.listRemoteTagsFn)
 		if err != nil {
 			return "", err
 		}
@@ -1226,7 +1314,7 @@ func pinHint(ctx context.Context, meta config.InstalledPackMeta, semverPin bool,
 	if source.IsCommitHash(ref) {
 		ref = ""
 	}
-	remoteHash, err := uctx.gitLsRemoteFn(ctx, meta.Origin, ref)
+	remoteHash, err := pluginGitHead(ctx, uctx.configDir, meta.Plugin, meta.Origin, ref, uctx.runGitFn, uctx.gitLsRemoteFn)
 	if err != nil {
 		return "", err
 	}

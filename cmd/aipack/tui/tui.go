@@ -518,7 +518,7 @@ func (m rootModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(common.PreviewRequestMsg); ok {
 		p := newPreviewModel(m.width, m.height)
 		m = m.withPreview(p)
-		return m, loadPreview(msg.Title, msg.Category, msg.PackName, msg.FilePath)
+		return m, loadPreview(msg.Title, msg.Category, msg.PackName, msg.FilePath, msg.AdditionalPaths...)
 	}
 	if msg, ok := msg.(previewLoadedMsg); ok {
 		if m.preview != nil {
@@ -2278,9 +2278,7 @@ func (m rootModel) doSyncItem(item profilescreen.ProfileSnapshot, scope, harness
 	if scope == "" {
 		scope = string(item.SyncTarget.Scope)
 	}
-	if scope == "" {
-		scope = string(domain.ScopeGlobal)
-	}
+	// An unresolved target keeps the override empty so runSync uses sync-config.
 	// An empty harness means "all configured harnesses" — runSync syncs each
 	// resolved harness independently. The customize flow may pass a specific
 	// harness to narrow the sync to one.

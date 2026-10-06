@@ -11,7 +11,6 @@ import (
 
 // codexApprovalModeApprove is the Codex per-tool auto-approve value.
 const codexApprovalModeApprove = "approve"
-const defaultCodexPluginMarketplace = "openai-curated"
 
 type codexMCPServer struct {
 	Enabled           bool                       `toml:"enabled"`
@@ -84,17 +83,6 @@ func buildMCPEntries(servers []domain.MCPServer) (map[string]codexMCPServer, []d
 	return mcp, warnings
 }
 
-func buildPluginEntries(plugins []domain.Plugin) map[string]map[string]any {
-	if len(plugins) == 0 {
-		return nil
-	}
-	out := make(map[string]map[string]any, len(plugins))
-	for _, p := range plugins {
-		out[p.Binding(defaultCodexPluginMarketplace)] = map[string]any{"enabled": true}
-	}
-	return out
-}
-
 // RenderBytes produces the full config.toml content including MCP servers and
 // agent registrations.
 func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any) ([]byte, []domain.Warning, error) {
@@ -105,33 +93,12 @@ func RenderBytes(base []byte, servers []domain.MCPServer, agentRegs map[string]m
 	})
 }
 
-// RenderBytesWithPlugins produces the full config.toml content including MCP
-// servers, agent registrations, and plugin enable stanzas.
-func RenderBytesWithPlugins(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin) ([]byte, []domain.Warning, error) {
-	return RenderBytesWithOptions(RenderOptions{
-		Base:      base,
-		Servers:   servers,
-		AgentRegs: agentRegs,
-		Plugins:   plugins,
-	})
-}
-
 type RenderOptions struct {
-	Base      []byte
-	Servers   []domain.MCPServer
-	AgentRegs map[string]map[string]any
-	Plugins   []domain.Plugin
-	HookState map[string]string
-}
-
-func RenderBytesWithPluginsAndHookState(base []byte, servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin, hookState map[string]string) ([]byte, []domain.Warning, error) {
-	return RenderBytesWithOptions(RenderOptions{
-		Base:      base,
-		Servers:   servers,
-		AgentRegs: agentRegs,
-		Plugins:   plugins,
-		HookState: hookState,
-	})
+	Base          []byte
+	Servers       []domain.MCPServer
+	AgentRegs     map[string]map[string]any
+	HookState     map[string]string
+	NativePlugins []domain.NativePluginAction
 }
 
 func RenderBytesWithOptions(opts RenderOptions) ([]byte, []domain.Warning, error) {
@@ -143,7 +110,11 @@ func RenderBytesWithOptions(opts RenderOptions) ([]byte, []domain.Warning, error
 	}
 
 	entries, warnings := buildMCPEntries(opts.Servers)
-	root["mcp_servers"] = entries
+	if len(entries) > 0 {
+		root["mcp_servers"] = entries
+	} else {
+		delete(root, "mcp_servers")
+	}
 
 	// Merge agent registrations into the [agents] table.
 	if len(opts.AgentRegs) > 0 {
@@ -158,17 +129,39 @@ func RenderBytesWithOptions(opts RenderOptions) ([]byte, []domain.Warning, error
 		root["agents"] = agents
 	}
 
-	if pluginEntries := buildPluginEntries(opts.Plugins); len(pluginEntries) > 0 {
-		pluginRoot := map[string]any{}
-		if existing, ok := root["plugins"].(map[string]any); ok {
-			maps.Copy(pluginRoot, existing)
+	mergeHookState(root, opts.HookState)
+	if len(opts.NativePlugins) > 0 {
+		pluginRoot, _ := root["plugins"].(map[string]any)
+		if pluginRoot == nil {
+			pluginRoot = map[string]any{}
 		}
-		for name, reg := range pluginEntries {
-			pluginRoot[name] = reg
+		for _, action := range opts.NativePlugins {
+			entry := map[string]any{"enabled": true}
+			servers := map[string]any{}
+			for name, policy := range action.MCPPolicy {
+				server := map[string]any{"enabled": true}
+				if allowed := engine.UnionToolLists(policy.AllowedTools, policy.AlwaysAllowedTools); len(allowed) > 0 {
+					server["enabled_tools"] = allowed
+				}
+				if len(policy.DisabledTools) > 0 {
+					server["disabled_tools"] = policy.DisabledTools
+				}
+				if len(policy.AlwaysAllowedTools) > 0 {
+					tools := map[string]any{}
+					for _, tool := range policy.AlwaysAllowedTools {
+						tools[tool] = map[string]any{"approval_mode": "approve"}
+					}
+					server["tools"] = tools
+				}
+				servers[name] = server
+			}
+			if len(servers) > 0 {
+				entry["mcp_servers"] = servers
+			}
+			pluginRoot[action.Package.Binding()] = entry
 		}
 		root["plugins"] = pluginRoot
 	}
-	mergeHookState(root, opts.HookState)
 
 	out, err := toml.Marshal(root)
 	if err != nil {
@@ -181,17 +174,4 @@ func RenderBytesWithOptions(opts RenderOptions) ([]byte, []domain.Warning, error
 // sync-managed keys (mcp_servers + agent registrations), without base template.
 func RenderManagedKeysOnly(servers []domain.MCPServer, agentRegs map[string]map[string]any) ([]byte, []domain.Warning, error) {
 	return RenderBytes(nil, servers, agentRegs)
-}
-
-func RenderManagedKeysOnlyWithPlugins(servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin) ([]byte, []domain.Warning, error) {
-	return RenderBytesWithPlugins(nil, servers, agentRegs, plugins)
-}
-
-func RenderManagedKeysOnlyWithPluginsAndHookState(servers []domain.MCPServer, agentRegs map[string]map[string]any, plugins []domain.Plugin, hookState map[string]string) ([]byte, []domain.Warning, error) {
-	return RenderBytesWithOptions(RenderOptions{
-		Servers:   servers,
-		AgentRegs: agentRegs,
-		Plugins:   plugins,
-		HookState: hookState,
-	})
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 )
 
 // mockPlanner is a test double for Planner that returns a fixed Fragment or error.
@@ -22,6 +23,51 @@ func (m *mockPlanner) ID() domain.Harness { return m.id }
 func (m *mockPlanner) Plan(_ context.Context, ctx SyncContext) (domain.Fragment, error) {
 	m.targetDir = ctx.TargetDir
 	return m.frag, m.err
+}
+
+func TestPlanSync_ReportsAllUnsupportedSelectionsBeforePlanning(t *testing.T) {
+	t.Parallel()
+	profile := domain.NewProfile()
+	profile.Packs = []domain.Pack{
+		{Name: "first", NativePlugin: &domain.NativePluginSelection{
+			Package: domain.NativePlugin{Harness: domain.HarnessCodex, SettingsFiles: []string{"native.json"}},
+			Selected: map[domain.PackCategory][]string{
+				domain.CategorySkills: {"review"}, domain.CategoryHooks: {"stop"},
+			}, SettingsEnabled: true,
+		}},
+		{Name: "second", NativePlugin: &domain.NativePluginSelection{
+			Package:  domain.NativePlugin{Harness: domain.HarnessCodex},
+			Selected: map[domain.PackCategory][]string{domain.CategoryMCP: {"search"}},
+		}},
+	}
+	planners := []*mockPlanner{{id: domain.HarnessClaudeCode}, {id: domain.HarnessOpenCode}}
+	_, err := PlanSync(context.Background(), profile, PlanRequest{Scope: domain.ScopeProject, ProjectDir: t.TempDir()}, []Planner{planners[0], planners[1]})
+	if err == nil {
+		t.Fatal("unsupported selection produced an activation plan")
+	}
+	for _, text := range []string{`pack "first"`, `pack "second"`, string(domain.HarnessClaudeCode), string(domain.HarnessOpenCode), "hooks/stop, settings/native.json, skills/review", "mcp/search"} {
+		if !strings.Contains(err.Error(), text) {
+			t.Errorf("missing %q in compatibility refusal: %v", text, err)
+		}
+	}
+	for _, planner := range planners {
+		if planner.targetDir != "" {
+			t.Fatal("harness planning ran before all target incompatibilities were reported")
+		}
+	}
+}
+
+func TestPlanSync_PortablePayloadFailureBeforeNativePlanning(t *testing.T) {
+	t.Parallel()
+	profile := domain.NewProfile()
+	profile.Packs = []domain.Pack{{Name: "imported", NativePlugin: &domain.NativePluginSelection{
+		Root: t.TempDir(), Package: domain.NativePlugin{Harness: domain.HarnessCodex, Format: plugin.CodexLegacy, ConverterVersion: plugin.ConverterVersion, Manifest: ".codex-plugin/plugin.json"},
+	}}}
+	native, portable := &mockPlanner{id: domain.HarnessCodex}, &mockPlanner{id: domain.HarnessClaudeCode}
+	_, err := PlanSync(context.Background(), profile, PlanRequest{Scope: domain.ScopeProject, ProjectDir: t.TempDir()}, []Planner{native, portable})
+	if err == nil || !strings.Contains(err.Error(), "delivery to claudecode") || native.targetDir != "" || portable.targetDir != "" {
+		t.Fatalf("portable payload failure was not checked before native planning: %v", err)
+	}
 }
 
 func TestPlanSync_SingleHarness(t *testing.T) {
@@ -63,6 +109,22 @@ func TestPlanSync_SingleHarness(t *testing.T) {
 		if _, ok := plan.Desired[dst]; !ok {
 			t.Errorf("Desired missing %q", dst)
 		}
+	}
+}
+
+func TestPlanSync_RejectsMissingNativeDelivery(t *testing.T) {
+	t.Parallel()
+	p := domain.NativePlugin{Name: "probe", Marketplace: "market", Harness: domain.HarnessClaudeCode}
+	profile := domain.NewProfile()
+	profile.Packs = []domain.Pack{{Name: "alias", NativePlugin: &domain.NativePluginSelection{Package: p}}}
+	planner := &mockPlanner{id: domain.HarnessClaudeCode}
+	req := PlanRequest{Scope: domain.ScopeProject, ProjectDir: t.TempDir()}
+	if _, err := PlanSync(context.Background(), profile, req, []Planner{planner}); err == nil || !strings.Contains(err.Error(), "does not implement native delivery") {
+		t.Fatalf("missing native delivery silently succeeded: %v", err)
+	}
+	planner.frag.NativePlugins = []domain.NativePluginAction{{Package: p, SourcePack: "alias"}}
+	if _, err := PlanSync(context.Background(), profile, req, []Planner{planner}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -37,7 +37,6 @@ type PackEntry struct {
 	Workflows VectorSelector             `yaml:"workflows"`
 	Skills    VectorSelector             `yaml:"skills"`
 	Hooks     HookSelector               `yaml:"hooks"`
-	Plugins   VectorSelector             `yaml:"plugins"`
 	MCP       map[string]MCPServerConfig `yaml:"mcp"`
 
 	Overrides Overrides `yaml:"overrides"`
@@ -67,6 +66,12 @@ type MCPServerConfig struct {
 	AllowedTools       []string `yaml:"allowed_tools,omitempty"`
 	AlwaysAllowedTools []string `yaml:"always_allowed_tools,omitempty"`
 	DisabledTools      []string `yaml:"disabled_tools,omitempty"`
+	StartupTimeout     string   `yaml:"startup_timeout,omitempty"`
+}
+
+// IsZero reports whether the entry has no profile overrides.
+func (c MCPServerConfig) IsZero() bool {
+	return c.Enabled == nil && c.StartupTimeout == "" && !c.HasToolPolicy()
 }
 
 // HasToolPolicy reports whether the profile entry customizes tool visibility.
@@ -84,6 +89,7 @@ type mcpServerConfigYAML struct {
 	AllowedTools       *[]string `yaml:"allowed_tools,omitempty"`
 	AlwaysAllowedTools *[]string `yaml:"always_allowed_tools,omitempty"`
 	DisabledTools      []string  `yaml:"disabled_tools,omitempty"`
+	StartupTimeout     string    `yaml:"startup_timeout,omitempty"`
 }
 
 // MarshalYAML omits empty tool-list slices so they fall back to manifest
@@ -93,8 +99,9 @@ type mcpServerConfigYAML struct {
 // empty list.
 func (c MCPServerConfig) MarshalYAML() (any, error) {
 	out := mcpServerConfigYAML{
-		Enabled:       c.Enabled,
-		DisabledTools: c.DisabledTools,
+		Enabled:        c.Enabled,
+		DisabledTools:  c.DisabledTools,
+		StartupTimeout: c.StartupTimeout,
 	}
 	if len(c.AllowedTools) > 0 {
 		tools := append([]string{}, c.AllowedTools...)
@@ -113,7 +120,6 @@ type Overrides struct {
 	Workflows []string `yaml:"workflows"`
 	Skills    []string `yaml:"skills"`
 	Hooks     []string `yaml:"hooks"`
-	Plugins   []string `yaml:"plugins"`
 	MCP       []string `yaml:"mcp"`
 }
 
@@ -132,8 +138,6 @@ func (pe *PackEntry) OverridesForCategory(cat domain.PackCategory) *[]string {
 		return &pe.Overrides.Skills
 	case domain.CategoryHooks:
 		return &pe.Overrides.Hooks
-	case domain.CategoryPlugins:
-		return &pe.Overrides.Plugins
 	case domain.CategoryMCP:
 		return &pe.Overrides.MCP
 	}
@@ -149,6 +153,25 @@ func LoadProfile(path string) (ProfileConfig, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	if err := dec.Decode(&cfg); err != nil {
 		return ProfileConfig{}, err
+	}
+	// Empty legacy selectors were generated in existing profiles. Accept those
+	// inert fields, but never silently discard a user's nonempty plugin intent.
+	var retired struct {
+		Packs []struct {
+			Name      string         `yaml:"name"`
+			Plugins   VectorSelector `yaml:"plugins"`
+			Overrides struct {
+				Plugins []string `yaml:"plugins"`
+			} `yaml:"overrides"`
+		} `yaml:"packs"`
+	}
+	if err := yaml.Unmarshal(b, &retired); err != nil {
+		return ProfileConfig{}, err
+	}
+	for _, pack := range retired.Packs {
+		if (pack.Plugins.Include != nil && len(*pack.Plugins.Include) > 0) || (pack.Plugins.Exclude != nil && len(*pack.Plugins.Exclude) > 0) || len(pack.Overrides.Plugins) > 0 {
+			return ProfileConfig{}, fmt.Errorf("pack %q: plugins selectors are no longer supported; import marketplace plugins as packs and select their components", pack.Name)
+		}
 	}
 	cfg.mergeDeprecatedParams()
 	return cfg, nil

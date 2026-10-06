@@ -123,45 +123,25 @@ func TestResolveProfile_VectorSelectorErrors(t *testing.T) {
 	}
 }
 
-func TestResolveProfile_PluginSelectors(t *testing.T) {
+func TestLoadProfile_RetiredPluginSelectors(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	installPackForResolveTest(t, root, "base", PackManifest{
-		SchemaVersion: 2,
-		Name:          "base",
-		Version:       "1",
-		Root:          ".",
-		Plugins:       []string{"linear", "superpowers"},
-	}, map[string]string{
-		"plugins/linear.json":      `{"source":"github:linear/linear-codex-plugin"}`,
-		"plugins/superpowers.json": `{"source":"github:obra/superpowers"}`,
-	})
-
-	include := []string{"superpowers"}
-	packs, _, err := resolveStrict(t, ProfileConfig{
-		SchemaVersion: ProfileSchemaVersion,
-		Packs: []PackEntry{{
-			Name:    "base",
-			Plugins: VectorSelector{Include: &include},
-		}},
-	}, filepath.Join(root, "profile.yaml"), root)
-	if err != nil {
-		t.Fatalf("ResolveProfile: %v", err)
+	for _, selector := range []string{"plugins: {include: [probe]}", "plugins: {exclude: [probe]}", "overrides: {plugins: [probe]}"} {
+		t.Run(selector, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "profile.yaml")
+			if err := os.WriteFile(path, []byte("schema_version: 2\npacks:\n  - name: base\n    "+selector+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadProfile(path); err == nil || !strings.Contains(err.Error(), "plugins selectors are no longer supported") {
+				t.Fatalf("expected migration diagnostic, got %v", err)
+			}
+		})
 	}
-	if got := packs[0].Plugins; len(got) != 1 || got[0] != "superpowers" {
-		t.Fatalf("Plugins = %v, want [superpowers]", got)
+	path := filepath.Join(t.TempDir(), "profile.yaml")
+	if err := os.WriteFile(path, []byte("schema_version: 2\npacks:\n  - name: base\n    plugins: {include: [], exclude: []}\n    overrides: {plugins: []}\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-
-	unknown := []string{"missing"}
-	_, _, err = resolveStrict(t, ProfileConfig{
-		SchemaVersion: ProfileSchemaVersion,
-		Packs: []PackEntry{{
-			Name:    "base",
-			Plugins: VectorSelector{Include: &unknown},
-		}},
-	}, filepath.Join(root, "profile.yaml"), root)
-	if err == nil || !strings.Contains(err.Error(), `pack "base" plugins include references unknown id "missing"`) {
-		t.Fatalf("expected unknown plugin include error, got %v", err)
+	if _, err := LoadProfile(path); err != nil {
+		t.Fatalf("empty selectors from previously generated profiles must remain readable: %v", err)
 	}
 }
 

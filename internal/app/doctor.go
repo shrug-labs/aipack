@@ -139,6 +139,16 @@ func RunDoctor(ctx context.Context, eng *engine.Engine, req DoctorRequest) (rep 
 	syncCheck.Details = map[string]any{"config_dir": configDir, "path": syncCfgPath}
 	add(syncCheck)
 
+	if req.Fix {
+		lockedCtx, unlock, err := lockPackMutationContext(ctx, configDir, false)
+		if err != nil {
+			add(CheckResult{Name: "config_mutation", Severity: "critical", Status: "fail", Message: err.Error()})
+			return rep
+		}
+		defer unlock()
+		ctx = lockedCtx
+	}
+
 	// CLI update check (informational, warning-only) — run async so the HTTP
 	// call doesn't block subsequent file-based checks.
 	updateIdx := len(rep.Checks)
@@ -818,7 +828,11 @@ func doctorCheckStaleBackups(configDir string, fix bool) CheckResult {
 
 	if fix {
 		for _, s := range stale {
-			_ = os.RemoveAll(filepath.Join(s.dir, s.name))
+			if err := util.RemoveOwnedTree(filepath.Join(s.dir, s.name)); err != nil {
+				check.Status, check.OK = "fail", false
+				check.Message = fmt.Sprintf("removing stale item %s: %s", s.name, err)
+				return check
+			}
 		}
 		check.Status = "fixed"
 		check.Fixed = true
@@ -951,7 +965,7 @@ func DetectPackDrift(
 			if source.IsCommitHash(ref) {
 				ref = ""
 			}
-			remoteHash, err := lsRemoteFn(netCtx, meta.Origin, ref)
+			remoteHash, err := pluginGitHead(netCtx, configDir, meta.Plugin, meta.Origin, ref, nil, lsRemoteFn)
 			if err != nil || remoteHash == "" || remoteHash == meta.CommitHash {
 				ch <- nil
 				return
@@ -991,16 +1005,17 @@ func BuildEcosystemStatus(profile domain.Profile, profileCfg config.ProfileConfi
 		SettingsPacks: profile.SettingsPacks,
 	}
 	for _, pk := range profile.Packs {
+		counts := CountProfileContent(domain.Profile{Packs: []domain.Pack{pk}})
 		ps := PackStatus{
 			Name:       pk.Name,
 			Version:    pk.Version,
-			Rules:      len(pk.Rules),
-			Agents:     len(pk.Agents),
-			Workflows:  len(pk.Workflows),
-			Skills:     len(pk.Skills),
-			Hooks:      len(pk.Hooks),
-			Plugins:    len(pk.Plugins),
-			MCPServers: mcpPerPack[pk.Name],
+			Rules:      counts.Rules,
+			Agents:     counts.Agents,
+			Workflows:  counts.Workflows,
+			Skills:     counts.Skills,
+			Hooks:      counts.Hooks,
+			Plugins:    counts.Plugins,
+			MCPServers: counts.MCP + mcpPerPack[pk.Name],
 			Settings:   slices.Contains(profile.SettingsPacks, pk.Name),
 		}
 		es.TotalRules += ps.Rules
@@ -1032,7 +1047,7 @@ func disabledPackStatus(configDir string, pe config.PackEntry) PackStatus {
 }
 
 func packStatusFromManifest(name string, manifest config.PackManifest) PackStatus {
-	return PackStatus{
+	status := PackStatus{
 		Name:       name,
 		Version:    manifest.Version,
 		Rules:      len(manifest.Rules),
@@ -1040,10 +1055,13 @@ func packStatusFromManifest(name string, manifest config.PackManifest) PackStatu
 		Workflows:  len(manifest.Workflows),
 		Skills:     len(manifest.Skills),
 		Hooks:      len(manifest.Hooks),
-		Plugins:    len(manifest.Plugins),
 		MCPServers: len(manifest.MCP),
 		Settings:   manifest.Configs.HasAnyConfigs(),
 	}
+	if manifest.NativePlugin != nil {
+		status.Plugins = 1
+	}
+	return status
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,6 +1229,9 @@ func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack, fix bool) C
 	for _, rp := range packs {
 		packRoot := rp.Root
 		manifest := rp.Manifest
+		if manifest.NativePlugin != nil {
+			continue // Imported inventories are validated against their upstream descriptors.
+		}
 
 		// Rules: ids preserve the slashed relative path.
 		if onDisk, err := config.DiscoverIDs(filepath.Join(packRoot, "rules"), ".md"); err == nil {
@@ -1227,9 +1248,6 @@ func doctorCheckManifestDrift(_ string, packs []config.ResolvedPack, fix bool) C
 		// Skills: leaf ids from directory names.
 		if onDisk, _, err := config.DiscoverSkills(filepath.Join(packRoot, "skills")); err == nil {
 			drifts = appendDrift(drifts, rp.Name, "skills", onDisk, manifest.Skills)
-		}
-		if onDisk, _, err := config.DiscoverIDsByLeaf(filepath.Join(packRoot, "plugins"), "plugins", ".json"); err == nil {
-			drifts = appendDrift(drifts, rp.Name, "plugins", onDisk, manifest.Plugins)
 		}
 	}
 
@@ -1322,7 +1340,6 @@ func fixManifestDrift(packs []config.ResolvedPack, drifts []driftItem) int {
 		slices.Sort(manifest.Agents)
 		slices.Sort(manifest.Workflows)
 		slices.Sort(manifest.Skills)
-		slices.Sort(manifest.Plugins)
 
 		manifestPath := filepath.Join(rp.Root, "pack.json")
 		if err := config.SavePackManifest(manifestPath, manifest); err == nil {
@@ -1335,7 +1352,7 @@ func fixManifestDrift(packs []config.ResolvedPack, drifts []driftItem) int {
 func kindToCategory(kind string) domain.PackCategory {
 	cat := domain.PackCategory(kind)
 	switch cat {
-	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills, domain.CategoryPlugins:
+	case domain.CategoryRules, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategorySkills:
 		return cat
 	default:
 		return ""

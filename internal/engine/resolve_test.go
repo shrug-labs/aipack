@@ -180,7 +180,7 @@ func TestResolve_TypedContent(t *testing.T) {
 	}
 }
 
-func TestResolve_Plugins(t *testing.T) {
+func TestResolve_RejectsRetiredPluginReferences(t *testing.T) {
 	t.Parallel()
 	eng := New(nil, nil)
 	configDir := t.TempDir()
@@ -193,7 +193,6 @@ func TestResolve_Plugins(t *testing.T) {
 		Name:          "plugin-pack",
 		Version:       "0.1.0",
 		Root:          ".",
-		Plugins:       []string{"superpowers"},
 	}
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -209,60 +208,12 @@ func TestResolve_Plugins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	profile, warnings, err := eng.Resolve(config.ProfileConfig{
-		SchemaVersion: config.ProfileSchemaVersion,
-		Packs:         []config.PackEntry{{Name: "plugin-pack"}},
-	}, filepath.Join(configDir, "profiles", "default.yaml"), configDir, config.CollisionError, nil)
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if len(warnings) > 0 {
-		t.Fatalf("warnings = %v, want none", warnings)
-	}
-	plugins := profile.AllPlugins()
-	if len(plugins) != 1 {
-		t.Fatalf("AllPlugins = %d, want 1", len(plugins))
-	}
-	if plugins[0].Name != "superpowers" || plugins[0].Source != "github:obra/superpowers" || plugins[0].Marketplace != "github:obra/superpowers-marketplace" {
-		t.Fatalf("plugin = %+v", plugins[0])
-	}
-}
-
-func TestResolve_PluginDescriptorRejectsUnknownFields(t *testing.T) {
-	t.Parallel()
-	eng := New(nil, nil)
-	configDir := t.TempDir()
-	packDir := filepath.Join(configDir, "packs", "plugin-pack")
-	if err := os.MkdirAll(filepath.Join(packDir, "plugins"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	manifest := config.PackManifest{
-		SchemaVersion: 2,
-		Name:          "plugin-pack",
-		Version:       "0.1.0",
-		Root:          ".",
-		Plugins:       []string{"superpowers"},
-	}
-	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packDir, "pack.json"), manifestBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packDir, "plugins", "superpowers.json"), []byte(`{
-  "source": "github:obra/superpowers",
-  "version": "5.0.7"
-}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	_, _, err = eng.Resolve(config.ProfileConfig{
 		SchemaVersion: config.ProfileSchemaVersion,
 		Packs:         []config.PackEntry{{Name: "plugin-pack"}},
 	}, filepath.Join(configDir, "profiles", "default.yaml"), configDir, config.CollisionError, nil)
-	if err == nil || !strings.Contains(err.Error(), `unknown field "version"`) {
-		t.Fatalf("expected unknown version field error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "plugins/<id>.json references are no longer supported") {
+		t.Fatalf("expected migration diagnostic, got %v", err)
 	}
 }
 

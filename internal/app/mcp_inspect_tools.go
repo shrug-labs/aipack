@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/mcp"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -107,6 +109,8 @@ type mcpServerRef struct {
 	packRoot      string
 	inventoryPath string
 	server        domain.MCPServer
+	imported      bool
+	loadErr       error
 }
 
 // RunMCPInspectTools discovers MCP servers from installed packs, probes them
@@ -118,12 +122,20 @@ func RunMCPInspectTools(ctx context.Context, req MCPInspectToolsRequest) MCPInsp
 	if err != nil {
 		return errResult("load sync-config: %v", err)
 	}
+	req.ConfigDir = configDir
 
 	allServers, warnings, err := discoverMCPServers(filepath.Join(configDir, "packs"))
 	if err != nil {
 		return errResult("discover servers: %v", err)
 	}
 	result.Warnings = warnings
+	cache := LoadMCPProbeCache(configDir)
+	for i := range allServers {
+		if allServers[i].imported {
+			entry, _, _ := cache.Get(MCPProbeKey{PackRoot: allServers[i].packRoot, Server: allServers[i].serverName})
+			allServers[i].server.AvailableTools = entry.Tools
+		}
+	}
 
 	if req.ServerRef == "" && !req.All {
 		result.ListMode = true
@@ -180,7 +192,7 @@ func RunMCPInspectTools(ctx context.Context, req MCPInspectToolsRequest) MCPInsp
 	concurrency := max(1, min(len(targets), 4))
 	parallelBounded(ctx, len(targets), concurrency, func(i int) {
 		results[i] = probeOneInspectTarget(ctx, targets[i], req, timeout, loadParams, dotenv)
-		if req.OnResult != nil {
+		if req.OnResult != nil && !(req.Save && targets[i].imported && !req.DryRun) {
 			req.OnResult(results[i])
 		}
 	})
@@ -193,16 +205,33 @@ func RunMCPInspectTools(ctx context.Context, req MCPInspectToolsRequest) MCPInsp
 	// before the save attempt, so len(r.Tools) > 0 is the real "probe
 	// succeeded" signal — don't discard fresh probe data on unrelated
 	// inventory-write failures.
-	cache := LoadMCPProbeCache(configDir)
 	cacheDirty := false
 	for i, r := range result.Results {
-		if len(r.Tools) > 0 {
+		if (r.Status == InspectStatusOK || len(r.Tools) > 0) && !req.DryRun {
 			cache.Put(MCPProbeKey{PackRoot: targets[i].packRoot, Server: r.ServerName}, r.Tools)
 			cacheDirty = true
 		}
 	}
 	if cacheDirty {
-		_ = SaveMCPProbeCache(configDir, cache)
+		cacheErr := SaveMCPProbeCache(configDir, cache)
+		for i := range result.Results {
+			r := &result.Results[i]
+			if !req.Save || !targets[i].imported || r.Status != InspectStatusOK {
+				continue
+			}
+			if cacheErr != nil {
+				r.Status, r.Error = InspectStatusError, fmt.Sprintf("save probe cache: %v", cacheErr)
+			} else {
+				r.Saved = true
+			}
+		}
+	}
+	if req.OnResult != nil && req.Save && !req.DryRun {
+		for i, r := range result.Results {
+			if targets[i].imported {
+				req.OnResult(r)
+			}
+		}
 	}
 
 	anyOK := false
@@ -240,6 +269,10 @@ func probeOneInspectTarget(
 		PackName:      ref.packName,
 		Transport:     normalizedTransport(ref.server.Transport),
 		PreviousTools: slices.Clone(ref.server.AvailableTools),
+	}
+	if ref.loadErr != nil {
+		sr.Status, sr.Error = InspectStatusSkipped, ref.loadErr.Error()
+		return sr
 	}
 
 	var serverParams map[string]string
@@ -284,7 +317,10 @@ func probeOneInspectTarget(
 	sr.Added, sr.Removed = engine.DiffStrings(sr.PreviousTools, names)
 
 	if req.Save {
-		if req.DryRun {
+		if ref.imported {
+			sr.InventoryPath = MCPProbeCachePath(req.ConfigDir)
+			sr.WouldSave = req.DryRun
+		} else if req.DryRun {
 			sr.WouldSave = true
 			sr.InventoryPath = ref.inventoryPath
 		} else if saveErr := saveInventoryTools(ref.inventoryPath, names); saveErr != nil {
@@ -303,6 +339,132 @@ func probeOneInspectTarget(
 // existing mcp/<server>.json file while preserving unrelated fields.
 func SaveMCPInventoryTools(inventoryPath string, tools []string) error {
 	return saveInventoryTools(inventoryPath, tools)
+}
+
+// LoadMCPServerForProbe reads ordinary inventories or imported native declarations.
+// The returned imported flag routes inventory saves to the user-local probe cache.
+func LoadMCPServerForProbe(packRoot, name string) (domain.MCPServer, string, bool, error) {
+	manifest, err := config.LoadPackManifest(filepath.Join(packRoot, "pack.json"))
+	if err != nil && !os.IsNotExist(err) {
+		return domain.MCPServer{Name: name, PackRoot: packRoot}, "", false, err
+	}
+	return loadMCPServerForProbe(packRoot, name, manifest)
+}
+
+func loadMCPServerForProbe(packRoot, name string, manifest config.PackManifest) (domain.MCPServer, string, bool, error) {
+	server := domain.MCPServer{Name: name, PackRoot: packRoot}
+	path := filepath.Join(packRoot, "mcp", name+".json")
+	if manifest.NativePlugin == nil {
+		body, err := os.ReadFile(path)
+		if err == nil {
+			err = json.Unmarshal(body, &server)
+		}
+		return server, path, false, err
+	}
+	path = filepath.Join(packRoot, filepath.FromSlash(manifest.RelPath(domain.CategoryMCP, name)))
+	entry, err := plugin.MCPEntry(packRoot, *manifest.NativePlugin, name)
+	if err != nil {
+		return server, path, true, err
+	}
+	for key := range entry {
+		if !slices.Contains([]string{"type", "command", "args", "env", "cwd", "url", "headers", "startup_timeout_sec", "tool_timeout_sec", "timeout"}, key) {
+			return server, path, true, fmt.Errorf("native MCP field %q requires the assistant's launcher", key)
+		}
+	}
+	var native struct {
+		Type, Command, Cwd, URL string
+		Args                    []string
+		Env, Headers            map[string]string
+	}
+	body, err := json.Marshal(entry)
+	if err == nil {
+		err = json.Unmarshal(body, &native)
+	}
+	if err != nil {
+		return server, path, true, fmt.Errorf("parse native MCP declaration: %w", err)
+	}
+	root := filepath.Join(packRoot, "upstream")
+	data := filepath.Join(filepath.Dir(filepath.Dir(packRoot)), "plugin-data", manifest.NativePlugin.Binding())
+	if manifest.NativePlugin.Format == plugin.AgentPlugins && (native.Type == "" || native.Type == domain.TransportStdio) {
+		selection := domain.NativePluginSelection{Root: packRoot, Package: *manifest.NativePlugin, SourcePack: manifest.Name}
+		server, err = plugin.GenericMCPServer(selection, name, domain.HarnessCline, data)
+		server.PackRoot = packRoot
+		return server, path, true, err
+	}
+	translate := func(value string) string { return value }
+	if manifest.NativePlugin.Format == plugin.AgentPlugins {
+		translate = strings.NewReplacer("${PLUGIN_ROOT}", root, "${PLUGIN_DATA}", data).Replace
+		if native.Cwd == "" {
+			native.Cwd = root
+		}
+	} else if manifest.NativePlugin.Format == plugin.Claude {
+		translate = strings.NewReplacer("${CLAUDE_PLUGIN_ROOT}", root, "${CLAUDE_PLUGIN_DATA}", data).Replace
+	}
+	values := append([]string{native.Command, native.Cwd, native.URL}, native.Args...)
+	for _, mapping := range []map[string]string{native.Env, native.Headers} {
+		for key, value := range mapping {
+			values = append(values, key, value)
+			mapping[key] = translate(value)
+		}
+	}
+	for _, value := range values {
+		if strings.Contains(value, "{env:") || strings.Contains(value, "{params.") || strings.Contains(value, "{pack:root}") ||
+			(manifest.NativePlugin.Format != plugin.CodexLegacy && strings.Contains(translate(value), "${")) {
+			return server, path, true, fmt.Errorf("native MCP environment references require the assistant's launcher")
+		}
+	}
+	server.Transport, server.URL, server.Headers = native.Type, translate(native.URL), native.Headers
+	if server.Transport == "http" || server.Transport == "" && server.URL != "" {
+		server.Transport = domain.TransportStreamableHTTP
+	}
+	if !server.IsStdio() && server.Transport != domain.TransportStreamableHTTP && server.Transport != domain.TransportSSE {
+		return server, path, true, fmt.Errorf("native MCP transport %q requires the assistant's launcher", server.Transport)
+	}
+	if server.IsStdio() {
+		if native.Command == "" {
+			return server, path, true, fmt.Errorf("native stdio server requires a command")
+		}
+		server.Command = []string{translate(native.Command)}
+		for _, arg := range native.Args {
+			server.Command = append(server.Command, translate(arg))
+		}
+		server.Env = native.Env
+		if manifest.NativePlugin.Format == plugin.Claude {
+			if server.Env == nil {
+				server.Env = map[string]string{}
+			}
+			server.Env["CLAUDE_PLUGIN_ROOT"], server.Env["CLAUDE_PLUGIN_DATA"] = root, data
+		}
+		if native.Cwd != "" {
+			if runtime.GOOS == "windows" {
+				return server, path, true, fmt.Errorf("native MCP working-directory probes require a POSIX shell")
+			}
+			cwd := translate(native.Cwd)
+			if !filepath.IsAbs(cwd) {
+				cwd = filepath.Join(root, cwd)
+			}
+			server.Command = append([]string{"sh", "-c", `cd -- "$1" && shift && exec "$@"`, "aipack", cwd}, server.Command...)
+		}
+		if manifest.NativePlugin.Format == plugin.Claude {
+			if runtime.GOOS == "windows" {
+				return server, path, true, fmt.Errorf("native Claude MCP probes require a POSIX shell")
+			}
+			server.Command = append([]string{"sh", "-c", `(umask 077; mkdir -p -- "$1") && shift && exec "$@"`, "aipack", data}, server.Command...)
+		}
+	}
+	return server, path, true, nil
+}
+
+// SaveMCPServerProbeTools keeps imported inventories out of machine-managed sources.
+func SaveMCPServerProbeTools(configDir, packRoot, name string, tools []string) error {
+	_, path, imported, err := LoadMCPServerForProbe(packRoot, name)
+	if err != nil {
+		return err
+	}
+	if imported {
+		return UpdateMCPProbeEntry(configDir, MCPProbeKey{PackRoot: packRoot, Server: name}, tools)
+	}
+	return SaveMCPInventoryTools(path, tools)
 }
 
 // discoverMCPServers scans all installed packs for MCP server definitions.
@@ -324,6 +486,18 @@ func discoverMCPServers(packsDir string) (refs []mcpServerRef, warnings []string
 			continue
 		}
 		packRoot := filepath.Join(packsDir, e.Name())
+		manifest, manifestErr := config.LoadPackManifest(filepath.Join(packRoot, "pack.json"))
+		if manifestErr == nil && manifest.NativePlugin != nil {
+			for _, name := range manifest.MCP {
+				server, inventoryPath, _, loadErr := loadMCPServerForProbe(packRoot, name, manifest)
+				refs = append(refs, mcpServerRef{serverName: name, packName: e.Name(), packRoot: packRoot,
+					inventoryPath: inventoryPath, server: server, imported: true, loadErr: loadErr})
+				if loadErr != nil {
+					warnings = append(warnings, fmt.Sprintf("%s/%s: %v", e.Name(), name, loadErr))
+				}
+			}
+			continue
+		}
 		mcpDir := filepath.Join(packRoot, "mcp")
 		mcpFiles, readErr := os.ReadDir(mcpDir)
 		if readErr != nil {

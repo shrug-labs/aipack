@@ -2,10 +2,7 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -166,16 +163,10 @@ func probeMCPServer(ctx context.Context, configDir, packRoot, serverName string,
 }
 
 func loadExpandedMCPServerForProbe(packRoot, serverName string, params map[string]string, env map[string]string) (domain.MCPServer, error) {
-	path := filepath.Join(packRoot, "mcp", serverName+".json")
-	b, err := os.ReadFile(path)
+	srv, _, _, err := app.LoadMCPServerForProbe(packRoot, serverName)
 	if err != nil {
-		return domain.MCPServer{}, fmt.Errorf("read inventory: %w", err)
+		return domain.MCPServer{}, err
 	}
-	var srv domain.MCPServer
-	if err := json.Unmarshal(b, &srv); err != nil {
-		return domain.MCPServer{}, fmt.Errorf("parse inventory: %w", err)
-	}
-	srv.PackRoot = packRoot
 	return engine.ExpandSingleMCPServerWithEnv(params, env, srv)
 }
 
@@ -193,12 +184,11 @@ func readNextProbeEvent(eventCh <-chan mcp.ProbeEvent, resultCh <-chan mcpProbeS
 	}
 }
 
-func saveMCPInventoryToPack(packRoot, serverName string, tools []string) tea.Cmd {
+func saveMCPInventoryToPack(configDir, packRoot, serverName string, tools []string) tea.Cmd {
 	return func() tea.Msg {
-		path := filepath.Join(packRoot, "mcp", serverName+".json")
 		return mcpInventorySavedMsg{
 			key: newMCPProbeKey(packRoot, serverName),
-			err: app.SaveMCPInventoryTools(path, tools),
+			err: app.SaveMCPServerProbeTools(configDir, packRoot, serverName, tools),
 		}
 	}
 }
@@ -310,14 +300,9 @@ func (m rootModel) handleMCPProbeResult(msg mcpProbeResultMsg) (tea.Model, tea.C
 // mcp/ directory and returns its available_tools slice. Used by the TUI to
 // populate the tool picker without triggering a full profile resolve.
 func loadMCPAvailableTools(packRoot, serverName string) ([]string, error) {
-	path := filepath.Join(packRoot, "mcp", serverName+".json")
-	b, err := os.ReadFile(path)
+	srv, _, _, err := app.LoadMCPServerForProbe(packRoot, serverName)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	var srv domain.MCPServer
-	if err := json.Unmarshal(b, &srv); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, err
 	}
 	out := slices.Clone(srv.AvailableTools)
 	slices.Sort(out)
@@ -447,17 +432,6 @@ func (m rootModel) openMCPBulkMenu() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// mcpServerConfigIsZero reports whether an MCPServerConfig has no
-// meaningful content — all four fields are nil or empty. Zero-value
-// entries should be removed from the profile's MCP map rather than
-// serialized as empty blocks.
-func mcpServerConfigIsZero(c config.MCPServerConfig) bool {
-	return c.Enabled == nil &&
-		len(c.AllowedTools) == 0 &&
-		len(c.AlwaysAllowedTools) == 0 &&
-		len(c.DisabledTools) == 0
-}
-
 // pickerOutputForSave converts the user's ask/auto selection into profile
 // fields.
 //
@@ -536,8 +510,7 @@ func (m rootModel) handleMCPBulkActionResult(msg dialogResultMsg) (tea.Model, te
 	}
 	probeKey := newMCPProbeKey(ctx.PackRoot, ctx.Server)
 
-	// Save-inventory writes to the pack's mcp/<server>.json, not the profile,
-	// so it bypasses the mutation helper entirely.
+	// Imported inventories save to the probe cache; ordinary inventories save to the pack.
 	if msg.Value == actMCPSaveInventory {
 		tools, ok := m.profilesScreen().CachedMCPProbeTools(probeKey.packRoot, probeKey.server)
 		if !ok {
@@ -548,7 +521,7 @@ func (m rootModel) handleMCPBulkActionResult(msg dialogResultMsg) (tea.Model, te
 			}
 			return m, nil
 		}
-		return m, saveMCPInventoryToPack(ctx.PackRoot, ctx.Server, tools)
+		return m, saveMCPInventoryToPack(m.cfg.ConfigDir, ctx.PackRoot, ctx.Server, tools)
 	}
 
 	probedTools, _ := m.profilesScreen().CachedMCPProbeTools(probeKey.packRoot, probeKey.server)

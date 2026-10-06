@@ -10,8 +10,90 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/testutil"
 )
+
+func TestExtractPackContent_RejectsRetiredPluginReferences(t *testing.T) {
+	t.Parallel()
+	source, parent := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(source, "pack.json"), `{"schema_version":2,"name":"test","root":"."}`)
+	writeFile(t, filepath.Join(source, "plugins", "linear.json"), `{"source":"github:linear/linear-codex-plugin"}`)
+	_, _, err := extractPackContent(parent, source, nil, "test", source)
+	if err == nil || !strings.Contains(err.Error(), "plugins/<id>.json references are no longer supported") {
+		t.Fatalf("expected migration diagnostic before extraction drops descriptors, got %v", err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("rejected source left staging files: %v %v", entries, err)
+	}
+}
+
+func TestExtractPluginManifestFormat(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, format                string
+		portable, claude, wantError bool
+	}{
+		{"portable", plugin.AgentPlugins, true, false, false},
+		{"portable-with-legacy-catalog", plugin.CodexLegacy, true, false, false},
+		{"legacy-with-portable-catalog", plugin.AgentPlugins, false, false, false},
+		{"ambiguous-native-host", "", true, true, true},
+		{"explicit-portable-host", plugin.AgentPlugins, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, parent := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(src, ".codex-plugin/plugin.json"), `{"name":"probe"}`)
+			if tc.portable {
+				writeFile(t, filepath.Join(src, "plugin.json"), `{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"probe"}`)
+			}
+			if tc.claude {
+				writeFile(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"probe"}`)
+			}
+			_, m, err := extractPackSource(parent, src, nil, "alias", src, &domain.PluginSource{Format: tc.format, Name: "probe", Marketplace: "fixture"})
+			wantFormat := plugin.CodexLegacy
+			if tc.portable {
+				wantFormat = plugin.AgentPlugins
+			}
+			if (err != nil) != tc.wantError || err == nil && m.NativePlugin.Format != wantFormat {
+				t.Fatalf("source format %q: manifest %+v, error %v", tc.format, m.NativePlugin, err)
+			}
+		})
+	}
+}
+
+func TestCodexPolicyRefusesBeforeExtraction(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{"", plugin.CodexLegacy, plugin.AgentPlugins} {
+		src, parent := t.TempDir(), t.TempDir()
+		writeFile(t, filepath.Join(src, ".codex-plugin/plugin.json"), `{"name":"probe"}`)
+		if format == plugin.AgentPlugins {
+			writeFile(t, filepath.Join(src, "plugin.json"), `{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"probe"}`)
+		}
+		_, _, err := extractPackSource(parent, src, nil, "alias", src, &domain.PluginSource{Format: format, Name: "probe", Marketplace: "fixture", Entry: map[string]any{"policy": map[string]any{"installation": "NOT_AVAILABLE"}}})
+		entries, readErr := os.ReadDir(parent)
+		if err == nil || !strings.Contains(err.Error(), "policy") || readErr != nil || len(entries) != 0 {
+			t.Fatalf("rejected policy left extraction output: format=%q error=%v entries=%v", format, err, entries)
+		}
+	}
+}
+
+func TestNPMPluginDoesNotSwitchHarness(t *testing.T) {
+	src, parent := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, ".claude-plugin/plugin.json"), `{"name":"probe"}`)
+	_, _, err := extractPackSource(parent, src, nil, "alias", src, &domain.PluginSource{Name: "probe", Marketplace: "fixture", NPM: &domain.NPMSource{Package: "probe"}})
+	if err == nil || !strings.Contains(err.Error(), "Codex plugin format") {
+		t.Fatalf("Codex npm source switched harness: %v", err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("rejected npm package left staging content")
+	}
+	_, manifest, err := extractPackSource(parent, src, nil, "alias", src, &domain.PluginSource{Format: plugin.Claude, Name: "probe", Marketplace: "fixture", NPM: &domain.NPMSource{Package: "probe"}})
+	if err != nil || !manifest.NativePlugin.CopiedSource || manifest.NativePlugin.CacheVersion != "unknown" {
+		t.Fatalf("explicit Claude npm source lost copied/unknown identity: %+v %v", manifest.NativePlugin, err)
+	}
+}
 
 func TestExtractPackContent_ContentPaths(t *testing.T) {
 	t.Parallel()

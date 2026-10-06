@@ -6,16 +6,14 @@ aipack can install from these repositories directly. You point it at the directo
 
 ## Fast path
 
-For the common path, inspect, install into the active profile, check setup, then sync:
+Install a source into the active profile, then sync:
 
 ```bash
-aipack pack inspect <source>
 aipack pack install <source> --add
-aipack setup
 aipack sync
 ```
 
-`pack inspect` is the trust step. `pack install --add` installs the source and adds it to the active profile. `setup` reports missing `{params.*}` and `{env:*}` values before sync.
+Use `pack inspect <source>` to preview content and compatibility, `setup` to check missing `{params.*}` or `{env:*}` values, and `sync --dry-run` to preview changes.
 
 ## Installing a standard pack
 
@@ -49,6 +47,34 @@ aipack pack install       # reconcile the active profile — installs anything m
 (Equivalent to `aipack pack install -m`, which stays as an explicit alias for scripts.)
 
 For creating your own pack from scratch, see [Creating Packs](./creating-packs.md).
+
+## Installing marketplace plugins
+
+Import an existing Claude or Codex marketplace through the registry, then use the ordinary pack commands. The plugin source does not need a `pack.json`.
+
+Local plugin directories can also be inspected and installed directly with `pack inspect ./plugin` and `pack install ./plugin --add`. Imports are copied and retain the nearest matching marketplace catalog's identity and policy.
+
+```bash
+aipack registry fetch https://github.com/org/marketplace.git \
+  --path .agents/plugins/marketplace.json --format codex-legacy
+aipack registry list
+aipack pack install example-plugin --add
+aipack sync
+```
+
+Replace the example URL and catalog path with your marketplace's values, and `example-plugin` with a name from `registry list`. Catalog formats are `claude`, `codex-legacy`, and `agent-plugins`. The format is saved for future refreshes; it can be omitted when the source format is detected automatically.
+
+To start with a subset of components, add `--quiet` to the install command. Use `pack show example-plugin` to find their IDs, then include the ones you need:
+
+```bash
+aipack profile include debugging --kind skill --pack example-plugin
+aipack sync --harness claudecode --dry-run
+aipack sync --harness claudecode
+```
+
+Replace `debugging` with an installed skill ID. Profile selections apply to every sync target; separate profiles can select different components. See [supported source/target combinations](aipack.md#imported-plugin-support) for compatibility. Reload the assistant after sync and use its normal login or hook setup when needed.
+
+Use `pack update` for upstream changes and `pack delete` for removal. Imports retain source files and runtime data and protect local edits. If an existing native installation conflicts, the error identifies it; see [ownership and scopes](aipack.md#ownership-and-scopes). `pack import` installs a single markdown resource.
 
 ## Inspecting before install
 

@@ -18,6 +18,9 @@ type openCodeHookHandler struct {
 	CommandWindows string `json:"commandWindows,omitempty"`
 	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
 	Label          string `json:"label"`
+	PluginEvent    string `json:"pluginEvent,omitempty"`
+	PluginRoot     string `json:"pluginRoot,omitempty"`
+	PluginData     string `json:"pluginData,omitempty"`
 }
 
 func RenderHooksPlugin(hooks []domain.Hook) ([]byte, string, []domain.Warning, error) {
@@ -45,9 +48,11 @@ func RenderHooksPlugin(hooks []domain.Hook) ([]byte, string, []domain.Warning, e
 	}
 	var b strings.Builder
 	b.WriteString("import { spawn } from \"node:child_process\";\n\n")
+	b.WriteString("import { mkdirSync } from \"node:fs\";\n\n")
 	b.WriteString("const handlers = ")
 	b.Write(handlerJSON)
 	b.WriteString(";\n\n")
+	b.WriteString(harness.PluginHookRuntime)
 	b.WriteString(openCodeHooksRuntime)
 	return []byte(b.String()), harness.CompositeSourcePack(hooks, func(h domain.Hook) string { return h.SourcePack }), nil, nil
 }
@@ -65,6 +70,9 @@ func openCodeNativeHookHandler(hook domain.Hook, event domain.HookEvent, handler
 		CommandWindows: normalized.CommandWindows,
 		TimeoutSeconds: normalized.TimeoutSeconds,
 		Label:          normalized.Label,
+		PluginEvent:    handler.PluginEvent,
+		PluginRoot:     handler.PluginRoot,
+		PluginData:     handler.PluginData,
 	}, nil
 }
 
@@ -104,24 +112,29 @@ function matchesHandler(handler, eventName, input) {
   return true;
 }
 
-async function runCommand(handler, payloadJSON) {
+async function runCommand(handler, payloadJSON, cwd) {
   const command = process.platform === "win32" && handler.commandWindows ? handler.commandWindows : handler.command;
   if (!command) return;
-  await new Promise((resolve) => {
-    const child = spawn(command, { shell: true, stdio: ["pipe", "ignore", "pipe"] });
+  return await new Promise((resolve) => {
+    const child = spawn(command, pluginHookOptions(handler, cwd));
     let done = false;
+    let stdout = "";
     let stderr = "";
-    const finish = (message) => {
+    const finish = (message, output = null) => {
       if (done) return;
       done = true;
       if (timer) clearTimeout(timer);
       if (message) console.error(message);
-      resolve();
+      resolve(output);
     };
     const timer = handler.timeoutSeconds > 0 ? setTimeout(() => {
-      child.kill();
+      stopHookCommand(child);
       finish("[aipack hooks] " + handler.label + " timed out after " + handler.timeoutSeconds + "s");
     }, handler.timeoutSeconds * 1000) : null;
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+      if (stdout.length > 65536) stdout = stdout.slice(-65536);
+    });
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk);
       if (stderr.length > 4096) stderr = stderr.slice(-4096);
@@ -129,6 +142,7 @@ async function runCommand(handler, payloadJSON) {
     child.stdin.on("error", () => {});
     child.on("error", (error) => finish("[aipack hooks] " + handler.label + " failed to start: " + error.message));
     child.on("close", (code, signal) => {
+      if (handler.pluginEvent) return finish(null, pluginHookOutput(handler, stdout, stderr, code));
       if (code === 0) return finish();
       const suffix = stderr.trim() ? ": " + stderr.trim() : "";
       finish("[aipack hooks] " + handler.label + " exited " + (signal || code) + suffix);
@@ -141,30 +155,53 @@ async function runCommand(handler, payloadJSON) {
   });
 }
 
-async function runHandlers(eventName, input = {}, output = {}) {
-  const payloadJSON = JSON.stringify({ event: eventName, input, output });
+async function runHandlers(eventName, input = {}, output = {}, selection = "all", cwd) {
+  const outputs = [];
   for (const handler of handlers) {
+    if (selection === "ordinary" && handler.pluginEvent || selection === "imported" && !handler.pluginEvent) continue;
     if (!matchesHandler(handler, eventName, input)) continue;
-    await runCommand(handler, payloadJSON);
+    const payload = { event: eventName, input, output };
+    const value = await runCommand(handler, JSON.stringify(handler.pluginEvent ? pluginHookInput(handler, payload, cwd) : payload), cwd);
+    if (!value) continue;
+    if (value.cancel && (eventName === "prompt.submit" || eventName === "tool.before")) throw new Error(value.errorMessage);
+    if (value.review) throw new Error("Imported hook requests permission review; approve through the native client before retrying");
+    if (value.overrideInput !== undefined && eventName === "tool.before") output.args = value.overrideInput;
+    if (value.contextModification) outputs.push(value.contextModification);
   }
+  return outputs;
 }
 
-async function server() {
+async function server({ directory } = {}) {
+  const startupContexts = new Map();
   return {
     event: async ({ event }) => {
-      if (event?.type === "session.created") await runHandlers("run.start", { event }, {});
+      if (event?.type === "session.created") await runHandlers("run.start", { event }, {}, "ordinary", directory);
+      if (event?.type === "session.deleted") startupContexts.delete(event.properties?.info?.id);
+    },
+    "experimental.chat.system.transform": async (input, output) => {
+      if (!input.sessionID) return;
+      if (!startupContexts.has(input.sessionID)) startupContexts.set(input.sessionID, runHandlers("run.start", { ...input, source: "startup" }, {}, "imported", directory));
+      output.system.push(...await startupContexts.get(input.sessionID));
     },
     "chat.message": async (input, output) => {
-      await runHandlers("prompt.submit", input, output);
+      const context = await runHandlers("prompt.submit", input, output, "all", directory);
+      if (context.length) output.parts.push({ id: input.messageID + "-aipack-hook", sessionID: input.sessionID, messageID: input.messageID, type: "text", synthetic: true, text: context.join("\n\n") });
     },
     "tool.execute.before": async (input, output) => {
-      await runHandlers("tool.before", input, output);
+      const context = await runHandlers("tool.before", input, output, "all", directory);
+      if (context.length) {
+        if (!startupContexts.has(input.sessionID)) startupContexts.set(input.sessionID, runHandlers("run.start", { ...input, source: "startup" }, {}, "imported", directory));
+        const stored = await startupContexts.get(input.sessionID);
+        startupContexts.set(input.sessionID, Promise.resolve([...stored, ...context]));
+      }
     },
     "tool.execute.after": async (input, output) => {
-      await runHandlers("tool.after", input, output);
+      const context = await runHandlers("tool.after", input, output, "all", directory);
+      if (context.length) output.output = String(output.output ?? "") + "\n\n" + context.join("\n\n");
     },
     "experimental.session.compacting": async (input, output) => {
-      await runHandlers("compact.before", input, output);
+      const context = await runHandlers("compact.before", input, output, "all", directory);
+      if (context.length) output.context.push(...context);
     }
   };
 }

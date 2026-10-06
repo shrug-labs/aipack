@@ -22,8 +22,10 @@ func (e *Engine) LoadLedger(path string) (domain.Ledger, []domain.Warning, error
 		return domain.Ledger{}, nil, err
 	}
 	var raw struct {
-		Managed         map[string]domain.Entry `json:"managed"`
-		UpdatedAtEpochS int64                   `json:"updated_at_epoch_s"`
+		Managed         map[string]domain.Entry              `json:"managed"`
+		NativePlugins   map[string]domain.NativePluginRecord `json:"native_plugins"`
+		NativeOperation string                               `json:"native_operation"`
+		UpdatedAtEpochS int64                                `json:"updated_at_epoch_s"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return domain.NewLedger(), []domain.Warning{{
@@ -34,7 +36,7 @@ func (e *Engine) LoadLedger(path string) (domain.Ledger, []domain.Warning, error
 	if raw.Managed == nil {
 		raw.Managed = map[string]domain.Entry{}
 	}
-	return domain.Ledger{Managed: raw.Managed, UpdatedAt: raw.UpdatedAtEpochS}, nil, nil
+	return domain.Ledger{Managed: raw.Managed, NativePlugins: raw.NativePlugins, NativeOperation: raw.NativeOperation, UpdatedAt: raw.UpdatedAtEpochS}, nil, nil
 }
 
 // SaveLedger persists a ledger to disk.
@@ -45,6 +47,12 @@ func (e *Engine) SaveLedger(path string, l domain.Ledger, dryRun bool) error {
 		"updated_at_epoch_s": time.Now().Unix(),
 		"tool":               "aipack",
 		"managed":            l.Managed,
+	}
+	if len(l.NativePlugins) > 0 {
+		payload["native_plugins"] = l.NativePlugins
+	}
+	if l.NativeOperation != "" {
+		payload["native_operation"] = l.NativeOperation
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

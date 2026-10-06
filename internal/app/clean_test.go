@@ -130,7 +130,7 @@ func TestCleanCline_ProjectScope_DoesNotRemoveUnmanagedDotClineSkills(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	layout := h.Layout(domain.ScopeProject, projectDir, t.TempDir())
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: t.TempDir()})
 
 	for _, root := range layout.ValidationRoots {
 		if root == filepath.Join(projectDir, ".cline", "skills") {
@@ -147,7 +147,7 @@ func TestCleanCline_GlobalScope_RemovesManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	layout := h.Layout(domain.ScopeGlobal, home, home)
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeGlobal, Home: home})
 
 	gp := clharness.GlobalPathsFor(home)
 	want := map[string]bool{

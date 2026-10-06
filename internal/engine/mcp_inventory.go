@@ -55,7 +55,9 @@ func (e *Engine) loadMCPInventoryDir(dir string) (map[string]domain.MCPServer, e
 func (e *Engine) LoadMCPInventoryForPacks(packs []config.ResolvedPack) (map[string]domain.MCPServer, error) {
 	inventory := map[string]domain.MCPServer{}
 	for _, pack := range packs {
-		if len(pack.MCP) == 0 {
+		// Native declarations keep their author's layout and are rendered by
+		// the plugin route; they are not ordinary pack mcp/*.json files.
+		if len(pack.MCP) == 0 || pack.Manifest.NativePlugin != nil {
 			continue
 		}
 		inv, err := e.loadMCPInventoryDir(filepath.Join(pack.Root, "mcp"))

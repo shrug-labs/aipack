@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -264,6 +265,14 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 	configDir := config.FallbackConfigDir(req.ConfigDir, home)
 	var result RoundTripResult
 	knownPacks := knownPacksFromRoots(req.PackRoots)
+	req.PackRoots = maps.Clone(req.PackRoots)
+	for name, root := range req.PackRoots {
+		manifest, err := config.LoadPackManifest(filepath.Join(root, "pack.json"))
+		if err == nil && manifest.NativePlugin != nil {
+			delete(req.PackRoots, name)
+			result.CaptureWarnings = append(result.CaptureWarnings, domain.Warning{Field: "save", Message: fmt.Sprintf("plugin-derived pack %q retains upstream source; captured delivery is not saved into it", name)})
+		}
+	}
 
 	for _, hid := range req.Harnesses {
 		ledgerPath := engine.LedgerPath(configDir, req.Scope, req.ProjectDir, hid)
@@ -286,7 +295,7 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 			return RoundTripResult{}, err
 		}
 		spec := TargetSpec{Scope: req.Scope, ProjectDir: req.ProjectDir, Home: home, Env: req.TargetSpec.Env}
-		layout := h.Layout(req.Scope, targetDirForHarness(spec, hid), home)
+		layout := h.Layout(captureContextForHarness(spec, hid, nil))
 		res, err := h.Capture(ctx, captureContextForHarness(spec, hid, knownPacks))
 		if err != nil {
 			return RoundTripResult{}, err
@@ -567,8 +576,10 @@ func RunRoundTrip(ctx context.Context, eng *engine.Engine, req RoundTripRequest,
 				// Settings write — either save immediately when forced, or emit
 				// as pending so the caller can decide whether to persist it.
 				ctx := harness.EditContext{
+					NativePlugins:          lg.NativePlugins,
 					ManagedMCPServers:      mcpIndex.ForPath(src),
 					PreviousManagedOverlay: lg.PrevManagedOverlay(src),
+					PackageOverlays:        lg.PackageOverlays(src),
 				}
 				stripped, err := layout.StripManaged(w.Content, src, ctx)
 				if err != nil {

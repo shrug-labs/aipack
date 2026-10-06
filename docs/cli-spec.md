@@ -125,12 +125,18 @@ Sync emits a JSON **array** with one self-contained object per target harness, i
 | `workflows` | int | Number of workflows in the resolved profile |
 | `agents` | int | Number of agents in the resolved profile |
 | `skills` | int | Number of skills in the resolved profile |
-| `plugins` | int | Number of plugin references in the resolved profile |
+| `plugins` | int | Number of native imported packages in the resolved profile |
 | `settings` | int | Number of settings file actions in this harness's plan |
 | `mcp` | int | Number of MCP servers in the resolved profile |
 | `warnings` | array | Non-fatal issues encountered during this harness's sync. Each entry has `message` (string, always present), `path` (string, optional), and `field` (string, optional). Empty array when no warnings. Profile-resolution warnings are attached to the first harness's result. |
 
-Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are profile-level and identical across harnesses; `settings` and `warnings` are per-harness.
+Content counts (`rules`, `workflows`, `agents`, `skills`, `hooks`, `plugins`, `mcp`) describe the profile's selected source content; `settings` and `warnings` are per-harness.
+
+Existing Codex sources that fail admission exit 1 before writes, including unchanged deliveries. Explicit native source-policy refusals include the exact local source rule for administrator approval; a missing marketplace listing does not.
+
+Imported plugin incompatibilities exit 1 before any requested target writes, listing each affected pack, target and component. Unavailable hook events produce warnings. Ownership conflicts and pending recovery also block delivery. See [imported plugin support](aipack.md#imported-plugin-support) for delivery and recovery behavior.
+
+Imported `pack inspect`, `pack show` and `pack list --json` entries add `compatibility`: an array of `target`, `delivery` (`native`, `portable`, or `unsupported`), and optional sorted `supported`, `unsupported` and `warnings` lists. Unsupported entries include reasons. The report covers the full inventory; `portable` can still require component exclusions. Sync validates the effective selection. Ordinary packs omit this field.
 
 ### `aipack restore`
 
@@ -175,7 +181,7 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
       "workflows": 11,
       "skills": 5,
       "hooks": 0,
-      "plugins": 2,
+      "plugins": 0,
       "mcp_servers": 5,
       "settings": true
     }
@@ -199,7 +205,7 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
   "total_workflows": 11,
   "total_skills": 10,
   "total_hooks": 0,
-  "total_plugins": 2,
+  "total_plugins": 0,
   "total_mcp_servers": 5,
   "settings_packs": ["my-example-pack"]
 }
@@ -219,7 +225,7 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
 | `packs[].workflows` | int | Workflow count |
 | `packs[].skills` | int | Skill count |
 | `packs[].hooks` | int | Hook count |
-| `packs[].plugins` | int | Plugin reference count |
+| `packs[].plugins` | int | Native imported package count (zero or one) |
 | `packs[].mcp_servers` | int | MCP server count |
 | `packs[].settings` | bool | Whether this pack provides settings |
 | `disabled_packs[].error` | string | Manifest/discovery error for disabled pack diagnostics (omitempty) |
@@ -228,13 +234,17 @@ Content counts (`rules`, `workflows`, `agents`, `skills`, `plugins`, `mcp`) are 
 | `total_workflows` | int | Sum of workflows |
 | `total_skills` | int | Sum of skills |
 | `total_hooks` | int | Sum of hooks |
-| `total_plugins` | int | Sum of plugin references |
+| `total_plugins` | int | Sum of native imported packages |
 | `total_mcp_servers` | int | Sum of MCP servers |
 | `settings_packs` | string[] | Packs contributing settings, in profile order (omitempty) |
 
 ### `aipack trace`
 
-Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single-argument form resolves exact active-profile matches across traceable resource types, then inactive matches from disabled/excluded profile content and installed packs. Exit code 1 when the resource is absent or when the single-argument form is ambiguous.
+Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single-argument form resolves exact active-profile matches across traceable resource types, then inactive matches from disabled/excluded profile content and installed packs. Use `--pack <name>` to select the source pack. Exit code 1 when the resource is absent or the supplied name/type and pack filter still match multiple resources.
+
+Skill names also accept `<plugin>:<skill>`, `<plugin>@<marketplace>:<skill>` and ordinary namespaced `<skill>__aipack__<pack>` forms. Plain names follow target collision rules; `--pack` can locate a suppressed source. JSON retains the original skill ID and AIPack pack name. Suppression and planning errors appear in `blockers`.
+
+`trace mcp <observed-tool-name> --tool --harness <target>` resolves Claude Code, OpenCode or Codex tool identifiers to their source server and pack. Exactly one explicit harness is required; ambiguous namespaces are refused even with `--pack`.
 
 ```json
 {
@@ -271,11 +281,18 @@ Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single
 | `resource_name` | string | Resolved resource name |
 | `found` | bool | Whether the resource exists in the active profile or was diagnostically found as inactive |
 | `profile_state` | string | `active`, `pack_disabled`, `content_excluded`, `installed_not_in_profile`, or `not_installed` |
-| `blockers` | string[] | Reasons an inactive resource is not syncing (omitempty) |
+| `blockers` | string[] | Reasons an inactive resource is not syncing, or errors preventing destination tracing (omitempty) |
 | `remediation` | string[] | Exact next commands for inactive resources (omitempty) |
 | `source` | object or null | Source location (absent when `found` is false) |
 | `source.pack` | string | Pack name containing the resource |
 | `source.source_path` | string | Absolute path to the source file |
+| `source.source_paths` | string[] | Declared native source paths; inline declarations use the generated pack metadata (omitempty) |
+| `source.native_binding` | string | Native `plugin@marketplace` identity (omitempty) |
+| `source.plugin_source` | object | Original catalog URL/path/ref, native dialect and entry metadata (omitempty) |
+| `source.origin`, `source.sub_path`, `source.commit_hash` | string | Acquired plugin repository/source, subdirectory and revision (omitempty) |
+| `source.converter_version` | integer | AIPack converter revision for the imported native package (omitempty) |
+| `source.materialized_digest` | string | Recorded digest of the installed import, before profile selection (omitempty) |
+| `source.selected` | object | Active native component IDs by category (omitempty; inactive resources have no delivery selection) |
 | `source.category` | string | Content category: `rules`, `agents`, `workflows`, `skills`, `hooks`, `plugins`, `mcp` |
 | `destinations` | array | Per-harness destination info (empty when not found or inactive) |
 | `destinations[].harness` | string | Harness ID |
@@ -283,10 +300,26 @@ Accepts either `aipack trace <type> <name>` or `aipack trace <name>`. The single
 | `destinations[].embedded` | bool | True when composited into a multi-resource file (omitempty) |
 | `destinations[].state` | string | On-disk state (see [Enumerations](#enumerations)) |
 | `destinations[].diff_kind` | string | Same as `state` (typed enum in source) |
+| `destinations[].location` | string | Native `package`, installed `cache`, or `activation` settings (omitempty) |
+| `destinations[].marketplace_source` | string | Generated local marketplace path used for native delivery (omitempty) |
+| `destinations[].planned_generation` | string | Digest of the desired selected native delivery (omitempty) |
+| `destinations[].delivered_generation` | string | Last applied delivery digest recorded by this scope; not a claim that live cache bytes are intact (omitempty) |
 
 ### `aipack doctor`
 
 Overall `ok` is false only when a critical-severity check fails. Warning-level checks do not affect the exit code.
+
+Imported plugins add optional `plugin_readiness` rows, one per import and target. `--harness` and `--scope` default to sync-config; project scope uses the current directory. A blocked preview adds a warning check without changing the critical-check exit contract.
+
+| Row fields | Meaning |
+| --- | --- |
+| `pack`, `binding` | AIPack pack name and native plugin identity |
+| `harness`, `scope`, `project_dir` | Delivery target; project directory is optional |
+| `inventory`, `selected`, `settings_selected` | Installed component IDs and effective selections |
+| `delivery`, `recorded_entries`, `delivered_generation` | Delivery status, receipt count and optional recorded generation |
+| `setup_status`, `setup` | Known setup status and optional warnings |
+| `authentication`, `reload`, `runtime` | Unknown; doctor does not start servers or verify live readiness |
+| `blocker` | Optional preview failure reason |
 
 ```json
 {
@@ -444,7 +477,7 @@ Content ID arrays are always present (empty `[]`, never null).
   "workflows": ["session-retro", "brainstorm"],
   "skills": ["deep-research", "writing-plans"],
   "hooks": [],
-  "plugins": ["linear"],
+  "plugins": [],
   "prompts": [],
   "mcp_servers": [],
   "settings": ["codex/config.toml", "opencode/opencode.json"],
@@ -459,19 +492,25 @@ Content ID arrays are always present (empty `[]`, never null).
 | `path` | string | Absolute path |
 | `method` | string | Install method |
 | `origin` | string | Source URL |
-| `ref` | string | Git ref used at install (omitempty) |
+| `ref` | string | Git ref or npm version selector used at install (omitempty) |
 | `commit_hash` | string | Git commit at install time (omitempty) |
+| `package_version` | string | Resolved npm package version, separate from the plugin manifest version (omitempty) |
+| `package_archive_hash` | string | SHA-256 of the acquired npm archive (omitempty) |
 | `installed_at` | string | ISO 8601 timestamp (omitempty) |
 | `rules` | string[] | Rule IDs |
 | `agents` | string[] | Agent IDs |
 | `workflows` | string[] | Workflow IDs |
 | `skills` | string[] | Skill IDs |
 | `hooks` | string[] | Hook IDs |
-| `plugins` | string[] | Plugin reference IDs |
+| `plugins` | string[] | Native imported package binding (`<name>@<marketplace>`), or empty for ordinary packs |
 | `prompts` | string[] | Prompt IDs |
 | `mcp_servers` | string[] | MCP server names |
 | `settings` | string[] | Harness config files as `<harness>/<file>` IDs (omitempty) |
 | `extras` | string[] | Extra bundled file paths (omitempty) |
+| `native_plugin` | object | Imported native package descriptor (omitempty) |
+| `plugin_source` | object | Original catalog coordinates and native entry metadata (omitempty) |
+| `sub_path` | string | Plugin subdirectory in the acquired source (omitempty) |
+| `materialized_digest` | string | Recorded installed import digest (omitempty) |
 
 ### `aipack pack inspect`
 
@@ -494,7 +533,7 @@ Inspects a source without installing it. Content ID arrays are always present (e
     "hooks": 0,
     "workflows": 1,
     "agents": 0,
-    "plugins": 1,
+    "plugins": 0,
     "prompts": 0,
     "mcp": 2
   },
@@ -503,7 +542,7 @@ Inspects a source without installing it. Content ID arrays are always present (e
   "workflows": ["deploy"],
   "skills": ["triage"],
   "hooks": [],
-  "plugins": ["linear"],
+  "plugins": [],
   "prompts": [],
   "mcp_servers": ["issue-tracker"],
   "profiles": ["oncall"],
@@ -530,11 +569,12 @@ Inspects a source without installing it. Content ID arrays are always present (e
 | `source` | string | Same source value used for indexing |
 | `source_type` | string | `path`, `url`, or `registry` |
 | `status` | string | Always `inspected` |
-| `method` | string | Inspect method: `local`, `clone`, or `archive` |
-| `ref` | string | Git ref used for clone inspection (omitempty) |
+| `method` | string | Inspect method: `local`, `clone`, `archive`, or `npm` |
+| `ref` | string | Git ref or npm version selector used for inspection (omitempty) |
 | `path_in_source` | string | Subdirectory within the source (omitempty) |
 | `counts` | object | Content counts by vector |
-| `rules`, `agents`, `workflows`, `skills`, `hooks`, `plugins`, `prompts`, `mcp_servers` | string[] | Discovered content IDs |
+| `rules`, `agents`, `workflows`, `skills`, `hooks`, `prompts`, `mcp_servers` | string[] | Discovered content IDs |
+| `plugins` | string[] | Native imported package binding (`<name>@<marketplace>`), or empty for ordinary packs |
 | `profiles`, `registries`, `extras` | string[] | Bundled content IDs or paths (omitempty) |
 | `warnings` | string[] | Trust warnings surfaced by inspection, such as MCP external tool access (omitempty) |
 | `registry` | object | Registry metadata when inspected by registry name (omitempty) |
@@ -644,6 +684,7 @@ Versioned update-check output intended for startup hooks and automation. `--json
 | `results[].bundled.available` | object | Categories and exact bundled IDs offered by the current candidate; `new`, `previously_declined`, `profiles`, `registries`, and `extras` arrays are always present |
 | `results[].bundled.preferences` | object | Complete persisted `approved` and `declined` category preferences; arrays are always present |
 | `results[].origin_migration` | object | Registry coordinates differ from the authoritative installed lockfile coordinates (omitempty). This is advisory and is never adopted by update implicitly |
+| `results[].origin_migration.installed.npm`, `results[].origin_migration.candidate.npm` | object | npm package and registry coordinates when applicable (omitempty); `version` records the catalog selector after normalizing inline versions. The native entry retains the declared source |
 | `results[].origin_migration.registry_source` | object | Winning registry source |
 | `results[].origin_migration.shadowed_sources` | object[] | Lower-priority registry sources that also define this name |
 | `summary` | object | Counts by semantic check status |
@@ -934,9 +975,12 @@ Exit code 1 when `valid` is false.
 |-------|------|-------------|
 | `name` | string | Local name for this source |
 | `url` | string | Git repository URL |
-| `ref` | string | Git ref (omitempty) |
-| `path` | string | File path within the repo (omitempty) |
+| `ref` | string | Git branch, tag or commit (omitempty) |
+| `path` | string | Repository-relative catalog path; declares Git acquisition for remote URLs, including URLs without `.git` (omitempty) |
+| `format` | string | Explicit native marketplace dialect (omitempty): `claude`, `codex-legacy`, or `agent-plugins` |
 | `cached` | bool | Whether a local cache file exists |
+
+`registry fetch <url> --format claude|codex-legacy|agent-plugins` saves the native catalog dialect. Omitting the flag preserves the saved choice; `--format auto` clears it. The flag requires an explicit source URL and rejects ordinary AIPack registries. Bare `registry fetch` reuses each source's saved format.
 
 ### `aipack mcp inspect-tools` (list mode)
 
@@ -1007,12 +1051,12 @@ When invoked with a server name or `--all`, probes servers and returns results.
 | `results[].status` | string | `ok`, `skipped`, or `error`. `error` covers probe failures and post-probe `--save` write failures. |
 | `results[].tools` | string[] | Discovered tool names (sorted). Present when the live probe succeeded, even if a later `--save` failed. |
 | `results[].tool_count` | int | Number of discovered tools |
-| `results[].previous_tools` | string[] | Tools from the static inventory before probe |
+| `results[].previous_tools` | string[] | Tools from the static inventory, or the imported plugin's probe cache, before probe |
 | `results[].added` | string[] | Tools in live list but not in previous inventory |
 | `results[].removed` | string[] | Tools in previous inventory but not in live list |
-| `results[].saved` | bool | Whether `--save` wrote the inventory file |
+| `results[].saved` | bool | Whether `--save` wrote the inventory file or imported plugin probe cache |
 | `results[].would_save` | bool | Present and `true` when `--save --dry-run` determined a write would happen but skipped it |
-| `results[].inventory_path` | string | Path to inventory JSON (present when `saved` or `would_save` is true) |
+| `results[].inventory_path` | string | Path to inventory JSON or imported plugin probe cache (present when `saved` or `would_save` is true) |
 | `results[].error` | string | Error message (present when status is `skipped` or `error`) |
 | `results[].duration` | string | Probe duration (e.g. `"1.2s"`). Present when the live probe succeeded, even if a later `--save` failed. |
 
@@ -1046,7 +1090,7 @@ Commands may apply different cardinality rules after this resolution chain. `syn
 
 **Diff kinds:** `create` (file doesn't exist on disk), `identical` (desired matches on-disk), `managed` (on-disk matches ledger — safe to update), `conflict` (user-modified since last sync), `untracked` (exists on disk but not in ledger), `error` (classification failed)
 
-**Install methods:** `clone` (shallow git clone — default for remote git installs), `archive` (static zip/tar URL, re-fetched on update), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place). Legacy `http-tarball` entries may appear in old lockfiles; they are transparently migrated to `clone` on the next `pack update`.
+**Install methods:** `clone` (shallow git clone — default for remote git installs), `archive` (static zip/tar URL, re-fetched on update), `npm` (Codex or Claude marketplace package acquired with npm lifecycle scripts disabled), `copy` (copied from local path), `link` (symlinked to local path), `local` (already in packs directory, registered in-place). Legacy `http-tarball` entries may appear in old lockfiles; they are transparently migrated to `clone` on the next `pack update`.
 
 **Search statuses:** `installed` (pack is installed locally), `registered` (uninstalled registry/deep-index content), `inspected` (one-off preview from `pack inspect`). Search reconciles installed status from `aipack.lock` and installed pack directories before applying status filters.
 

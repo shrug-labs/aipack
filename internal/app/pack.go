@@ -64,6 +64,8 @@ type PackInstallRequest struct {
 	// ContentPaths maps content types to directories within the repo for packs
 	// that don't follow the standard pack layout. Stored in sync-config.
 	ContentPaths map[domain.PackCategory]string
+	Plugin       *domain.PluginSource
+	Unsupported  string
 
 	// SubPath is the subdirectory within a cloned repo where pack.json lives.
 	// Set when installing from a registry entry that specifies a path.
@@ -198,9 +200,20 @@ func extractLocalPackToStaging(configDir, packDir string) (string, config.PackMa
 // success, Err on failure) so callers can use channel close to drive UI
 // state transitions.
 func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
+	if req.Unsupported != "" {
+		return fmt.Errorf("plugin %q: %s", req.Name, req.Unsupported)
+	}
+	if req.ConfigDir == "" {
+		return fmt.Errorf("config dir is required")
+	}
+	ctx, unlock, err := lockPackMutationContext(ctx, req.ConfigDir, false)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	label := installEventLabel(req)
 	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Phase: PackInstallPhaseStarting})
-	err := packInstallDispatch(ctx, req, stdout)
+	err = packInstallDispatch(ctx, req, stdout)
 	if err != nil {
 		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Err: err})
 	} else {
@@ -210,9 +223,6 @@ func PackInstall(ctx context.Context, req PackInstallRequest, stdout io.Writer) 
 }
 
 func packInstallDispatch(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
-	if req.ConfigDir == "" {
-		return fmt.Errorf("config dir is required")
-	}
 	if req.Archive && req.URL == "" && req.PackPath != "" {
 		req.URL = req.PackPath
 		req.PackPath = ""
@@ -248,6 +258,9 @@ func packInstallDispatch(ctx context.Context, req PackInstallRequest, stdout io.
 	}
 
 	if req.URL != "" {
+		if req.Plugin != nil && req.Plugin.NPM != nil {
+			return packInstallFromArchive(ctx, req, stdout)
+		}
 		if req.Archive {
 			return packInstallFromArchive(ctx, req, stdout)
 		}
@@ -275,7 +288,22 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 		}
 	}
 
+	if req.Plugin == nil && req.ContentPaths == nil {
+		req.Plugin, err = discoverLocalPackPlugin(packDir)
+		if err != nil {
+			return err
+		}
+		if req.Plugin != nil {
+			req.Link = false // Direct plugin imports are materialized, including the CLI's default local install.
+		}
+	}
 	manifest, err := config.LoadPackManifest(manifestPath)
+	if req.Plugin != nil {
+		if req.Link {
+			return fmt.Errorf("native plugin sources must be materialized; --link is not supported")
+		}
+		return packInstallNativePath(req, packDir, stdout)
+	}
 	if err != nil {
 		return fmt.Errorf("loading pack manifest: %w", err)
 	}
@@ -327,7 +355,9 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	} else if req.Link {
 		method = config.MethodLink
 		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseLinking})
-		packRemoveExisting(destDir, stdout)
+		if err := packRemoveExisting(req.ConfigDir, name, stdout); err != nil {
+			return fmt.Errorf("removing existing pack: %w", err)
+		}
 		if err := createLink(packDir, destDir); err != nil {
 			err = fmt.Errorf("creating symlink: %w", err)
 			if stdout != nil {
@@ -351,7 +381,7 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 			}
 			return err
 		}
-		defer os.RemoveAll(staging)
+		defer util.RemoveOwnedTree(staging)
 		if err := applyWithFilter(staging, &extractedManifest, with); err != nil {
 			err = fmt.Errorf("applying content filter: %w", err)
 			if stdout != nil {
@@ -359,7 +389,7 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 			}
 			return err
 		}
-		if err := util.ReplaceDirAtomic(destDir, staging); err != nil {
+		if _, err := beginPackReplacement(req.ConfigDir, name, staging); err != nil {
 			err = fmt.Errorf("installing pack to %s: %w", destDir, err)
 			if stdout != nil {
 				fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
@@ -372,33 +402,12 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 		}
 	}
 
-	now := time.Now()
-	if req.NowFn != nil {
-		now = req.NowFn()
-	}
-
-	approvedList, declinedList := buildPrefsLists(with)
-	meta := config.InstalledPackMeta{
-		Origin: packDir, Method: method, InstalledAt: now.UTC().Format(time.RFC3339),
-		Approved: approvedList, Declined: declinedList,
-		InstallQuiet: resolveInstallQuiet(req.ConfigDir, name, req.Quiet),
-	}
-	// Populate drift-detection baseline so doctor broken_refs and
-	// sync drift reports work before the first sync runs.
-	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, destDir, "", now, stdout)
-	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
-		if stdout != nil {
-			fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
-		}
-	}
-
-	// Record content integrity hashes for copy installs.
+	meta := config.InstalledPackMeta{Origin: packDir, Method: method}
 	if method == config.MethodCopy {
-		if _, err := saveIntegrity(destDir); err != nil {
-			if stdout != nil {
-				fmt.Fprintf(stdout, "Warning: failed to record integrity: %v\n", err)
-			}
-		}
+		meta.ConverterVersion = nativeConverterVersion(manifest)
+	}
+	if err := recordLocalPackInstall(req, name, meta, with, stdout); err != nil {
+		return err
 	}
 
 	installBundledContent(req.ConfigDir, destDir, manifest, with, stdout)
@@ -416,6 +425,35 @@ func packInstallFromPath(req PackInstallRequest, stdout io.Writer) error {
 	// Index the pack so search works immediately without requiring sync.
 	_ = indexInstalledPack(req.ConfigDir, name, destDir)
 
+	return nil
+}
+
+func recordLocalPackInstall(req PackInstallRequest, name string, meta config.InstalledPackMeta, with domain.BundledSet, stdout io.Writer) error {
+	now := time.Now()
+	if req.NowFn != nil {
+		now = req.NowFn()
+	}
+	meta.InstalledAt = now.UTC().Format(time.RFC3339)
+	meta.Approved, meta.Declined = buildPrefsLists(with)
+	meta.InstallQuiet = resolveInstallQuiet(req.ConfigDir, name, req.Quiet)
+	dest := filepath.Join(PacksDir(req.ConfigDir), name)
+	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, dest, "", now, stdout)
+	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
+		return errors.Join(err, recoverPackReplacements(req.ConfigDir))
+	}
+	if err := recoverPackReplacements(req.ConfigDir); err != nil {
+		return err
+	}
+	if meta.Method == config.MethodCopy {
+		if _, err := saveIntegrity(dest); err != nil {
+			if req.Plugin != nil {
+				return err
+			}
+			if stdout != nil {
+				fmt.Fprintf(stdout, "Warning: failed to record integrity: %v\n", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -494,7 +532,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 		}
 	}
 
-	// Resolve URL info: for SSH/git URLs or when SubPath/Ref/content paths/
+	// Resolve URL info: for native plugins, SSH/git URLs or when SubPath/Ref/content paths/
 	// partial version is pre-set, skip the HTTP probe (ProbePackURL) and go
 	// directly to git operations. Partial semver is treated like an explicit
 	// ref for probe purposes — the user declared git intent and the URL is
@@ -502,7 +540,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// normalization.
 	label := installEventLabel(req)
 	var info source.PackURLInfo
-	if req.SubPath != "" || req.Ref != "" || len(req.ContentPaths) > 0 || refClass.Kind == source.RefPartialSemver || config.IsGitURL(req.URL, "") {
+	if req.Plugin != nil || req.SubPath != "" || req.Ref != "" || len(req.ContentPaths) > 0 || refClass.Kind == source.RefPartialSemver || config.IsGitURL(req.URL, "") {
 		info = source.PackURLInfo{RepoURL: req.URL, Ref: req.Ref, SubPath: req.SubPath}
 	} else {
 		emitPackInstallEvent(req.Events, PackInstallEvent{Pack: label, Phase: PackInstallPhaseProbing})
@@ -521,7 +559,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 		}
 
 		// Validate pack.json is accessible if we have a direct URL for it.
-		if info.PackURL != "" {
+		if info.PackURL != "" && strings.HasSuffix(req.URL, "/pack.json") {
 			urlOKFn := source.URLOK
 			if req.URLOKFn != nil {
 				urlOKFn = req.URLOKFn
@@ -558,6 +596,12 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	listFn := req.ListRemoteTagsFn
 	if listFn == nil {
 		listFn = source.ListRemoteTags
+	}
+	if relativePluginGitSource(req.Plugin, info.RepoURL) {
+		query := listFn
+		listFn = func(ctx context.Context, repo string) ([]string, error) {
+			return pluginGitTags(ctx, req.ConfigDir, req.Plugin, repo, req.RunGitFn, query)
+		}
 	}
 	// Expand exact or partial semver specs to the remote tag's raw spelling.
 	// Partial installs still pin to a single resolved version — they do not
@@ -597,7 +641,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(result.destDir)
+	defer util.RemoveOwnedTree(result.destDir)
 
 	// Verify pack.json version against the requested tag, if both are present.
 	// This educates pack authors when their pack.json version drifts from
@@ -636,7 +680,7 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := util.ReplaceDirAtomic(destDir, result.destDir); err != nil {
+	if _, err := beginPackReplacement(req.ConfigDir, name, result.destDir); err != nil {
 		err = fmt.Errorf("installing pack to %s: %w", destDir, err)
 		if stdout != nil {
 			fmt.Fprintf(stdout, "error: %s: %v\n", name, err)
@@ -652,7 +696,8 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 		Origin: info.RepoURL, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
 		Ref: info.Ref, SubPath: info.SubPath, CommitHash: result.commitHash,
 		ContentPaths: req.ContentPaths,
-		Approved:     approvedList, Declined: declinedList,
+		Plugin:       installedPluginSource(result.plugin, result.manifest), ConverterVersion: nativeConverterVersion(result.manifest),
+		Approved: approvedList, Declined: declinedList,
 		InstallQuiet: resolveInstallQuiet(req.ConfigDir, name, req.Quiet),
 	}
 	// Populate drift-detection baseline so doctor broken_refs and
@@ -660,9 +705,10 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 	// captured so the next sync can report the version transition.
 	meta.Resolved = buildResolvedInventory(req.ConfigDir, name, destDir, info.Ref, now, stdout)
 	if err := packRecordOrigin(req.ConfigDir, name, meta); err != nil {
-		if stdout != nil {
-			fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
-		}
+		return errors.Join(err, recoverPackReplacements(req.ConfigDir))
+	}
+	if err := recoverPackReplacements(req.ConfigDir); err != nil {
+		return err
 	}
 
 	packWarnMCPServers(result.manifest, stdout)
@@ -694,14 +740,19 @@ func packInstallFromURL(ctx context.Context, req PackInstallRequest, stdout io.W
 }
 
 func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout io.Writer) error {
-	if req.Ref != "" {
+	npm := req.Plugin != nil && req.Plugin.NPM != nil
+	kind := config.MethodArchive
+	if npm {
+		kind = config.MethodNPM
+	}
+	if req.Ref != "" && !npm {
 		return fmt.Errorf("--ref/--version is not valid with archive installs")
 	}
 	if stdout != nil {
 		if req.Name == "" {
-			fmt.Fprintf(stdout, "Installing archive from %s\n", req.URL)
+			fmt.Fprintf(stdout, "Installing %s from %s\n", kind, req.URL)
 		} else {
-			fmt.Fprintf(stdout, "Installing %s from archive %s\n", req.Name, req.URL)
+			fmt.Fprintf(stdout, "Installing %s from %s %s\n", req.Name, kind, req.URL)
 		}
 	}
 
@@ -718,7 +769,7 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(result.destDir)
+	defer util.RemoveOwnedTree(result.destDir)
 
 	now := time.Now()
 	if req.NowFn != nil {
@@ -743,7 +794,7 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 	}
 
 	destDir := filepath.Join(packsDir, result.name)
-	if err := util.ReplaceDirAtomic(destDir, result.destDir); err != nil {
+	if _, err := beginPackReplacement(req.ConfigDir, result.name, result.destDir); err != nil {
 		err = fmt.Errorf("installing pack to %s: %w", destDir, err)
 		if stdout != nil {
 			fmt.Fprintf(stdout, "error: %s: %v\n", result.name, err)
@@ -751,23 +802,34 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 		return err
 	}
 	if stdout != nil {
-		fmt.Fprintf(stdout, "Fetched archive: %s -> %s\n", req.URL, destDir)
+		fmt.Fprintf(stdout, "Fetched %s: %s -> %s\n", kind, req.URL, destDir)
 	}
 
 	origin := archiveOrigin(req.URL)
+	if npm {
+		origin = req.URL
+	}
 	approvedList, declinedList := buildPrefsLists(effectiveWith)
 	installCandidates.markPreviouslyDeclined(declinedList)
 	meta := config.InstalledPackMeta{
-		Origin: origin, Method: config.MethodArchive, InstalledAt: now.UTC().Format(time.RFC3339),
+		Origin: origin, Method: result.method, InstalledAt: now.UTC().Format(time.RFC3339),
 		SubPath: req.SubPath, ContentPaths: req.ContentPaths,
+		Plugin: installedPluginSource(req.Plugin, result.manifest), ConverterVersion: nativeConverterVersion(result.manifest),
 		Approved: approvedList, Declined: declinedList,
 		InstallQuiet: resolveInstallQuiet(req.ConfigDir, result.name, req.Quiet),
 	}
-	meta.Resolved = buildResolvedInventory(req.ConfigDir, result.name, destDir, "", now, stdout)
-	if err := packRecordOrigin(req.ConfigDir, result.name, meta); err != nil {
-		if stdout != nil {
-			fmt.Fprintf(stdout, "Warning: failed to record pack origin: %v\n", err)
+	if npm {
+		meta.Ref, meta.PackageVersion, meta.PackageArchiveHash = req.Ref, result.packageVersion, result.archiveFetch.ByteHash
+		if meta.Ref == "latest" {
+			meta.Ref = ""
 		}
+	}
+	meta.Resolved = buildResolvedInventory(req.ConfigDir, result.name, destDir, meta.Ref, now, stdout)
+	if err := packRecordOrigin(req.ConfigDir, result.name, meta); err != nil {
+		return errors.Join(err, recoverPackReplacements(req.ConfigDir))
+	}
+	if err := recoverPackReplacements(req.ConfigDir); err != nil {
+		return err
 	}
 
 	packWarnMCPServers(result.manifest, stdout)
@@ -775,7 +837,9 @@ func packInstallFromArchive(ctx context.Context, req PackInstallRequest, stdout 
 	// Observation state is disposable. A seed failure must not turn a
 	// successful install into a failure; the next update simply does a full
 	// semantic comparison.
-	_ = seedArchiveObservation(req, result, origin, effectiveWith, installCandidates, installedIntegrity, integrityErr)
+	if !npm {
+		_ = seedArchiveObservation(req, result, origin, effectiveWith, installCandidates, installedIntegrity, integrityErr)
+	}
 	installBundledContent(req.ConfigDir, destDir, result.manifest, effectiveWith, stdout)
 
 	if req.Add {
@@ -845,19 +909,41 @@ func packFetchArchiveWithOptions(
 		}
 		return packInstallResult{}, err
 	}
-	defer os.RemoveAll(archiveDir)
+	defer util.RemoveOwnedTree(archiveDir)
 
+	method := config.MethodArchive
+	if req.Plugin != nil && req.Plugin.NPM != nil {
+		method = config.MethodNPM
+	}
 	if stdout != nil {
 		if req.Name == "" {
-			fmt.Fprintf(stdout, "Fetching archive %s\n", req.URL)
+			fmt.Fprintf(stdout, "Fetching %s %s\n", method, req.URL)
 		} else {
-			fmt.Fprintf(stdout, "Fetching archive %s from %s\n", req.Name, req.URL)
+			fmt.Fprintf(stdout, "Fetching %s %s from %s\n", method, req.Name, req.URL)
 		}
 	}
 	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseExtracting})
-	fetch, err := source.FetchArchiveObserved(ctx, req.URL, archiveDir, opts)
+	var fetch source.ArchiveFetchResult
+	var npmRoot, packageVersion string
+	if req.Plugin != nil && req.Plugin.NPM != nil {
+		if req.SubPath != "" || req.Link {
+			return packInstallResult{}, fmt.Errorf("npm acquisition requires a native plugin source without a subpath or link")
+		}
+		spec := *req.Plugin.NPM
+		spec.Version = req.Ref
+		if spec.Version == "latest" {
+			spec.Version = ""
+		}
+		if req.Plugin.Format == "claude" {
+			npmRoot, packageVersion, fetch.ByteHash, err = source.FetchClaudeNPM(ctx, spec, archiveDir)
+		} else {
+			npmRoot, packageVersion, fetch.ByteHash, err = source.FetchNPM(ctx, spec, archiveDir)
+		}
+	} else {
+		fetch, err = source.FetchArchiveObserved(ctx, req.URL, archiveDir, opts)
+	}
 	if err != nil {
-		err = fmt.Errorf("fetching archive %s: %w", req.URL, err)
+		err = fmt.Errorf("fetching %s %s: %w", method, req.URL, err)
 		if stdout != nil {
 			if req.Name == "" {
 				fmt.Fprintf(stdout, "error: %v\n", err)
@@ -872,7 +958,9 @@ func packFetchArchiveWithOptions(
 	}
 
 	var packRoot string
-	if req.ContentPaths != nil {
+	if npmRoot != "" {
+		packRoot = npmRoot
+	} else if req.ContentPaths != nil || req.Plugin != nil {
 		packRoot, err = resolveArchiveContentRoot(archiveDir, req.SubPath)
 	} else {
 		packRoot, err = resolveArchivePackRoot(archiveDir, req.SubPath)
@@ -888,8 +976,8 @@ func packFetchArchiveWithOptions(
 		return packInstallResult{}, err
 	}
 
-	staging, manifest, err := extractPackContent(
-		packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, archiveDir,
+	staging, manifest, err := extractPackSource(
+		packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, archiveDir, req.Plugin,
 	)
 	if err != nil {
 		if stdout != nil {
@@ -904,7 +992,7 @@ func packFetchArchiveWithOptions(
 
 	name, err := resolvePackName(req.Name, manifest.Name)
 	if err != nil {
-		os.RemoveAll(staging)
+		util.RemoveOwnedTree(staging)
 		if stdout != nil {
 			if req.Name == "" {
 				fmt.Fprintf(stdout, "error: %v\n", err)
@@ -915,8 +1003,8 @@ func packFetchArchiveWithOptions(
 		return packInstallResult{}, err
 	}
 	return packInstallResult{
-		name: name, destDir: staging, method: config.MethodArchive, manifest: manifest,
-		archiveFetch: fetch,
+		name: name, destDir: staging, method: method, manifest: manifest,
+		archiveFetch: fetch, packageVersion: packageVersion,
 	}, nil
 }
 
@@ -1066,12 +1154,14 @@ func listArchivePacks(root string) string {
 // The manifest is always unfiltered — callers apply applyWithFilter after
 // computing any diffs they need against the full source content.
 type packInstallResult struct {
-	name         string
-	destDir      string
-	method       string
-	manifest     config.PackManifest
-	commitHash   string
-	archiveFetch source.ArchiveFetchResult
+	name           string
+	destDir        string
+	method         string
+	manifest       config.PackManifest
+	commitHash     string
+	archiveFetch   source.ArchiveFetchResult
+	packageVersion string
+	plugin         *domain.PluginSource
 }
 
 type packCloneOptions struct {
@@ -1095,9 +1185,8 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		}
 		return packInstallResult{}, err
 	}
-	defer os.RemoveAll(cloneDir)
+	defer util.RemoveOwnedTree(cloneDir)
 
-	cacheRefDir := source.CacheRefDir(req.ConfigDir, info.RepoURL)
 	gitFn := req.RunGitFn
 	if gitFn == nil {
 		gitFn = source.RunGit
@@ -1110,7 +1199,7 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		}
 	}
 	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseCloning})
-	if err := source.EnsureCloneWithRef(ctx, info.RepoURL, cloneDir, info.Ref, cacheRefDir, gitFn); err != nil {
+	if err := clonePluginGitRepository(ctx, req.ConfigDir, req.Plugin, info.RepoURL, cloneDir, info.Ref, gitFn); err != nil {
 		err = fmt.Errorf("cloning %s: %w", info.RepoURL, err)
 		if stdout != nil {
 			if req.Name == "" {
@@ -1121,7 +1210,7 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		}
 		return packInstallResult{}, err
 	}
-	if opts.UpdateCache {
+	if opts.UpdateCache && !relativePluginGitSource(req.Plugin, info.RepoURL) {
 		// Best-effort: seed the bare-repo cache from the local clone for future
 		// --reference reuse. No network call — uses cloneDir as source.
 		_ = source.UpdateBareCache(ctx, info.RepoURL, cloneDir, source.GitCacheDir(req.ConfigDir), gitFn)
@@ -1136,12 +1225,18 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 	if info.SubPath != "" {
 		packRoot = filepath.Join(cloneDir, info.SubPath)
 	}
+	if req.Plugin == nil && req.ContentPaths == nil {
+		req.Plugin, err = discoverPackPlugin(cloneDir, info.SubPath, config.RegistrySourceEntry{URL: info.RepoURL, Ref: info.Ref})
+		if err != nil {
+			return packInstallResult{}, err
+		}
+	}
 
 	// Extract content into clean staging directory. Use cloneDir as symlink
 	// boundary so subpath packs can resolve symlinks to sibling directories.
 	emitPackInstallEvent(req.Events, PackInstallEvent{Pack: installEventLabel(req), Phase: PackInstallPhaseExtracting})
-	staging, manifest, err := extractPackContent(
-		packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, cloneDir,
+	staging, manifest, err := extractPackSource(
+		packStagingDir(req.ConfigDir), packRoot, req.ContentPaths, req.Name, cloneDir, pluginSourceAtRevision(req.Plugin, commitHash),
 	)
 	if err != nil {
 		// Provide a helpful hint when subpath packs fail to find pack.json.
@@ -1162,7 +1257,7 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 
 	name, err := resolvePackName(req.Name, manifest.Name)
 	if err != nil {
-		os.RemoveAll(staging)
+		util.RemoveOwnedTree(staging)
 		if stdout != nil {
 			if req.Name == "" {
 				fmt.Fprintf(stdout, "error: %v\n", err)
@@ -1172,7 +1267,7 @@ func packShallowClone(ctx context.Context, req PackInstallRequest, info source.P
 		}
 		return packInstallResult{}, err
 	}
-	return packInstallResult{name: name, destDir: staging, method: config.MethodClone, manifest: manifest, commitHash: commitHash}, nil
+	return packInstallResult{name: name, destDir: staging, method: config.MethodClone, manifest: manifest, commitHash: commitHash, plugin: req.Plugin}, nil
 }
 
 // listClonePacks returns a comma-separated list of top-level subdirectories in
@@ -1199,6 +1294,9 @@ func listClonePacks(dir string) string {
 // A pin is a ref that resolves to a fixed point — a semver tag (flat or
 // namespaced) or a commit hash. Branch names and an empty ref track upstream.
 func isPinned(meta config.InstalledPackMeta) bool {
+	if meta.Method == config.MethodNPM {
+		return source.IsSemverTag(meta.Ref) && !source.IsPartialSemver(meta.Ref)
+	}
 	switch source.ClassifyRef(meta.Ref).Kind {
 	case source.RefSemver, source.RefPartialSemver, source.RefCommit:
 		return true
@@ -1315,8 +1413,16 @@ func inferInstallMethod(mode os.FileMode) string {
 // packRemoveExisting removes an already-installed pack at destDir, emitting
 // a notice for what it replaces. Used only for the symlink install path
 // where there is no staging directory to swap in.
-func packRemoveExisting(destDir string, stdout io.Writer) {
+func packRemoveExisting(configDir, name string, stdout io.Writer) error {
+	destDir := filepath.Join(PacksDir(configDir), name)
 	if st, err := os.Lstat(destDir); err == nil {
+		lf, err := config.LoadLockfile(config.LockfilePath(configDir))
+		if err != nil {
+			return err
+		}
+		if err := verifyImportedPackUnmodified(destDir, lf.Packs[name]); err != nil {
+			return fmt.Errorf("pack %q: %w", name, err)
+		}
 		if st.Mode()&os.ModeSymlink != 0 {
 			target, _ := os.Readlink(destDir)
 			if stdout != nil {
@@ -1327,6 +1433,9 @@ func packRemoveExisting(destDir string, stdout io.Writer) {
 				fmt.Fprintf(stdout, "Replacing existing copy: %s\n", destDir)
 			}
 		}
-		os.RemoveAll(destDir)
+		return util.RemoveOwnedTree(destDir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
+	return nil
 }

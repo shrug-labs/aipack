@@ -29,6 +29,11 @@ func Run(ctx context.Context, profile domain.Profile, harnesses []harness.Harnes
 // RunToDir renders all pack content into outDir using the v2 harness Render methods.
 // Each harness produces a Fragment of writes; all writes are applied atomically.
 func RunToDir(ctx context.Context, profile domain.Profile, outDir string, harnesses []harness.Harness) error {
+	for _, pack := range profile.Packs {
+		if pack.NativePlugin != nil {
+			return fmt.Errorf("native plugin pack %q requires sync through its host installer; standalone render is unsupported", pack.Name)
+		}
+	}
 	outDirAbs, err := filepath.Abs(outDir)
 	if err != nil {
 		return err

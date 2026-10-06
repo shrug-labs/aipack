@@ -80,6 +80,9 @@ func (e *Engine) ResolveWithOptions(
 	p.BaseSettings = settings
 	p.SettingsPacks = settingsPacks
 	p.BrokenRefs = resolved.BrokenRefs
+	p.CollisionStrategy = string(opts.CollisionStrategy)
+	p.SkillOverrideOwners = resolved.SkillOverrides
+	p.MCPOverrideOwners = resolved.MCPOverrides
 	return p, warnings, nil
 }
 
@@ -122,6 +125,25 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack, params 
 	var warnings []domain.Warning
 
 	for _, rp := range resolvedPacks {
+		if rp.Manifest.NativePlugin != nil {
+			if !rp.NativeSettingsEnabled && len(rp.Skills)+len(rp.Agents)+len(rp.Workflows)+len(rp.Hooks)+len(rp.MCP) == 0 {
+				packs = append(packs, domain.Pack{Name: rp.Name, Version: rp.Manifest.Version, Root: rp.Root})
+				continue
+			}
+			selected := map[domain.PackCategory][]string{}
+			for _, cat := range []domain.PackCategory{domain.CategorySkills, domain.CategoryAgents, domain.CategoryWorkflows, domain.CategoryHooks} {
+				selected[cat] = rp.ContentIDs(cat)
+			}
+			policy := map[string]domain.NativeMCPPolicy{}
+			for name, server := range rp.MCP {
+				selected[domain.CategoryMCP] = append(selected[domain.CategoryMCP], name)
+				policy[name] = domain.NativeMCPPolicy{AllowedTools: server.AllowedTools, AlwaysAllowedTools: server.AlwaysAllowedTools, DisabledTools: server.DisabledTools, StartupTimeout: server.StartupTimeout}
+			}
+			packs = append(packs, domain.Pack{Name: rp.Name, Version: rp.Manifest.Version, Root: rp.Root,
+				NativePlugin: &domain.NativePluginSelection{Package: *rp.Manifest.NativePlugin, Root: rp.Root,
+					SourcePack: rp.Name, Selected: selected, MCPPolicy: policy, SettingsEnabled: rp.NativeSettingsEnabled}})
+			continue
+		}
 		rules, w, err := e.parseRules(rp)
 		if err != nil {
 			return nil, warnings, err
@@ -152,12 +174,6 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack, params 
 		}
 		warnings = append(warnings, w...)
 
-		plugins, w, err := e.parsePlugins(rp)
-		if err != nil {
-			return nil, warnings, err
-		}
-		warnings = append(warnings, w...)
-
 		packs = append(packs, domain.Pack{
 			Name:       rp.Name,
 			Version:    rp.Manifest.Version,
@@ -167,7 +183,6 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack, params 
 			Workflows:  workflows,
 			Skills:     skills,
 			Hooks:      hooks,
-			Plugins:    plugins,
 			Registries: rp.Manifest.Registries,
 		})
 	}
@@ -177,6 +192,13 @@ func (e *Engine) resolvePackContent(resolvedPacks []config.ResolvedPack, params 
 
 // resolveMCPServers loads MCP inventory from packs and builds typed servers.
 func (e *Engine) resolveMCPServers(packs []config.ResolvedPack, params map[string]string, env map[string]string) ([]domain.MCPServer, []domain.Warning, error) {
+	var portable []config.ResolvedPack
+	for _, pack := range packs {
+		if pack.Manifest.NativePlugin == nil {
+			portable = append(portable, pack)
+		}
+	}
+	packs = portable
 	inv, err := e.LoadMCPInventoryForPacks(packs)
 	if err != nil {
 		return nil, nil, err

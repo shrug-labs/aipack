@@ -104,6 +104,50 @@ func TestPackInspectRegistryNameUsesRegistrySource(t *testing.T) {
 	}
 }
 
+func TestPackInspectRegistryRelativeGitPlugin(t *testing.T) {
+	t.Parallel()
+	configDir := t.TempDir()
+	const marketplace = "https://github.com/aipack-fixture/marketplace.git"
+	writeShowTestRegistry(t, configDir, map[string]config.RegistryEntry{
+		"relative-plugin": {
+			Repo: "./.",
+			Plugin: &domain.PluginSource{
+				Format: "codex-legacy", Name: "probe", Marketplace: "market",
+				MarketplaceURL: marketplace, MarketplacePath: ".agents/plugins/marketplace.json",
+				Entry: map[string]any{"name": "probe", "source": map[string]any{"source": "url", "url": "./"}},
+			},
+		},
+	})
+	var clones []string
+	result, err := PackInspect(context.Background(), PackInspectRequest{
+		ConfigDir: configDir, Input: "relative-plugin",
+		RunGitFn: func(_ context.Context, args ...string) error {
+			if len(args) >= 4 && args[0] == "clone" {
+				clones = append(clones, args[len(args)-2])
+				root := args[len(args)-1]
+				writeFile(t, filepath.Join(root, ".codex-plugin/plugin.json"), `{"name":"probe","version":"1.0.0"}`)
+				writeFile(t, filepath.Join(root, "skills/probe/SKILL.md"), "---\nname: probe\ndescription: Fixture.\n---\nRelative source body.\n")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("PackInspect relative Git plugin: %v", err)
+	}
+	if len(clones) != 2 || clones[0] != marketplace || !strings.HasPrefix(clones[1], "file://") {
+		t.Fatalf("relative source must acquire its marketplace then payload: %v", clones)
+	}
+	if result.SourceType != "registry" || result.Method != config.MethodClone || result.Source != "./." || result.Counts.Skills != 1 || result.NativePlugin == nil || result.NativePlugin.Binding() != "probe@market" {
+		t.Fatalf("relative source inspection lost inventory or provenance: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "packs", "relative-plugin")); !os.IsNotExist(err) {
+		t.Fatalf("inspect must not install pack, stat err=%v", err)
+	}
+	if _, err := os.Stat(config.LockfilePath(configDir)); !os.IsNotExist(err) {
+		t.Fatalf("inspect must not write a lockfile, stat err=%v", err)
+	}
+}
+
 func TestPackInspectWarnsForMCPServers(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()

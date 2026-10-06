@@ -10,17 +10,51 @@ import (
 
 // Entry records metadata about a file managed by a sync operation.
 type Entry struct {
-	Digest         string  `json:"digest"`
-	SyncedAtEpochS int64   `json:"synced_at_epoch_s"`
-	MTimeEpochS    float64 `json:"mtime_epoch_s"`
-	SourcePack     string  `json:"source_pack,omitempty"`
-	ManagedOverlay []byte  `json:"managed_overlay,omitempty"` // managed-only content for three-way merge
+	Digest         string           `json:"digest"`
+	SyncedAtEpochS int64            `json:"synced_at_epoch_s"`
+	MTimeEpochS    float64          `json:"mtime_epoch_s"`
+	SourcePack     string           `json:"source_pack,omitempty"`
+	ManagedOverlay []byte           `json:"managed_overlay,omitempty"` // managed-only content for three-way merge
+	Package        bool             `json:"package,omitempty"`         // complete payload tree; digest includes modes and links
+	Delivery       *PackageDelivery `json:"delivery,omitempty"`
+}
+
+// PackageOverlays returns exact portable activation overlays owned by this ledger.
+func (l Ledger) PackageOverlays(path string) [][]byte {
+	var overlays [][]byte
+	for _, entry := range l.Managed {
+		if entry.Delivery != nil && filepath.Clean(entry.Delivery.SettingsPath) == filepath.Clean(path) {
+			overlays = append(overlays, entry.Delivery.ManagedOverlay)
+		}
+	}
+	return overlays
 }
 
 // Ledger tracks managed files across sync operations.
 type Ledger struct {
-	Managed   map[string]Entry `json:"managed"`
-	UpdatedAt int64            `json:"-"` // epoch seconds from updated_at_epoch_s; 0 if absent
+	Managed         map[string]Entry              `json:"managed"`
+	NativePlugins   map[string]NativePluginRecord `json:"native_plugins,omitempty"`
+	NativeOperation string                        `json:"native_operation,omitempty"`
+	UpdatedAt       int64                         `json:"-"` // epoch seconds from updated_at_epoch_s; 0 if absent
+}
+
+// NativePluginRecord owns one scope's native activation and records the last
+// successfully applied generation. Native caches remain owned by the host.
+type NativePluginRecord struct {
+	Generation           string   `json:"generation"`
+	Harness              Harness  `json:"harness"`
+	ConfigHome           string   `json:"config_home"`
+	Home                 string   `json:"home,omitempty"`
+	MarketplaceDir       string   `json:"marketplace_dir"`
+	RootDirectoryName    string   `json:"root_directory_name,omitempty"`
+	SharedRoot           string   `json:"shared_root,omitempty"`
+	PayloadPath          string   `json:"payload_path,omitempty"`
+	CachePath            string   `json:"cache_path"`
+	SettingsPath         string   `json:"settings_path"`
+	SourcePack           string   `json:"source_pack"`
+	SetupPending         bool     `json:"setup_pending,omitempty"`
+	Namespace            string   `json:"namespace,omitempty"`
+	MCPPermissionServers []string `json:"mcp_permission_servers,omitempty"`
 }
 
 // NewLedger creates an empty ledger.

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,12 +16,13 @@ import (
 
 // ApplyRequest controls how the plan is applied.
 type ApplyRequest struct {
-	Force  bool // override conflicts for ALL file types
-	Yes    bool // auto-confirm stale file deletions
-	DryRun bool
-	Quiet  bool      // suppress diagnostic output (for TUI and --json)
-	Stdout io.Writer // progress diagnostics (create/update/conflict/diff/merge); nil suppresses output
-	Req    PlanRequest
+	Force       bool // override conflicts for ALL file types
+	Yes         bool // auto-confirm stale file deletions
+	DryRun      bool
+	Quiet       bool      // suppress diagnostic output (for TUI and --json)
+	OperationID string    // persisted only when the complete apply commits
+	Stdout      io.Writer // progress diagnostics (create/update/conflict/diff/merge); nil suppresses output
+	Req         PlanRequest
 
 	// LabelForPath returns the human-readable label for diagnostics.
 	// When nil, paths are displayed as stable slash-separated absolute paths.
@@ -42,6 +44,10 @@ type ApplyRequest struct {
 	// deleting the entire file. The ledger argument is a pre-reconciliation
 	// snapshot so strip functions can derive any ownership context they need.
 	StripFuncs map[string]func(content []byte, ledger domain.Ledger) ([]byte, error)
+
+	// ApplyNativePlugins is supplied by the app boundary, which owns native
+	// installers and source acquisition. It runs only during an actual apply.
+	ApplyNativePlugins func(context.Context, []domain.NativePluginAction, *domain.Ledger) (func(bool) error, error)
 }
 
 // ApplyPlan applies a sync plan to disk.
@@ -81,9 +87,30 @@ func (e *Engine) ApplyPlan(ctx context.Context, plan domain.Plan, ar ApplyReques
 	staleRoots := append([]string{}, managedRoots...)
 	staleRoots = append(staleRoots, ar.StaleRoots...)
 	warnings = append(warnings, e.reconcileStaleEntries(ctx, plan, &lg, staleRoots, recorded, ar)...)
+	var finalizeNative func(bool) error
+	if (len(plan.NativePlugins) > 0 || len(lg.NativePlugins) > 0) && !ar.DryRun {
+		if ar.ApplyNativePlugins == nil {
+			return warnings, wrapFatalApply("native plugins", fmt.Errorf("native plugin installer is not configured"))
+		}
+		finalizeNative, err = ar.ApplyNativePlugins(ctx, plan.NativePlugins, &lg)
+		if err != nil {
+			return warnings, wrapFatalApply("native plugins", err)
+		}
+	}
 
+	if ar.OperationID != "" {
+		lg.NativeOperation = ar.OperationID
+	}
 	if err := e.SaveLedger(plan.Ledger, lg, ar.DryRun); err != nil {
+		if finalizeNative != nil {
+			err = errors.Join(err, finalizeNative(false))
+		}
 		return warnings, wrapFatalApply("save ledger", err)
+	}
+	if finalizeNative != nil {
+		if err := finalizeNative(true); err != nil {
+			return warnings, wrapFatalApply("finish native plugins", err)
+		}
 	}
 	return warnings, nil
 }
@@ -111,6 +138,9 @@ func (e *Engine) buildDiffsForApply(plan domain.Plan, ar ApplyRequest, lg domain
 		fd, err := e.ClassifyWrite(w, ar.displayLabel(w.Dst), lg)
 		if err != nil {
 			return nil, err
+		}
+		if fd.PackageFiles != nil && fd.Kind == domain.DiffConflict && !ar.Force && !ar.DryRun {
+			return nil, fmt.Errorf("portable payload %s has local changes; preserve them before replacing it with --force", w.Dst)
 		}
 		diffs = append(diffs, fd)
 	}
@@ -168,6 +198,11 @@ func (e *Engine) applyDiffsAndRecord(plan domain.Plan, ar ApplyRequest, lg *doma
 	now := time.Now()
 	recorded := map[string]struct{}{}
 	for _, d := range diffs {
+		if d.Delivery != nil && !ar.DryRun {
+			if err := e.FS.MkdirAll(d.Delivery.DataDir, 0o700); err != nil {
+				return nil, err
+			}
+		}
 		applied, err := e.applyFileDiff(d, ar)
 		if err != nil {
 			return nil, err
@@ -175,6 +210,12 @@ func (e *Engine) applyDiffsAndRecord(plan domain.Plan, ar ApplyRequest, lg *doma
 		if !ar.DryRun && (applied || d.Kind == domain.DiffIdentical) {
 			p := filepath.Clean(d.Dst)
 			lg.Record(p, d.Desired, d.SourcePack, d.ManagedOverlay, now)
+			if d.PackageFiles != nil {
+				entry := lg.Managed[p]
+				entry.Package = true
+				entry.Delivery = d.Delivery
+				lg.Managed[p] = entry
+			}
 			recorded[p] = struct{}{}
 		}
 	}
@@ -269,7 +310,7 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		if err := e.FS.MkdirAll(filepath.Dir(d.Dst), 0o755); err != nil {
 			return false, err
 		}
-		return true, e.FS.WriteFile(d.Dst, d.Desired, fileDiffMode(d))
+		return true, e.writeFileDiff(d)
 
 	case domain.DiffManaged:
 		if !ar.Quiet && ar.Stdout != nil {
@@ -283,7 +324,7 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		if err := e.FS.MkdirAll(filepath.Dir(d.Dst), 0o755); err != nil {
 			return false, err
 		}
-		return true, e.FS.WriteFile(d.Dst, d.Desired, fileDiffMode(d))
+		return true, e.writeFileDiff(d)
 
 	case domain.DiffConflict:
 		if !ar.Quiet && ar.Stdout != nil {
@@ -302,7 +343,7 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 			if err := e.FS.MkdirAll(filepath.Dir(d.Dst), 0o755); err != nil {
 				return false, err
 			}
-			return true, e.FS.WriteFile(d.Dst, d.Desired, fileDiffMode(d))
+			return true, e.writeFileDiff(d)
 		}
 		if !ar.Quiet && ar.Stdout != nil {
 			fmt.Fprintf(ar.Stdout, "  skip (conflict, use --force to apply): %s\n", d.Label)
@@ -310,6 +351,13 @@ func (e *Engine) applyFileDiff(d FileDiff, ar ApplyRequest) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("unhandled diff kind %q for %s", d.Kind, d.Label)
+}
+
+func (e *Engine) writeFileDiff(d FileDiff) error {
+	if d.PackageFiles != nil {
+		return e.FS.WritePackage(d.Dst, d.PackageFiles)
+	}
+	return e.FS.WriteFile(d.Dst, d.Desired, fileDiffMode(d))
 }
 
 func fileDiffMode(d FileDiff) os.FileMode {
@@ -366,6 +414,20 @@ func validatePlanDestinations(plan domain.Plan, allowed []string) error {
 	for _, w := range plan.Writes {
 		if err := check(w.Dst, "write"); err != nil {
 			return err
+		}
+		if w.Delivery != nil {
+			if w.PackageFiles == nil {
+				return fmt.Errorf("portable delivery requires a package tree")
+			}
+			if err := check(w.Delivery.DataDir, "create runtime data"); err != nil {
+				return err
+			}
+			if err := check(w.Delivery.SettingsPath, "activate package"); err != nil {
+				return err
+			}
+			if domain.IsUnderAny(w.Delivery.DataDir, []string{w.Dst}) || domain.IsUnderAny(w.Dst, []string{w.Delivery.DataDir}) {
+				return fmt.Errorf("payload and runtime data must have separate roots")
+			}
 		}
 	}
 	for _, c := range plan.Copies {

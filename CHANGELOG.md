@@ -6,6 +6,23 @@ The format is based on Keep a Changelog, and releases use semantic versioning ta
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-10-06
+
+### Added
+
+- Install Claude and Codex marketplace plugins, including Agent Plugins v1, as packs from Git, local paths or npm. Manage components, updates and versions through existing commands; inspect delivery status and trace content to its source.
+- Sync supported Codex plugin skills, stdio MCP servers and command hooks to Claude Code, OpenCode and Cline, with compatibility checks before writes.
+- Discover imported MCP tools through `mcp inspect-tools` or manage without changing source files. Startup timeouts use the target's defaults, with optional per-server policies.
+
+### Changed
+
+- Replace `plugins/<id>.json` references and profile `plugins` selectors with marketplace imports and component selectors.
+- Plugin lifecycle operations protect local edits and runtime data, preserve shared hooks and asset references, and recover interrupted replacements.
+- Sync removes managed content after removing or disabling the last pack; dry-runs include pending removals.
+- Claude Code honors `CLAUDE_CONFIG_DIR` and rejects colliding MCP permission namespaces. Codex pack hooks support Codex 0.159.2.
+- Pack updates refresh search results; profile totals include selected plugin components. Registry discovery supports local pack sources.
+- Settings and plugin metadata preserve large numbers without rounding.
+
 ## [0.34.0] - 2026-09-15
 
 ### Changed

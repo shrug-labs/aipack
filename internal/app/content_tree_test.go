@@ -676,7 +676,6 @@ func TestBuildContentTree_CategoryOrdering(t *testing.T) {
 		Workflows:     []string{"w1"},
 		Skills:        []string{"s1"},
 		Hooks:         []string{"h1"},
-		Plugins:       []string{"p1"},
 		MCP:           []string{"m1"},
 	}
 	packs := []ProfilePackInfo{{Index: 0, Name: "all", Root: "/tmp", Manifest: manifest}}
@@ -684,13 +683,13 @@ func TestBuildContentTree_CategoryOrdering(t *testing.T) {
 
 	tree := BuildContentTree(packs, entries)
 
-	if len(tree.Items) != 7 {
-		t.Fatalf("items = %d, want 7", len(tree.Items))
+	if len(tree.Items) != 6 {
+		t.Fatalf("items = %d, want 6", len(tree.Items))
 	}
 
 	// Items should follow domain category order.
 	expected := []domain.PackCategory{
-		domain.CategoryAgents, domain.CategoryHooks, domain.CategoryMCP, domain.CategoryPlugins, domain.CategoryRules,
+		domain.CategoryAgents, domain.CategoryHooks, domain.CategoryMCP, domain.CategoryRules,
 		domain.CategorySkills, domain.CategoryWorkflows,
 	}
 	for i, item := range tree.Items {

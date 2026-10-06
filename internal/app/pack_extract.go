@@ -9,6 +9,7 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -20,7 +21,73 @@ var errPackRootEscape = fmt.Errorf("pack.json root escapes source boundary")
 // Only these are extracted from a source into the installed pack.
 var packContentDirs = []string{
 	"rules", "agents", "workflows", "skills", "hooks",
-	"mcp", "plugins", "configs", "prompts", "profiles", "registries",
+	"mcp", "configs", "prompts", "profiles", "registries",
+}
+
+// Acquisition feeds the same materializer for install, inspect, and update.
+func extractPackSource(parentDir, srcRoot string, contentPaths map[domain.PackCategory]string, packName, boundary string, native *domain.PluginSource) (string, config.PackManifest, error) {
+	if native == nil {
+		return extractPackContent(parentDir, srcRoot, contentPaths, packName, boundary)
+	}
+	if contentPaths != nil {
+		return "", config.PackManifest{}, fmt.Errorf("plugin sources cannot declare content_paths")
+	}
+	if native.Format != "" && native.Format != plugin.CodexLegacy && native.Format != plugin.AgentPlugins && native.Format != plugin.Claude {
+		return "", config.PackManifest{}, fmt.Errorf("unsupported plugin format %q", native.Format)
+	}
+	if boundary == "" {
+		boundary = srcRoot
+	}
+	resolved, err := filepath.EvalSymlinks(srcRoot)
+	if err != nil || !util.IsWithinDir(resolved, canonicalPath(boundary)) {
+		return "", config.PackManifest{}, fmt.Errorf("plugin root escapes source boundary: %s", srcRoot)
+	}
+	format := native.Format
+	if format == "" {
+		if _, err := os.Stat(filepath.Join(srcRoot, ".claude-plugin/plugin.json")); err == nil {
+			if util.PathExists(filepath.Join(srcRoot, ".codex-plugin/plugin.json")) || util.PathExists(filepath.Join(srcRoot, "plugin.json")) {
+				return "", config.PackManifest{}, fmt.Errorf("plugin declares both Claude and Codex manifests; its source must specify a format")
+			}
+			format = plugin.Claude
+		}
+	}
+	if native.NPM != nil && format == plugin.Claude && native.Format != plugin.Claude {
+		return "", config.PackManifest{}, fmt.Errorf("npm imports require a Codex plugin format unless the source explicitly declares Claude")
+	}
+	if format != plugin.Claude {
+		if err := config.ValidateCodexMarketplacePolicy(native.Entry); err != nil {
+			return "", config.PackManifest{}, err
+		}
+	}
+	staging, err := os.MkdirTemp(parentDir, "extract-*")
+	if err != nil {
+		return "", config.PackManifest{}, err
+	}
+	var m config.PackManifest
+	if format == plugin.Claude {
+		m, err = plugin.MaterializeClaude(srcRoot, staging, packName, *native)
+	} else {
+		m, err = plugin.MaterializeCodex(srcRoot, staging, packName, native.Marketplace)
+	}
+	if err == nil {
+		m.NativePlugin.Name = native.Name
+		m.NativePlugin.MarketplaceEntry = native.Entry
+		m.NativePlugin.MarketplaceMetadata = native.MarketplaceMetadata
+		err = config.SavePackManifest(filepath.Join(staging, "pack.json"), m)
+	}
+	if err == nil {
+		for _, finding := range config.ValidatePackRoot(staging) {
+			if finding.Severity == config.FindingSeverityError {
+				err = fmt.Errorf("invalid converted plugin: %s", finding.String())
+				break
+			}
+		}
+	}
+	if err != nil {
+		util.RemoveOwnedTree(staging)
+		return "", config.PackManifest{}, err
+	}
+	return staging, m, nil
 }
 
 // extractPackContent extracts pack content from srcRoot into a clean staging
@@ -82,6 +149,23 @@ func extractStandardPack(staging, srcRoot, symlinkBoundary string) (string, conf
 	// Content is flattened into the staging root, so the manifest's Root
 	// must be "." regardless of what the source pack declared.
 	manifest.Root = "."
+	if manifest.NativePlugin != nil {
+		files, err := plugin.ReadFiles(filepath.Join(packRoot, "upstream"))
+		if err != nil {
+			return cleanup(err)
+		}
+		if err := plugin.WriteFiles(filepath.Join(staging, "upstream"), files); err != nil {
+			return cleanup(err)
+		}
+		if err := config.SavePackManifest(filepath.Join(staging, "pack.json"), manifest); err != nil {
+			return cleanup(err)
+		}
+		return staging, manifest, nil
+	}
+	// Validate the source before extraction can omit unsupported directories.
+	if err := config.DiscoverContent(&manifest, packRoot); err != nil {
+		return cleanup(fmt.Errorf("discovering source content: %w", err))
+	}
 	origExtras := manifest.Extras
 
 	// Validate extras entries and compute staging-relative names (leading

@@ -46,6 +46,25 @@ func TestTreeModel_Toggle(t *testing.T) {
 	}
 }
 
+func TestProfileNativeAgentSourcePreview(t *testing.T) {
+	native := &domain.NativePlugin{Components: map[domain.PackCategory]map[string][]string{domain.CategoryAgents: {"Reviewer": {"first.md", "second.md"}}}}
+	pe := config.PackEntry{Name: "alias"}
+	tree := testTree(config.PackManifest{Agents: []string{"Reviewer"}, NativePlugin: native}, pe)
+	if len(tree.nodes) != 2 {
+		t.Fatal("native agent sources became separate profile toggles")
+	}
+	tree.cursor = 1
+	m := Model{items: []profileItem{{name: "test", cfg: config.ProfileConfig{Packs: []config.PackEntry{pe}}, tree: &tree}}, focus: panelTree}
+	_, cmd := m.Update(testKeyCode(tea.KeyEnter))
+	req := cmd().(common.PreviewRequestMsg)
+	if req.FilePath != filepath.Join("/tmp/pack/upstream", "first.md") || len(req.AdditionalPaths) != 1 || req.AdditionalPaths[0] != filepath.Join("/tmp/pack/upstream", "second.md") {
+		t.Fatal("profile preview lost a candidate source")
+	}
+	if m.dirty || !tree.nodes[1].enabled {
+		t.Fatal("preview changed the agent selection")
+	}
+}
+
 func TestTreeModel_CategoryExpandCollapse(t *testing.T) {
 	t.Parallel()
 	tree := testTree(

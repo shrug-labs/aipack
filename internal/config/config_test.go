@@ -12,6 +12,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestMCPServerConfigIsZero(t *testing.T) {
+	t.Parallel()
+	if !(MCPServerConfig{AllowedTools: []string{}}).IsZero() {
+		t.Fatal("empty tool lists must not retain a profile override")
+	}
+	for _, cfg := range []MCPServerConfig{
+		{Enabled: BoolPtr(false)}, {StartupTimeout: "host"},
+		{AllowedTools: []string{"read"}}, {AlwaysAllowedTools: []string{"read"}},
+		{DisabledTools: []string{"write"}},
+	} {
+		if cfg.IsZero() {
+			t.Fatalf("profile override classified as empty: %+v", cfg)
+		}
+	}
+}
+
 func TestResolveProfile_AllowsEmptyInclude(t *testing.T) {
 	root := t.TempDir()
 	// Install pack at configDir/packs/test/

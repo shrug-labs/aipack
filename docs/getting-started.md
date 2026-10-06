@@ -99,6 +99,8 @@ aipack trace anti-slop     # trace a resource from pack source to harness destin
 
 ## Add more packs
 
+For an existing Claude or Codex marketplace, use [Installing marketplace plugins](installing-packs.md#installing-marketplace-plugins). Imported plugins use the same pack lifecycle and profile selection; supported components depend on the source format and target assistant.
+
 Profiles compose multiple packs. The public registry includes two more packs worth considering:
 
 ```bash

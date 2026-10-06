@@ -28,6 +28,18 @@ Examples:
    make dist
    ```
 
+   For changes to imported plugins or native delivery, require both Claude Code
+   and Codex on `PATH` and run native host parity checks. The default test run
+   skips these checks.
+
+   ```bash
+   make build
+   AIPACK_TEST_CLAUDE_NATIVE=1 \
+     AIPACK_TEST_CODEX_NATIVE=1 \
+     AIPACK_TEST_BINARY="$PWD/dist/aipack" \
+     go test ./internal/app -run '^Test(ClaudeNativePluginSync|NativeAgentPluginSync|NativePluginSync)$' -count=1 -timeout=20m
+   ```
+
 4. Verify release artifacts locally:
 
    ```bash

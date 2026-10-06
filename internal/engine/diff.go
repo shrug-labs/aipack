@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -29,6 +30,8 @@ type FileDiff struct {
 	Diff           string          // unified diff string (empty for create/identical)
 	ManagedOverlay []byte          // managed-only content for ledger (set by MergeMode settings)
 	MergeOps       []MergeOp       // merge operations performed (nil for non-merge files)
+	PackageFiles   []domain.NativePluginFile
+	Delivery       *domain.PackageDelivery
 }
 
 func LabelSettingsActions(actions []domain.SettingsAction, labelFor func(string) string) []domain.SettingsAction {
@@ -87,6 +90,26 @@ func (e *Engine) ClassifyWrite(w domain.WriteAction, label string, lg domain.Led
 }
 
 func (e *Engine) classifyWrite(w domain.WriteAction, label string, lg domain.Ledger, withDiff bool) (FileDiff, error) {
+	if w.PackageFiles != nil {
+		if err := plugin.ValidateFiles(w.PackageFiles); err != nil {
+			return FileDiff{}, err
+		}
+		desired := domain.PackageManifest(w.PackageFiles)
+		onDisk, missing, err := e.packageManifestStatus(w.Dst)
+		if err != nil {
+			return FileDiff{}, err
+		}
+		if missing {
+			return FileDiff{Dst: w.Dst, Desired: desired, PackageFiles: w.PackageFiles, Delivery: w.Delivery, Label: label, SourcePack: w.SourcePack, Kind: domain.DiffCreate}, nil
+		}
+		fd := classifyFilePreRead(w.Dst, desired, label, w.SourcePack, lg, onDisk)
+		fd.PackageFiles = w.PackageFiles
+		fd.Delivery = w.Delivery
+		if !withDiff {
+			fd.Diff = ""
+		}
+		return fd, nil
+	}
 	dst := filepath.Clean(w.Dst)
 	desiredMode := w.EffectiveMode(defaultWriteMode)
 	onDisk, err := e.FS.ReadFile(dst)
@@ -132,6 +155,20 @@ func (e *Engine) classifyWrite(w domain.WriteAction, label string, lg domain.Led
 	fd := classifyFilePreRead(dst, w.Content, label, w.SourcePack, lg, onDisk)
 	fd.DesiredMode = desiredMode
 	return fd, nil
+}
+
+func (e *Engine) packageManifestStatus(path string) ([]byte, bool, error) {
+	files, err := e.FS.ReadPackage(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// A broken internal link does not mean the package root is absent.
+			if _, rootErr := e.FS.Stat(path); os.IsNotExist(rootErr) {
+				return nil, true, nil
+			}
+		}
+		return nil, false, err
+	}
+	return domain.PackageManifest(files), false, nil
 }
 
 func (e *Engine) writeModeMatches(dst string, w domain.WriteAction) (bool, os.FileMode, error) {
@@ -430,8 +467,7 @@ func (e *Engine) computeSettingsDiff(s domain.SettingsAction, lg domain.Ledger, 
 	desired := s.Desired
 	var mergeOps []MergeOp
 	if fileExists && len(existing) > 0 {
-		prevManaged := lg.PrevManagedOverlay(s.Dst)
-		merged, mops, merr := mergeSettingsKeys(existing, prevManaged, s.Desired, s.Harness, s.AdditiveOnly)
+		merged, mops, merr := mergeSettingsForAction(existing, lg, s)
 		if merr != nil {
 			return FileDiff{}, fmt.Errorf("merge %s: %w", s.Label, merr)
 		}

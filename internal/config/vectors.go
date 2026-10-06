@@ -165,7 +165,7 @@ func MCPConfigEqual(a, b map[string]MCPServerConfig) bool {
 		if !ok {
 			return false
 		}
-		if !ptrBoolEqual(av.Enabled, bv.Enabled) {
+		if !ptrBoolEqual(av.Enabled, bv.Enabled) || av.StartupTimeout != bv.StartupTimeout {
 			return false
 		}
 		if !StringSlicesEqual(av.AllowedTools, bv.AllowedTools) {

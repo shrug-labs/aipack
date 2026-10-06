@@ -184,6 +184,9 @@ func packImportIntoExisting(req PackImportRequest, packName, id, displayName str
 	if err != nil {
 		return fmt.Errorf("loading pack manifest: %w", err)
 	}
+	if manifest.NativePlugin != nil {
+		return fmt.Errorf("cannot import content into plugin-derived pack %q; update it from its upstream source", packName)
+	}
 
 	content, err := ensureImportFrontmatter(req.Category, id, displayName, raw)
 	if err != nil {

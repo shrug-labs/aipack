@@ -93,8 +93,8 @@ func systemOpenCommand(goos, filePath string) (string, []string) {
 
 // loadPreview reads a markdown file asynchronously, parses frontmatter,
 // and returns a previewLoadedMsg.
-func loadPreview(title string, category domain.PackCategory, packName, filePath string) tea.Cmd {
-	return common.LoadPreview(title, category, packName, filePath)
+func loadPreview(title string, category domain.PackCategory, packName, filePath string, additionalPaths ...string) tea.Cmd {
+	return common.LoadPreview(title, category, packName, filePath, additionalPaths...)
 }
 
 // parseFrontmatter splits YAML frontmatter from markdown body.

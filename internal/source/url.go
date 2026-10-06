@@ -32,6 +32,17 @@ func IsHTTPURL(raw string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
+// IsRepositoryURL recognizes HTTP repository roots on supported Git hosts.
+func IsRepositoryURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || !IsHTTPURL(raw) {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	return len(parts) == 2 && (host == "github.com" || strings.HasPrefix(host, "github.") || host == "bitbucket.org")
+}
+
 // IsHTTPArchiveURL reports whether raw is an HTTP(S) URL whose path points at
 // an archive format FetchArchive supports.
 func IsHTTPArchiveURL(raw string) bool {

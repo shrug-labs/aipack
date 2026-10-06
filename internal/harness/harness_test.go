@@ -2,19 +2,73 @@ package harness
 
 import (
 	"context"
+	"os/exec"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 )
+
+func TestHookTimeoutStopsSubprocesses(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process groups; Windows uses taskkill")
+	}
+	for _, imported := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ordinary", true: "imported"}[imported], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			handler := "{}"
+			if imported {
+				handler = `{pluginEvent:"PreToolUse", pluginData:process.argv[1]}`
+			}
+			cmd := exec.CommandContext(ctx, "node", "--input-type=module", "-e", `import {spawn} from 'node:child_process';
+import {mkdirSync} from 'node:fs';
+`+PluginHookRuntime+`
+const child = spawn("node -e 'console.log(\"READY\"); setTimeout(() => console.log(\"SURVIVED_TIMEOUT\"), 250)' & wait", pluginHookOptions(`+handler+`));
+child.stdout.on("data", data => {
+  process.stdout.write(data);
+  if (String(data).includes("READY")) stopHookCommand(child);
+});
+await new Promise((resolve, reject) => { child.on("close", resolve); child.on("error", reject); });
+`, t.TempDir())
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "READY") || strings.Contains(string(out), "SURVIVED_TIMEOUT") {
+				t.Fatalf("hook subprocess survived timeout: %v %s", err, out)
+			}
+		})
+	}
+}
+
+func TestImportedHookRuntimeContract(t *testing.T) {
+	cmd := exec.Command("node", "--input-type=module", "-e", PluginHookRuntime+`
+import assert from 'node:assert/strict';
+const handler = {pluginEvent:'PreToolUse',label:'owned'};
+assert.equal(pluginHookOutput(handler, '{"additionalContext":"discard"}', 'failed', 1), null);
+assert.equal(pluginHookOutput(handler, '', 'denied', 2).cancel, true);
+assert.equal(pluginHookOutput(handler, '{"hookSpecificOutput":{"permissionDecision":"ask"}}', '', 0).review, true);
+assert.deepEqual(pluginHookOutput(handler, '{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"owned":true}}}', '', 0).overrideInput, {owned:true});
+assert.equal(pluginHookOutput(handler, '{"hookSpecificOutput":{"updatedInput":{"owned":true}}}', '', 0).overrideInput, undefined);
+const input = pluginHookInput({pluginEvent:'PreCompact'}, {taskId:'owned'}, '/owned');
+assert.equal(input.trigger, undefined);
+assert.equal(input.turn_id, undefined);
+assert.equal(input.transcript_path, undefined);
+`)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("imported command input/output contract: %v %s", err, out)
+	}
+}
 
 // stubHarness implements Harness for testing the registry.
 type stubHarness struct {
 	id domain.Harness
 }
 
-func (s stubHarness) ID() domain.Harness                         { return s.id }
-func (s stubHarness) Layout(domain.Scope, string, string) Layout { return Layout{} }
+func (s stubHarness) ID() domain.Harness           { return s.id }
+func (s stubHarness) Layout(CaptureContext) Layout { return Layout{} }
 func (s stubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
 	return domain.Fragment{}, nil
 }
@@ -104,7 +158,7 @@ type stubHarnessWithRoots struct {
 	roots []string
 }
 
-func (s stubHarnessWithRoots) Layout(domain.Scope, string, string) Layout {
+func (s stubHarnessWithRoots) Layout(CaptureContext) Layout {
 	return Layout{ValidationRoots: s.roots}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/plugin"
 )
 
 func TestFindResource_Rule(t *testing.T) {
@@ -37,6 +38,156 @@ func TestFindResource_Rule(t *testing.T) {
 	}
 	if src.SourcePath != "/packs/core/rules/anti-slop.md" {
 		t.Errorf("source_path = %q, want %q", src.SourcePath, "/packs/core/rules/anti-slop.md")
+	}
+}
+
+func TestTraceMCPToolNamesAndForeignAmbiguity(t *testing.T) {
+	for _, hid := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode, domain.HarnessCodex} {
+		t.Run(string(hid), func(t *testing.T) {
+			profile := domain.Profile{MCPServers: []domain.MCPServer{{Name: "probe.dot", SourcePack: "original", Transport: domain.TransportStdio, Command: []string{"true"}}}}
+			capture := harness.CaptureResult{MCPServers: map[string]domain.MCPServer{"probe.dot": profile.MCPServers[0]}}
+			req := TraceRequest{TargetSpec: TargetSpec{Home: t.TempDir(), Harnesses: []domain.Harness{hid}}, ResourceType: "mcp", ResourceName: "mcp__probe_dot__observe", MCPTool: true}
+			if hid == domain.HarnessOpenCode {
+				req.ResourceName = "probe_dot_observe"
+			}
+			reg := harness.NewRegistry(planHarnessStub{id: hid, capture: capture})
+			got, err := RunTrace(context.Background(), engine.New(nil, nil), profile, req, reg)
+			if err != nil || !got.Found || got.ResourceName != "probe.dot" || got.Source.Pack != "original" {
+				t.Fatal("target identifier lost source", got, err)
+			}
+			unicodeProfile := domain.Profile{MCPServers: []domain.MCPServer{{Name: "probe-🧪", SourcePack: "original", Transport: domain.TransportStdio, Command: []string{"true"}}}}
+			unicodeReq := req
+			unicodeReq.ResourceName = "mcp__probe-____observe"
+			if hid == domain.HarnessOpenCode {
+				unicodeReq.ResourceName = "probe-___observe"
+			} else if hid == domain.HarnessCodex {
+				unicodeReq.ResourceName = "mcp__probe____observe"
+			}
+			unicodeReg := harness.NewRegistry(planHarnessStub{id: hid, capture: harness.CaptureResult{MCPServers: map[string]domain.MCPServer{"probe-🧪": unicodeProfile.MCPServers[0]}}})
+			if got, err := RunTrace(context.Background(), engine.New(nil, nil), unicodeProfile, unicodeReq, unicodeReg); err != nil || !got.Found || got.ResourceName != "probe-🧪" {
+				t.Fatal("target sanitizer lost original Unicode server identity", got, err)
+			}
+			capture.MCPServers["probe_dot"] = domain.MCPServer{Name: "probe_dot", Command: []string{"false"}}
+			if _, err := RunTrace(context.Background(), engine.New(nil, nil), profile, req, reg); err == nil {
+				t.Fatal("sanitized foreign namespace was attributed to an owned source")
+			}
+			req.PackName = "original"
+			if _, err := RunTrace(context.Background(), engine.New(nil, nil), profile, req, reg); err == nil {
+				t.Fatal("pack filter hid an ambiguous runtime namespace")
+			}
+		})
+	}
+}
+
+func TestTracePluginBindings(t *testing.T) {
+	t.Parallel()
+	source, configDir := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(source, ".codex-plugin/plugin.json"), `{"name":"probe"}`)
+	for _, market := range []string{"first", "second"} {
+		if err := PackInstall(context.Background(), PackInstallRequest{PackPath: source, ConfigDir: configDir, Name: market, Plugin: &domain.PluginSource{Name: "probe", Marketplace: market}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shown, err := PackShow(configDir, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := engine.New(nil, nil)
+	for _, state := range []TraceProfileState{TraceProfileStateActive, TraceProfileStatePackDisabled, TraceProfileStateInstalledNotInProfile} {
+		t.Run(string(state), func(t *testing.T) {
+			cfg := config.ProfileConfig{}
+			if state != TraceProfileStateInstalledNotInProfile {
+				cfg.Packs = []config.PackEntry{{Name: "first"}, {Name: "second"}}
+				if state == TraceProfileStatePackDisabled {
+					cfg.Packs[1].Enabled = config.BoolPtr(false)
+				}
+			}
+			profile, _, err := eng.ResolveWithOptions(cfg, "", configDir, config.ResolveOptions{AllowEmpty: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"probe", shown.Plugins[0]} {
+				req := TraceRequest{TargetSpec: TargetSpec{ConfigDir: configDir}, ResourceType: "plugin", ResourceName: name, ProfileName: "default", ProfileConfig: cfg, PackName: "second"}
+				got, err := RunTrace(context.Background(), eng, profile, req, testRegistry())
+				if err != nil || !got.Found || got.ProfileState != state || got.Source == nil || got.Source.Pack != "second" || got.Source.NativeBinding != shown.Plugins[0] || got.Source.SourcePath != filepath.Join(PacksDir(configDir), "second/upstream/.codex-plugin/plugin.json") {
+					t.Fatalf("%s: wrong source/state: %+v (%v)", name, got, err)
+				}
+			}
+			if state == TraceProfileStateActive {
+				got := FindTraceCandidates(profile, shown.Plugins[0])
+				if len(got) != 1 || got[0].Pack != "second" {
+					t.Fatalf("qualified plugin did not disambiguate marketplaces: %+v", got)
+				}
+			} else {
+				got := FindTraceDiagnosticCandidates(cfg, configDir, shown.Plugins[0], "default")
+				if len(got) != 1 || got[0].Candidate.Pack != "second" {
+					t.Fatalf("qualified inactive plugin did not resolve: %+v", got)
+				}
+			}
+			if got, err := RunTrace(context.Background(), eng, profile, TraceRequest{TargetSpec: TargetSpec{ConfigDir: configDir}, ResourceType: "plugin", ResourceName: "probe@missing", ProfileConfig: cfg}, testRegistry()); err != nil || got.Found {
+				t.Fatalf("unknown marketplace matched a plugin: %+v (%v)", got, err)
+			}
+		})
+	}
+}
+
+func TestFindTracePluginSkillIdentities(t *testing.T) {
+	t.Parallel()
+	profile := domain.Profile{}
+	for _, marketplace := range []string{"first", "second"} {
+		profile.Packs = append(profile.Packs, domain.Pack{
+			Name: marketplace + "-alias",
+			NativePlugin: &domain.NativePluginSelection{
+				Package:  domain.NativePlugin{Name: "probe", Marketplace: marketplace},
+				Selected: map[domain.PackCategory][]string{domain.CategorySkills: {"selected"}},
+			},
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		want int
+	}{
+		{"selected", 2}, {"probe:selected", 2},
+		{"probe@first:selected", 1}, {"probe@second:selected", 1},
+		{"first-alias:selected", 0}, {"probe@missing:selected", 0},
+	} {
+		found := FindTraceCandidates(profile, tc.name)
+		if len(found) != tc.want {
+			t.Fatalf("%s: %+v", tc.name, found)
+		}
+		for _, candidate := range found {
+			if candidate.ResourceName != "selected" || candidate.ResourceType != "skill" {
+				t.Fatalf("native identity changed the source selector: %+v", candidate)
+			}
+		}
+	}
+	profile.Packs = append(profile.Packs, domain.Pack{Name: "ordinary", Skills: []domain.Skill{{Name: "probe:selected", SourcePack: "ordinary"}}})
+	if got := FindTraceCandidates(profile, "probe:selected"); len(got) != 3 || got[2].Pack != "ordinary" || got[2].ResourceName != "probe:selected" {
+		t.Fatalf("native aliases hid an exact ordinary resource: %+v", got)
+	}
+}
+
+func TestTraceMCPToolUsesClaudeManifestNamespace(t *testing.T) {
+	source, root := t.TempDir(), t.TempDir()
+	for path, body := range map[string]string{
+		".claude-plugin/plugin.json": `{"name":"probe","version":"1"}`,
+		".mcp.json":                  `{"mcpServers":{"probe.dot":{"command":"true"}}}`,
+	} {
+		if err := writeTestFile(filepath.Join(source, path), body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := plugin.MaterializeClaude(source, root, "alias", domain.PluginSource{Marketplace: "market"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.NativePlugin.Name = "catalog-probe"
+	profile := domain.Profile{Packs: []domain.Pack{{Name: "alias", NativePlugin: &domain.NativePluginSelection{Package: *m.NativePlugin, Root: root, Selected: map[domain.PackCategory][]string{domain.CategoryMCP: {"probe.dot"}}}}}}
+	req := TraceRequest{TargetSpec: TargetSpec{Home: t.TempDir(), Harnesses: []domain.Harness{domain.HarnessClaudeCode}}, ResourceType: "mcp", ResourceName: "mcp__plugin_probe_probe_dot__observe", MCPTool: true}
+	reg := harness.NewRegistry(planHarnessStub{id: domain.HarnessClaudeCode})
+	name, pack, err := traceMCPToolSource(context.Background(), profile, req, reg)
+	if err != nil || name != "probe.dot" || pack != "alias" {
+		t.Fatalf("catalog identity replaced native component namespace: %q %q (%v)", name, pack, err)
 	}
 }
 

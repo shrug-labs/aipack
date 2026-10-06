@@ -1,5 +1,7 @@
 # Creating Packs
 
+If you already publish a Claude or Codex marketplace plugin, consumers can [install it as a pack](installing-packs.md#installing-marketplace-plugins) from that source. Maintain its native manifest and assets; an AIPack-specific copy or `pack.json` is not required.
+
 Create a pack from scratch or from existing content, validate it, and share it. For installing existing packs, see [Getting Started](./getting-started.md). For installing from repositories that aren't structured as packs, see [Installing Packs](./installing-packs.md). For profiles and composition, see [Profiles](./profiles.md).
 
 **Contents:**
@@ -16,7 +18,6 @@ my-pack/
 ├── skills/            # on-demand knowledge (subdirectories)
 ├── workflows/         # step-by-step procedures
 ├── agents/            # tool-using sub-personas
-├── plugins/           # harness plugin references
 ├── mcp/               # MCP server definitions
 ├── hooks/             # portable hook descriptors (advanced)
 └── configs/           # harness settings and drop-ins (advanced)
@@ -59,7 +60,7 @@ If you have a repo with rules, skills, or instructions for AI agents — pack co
 
 1. Create the same minimal `pack.json` in the repo root (or a subdirectory).
 
-2. Organize your existing files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`, `plugins/`). Auto-discovery handles the rest.
+2. Organize your existing files into the conventional directories (`rules/`, `skills/`, `workflows/`, `agents/`). Auto-discovery handles the rest.
 
 3. Add YAML frontmatter to each file. The `name` and `description` fields help with search indexing and harness rendering:
 
@@ -162,22 +163,6 @@ Report findings with severity, location, and remediation.
 ```
 
 File: `agents/security-reviewer.md`
-
-### Plugin references
-
-JSON descriptors in `plugins/`, one file per plugin reference. The filename is the plugin id. The descriptor points at the plugin source and optionally names a marketplace; aipack does not vendor plugin bytes into the pack.
-
-```json
-{
-  "source": "github:linear/linear-codex-plugin"
-}
-```
-
-File: `plugins/linear.json`
-
-With no `marketplace`, supported harnesses use their default marketplace (`openai-curated` for Codex, `claude-plugins-official` for Claude Code). A bare marketplace name is used as-is. A source-prefixed marketplace such as `github:obra/superpowers-marketplace` derives the marketplace name from the path leaf.
-
-Plugin sync is additive-only. Removing a descriptor or profile selector does not disable or uninstall the plugin from the harness.
 
 ### MCP servers
 

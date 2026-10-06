@@ -2,13 +2,14 @@ package claudecode
 
 import (
 	"encoding/json"
-	"path/filepath"
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	harnesspkg "github.com/shrug-labs/aipack/internal/harness"
+	"github.com/shrug-labs/aipack/internal/util"
 )
 
 // mcpEntry is the Claude Code .mcp.json server format.
@@ -27,7 +28,6 @@ type mcpRoot struct {
 }
 
 const mcpPermPrefix = "mcp__"
-const defaultClaudePluginMarketplace = "claude-plugins-official"
 
 const claudeTransportHTTP = "http"
 
@@ -103,17 +103,31 @@ func RenderDenyPermissions(servers []domain.MCPServer) []string {
 func renderPermPatterns(servers []domain.MCPServer, tools func(domain.MCPServer) []string) []string {
 	var perms []string
 	for _, s := range servers {
-		name := engine.NormalizeServerName(s.Name)
+		name := MCPPermissionName(strings.TrimSpace(s.Name))
 		for _, tool := range tools(s) {
 			tool = strings.TrimSpace(tool)
 			if tool == "" {
 				continue
 			}
-			perms = append(perms, mcpPermPrefix+name+"__"+tool)
+			parts := strings.Split(tool, "*")
+			for i := range parts {
+				parts[i] = MCPPermissionName(parts[i])
+			}
+			perms = append(perms, mcpPermPrefix+name+"__"+strings.Join(parts, "*"))
 		}
 	}
 	slices.Sort(perms)
 	return perms
+}
+
+// MCPPermissionName matches Claude's case-sensitive MCP tool namespace.
+func MCPPermissionName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, name)
 }
 
 // settingsRoot is the structure of settings.local.json.
@@ -124,21 +138,6 @@ type settingsRoot struct {
 type settingsPermissions struct {
 	Allow []string `json:"allow"`
 	Deny  []string `json:"deny,omitempty"`
-}
-
-type pluginSettingsRoot struct {
-	EnabledPlugins map[string]bool `json:"enabledPlugins"`
-}
-
-type knownMarketplace struct {
-	Source          marketplaceSource `json:"source"`
-	InstallLocation string            `json:"installLocation,omitempty"`
-}
-
-type marketplaceSource struct {
-	Source string `json:"source"`
-	Repo   string `json:"repo,omitempty"`
-	Path   string `json:"path,omitempty"`
 }
 
 // RenderSettingsBytes renders managed settings.local.json content.
@@ -162,8 +161,11 @@ func RenderSettingsBytesWithHooks(base []byte, servers []domain.MCPServer, hooks
 func RenderSettingsBytesWithRenderedHooks(base []byte, servers []domain.MCPServer, renderedHooks map[string][]any) ([]byte, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
-		if err := json.Unmarshal(base, &root); err != nil {
+		if err := util.UnmarshalJSON(base, &root); err != nil {
 			return nil, err
+		}
+		if root == nil {
+			return nil, fmt.Errorf("settings JSON must be an object")
 		}
 	}
 
@@ -243,40 +245,30 @@ func mergeClaudeHooks(root map[string]any, rendered map[string][]any) {
 	root["hooks"] = hooks
 }
 
-// RenderPluginSettingsBytes renders Claude Code enabledPlugins entries.
-func RenderPluginSettingsBytes(plugins []domain.Plugin) ([]byte, error) {
-	enabled := make(map[string]bool, len(plugins))
-	for _, p := range plugins {
-		enabled[p.Binding(defaultClaudePluginMarketplace)] = true
-	}
-	out, err := json.MarshalIndent(pluginSettingsRoot{EnabledPlugins: enabled}, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
-}
-
 // InjectEnabledPlugins merges enabledPlugins entries into already-rendered
 // settings JSON, preserving every other key. Used at global scope, where Claude
 // Code exposes a single user settings file (~/.claude/settings.json): managed
 // keys (hooks, permissions) and enabledPlugins must share it rather than collide
 // as two same-destination merge actions.
-func InjectEnabledPlugins(settings []byte, plugins []domain.Plugin) ([]byte, error) {
+func InjectEnabledPlugins(settings []byte, plugins []string) ([]byte, error) {
 	if len(plugins) == 0 {
 		return settings, nil
 	}
 	root := map[string]any{}
 	if len(settings) > 0 {
-		if err := json.Unmarshal(settings, &root); err != nil {
+		if err := util.UnmarshalJSON(settings, &root); err != nil {
 			return nil, err
+		}
+		if root == nil {
+			return nil, fmt.Errorf("settings JSON must be an object")
 		}
 	}
 	enabled, _ := root["enabledPlugins"].(map[string]any)
 	if enabled == nil {
 		enabled = map[string]any{}
 	}
-	for _, p := range plugins {
-		enabled[p.Binding(defaultClaudePluginMarketplace)] = true
+	for _, binding := range plugins {
+		enabled[binding] = true
 	}
 	root["enabledPlugins"] = enabled
 	out, err := json.MarshalIndent(root, "", "  ")
@@ -284,39 +276,4 @@ func InjectEnabledPlugins(settings []byte, plugins []domain.Plugin) ([]byte, err
 		return nil, err
 	}
 	return append(out, '\n'), nil
-}
-
-// RenderKnownMarketplacesBytes renders source-prefixed marketplace registrations.
-func RenderKnownMarketplacesBytes(home string, plugins []domain.Plugin) ([]byte, error) {
-	marketplaces := map[string]knownMarketplace{}
-	for _, p := range plugins {
-		if !p.HasSourceMarketplace() {
-			continue
-		}
-		name := p.MarketplaceName(defaultClaudePluginMarketplace)
-		src := parseMarketplaceSource(p.Marketplace)
-		marketplaces[name] = knownMarketplace{
-			Source:          src,
-			InstallLocation: filepath.Join(home, ".claude", "plugins", "marketplaces", name),
-		}
-	}
-	out, err := json.MarshalIndent(marketplaces, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
-}
-
-func parseMarketplaceSource(raw string) marketplaceSource {
-	source, rest, ok := strings.Cut(strings.TrimSpace(raw), ":")
-	if !ok {
-		return marketplaceSource{Source: strings.TrimSpace(raw)}
-	}
-	rest = strings.Trim(rest, "/")
-	switch source {
-	case "github":
-		return marketplaceSource{Source: source, Repo: rest}
-	default:
-		return marketplaceSource{Source: source, Path: rest}
-	}
 }

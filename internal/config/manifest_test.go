@@ -8,7 +8,37 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
+
+func TestNativePluginManifestPath(t *testing.T) {
+	t.Parallel()
+	for _, manifest := range []string{".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "plugin.json", ""} {
+		m := PackManifest{NativePlugin: &domain.NativePlugin{Name: "probe", Marketplace: "market", Manifest: manifest}}
+		want := "pack.json"
+		if manifest != "" {
+			want = "upstream/" + manifest
+		}
+		if got := m.RelPath(domain.CategoryPlugins, m.NativePlugin.Binding()); got != want {
+			t.Fatalf("manifest %q: got %q, want %q", manifest, got, want)
+		}
+	}
+}
+
+func TestParsePackManifest_RetiredPluginReferences(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{`["linear"]`, `[]`, `null`} {
+		_, err := ParsePackManifest([]byte(`{"schema_version":2,"name":"test","root":".","plugins":` + value + `}`))
+		if value == `["linear"]` {
+			if err == nil || !strings.Contains(err.Error(), "plugins references are no longer supported") {
+				t.Fatalf("expected migration diagnostic, got %v", err)
+			}
+		} else if err != nil {
+			t.Fatalf("empty legacy field %s must remain readable: %v", value, err)
+		}
+	}
+}
 
 func TestContentPaths(t *testing.T) {
 	m := PackManifest{
@@ -148,7 +178,7 @@ func TestContentPaths_Empty(t *testing.T) {
 	}
 }
 
-func TestContentPaths_IncludesPlugins(t *testing.T) {
+func TestContentPaths_IncludesHarnessPluginConfigs(t *testing.T) {
 	m := PackManifest{
 		SchemaVersion: 1,
 		Name:          "plugins-test",
@@ -405,9 +435,20 @@ func TestPackSchema_ReservesRenderedSeparator(t *testing.T) {
 	var schema struct {
 		Properties  map[string]json.RawMessage `json:"properties"`
 		Definitions map[string]json.RawMessage `json:"definitions"`
+		AllOf       []struct {
+			Else struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"else"`
+		} `json:"allOf"`
 	}
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		t.Fatal(err)
+	}
+	// Ordinary pack constraints also live in the native-import conditional.
+	for _, branch := range schema.AllOf {
+		for key, value := range branch.Else.Properties {
+			schema.Properties[key] = value
+		}
 	}
 
 	wantRefs := map[string]string{

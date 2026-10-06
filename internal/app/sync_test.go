@@ -24,7 +24,7 @@ type syncStubHarness struct {
 }
 
 func (s syncStubHarness) ID() domain.Harness { return s.id }
-func (s syncStubHarness) Layout(domain.Scope, string, string) harness.Layout {
+func (s syncStubHarness) Layout(harness.CaptureContext) harness.Layout {
 	return harness.Layout{ValidationRoots: s.roots, StaleRoots: s.staleRoots}
 }
 func (s syncStubHarness) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
@@ -59,6 +59,46 @@ func TestRunSync_RejectsMultipleHarnesses(t *testing.T) {
 	}, reg, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "one harness per run") {
 		t.Fatalf("RunSync error = %v, want one-harness rejection", err)
+	}
+}
+
+func TestSyncPluginTargets_RefuseAllTargetsBeforeWrites(t *testing.T) {
+	t.Parallel()
+	profile := domain.NewProfile()
+	profile.Packs = []domain.Pack{{Name: "imported", NativePlugin: &domain.NativePluginSelection{
+		Package:  domain.NativePlugin{Harness: domain.HarnessCodex},
+		Selected: map[domain.PackCategory][]string{domain.CategorySkills: {"review"}, domain.CategoryMCP: {"search"}},
+	}}}
+	for _, operation := range []string{"sync-each", "sync", "preview-each"} {
+		t.Run(operation, func(t *testing.T) {
+			root := t.TempDir()
+			req := SyncRequest{TargetSpec: TargetSpec{
+				ConfigDir: filepath.Join(root, "config"), Home: root, Scope: domain.ScopeGlobal,
+				Harnesses: []domain.Harness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessOpenCode},
+			}}
+			reg := harness.NewRegistry(syncStubHarness{id: domain.HarnessCodex}, syncStubHarness{id: domain.HarnessClaudeCode}, syncStubHarness{id: domain.HarnessOpenCode})
+			eng := engine.New(nil, nil)
+			var err error
+			switch operation {
+			case "sync-each":
+				_, _, err = RunSyncEach(context.Background(), eng, profile, req, reg, nil, nil)
+			case "sync":
+				req.Harnesses = []domain.Harness{domain.HarnessClaudeCode}
+				_, _, err = RunSync(context.Background(), eng, profile, req, reg, nil, nil)
+			case "preview-each":
+				_, err = PlanWithDiffsEach(context.Background(), eng, profile, req, reg)
+			}
+			if err == nil || !strings.Contains(err.Error(), "mcp/search, skills/review") || !strings.Contains(err.Error(), string(domain.HarnessClaudeCode)) {
+				t.Fatalf("missing complete target refusal: %v", err)
+			}
+			if operation != "sync" && !strings.Contains(err.Error(), string(domain.HarnessOpenCode)) {
+				t.Fatalf("only the first unsupported target was reported: %v", err)
+			}
+			entries, readErr := os.ReadDir(root)
+			if readErr != nil || len(entries) != 0 {
+				t.Fatalf("unsupported targets wrote config or activation state: %v %v", entries, readErr)
+			}
+		})
 	}
 }
 
@@ -663,7 +703,7 @@ func TestPrintDryRun_ClassifiesSkillCopies(t *testing.T) {
 					Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
 					Home:       home,
 				},
-			}, ContentCounts{Skills: 1}, &buf)
+			}, ContentCounts{Skills: 1}, testRegistry(), &buf)
 
 			if got := buf.String(); got != tt.wantOut {
 				t.Errorf("output = %q, want %q", got, tt.wantOut)
@@ -696,7 +736,7 @@ func TestPrintDryRun_CountsSettingsMergeAsFileOp(t *testing.T) {
 			Harnesses:  []domain.Harness{domain.HarnessClaudeCode},
 			Home:       home,
 		},
-	}, ContentCounts{}, &buf)
+	}, ContentCounts{}, testRegistry(), &buf)
 
 	want := "merge: [claudecode] " + domain.DisplayPath(settingsDst) + "\nplan: 1 file ops from 0 content, 0 identical\n"
 	if got := buf.String(); got != want {
@@ -901,9 +941,6 @@ func TestIndexInstalledPack_IndexesStructuredManifestResources(t *testing.T) {
 	t.Parallel()
 	configDir := t.TempDir()
 	packRoot := t.TempDir()
-	writeFile(t, filepath.Join(packRoot, "plugins", "linear.json"), `{
-  "source": "github:linear/linear-codex-plugin"
-}`)
 	writeFile(t, filepath.Join(packRoot, "mcp", "jira.json"), `{
   "name": "jira",
   "transport": "stdio",
@@ -915,7 +952,6 @@ func TestIndexInstalledPack_IndexesStructuredManifestResources(t *testing.T) {
 		Name:          "structured-tools",
 		Version:       "1.0.0",
 		Root:          ".",
-		Plugins:       []string{"linear"},
 		MCP:           []string{"jira"},
 	}); err != nil {
 		t.Fatal(err)
@@ -930,7 +966,7 @@ func TestIndexInstalledPack_IndexesStructuredManifestResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	for kind, name := range map[string]string{"plugin": "linear", "mcp": "jira"} {
+	for kind, name := range map[string]string{"mcp": "jira"} {
 		results, err := db.Search("", index.SearchFilters{
 			Pack:   "structured-tools",
 			Kind:   kind,

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,52 @@ func TestTrace_HelpReturnsOK(t *testing.T) {
 	_, _, code := runApp(t, "trace", "--help")
 	if code != cmdutil.ExitOK {
 		t.Fatalf("trace --help exit=%d, want %d", code, cmdutil.ExitOK)
+	}
+}
+
+func TestTrace_MCPToolRequiresExplicitTarget(t *testing.T) {
+	for _, args := range [][]string{
+		{"trace", "mcp", "probe_observe", "--tool"},
+		{"trace", "skill", "probe_observe", "--tool", "--harness", "opencode"},
+		{"trace", "probe_observe", "--tool", "--harness", "opencode"},
+	} {
+		_, _, code := runApp(t, args...)
+		if code == cmdutil.ExitOK {
+			t.Fatalf("tool lookup accepted an unspecified source/target: %v", args)
+		}
+	}
+}
+
+func TestTrace_MCPToolLookup(t *testing.T) {
+	home, cfg, project := writeSyncFixture(t)
+	t.Setenv("HOME", home)
+	root := filepath.Join(cfg, "packs", "demo")
+	if err := os.MkdirAll(filepath.Join(root, "mcp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		"pack.json":          `{"schema_version":2,"name":"demo","root":".","mcp":["probe.dot"]}`,
+		"mcp/probe.dot.json": `{"name":"probe.dot","transport":"stdio","command":["true"]}`,
+	} {
+		if err := os.WriteFile(filepath.Join(root, path), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"trace", "mcp", "probe_dot_observe", "--tool", "--harness", "opencode", "--config-dir", cfg, "--scope", "project", "--project-dir", project, "--json"}
+	var out, stderr string
+	var code int
+	if binary := os.Getenv("AIPACK_TEST_BINARY"); binary != "" {
+		result, err := exec.Command(binary, args...).CombinedOutput()
+		if err != nil {
+			t.Fatal(string(result), err)
+		}
+		out = string(result)
+	} else {
+		out, stderr, code = runApp(t, args...)
+	}
+	var traced app.TraceResult
+	if err := json.Unmarshal([]byte(out), &traced); code != cmdutil.ExitOK || err != nil || !traced.Found || traced.ResourceName != "probe.dot" || traced.Source.Pack != "demo" {
+		t.Fatal("runtime tool lookup lost source", out, stderr, code, err)
 	}
 }
 

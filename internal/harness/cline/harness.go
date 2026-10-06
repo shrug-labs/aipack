@@ -19,7 +19,8 @@ type Harness struct{}
 func (Harness) ID() domain.Harness { return domain.HarnessCline }
 
 // Layout describes Cline's filesystem footprint for a given scope.
-func (Harness) Layout(scope domain.Scope, baseDir, home string) harness.Layout {
+func (Harness) Layout(ctx harness.CaptureContext) harness.Layout {
+	scope, baseDir, home := ctx.Scope, ctx.TargetBaseDir(), ctx.Home
 	paths := PathsForScope(scope, home)
 	// For project scope, paths are relative and must be joined with baseDir.
 	// For global scope, paths are already absolute (documentsDir may differ from home).

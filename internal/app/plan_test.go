@@ -19,7 +19,7 @@ type planHarnessStub struct {
 }
 
 func (s planHarnessStub) ID() domain.Harness { return s.id }
-func (s planHarnessStub) Layout(domain.Scope, string, string) harness.Layout {
+func (s planHarnessStub) Layout(harness.CaptureContext) harness.Layout {
 	return harness.Layout{ValidationRoots: s.roots}
 }
 func (s planHarnessStub) Plan(_ context.Context, _ engine.SyncContext) (domain.Fragment, error) {
@@ -223,8 +223,10 @@ func TestPlanWithDiffs_ExpandsDirectoryCopyToFileOps(t *testing.T) {
 	srcDir := filepath.Join(home, "packs", "core", "skills", "deploy")
 	dstDir := filepath.Join(projectDir, ".agents", "skills", "deploy")
 	for rel, body := range map[string]string{
-		"SKILL.md": "# Deploy\n",
-		"notes.md": "notes\n",
+		"SKILL.md":           "# Deploy\n",
+		"notes.md":           "notes\n",
+		"agents/openai.yaml": "interface:\n  display_name: Deploy\n",
+		"hooks/hooks.json":   "{}\n",
 	} {
 		path := filepath.Join(srcDir, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -235,18 +237,12 @@ func TestPlanWithDiffs_ExpandsDirectoryCopyToFileOps(t *testing.T) {
 		}
 	}
 
+	var fragment domain.Fragment
+	fragment.AddSkillCopies(filepath.Dir(dstDir), "", []domain.Skill{{Name: "deploy", DirPath: srcDir, SourcePack: "core"}})
 	reg := harness.NewRegistry(planHarnessStub{
-		id: "codex",
-		fragment: domain.Fragment{
-			Copies: []domain.CopyAction{{
-				Src:        srcDir,
-				Dst:        dstDir,
-				Kind:       domain.CopyKindDir,
-				SourcePack: "core",
-			}},
-			Desired: []string{dstDir},
-		},
-		roots: []string{filepath.Dir(dstDir)},
+		id:       "codex",
+		fragment: fragment,
+		roots:    []string{filepath.Dir(dstDir)},
 	})
 
 	summary, err := PlanWithDiffs(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
@@ -261,16 +257,20 @@ func TestPlanWithDiffs_ExpandsDirectoryCopyToFileOps(t *testing.T) {
 		t.Fatalf("PlanWithDiffs: %v", err)
 	}
 
-	if summary.NumSkills != 2 {
-		t.Fatalf("NumSkills = %d, want 2", summary.NumSkills)
+	if summary.NumSkills != 4 || summary.NumAgents != 0 || summary.NumHooks != 0 {
+		t.Fatalf("content counts = skills:%d agents:%d hooks:%d, want skills:4 agents:0 hooks:0", summary.NumSkills, summary.NumAgents, summary.NumHooks)
 	}
-	if len(summary.Ops) != 2 {
-		t.Fatalf("ops = %d, want 2: %+v", len(summary.Ops), summary.Ops)
+	if len(summary.Ops) != 4 {
+		t.Fatalf("ops = %d, want 4: %+v", len(summary.Ops), summary.Ops)
 	}
 
 	got := map[string]appPlanOpForTest{}
 	for _, op := range summary.Ops {
-		got[filepath.Base(op.Dst)] = appPlanOpForTest{
+		rel, err := filepath.Rel(dstDir, op.Dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[filepath.ToSlash(rel)] = appPlanOpForTest{
 			Kind:       op.Kind,
 			Dst:        op.Dst,
 			Src:        op.Src,
@@ -280,8 +280,10 @@ func TestPlanWithDiffs_ExpandsDirectoryCopyToFileOps(t *testing.T) {
 		}
 	}
 	for name, wantContent := range map[string]string{
-		"SKILL.md": "# Deploy\n",
-		"notes.md": "notes\n",
+		"SKILL.md":           "# Deploy\n",
+		"notes.md":           "notes\n",
+		"agents/openai.yaml": "interface:\n  display_name: Deploy\n",
+		"hooks/hooks.json":   "{}\n",
 	} {
 		op, ok := got[name]
 		if !ok {
@@ -305,6 +307,47 @@ func TestPlanWithDiffs_ExpandsDirectoryCopyToFileOps(t *testing.T) {
 		if op.Size != len(wantContent) {
 			t.Fatalf("%s size = %d, want %d", name, op.Size, len(wantContent))
 		}
+	}
+}
+
+func TestPlanWithDiffs_RenderedSkillAssetsKeepSkillCategory(t *testing.T) {
+	t.Parallel()
+	for _, namespaced := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "namespaced"}[namespaced], func(t *testing.T) {
+			home := t.TempDir()
+			projectDir := filepath.Join(home, "project")
+			srcDir := filepath.Join(home, "packs", "core", "skills", "agents")
+			skillsDir := filepath.Join(projectDir, ".agents", "skills")
+			for rel, body := range map[string]string{
+				"SKILL.md":           "---\nname: agents\ndescription: Deploy\n---\n# Deploy\n",
+				"agents/openai.yaml": "interface:\n  display_name: Deploy\n",
+				"hooks/hooks.json":   "{}\n",
+			} {
+				writeFile(t, filepath.Join(srcDir, rel), body)
+			}
+			var fragment domain.Fragment
+			harness.AddRenderedSkillCopies(&fragment, skillsDir, "", namespaced, []domain.Skill{{
+				Name: "agents", DirPath: srcDir, SourcePack: "core",
+				Raw:    []byte("---\nname: agents\ndescription: Deploy\n---\n# Deploy\n"),
+				Assets: []string{"agents/openai.yaml", "hooks/hooks.json"},
+			}})
+			fragment.AddAgentWrites(projectDir, "agents", []domain.Agent{{Name: "reviewer", Raw: []byte("# Reviewer\n"), SourcePack: "core"}})
+			reg := harness.NewRegistry(planHarnessStub{
+				id: "codex", fragment: fragment, roots: []string{projectDir},
+			})
+			summary, err := PlanWithDiffs(context.Background(), engine.New(nil, nil), domain.Profile{}, SyncRequest{
+				TargetSpec: TargetSpec{
+					Scope: domain.ScopeProject, Harnesses: []domain.Harness{domain.HarnessCodex},
+					ProjectDir: projectDir, Home: home,
+				},
+			}, reg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary.NumSkills != 3 || summary.NumAgents != 1 || summary.NumHooks != 0 || len(summary.Ops) != 4 {
+				t.Fatalf("wrong skill asset classification: %+v", summary)
+			}
+		})
 	}
 }
 

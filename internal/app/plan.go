@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
 	"github.com/shrug-labs/aipack/internal/engine"
 	"github.com/shrug-labs/aipack/internal/harness"
@@ -21,6 +22,7 @@ const (
 	PlanOpAgent    PlanOpKind = "agent"
 	PlanOpSkill    PlanOpKind = "skill"
 	PlanOpHook     PlanOpKind = "hook"
+	PlanOpPlugin   PlanOpKind = "plugin"
 	PlanOpSettings PlanOpKind = "settings"
 	PlanOpMCP      PlanOpKind = "mcp"
 	PlanOpStale    PlanOpKind = "stale"
@@ -57,6 +59,7 @@ type PlanSummary struct {
 	NumAgents      int
 	NumSkills      int
 	NumHooks       int
+	NumPlugins     int
 	NumSettings    int
 	NumMCP         int
 	NumStale       int
@@ -68,7 +71,7 @@ type PlanSummary struct {
 
 // NumContent returns the total number of content changes.
 func (ps PlanSummary) NumContent() int {
-	return ps.NumRules + ps.NumWorkflows + ps.NumAgents + ps.NumSkills + ps.NumHooks
+	return ps.NumRules + ps.NumWorkflows + ps.NumAgents + ps.NumSkills + ps.NumHooks + ps.NumPlugins
 }
 
 // TotalChanges returns the total number of pending changes.
@@ -83,6 +86,7 @@ func (ps *PlanSummary) Merge(other PlanSummary) {
 	ps.NumAgents += other.NumAgents
 	ps.NumSkills += other.NumSkills
 	ps.NumHooks += other.NumHooks
+	ps.NumPlugins += other.NumPlugins
 	ps.NumSettings += other.NumSettings
 	ps.NumMCP += other.NumMCP
 	ps.NumStale += other.NumStale
@@ -99,12 +103,12 @@ func (ps *PlanSummary) Merge(other PlanSummary) {
 // details" entry point used by the TUI and potentially CLI --dry-run.
 func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry) (PlanSummary, error) {
 	var summary PlanSummary
+	req.ConfigDir = config.FallbackConfigDir(req.ConfigDir, req.Home)
 	knownPacks := knownPacksFromRoots(resolvePackRoots(profile))
 	hid, err := SingleSyncHarness(req.Harnesses)
 	if err != nil {
 		return PlanSummary{}, err
 	}
-
 	planners, err := reg.AsPlanners([]domain.Harness{hid})
 	if err != nil {
 		return PlanSummary{}, err
@@ -123,7 +127,9 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 	if err != nil {
 		return PlanSummary{}, err
 	}
-
+	if err := preflightNativePlugins(ctx, eng, plan, req); err != nil {
+		return PlanSummary{}, err
+	}
 	captured, err := h.Capture(ctx, captureContextForHarness(req.TargetSpec, hid, knownPacks))
 	if err != nil {
 		return PlanSummary{}, err
@@ -138,6 +144,12 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 			summary.Warnings = append(summary.Warnings, ledgerWarnings...)
 		}
 	}
+	nativeOps, err := nativePluginPlanOps(eng, req, plan, lg)
+	if err != nil {
+		return PlanSummary{}, err
+	}
+	summary.Ops = append(summary.Ops, nativeOps...)
+	summary.NumPlugins = len(nativeOps)
 
 	// Classify writes.
 	for _, w := range plan.Writes {
@@ -158,8 +170,8 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 			Dst:        w.Dst,
 			DisplayDst: planOpDisplayDst(fd),
 			SourcePack: w.SourcePack,
-			Size:       len(w.Content),
-			Content:    w.Content,
+			Size:       len(fd.Desired),
+			Content:    fd.Desired,
 			DiffKind:   fd.Kind,
 			Diff:       classifyWriteDiffText(fd, fd.Kind),
 		})
@@ -167,6 +179,7 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 
 	// Classify copies.
 	for _, c := range plan.Copies {
+		opKind, knownCategory := planOpKindForCategory(c.Category)
 		switch c.Kind {
 		case domain.CopyKindDir:
 			fds, cerr := eng.ClassifyCopyWithOptions(c.Src, c.Dst, c.SourcePack, lg, engine.ClassifyCopyOptions{
@@ -180,7 +193,11 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 				continue
 			}
 			for _, fd := range fds {
-				appendPlanOpFromFileDiff(&summary, fd, inferContentKind(fd.Dst))
+				kind := opKind
+				if !knownCategory {
+					kind = inferContentKind(fd.Dst)
+				}
+				appendPlanOpFromFileDiff(&summary, fd, kind)
 			}
 		case domain.CopyKindFile:
 			fd, cerr := eng.ClassifyCopyFileWithOptions(c.Src, c.Dst, c.SourcePack, lg, engine.ClassifyCopyOptions{
@@ -193,7 +210,10 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 				})
 				continue
 			}
-			appendPlanOpFromFileDiff(&summary, fd, inferContentKind(c.Dst))
+			if !knownCategory {
+				opKind = inferContentKind(c.Dst)
+			}
+			appendPlanOpFromFileDiff(&summary, fd, opKind)
 		}
 	}
 
@@ -216,30 +236,9 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 	summary.Ops = append(summary.Ops, mcpCfgOps...)
 
 	// Detect stale files.
-	layout := h.Layout(req.Scope, targetDirForHarness(req.TargetSpec, hid), req.Home)
-	cleanup := staleCleanupContextForHarness(eng, reg, req.TargetSpec, hid, layout, nil)
-	if candidates, perr := eng.StaleCandidatesWithLedger(plan, cleanup.Roots, lg); perr == nil {
-		cleanup = staleCleanupContextForHarness(eng, reg, req.TargetSpec, hid, layout, candidates)
-		for _, p := range candidates {
-			if _, protected := cleanup.Protected[filepath.Clean(p)]; protected {
-				continue
-			}
-			summary.NumStale++
-			summary.Ops = append(summary.Ops, PlanOp{
-				Kind:       PlanOpStale,
-				Dst:        p,
-				DisplayDst: labelFor(p),
-			})
-		}
-	}
-	for _, candidate := range newInactiveStaleContext(eng, reg, req.TargetSpec, hid, cleanup.StaleRoots).candidates() {
-		summary.NumStale++
-		summary.Ops = append(summary.Ops, PlanOp{
-			Kind:       PlanOpStale,
-			Dst:        candidate.Path,
-			DisplayDst: syncDisplayPath(candidate.Harness, candidate.Path),
-		})
-	}
+	staleOps := stalePlanOps(eng, plan, req, reg, lg)
+	summary.NumStale += len(staleOps)
+	summary.Ops = append(summary.Ops, staleOps...)
 
 	if plan.Ledger != "" {
 		summary.LedgerPath = plan.Ledger
@@ -262,6 +261,9 @@ func PlanWithDiffs(ctx context.Context, eng *engine.Engine, profile domain.Profi
 // preview a default sync that targets all configured harnesses independently.
 func PlanWithDiffsEach(ctx context.Context, eng *engine.Engine, profile domain.Profile, req SyncRequest, reg *harness.Registry) (PlanSummary, error) {
 	if err := ValidateSyncHarnesses(req.Harnesses); err != nil {
+		return PlanSummary{}, err
+	}
+	if err := engine.ValidatePluginTargets(profile, req.Harnesses, req.Namespaced); err != nil {
 		return PlanSummary{}, err
 	}
 	activeHarnesses := append([]domain.Harness{}, req.Harnesses...)
@@ -287,13 +289,14 @@ func PlanWithDiffsEach(ctx context.Context, eng *engine.Engine, profile domain.P
 	wg.Wait()
 
 	var merged PlanSummary
+	var firstErr error
 	for i, err := range errs {
-		if err != nil {
-			return PlanSummary{}, err
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
 		merged.Merge(summaries[i])
 	}
-	return merged, nil
+	return merged, firstErr
 }
 
 func appendPlanOpFromFileDiff(summary *PlanSummary, fd engine.FileDiff, kind PlanOpKind) {
@@ -344,6 +347,8 @@ func planOpKindForCategory(cat domain.PackCategory) (PlanOpKind, bool) {
 		return PlanOpSettings, true
 	case domain.CategoryMCP:
 		return PlanOpMCP, true
+	case domain.CategoryPlugins:
+		return PlanOpPlugin, true
 	default:
 		return "", false
 	}
@@ -389,6 +394,8 @@ func incrContentCount(s *PlanSummary, kind PlanOpKind) {
 		s.NumSkills++
 	case PlanOpHook:
 		s.NumHooks++
+	case PlanOpPlugin:
+		s.NumPlugins++
 	}
 }
 
@@ -486,15 +493,26 @@ func (c ContentCounts) pairs() [8]struct {
 // collections. This counts source resources, not plan-level file writes,
 // so counts are stable regardless of how many harnesses are targeted.
 func CountProfileContent(p domain.Profile) ContentCounts {
-	return ContentCounts{
-		Rules:     len(p.AllRules()),
-		Workflows: len(p.AllWorkflows()),
-		Agents:    len(p.AllAgents()),
-		Skills:    len(p.AllSkills()),
-		Hooks:     len(p.AllHooks()),
-		Plugins:   len(p.AllPlugins()),
-		MCP:       len(p.MCPServers),
+	counts := ContentCounts{
+		MCP: len(p.MCPServers),
 	}
+	for _, pack := range p.Packs {
+		counts.Rules += len(pack.Rules)
+		counts.Workflows += len(pack.Workflows)
+		counts.Agents += len(pack.Agents)
+		counts.Skills += len(pack.Skills)
+		counts.Hooks += len(pack.Hooks)
+		if pack.NativePlugin == nil {
+			continue
+		}
+		counts.Plugins++
+		counts.Agents += len(pack.NativePlugin.Selected[domain.CategoryAgents])
+		counts.Skills += len(pack.NativePlugin.Selected[domain.CategorySkills])
+		counts.Workflows += len(pack.NativePlugin.Selected[domain.CategoryWorkflows])
+		counts.Hooks += len(pack.NativePlugin.Selected[domain.CategoryHooks])
+		counts.MCP += len(pack.NativePlugin.Selected[domain.CategoryMCP])
+	}
+	return counts
 }
 
 // classifySettingsOps computes diffs for settings/plugin actions and returns plan ops.

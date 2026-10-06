@@ -18,6 +18,25 @@ import (
 
 // --- Plan tests ---
 
+func TestImportedMCPWithoutSkillsSettings(t *testing.T) {
+	content, err := mergeImportedSettings([]byte(`{}`), []map[string]any{{
+		"mcp":        map[string]any{"probe": map[string]any{"type": "local", "command": []string{"true"}}},
+		"skills":     map[string]any{"paths": []string{}},
+		"permission": map[string]any{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Skills struct {
+			Paths []string `json:"paths"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(content, &got); err != nil || got.Skills.Paths == nil {
+		t.Fatalf("MCP-only import emitted invalid null skills.paths: %s (%v)", content, err)
+	}
+}
+
 func TestPlan_Project_RulesAndAgents(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
@@ -309,7 +328,7 @@ func TestPlan_Global_HooksPluginUsesOPENCODE_CONFIG_DIR(t *testing.T) {
 func TestLayout_DoesNotRemovePluginsDir(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
-	layout := Harness{}.Layout(domain.ScopeProject, projectDir, t.TempDir())
+	layout := Harness{}.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: t.TempDir()})
 	pluginsDir := filepath.Join(projectDir, ".opencode", "plugins")
 	if slices.Contains(layout.RemovePaths, pluginsDir) {
 		t.Fatalf("plugins dir %q must not be a RemovePath: %v", pluginsDir, layout.RemovePaths)
@@ -1326,7 +1345,7 @@ func TestLayout_StripManaged_RemovesMCPAndTools(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 	h := Harness{}
-	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: projectDir})
 	input := []byte(`{"mcp": {"foo": {}, "usermcp": {}}, "tools": {"bar": true}, "custom": "keep"}`)
 	ctx := harness.EditContext{ManagedMCPServers: map[string]struct{}{"foo": {}}}
 	out, err := layout.StripManaged(input, layout.OwnedFiles[0].Path, ctx)
@@ -1360,7 +1379,7 @@ func TestLayout_StripManaged_UnmatchedPath_PassThrough(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
 	h := Harness{}
-	layout := h.Layout(domain.ScopeProject, projectDir, projectDir)
+	layout := h.Layout(harness.CaptureContext{Scope: domain.ScopeProject, ProjectDir: projectDir, Home: projectDir})
 	input := []byte(`{"mcp": {"foo": {}}}`)
 	out, err := layout.StripManaged(input, "/some/other/path.json", harness.EditContext{})
 	if err != nil {

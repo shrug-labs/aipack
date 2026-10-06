@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shrug-labs/aipack/internal/config"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/util"
 )
 
@@ -19,10 +21,28 @@ type IntegrityManifest struct {
 	Files map[string]string `json:"files"` // relative path -> hex SHA256
 }
 
-// computeIntegrity walks packDir and computes SHA256 for every regular file,
-// skipping the integrity file itself and ignored names.
+// computeIntegrity hashes complete native entries, including directories, modes
+// and links. Ordinary packs hash regular files and skip ignored names. Both
+// exclude the integrity manifest itself.
 func computeIntegrity(packDir string) (IntegrityManifest, error) {
 	m := IntegrityManifest{Files: make(map[string]string)}
+	if manifest, err := config.LoadPackManifest(filepath.Join(packDir, "pack.json")); err == nil && manifest.NativePlugin != nil {
+		files, err := plugin.ReadPayloadFiles(packDir)
+		if err != nil {
+			return m, err
+		}
+		for _, file := range files {
+			if file.Path == integrityFileName {
+				continue
+			}
+			body, err := json.Marshal(file)
+			if err != nil {
+				return m, err
+			}
+			m.Files[file.Path] = util.ContentDigest(body)
+		}
+		return m, nil
+	}
 	err := filepath.WalkDir(packDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err

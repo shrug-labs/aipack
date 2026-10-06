@@ -86,7 +86,6 @@ exit 128
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GIT_TERMINAL_PROMPT", "")
-	t.Setenv("AIPACK_TELEMETRY_DISABLED", "1")
 	type command interface {
 		Run(context.Context, *Globals) error
 	}

@@ -3,6 +3,7 @@ package util
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -118,6 +119,71 @@ func TestReplaceDirAtomic_FreshInstall(t *testing.T) {
 	}
 	if string(got) != "new" {
 		t.Errorf("got %q, want %q", string(got), "new")
+	}
+}
+
+func TestRemoveOwnedTree_ReadOnlyAndSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions")
+	}
+	parent, outside := t.TempDir(), t.TempDir()
+	tree := filepath.Join(parent, "owned")
+	dir := filepath.Join(tree, "read-only", "nested")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, ".", filepath.Join(dir, "root-loop"))
+	asset := filepath.Join(dir, "asset")
+	if err := os.WriteFile(asset, []byte("owned"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(outside, "keep")
+	if err := os.WriteFile(external, []byte("outside"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, outside, filepath.Join(dir, "external"))
+	for _, path := range []string{dir, filepath.Dir(dir), tree} {
+		if err := os.Chmod(path, 0o500); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, path := range []string{tree, filepath.Dir(dir), dir} {
+			_ = os.Chmod(path, 0o700)
+		}
+	})
+	if err := RemoveOwnedTree(tree); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Fatalf("owned tree survived removal: %v", err)
+	}
+	if info, err := os.Stat(external); err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatalf("external symlink target changed: %v %v", info, err)
+	}
+	link := filepath.Join(parent, "root-link")
+	testutil.Symlink(t, outside, link)
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	removeErr := RemoveOwnedTree(link)
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if removeErr != nil && !os.IsPermission(removeErr) {
+		t.Fatalf("root-link refusal did not report parent permissions: %v", removeErr)
+	}
+	if info, err := os.Stat(external); err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatalf("failed root-link removal changed external permissions: %v %v", info, err)
+	}
+	if err := RemoveOwnedTree(link); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(external); err != nil || string(data) != "outside" {
+		t.Fatalf("external data changed: %q %v", data, err)
+	}
+	if err := RemoveOwnedTree(tree); err != nil {
+		t.Fatalf("missing tree is not idempotent: %v", err)
 	}
 }
 

@@ -111,6 +111,8 @@ type RegistryEntry struct {
 	Contact      string                         `yaml:"contact,omitempty" json:"contact,omitempty"`
 	Quiet        bool                           `yaml:"quiet,omitempty" json:"quiet,omitempty"`
 	ContentPaths map[domain.PackCategory]string `yaml:"content_paths,omitempty" json:"content_paths,omitempty"`
+	Plugin       *domain.PluginSource           `yaml:"plugin,omitempty" json:"plugin,omitempty"`
+	Unsupported  string                         `yaml:"unsupported,omitempty" json:"unsupported,omitempty"`
 }
 
 // RegistryCollection describes a named install recipe for multiple registry packs.
@@ -188,7 +190,11 @@ func LoadRegistry(path string) (Registry, error) {
 	if err != nil {
 		return Registry{}, fmt.Errorf("reading registry: %w", err)
 	}
-	return ParseRegistry(b)
+	coordinates, err := LocalRegistrySource(path)
+	if err != nil {
+		return Registry{}, err
+	}
+	return ParseRegistrySource(b, coordinates)
 }
 
 // ParseRegistry parses raw YAML bytes into a Registry, validating schema_version.
@@ -216,6 +222,17 @@ func ValidateRegistry(reg Registry) []string {
 	var errs []string
 	for _, name := range names {
 		entry := reg.Packs[name]
+		if entry.Plugin != nil {
+			if !domain.ValidNativeName(entry.Plugin.Name) || !domain.ValidNativeName(entry.Plugin.Marketplace) {
+				errs = append(errs, fmt.Sprintf("pack %q: invalid native plugin identity", name))
+			}
+			if len(entry.ContentPaths) > 0 {
+				errs = append(errs, fmt.Sprintf("pack %q: native plugins cannot use content_paths", name))
+			}
+			if entry.Unsupported != "" {
+				continue
+			}
+		}
 		switch entry.Method {
 		case "", MethodClone:
 			if entry.Repo == "" {
@@ -224,6 +241,24 @@ func ValidateRegistry(reg Registry) []string {
 		case MethodArchive:
 			if entry.URL == "" {
 				errs = append(errs, fmt.Sprintf("pack %q: missing required field url", name))
+			}
+		case MethodNPM:
+			if entry.Plugin == nil || entry.Plugin.NPM == nil || entry.Path != "" || entry.Repo != "npm:"+entry.Plugin.NPM.Package {
+				errs = append(errs, fmt.Sprintf("pack %q: npm entries require a native plugin package source without a subpath", name))
+			} else {
+				var err error
+				if entry.Plugin.Format == "claude" {
+					_, err = source.NormalizeClaudeNPMSource(*entry.Plugin.NPM)
+				} else {
+					err = source.ValidateNPMSource(*entry.Plugin.NPM)
+				}
+				if err != nil {
+					errs = append(errs, fmt.Sprintf("pack %q: %v", name, err))
+				}
+			}
+		case MethodCopy:
+			if !filepath.IsAbs(entry.Repo) {
+				errs = append(errs, fmt.Sprintf("pack %q: copy registry sources require an absolute local source root", name))
 			}
 		default:
 			errs = append(errs, fmt.Sprintf("pack %q: unknown method %q", name, entry.Method))
@@ -328,7 +363,7 @@ func FetchRegistryFromURL(ctx context.Context, rawURL string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// FetchFileViaGit fetches a single file from a remote git repo via shallow clone.
+// FetchFileViaGit fetches a single file using the shared Git ref acquisition.
 func FetchFileViaGit(ctx context.Context, repoURL, ref, filePath string) ([]byte, error) {
 	return FetchFileViaGitWith(ctx, repoURL, ref, filePath, source.RunGit)
 }
@@ -347,12 +382,7 @@ func FetchFileViaGitWith(ctx context.Context, repoURL, ref, filePath string,
 	}
 	defer os.RemoveAll(tmp)
 
-	args := []string{"clone", "--depth", "1"}
-	if ref != "" {
-		args = append(args, "--branch", ref)
-	}
-	args = append(args, repoURL, tmp)
-	if err := runGitFn(ctx, args...); err != nil {
+	if err := source.EnsureCloneWithRef(ctx, repoURL, tmp, ref, "", runGitFn); err != nil {
 		return nil, fmt.Errorf("cloning %s: %w", repoURL, err)
 	}
 	data, err := os.ReadFile(filepath.Join(tmp, filePath))
@@ -360,6 +390,21 @@ func FetchFileViaGitWith(ctx context.Context, repoURL, ref, filePath string,
 		return nil, fmt.Errorf("reading %s from clone: %w", filePath, err)
 	}
 	return data, nil
+}
+
+// FetchRepositoryRegistry discovers all supported entry points in one clone.
+func FetchRepositoryRegistry(ctx context.Context, coordinates RegistrySourceEntry) (Registry, error) {
+	tmp, err := os.MkdirTemp("", "aipack-fetch-*")
+	if err != nil {
+		return Registry{}, err
+	}
+	defer os.RemoveAll(tmp)
+	if err := source.EnsureCloneWithRef(ctx, coordinates.URL, tmp, coordinates.Ref, "", source.RunGit); err != nil {
+		return Registry{}, fmt.Errorf("cloning %s: %w", coordinates.URL, err)
+	}
+	return DiscoverRegistrySource(coordinates, func(path string) ([]byte, error) {
+		return ReadRepositoryFile(tmp, path)
+	})
 }
 
 // RegistriesCacheDir returns the directory for cached remote registries.
@@ -569,9 +614,13 @@ func UniqueSourceName(derived, url, path string, existing []RegistrySourceEntry)
 	}
 }
 
-// IsGitURL returns true if the URL should use git-based fetch.
-// A URL is considered a git URL if it ends with ".git", uses an SSH scheme
-// or SCP-style syntax (git@host:path), or if a ref is provided.
+// RegistrySourceUsesGit recognizes an explicit repository-relative catalog path
+// as Git intent even when an HTTP repository URL has no .git suffix.
+func RegistrySourceUsesGit(src RegistrySourceEntry) bool {
+	return source.LooksLikeURL(src.URL) && (IsGitURL(src.URL, src.Ref) || source.IsRepositoryURL(src.URL) || src.Path != "")
+}
+
+// IsGitURL returns true for a .git suffix, SSH/SCP syntax or an explicit ref.
 func IsGitURL(rawURL, ref string) bool {
 	if ref != "" {
 		return true

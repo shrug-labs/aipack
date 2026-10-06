@@ -11,6 +11,10 @@ Common questions about aipack — what it is, how to use it, and how to share pa
 
 A package manager for AI agent knowledge. Rules, skills, workflows, MCP server configs, agent definitions — authored once as portable packs, composed through profiles, and synced to whatever coding assistant you use. The same pack works across Claude Code, Codex, OpenCode, and Cline without per-harness maintenance.
 
+### Can I install an existing Claude or Codex plugin?
+
+Yes. Fetch its marketplace catalog and install the plugin as a pack from the original source. Profiles select its components alongside other packs. See [Installing marketplace plugins](installing-packs.md#installing-marketplace-plugins) for the commands and the [support matrix](aipack.md#imported-plugin-support) for compatible assistants.
+
 ### What's a pack?
 
 A versioned bundle of agent configuration: rules (always-on constraints), skills (on-demand domain knowledge), workflows (step-by-step procedures), agents (scoped sub-personas with constrained tools), MCP server configs (tool connections), and profiles (composition presets). A pack is portable — it works across harnesses and teams.

@@ -141,8 +141,13 @@ func printSearchResults(w io.Writer, results []app.SearchResult, hasTerms bool) 
 	// Summary header: count by kind, grouped if single pack.
 	kindCounts := map[string]int{}
 	packs := map[string]bool{}
+	sourceCounts := map[[3]string]int{}
 	for _, r := range results {
-		kindCounts[r.Kind]++
+		key := [3]string{r.Pack, r.Kind, r.Name}
+		if sourceCounts[key] == 0 {
+			kindCounts[r.Kind]++
+		}
+		sourceCounts[key]++
 		packs[r.Pack] = true
 	}
 	var parts []string
@@ -185,6 +190,9 @@ func printSearchResults(w io.Writer, results []app.SearchResult, hasTerms bool) 
 		}
 		if r.Description != "" {
 			fmt.Fprintf(w, "    %s\n", truncateDescription(r.Description))
+		}
+		if sourceCounts[[3]string{r.Pack, r.Kind, r.Name}] > 1 && r.Path != "" {
+			fmt.Fprintf(w, "    source: %s\n", r.Path)
 		}
 		// Only show body snippets when searching with terms — browsing
 		// mode (no terms) shows descriptions only for a cleaner catalog view.

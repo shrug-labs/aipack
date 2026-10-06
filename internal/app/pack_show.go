@@ -9,29 +9,37 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/plugin"
 	"github.com/shrug-labs/aipack/internal/source"
 )
 
 // PackShowEntry describes detailed information about an installed pack.
 type PackShowEntry struct {
-	Name          string   `json:"name"`
-	Version       string   `json:"version"`       // pack.json version (informational)
-	Pin           string   `json:"pin,omitempty"` // lockfile version pin: "1.2.3", commit hash, or "" for HEAD
-	Path          string   `json:"path"`
-	Method        string   `json:"method"`
-	Origin        string   `json:"origin"`
-	Ref           string   `json:"ref,omitempty"`
-	CommitHash    string   `json:"commit_hash,omitempty"`
-	InstalledAt   string   `json:"installed_at,omitempty"`
-	LastCheckedAt string   `json:"last_checked_at,omitempty"`
-	Rules         []string `json:"rules"`
-	Agents        []string `json:"agents"`
-	Workflows     []string `json:"workflows"`
-	Skills        []string `json:"skills"`
-	Hooks         []string `json:"hooks"`
-	Plugins       []string `json:"plugins"`
-	Prompts       []string `json:"prompts"`
-	MCPServers    []string `json:"mcp_servers"`
+	Compatibility      []plugin.TargetCompatibility `json:"compatibility,omitempty"`
+	NativePlugin       *domain.NativePlugin         `json:"native_plugin,omitempty"`
+	PluginSource       *domain.PluginSource         `json:"plugin_source,omitempty"`
+	SubPath            string                       `json:"sub_path,omitempty"`
+	MaterializedDigest string                       `json:"materialized_digest,omitempty"`
+	Name               string                       `json:"name"`
+	Version            string                       `json:"version"`       // pack.json version (informational)
+	Pin                string                       `json:"pin,omitempty"` // lockfile version pin: "1.2.3", commit hash, or "" for HEAD
+	Path               string                       `json:"path"`
+	Method             string                       `json:"method"`
+	Origin             string                       `json:"origin"`
+	Ref                string                       `json:"ref,omitempty"`
+	CommitHash         string                       `json:"commit_hash,omitempty"`
+	PackageVersion     string                       `json:"package_version,omitempty"`
+	PackageArchiveHash string                       `json:"package_archive_hash,omitempty"`
+	InstalledAt        string                       `json:"installed_at,omitempty"`
+	LastCheckedAt      string                       `json:"last_checked_at,omitempty"`
+	Rules              []string                     `json:"rules"`
+	Agents             []string                     `json:"agents"`
+	Workflows          []string                     `json:"workflows"`
+	Skills             []string                     `json:"skills"`
+	Hooks              []string                     `json:"hooks"`
+	Plugins            []string                     `json:"plugins"`
+	Prompts            []string                     `json:"prompts"`
+	MCPServers         []string                     `json:"mcp_servers"`
 	// Settings lists the pack's harness config files as "<harness>/<file>"
 	// IDs (e.g. "codex/config.toml"). Both base settings and plugin configs
 	// live under the pack's configs/ directory; the Packs-tab content browser
@@ -58,19 +66,30 @@ func (e PackShowEntry) ContentPath(category domain.PackCategory, id string) stri
 	return filepath.Join(e.Path, filepath.FromSlash(e.manifest.RelPath(category, id)))
 }
 
+// ContentPaths includes every declared source for a colliding native agent.
+func (e PackShowEntry) ContentPaths(category domain.PackCategory, id string) []string {
+	if category == domain.CategoryAgents {
+		if paths := nativeAgentContentPaths(e.Path, e.NativePlugin, id); len(paths) > 0 {
+			return paths
+		}
+	}
+	return []string{e.ContentPath(category, id)}
+}
+
+func nativeAgentContentPaths(root string, native *domain.NativePlugin, id string) []string {
+	if native == nil || len(native.Components[domain.CategoryAgents][id]) == 0 {
+		return nil
+	}
+	var paths []string
+	for _, rel := range native.Components[domain.CategoryAgents][id] {
+		paths = append(paths, filepath.Join(root, "upstream", filepath.FromSlash(rel)))
+	}
+	return paths
+}
+
 // ContentSize returns the on-disk size of a content item, or -1 on error.
 func (e PackShowEntry) ContentSize(category domain.PackCategory, id string) int64 {
-	fp := e.ContentPath(category, id)
-	kind := domain.CopyKindFile
-	if category == domain.CategorySkills || category == domain.CategoryHooks {
-		fp = filepath.Dir(fp)
-		kind = domain.CopyKindDir
-	}
-	size, err := fileOrDirSize(fp, kind)
-	if err != nil {
-		return -1
-	}
-	return size
+	return contentPathsSize(category, e.ContentPaths(category, id))
 }
 
 // PinLabel returns a human-readable label for the lockfile pin:
@@ -265,19 +284,25 @@ func packShowCore(packsDir, name string, meta map[string]config.InstalledPackMet
 		entry.Workflows = m.Workflows
 		entry.Skills = m.Skills
 		entry.Hooks = m.Hooks
-		entry.Plugins = m.Plugins
 		entry.Prompts = m.Prompts
 		entry.MCPServers = slices.Clone(m.MCP)
 		entry.Settings = settingsIDsFromConfigs(m.Configs)
 		entry.Extras = m.Extras
 		entry.manifest = m
+		entry.NativePlugin = m.NativePlugin
+		if m.NativePlugin != nil {
+			entry.Plugins = []string{m.NativePlugin.Binding()}
+			entry.Compatibility = plugin.InventoryCompatibility(packRoot, *m.NativePlugin)
+		}
 	}
 
 	if m, ok := meta[name]; ok {
+		entry.PluginSource, entry.SubPath, entry.MaterializedDigest = m.Plugin, m.SubPath, m.MaterializedDigest
 		entry.Origin = m.Origin
 		entry.Method = m.Method
 		entry.Ref = m.Ref
 		entry.CommitHash = m.CommitHash
+		entry.PackageVersion, entry.PackageArchiveHash = m.PackageVersion, m.PackageArchiveHash
 		entry.InstalledAt = m.InstalledAt
 		entry.LastCheckedAt = m.LastCheckedAt
 		entry.installQuiet = m.InstallQuiet

@@ -62,7 +62,6 @@ func (e *Engine) buildPackInventory(configDir string, pk domain.Pack, now time.T
 		Agents:        domain.SortedCopy(manifest.Agents),
 		Workflows:     domain.SortedCopy(manifest.Workflows),
 		Hooks:         domain.SortedCopy(manifest.Hooks),
-		Plugins:       domain.SortedCopy(manifest.Plugins),
 	}
 
 	if len(manifest.Skills) > 0 {
@@ -84,7 +83,12 @@ func (e *Engine) buildPackInventory(configDir string, pk domain.Pack, now time.T
 		}
 	}
 
-	if len(manifest.MCP) > 0 {
+	if manifest.NativePlugin != nil {
+		inv.MCPServers = make(map[string]domain.MCPServerSnapshot, len(manifest.MCP))
+		for _, name := range manifest.MCP {
+			inv.MCPServers[name] = domain.MCPServerSnapshot{}
+		}
+	} else if len(manifest.MCP) > 0 {
 		rawServers, err := e.loadMCPInventoryDir(filepath.Join(packRoot, "mcp"))
 		if err != nil {
 			return domain.PackInventory{}, fmt.Errorf("loading mcp inventory for pack %q: %w", pk.Name, err)

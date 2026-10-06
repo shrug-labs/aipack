@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/shrug-labs/aipack/internal/domain"
 )
 
 func TestParseHarnessEnv_TrimsAndSkipsEmpty(t *testing.T) {
@@ -20,6 +22,21 @@ func TestParseHarnessEnv_TrimsAndSkipsEmpty(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("ParseHarnessEnv returned %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestHarnessFlagList(t *testing.T) {
+	t.Parallel()
+	for _, resolve := range []func(string, []string) ([]domain.Harness, error){ResolveHarnessesDefault, ResolveHarnessesOptional} {
+		hs, err := resolve("claudecode, opencode,cline", []string{"codex"})
+		if err != nil || len(hs) != 3 || hs[0] != domain.HarnessClaudeCode || hs[1] != domain.HarnessOpenCode || hs[2] != domain.HarnessCline {
+			t.Fatal("explicit harness list lost targets", hs, err)
+		}
+		for _, invalid := range []string{"cline,", "all,cline", "cline,invalid"} {
+			if _, err := resolve(invalid, nil); err == nil {
+				t.Fatal("invalid harness list accepted", invalid)
+			}
 		}
 	}
 }

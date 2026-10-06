@@ -13,6 +13,8 @@ import (
 
 	"github.com/shrug-labs/aipack/internal/config"
 	"github.com/shrug-labs/aipack/internal/domain"
+	"github.com/shrug-labs/aipack/internal/engine"
+	"github.com/shrug-labs/aipack/internal/plugin"
 
 	"gopkg.in/yaml.v3"
 )
@@ -211,6 +213,47 @@ func TestPackImport_ExistingPackPreservesAutoDiscovery(t *testing.T) {
 	}
 	if strings.Join(loaded.Skills, ",") != "existing,review" {
 		t.Fatalf("discovered skills = %v, want [existing review]", loaded.Skills)
+	}
+}
+
+func TestPackImportRejectsNativePack(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{plugin.Claude, plugin.CodexLegacy, plugin.AgentPlugins} {
+		t.Run(format, func(t *testing.T) {
+			source, configDir := t.TempDir(), t.TempDir()
+			manifest, body := ".codex-plugin/plugin.json", `{"name":"probe"}`
+			if format == plugin.Claude {
+				manifest = ".claude-plugin/plugin.json"
+			} else if format == plugin.AgentPlugins {
+				manifest, body = "plugin.json", `{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"probe"}`
+			}
+			writeFile(t, filepath.Join(source, manifest), body)
+			writeFile(t, filepath.Join(source, "skills/original/SKILL.md"), "---\nname: original\ndescription: Fixture\n---\nOriginal\n")
+			if err := PackInstall(context.Background(), PackInstallRequest{PackPath: source, ConfigDir: configDir, Name: "alias", Plugin: &domain.PluginSource{Format: format, Name: "probe", Marketplace: "market"}}, nil); err != nil {
+				t.Fatal(err)
+			}
+			root := filepath.Join(PacksDir(configDir), "alias")
+			before, err := packTreeDigest(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lockBefore := mustRead(t, config.LockfilePath(configDir))
+			markdown := filepath.Join(t.TempDir(), "extra.md")
+			writeFile(t, markdown, "Extra\n")
+			for _, category := range []domain.PackCategory{domain.CategorySkills, domain.CategoryRules, domain.CategoryPrompts} {
+				err := PackImport(context.Background(), PackImportRequest{Source: markdown, TargetPack: "alias", Category: category, ConfigDir: configDir}, nil)
+				if err == nil || !strings.Contains(err.Error(), "plugin-derived pack") {
+					t.Fatalf("%s import should reject native pack: %v", category, err)
+				}
+			}
+			after, err := packTreeDigest(root)
+			if err != nil || before != after || !bytes.Equal(lockBefore, mustRead(t, config.LockfilePath(configDir))) {
+				t.Fatalf("refused import changed source or metadata: %v", err)
+			}
+			if _, _, err := engine.New(nil, nil).Resolve(config.ProfileConfig{Packs: []config.PackEntry{{Name: "alias"}}}, "", configDir, config.CollisionError, nil); err != nil {
+				t.Fatalf("refused import broke profile resolution: %v", err)
+			}
+		})
 	}
 }
 

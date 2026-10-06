@@ -1989,7 +1989,7 @@ func TestPromptSync_UnsyncedProfileShowsPendingCount(t *testing.T) {
 		t.Fatalf("expected second option to be 'Customize...', got %q", rm.dialog.ListItems[1])
 	}
 	if rm.dialog.ListItems[2] != "Cancel" {
-		t.Fatalf("expected third option to be 'Cancel', got %q", rm.dialog.ListItems[2])
+		t.Fatalf("expected last option to be 'Cancel', got %q", rm.dialog.ListItems[2])
 	}
 	// Title should mention pending changes.
 	if !strings.Contains(rm.dialog.Title, "3 pending") {

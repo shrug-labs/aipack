@@ -32,9 +32,32 @@ type FrontmatterEntry struct {
 
 // LoadPreview reads a markdown file asynchronously, parses frontmatter,
 // and returns a PreviewLoadedMsg.
-func LoadPreview(title string, category domain.PackCategory, packName, filePath string) tea.Cmd {
+func LoadPreview(title string, category domain.PackCategory, packName, filePath string, additionalPaths ...string) tea.Cmd {
 	return func() tea.Msg {
 		const maxSize = 512 * 1024
+		if len(additionalPaths) > 0 {
+			msg := PreviewLoadedMsg{Title: title, Category: category, PackName: packName, FilePath: filePath}
+			var body strings.Builder
+			body.WriteString("Multiple source files define this agent; Claude Code's chosen source can vary.\n")
+			for _, path := range append([]string{filePath}, additionalPaths...) {
+				part := LoadPreview(title, category, packName, path)().(PreviewLoadedMsg)
+				if part.Err != nil {
+					msg.Err = part.Err
+					return msg
+				}
+				fmt.Fprintf(&body, "\n## Source: %s\n\n", path)
+				for _, entry := range part.Frontmatter {
+					fmt.Fprintf(&body, "%s: %s\n", entry.Key, entry.Value)
+				}
+				body.WriteString("\n" + part.Body)
+				if body.Len() > maxSize {
+					msg.Body = body.String()[:maxSize] + "\n\n--- (truncated at 512 KB) ---"
+					return msg
+				}
+			}
+			msg.Body = body.String()
+			return msg
+		}
 
 		target := filePath
 		if info, err := os.Stat(filePath); err == nil && info.IsDir() {

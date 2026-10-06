@@ -51,6 +51,11 @@ func TestModelViewShowsStatusAndPlan(t *testing.T) {
 	m = m.SetSize(120, 40).(Model)
 
 	rendered := lipgloss.NewCompositor(m.View()).Render()
+	for _, unwanted := range []string{"Plugin delivery:", "Details: aipack doctor", "Reload the assistant after sync"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Fatalf("unexpected plugin delivery output %q: %s", unwanted, rendered)
+		}
+	}
 	for _, want := range []string{
 		"up to date",
 		"Rules:     2",
