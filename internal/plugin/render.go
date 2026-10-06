@@ -258,6 +258,7 @@ func renderedFiles(files []File, changed map[string][]byte, drop, needed map[str
 							if err != nil {
 								return nil, err
 							}
+							child.Link = filepath.ToSlash(child.Link)
 						}
 					}
 					child.Path = path

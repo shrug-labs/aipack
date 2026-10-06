@@ -603,6 +603,9 @@ func TestGenericHooksRefuseForeignInstallation(t *testing.T) {
 func TestGenericImportedHookLifecycle(t *testing.T) {
 	for _, target := range []domain.Harness{domain.HarnessOpenCode, domain.HarnessCline} {
 		t.Run(string(target), func(t *testing.T) {
+			if runtime.GOOS == "windows" && target == domain.HarnessCline {
+				t.Skip("POSIX-authored imported commands; Windows handlers are tested by the PowerShell wrapper suite")
+			}
 			src, dir, home, project := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 			writeFile(t, filepath.Join(src, ".codex-plugin/plugin.json"), `{"name":"probe","version":"1.0.0"}`)
 			writeFile(t, filepath.Join(src, "hooks/hooks.json"), `{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"node -e \"require(process.env.PLUGIN_ROOT+'/scripts/hook.js')\"","timeout":5}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node -e \"require(process.env.CODEX_PLUGIN_ROOT+'/scripts/hook.js')\"","timeout":5}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"node -e \"require(process.env.CLAUDE_PLUGIN_ROOT+'/scripts/hook.js')\"","timeout":5}]}],"Stop":[{"hooks":[{"type":"command","command":"false"}]}]}}`)

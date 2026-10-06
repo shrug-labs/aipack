@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -21,7 +22,28 @@ import (
 	"github.com/shrug-labs/aipack/internal/domain"
 )
 
+func TestForeignMCPWindowsRefusal(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows platform refusal")
+	}
+	root := t.TempDir()
+	write(t, root, "upstream/mcp.json", `{"mcpServers":{"probe":{"command":"node","cwd":"."}}}`, 0o644)
+	s := domain.NativePluginSelection{Root: root, Package: domain.NativePlugin{
+		Harness: domain.HarnessCodex, Format: CodexLegacy, Name: "probe", Marketplace: "owned", ConverterVersion: ConverterVersion,
+		Components: map[domain.PackCategory]map[string][]string{domain.CategoryMCP: {"probe": {"mcp.json"}}},
+	}, Selected: map[domain.PackCategory][]string{domain.CategoryMCP: {"probe"}}}
+	for _, target := range []domain.Harness{domain.HarnessClaudeCode, domain.HarnessOpenCode, domain.HarnessCline} {
+		report := Compatibility(s, target)
+		if len(report.Supported) != 0 || len(report.Unsupported) != 1 || !strings.Contains(report.Unsupported[0], "POSIX shell") || GenericContentSelection(s, target) {
+			t.Fatalf("unsupported Windows delivery accepted: %+v", report)
+		}
+	}
+}
+
 func TestCodexMCPClaudeRefusals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, test := range []struct {
 		name, format, fields, reason string
 	}{
@@ -97,6 +119,9 @@ func TestGenericMCPRefusesPackPlaceholders(t *testing.T) {
 }
 
 func TestGenericMCPRetainsNativeTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	root := t.TempDir()
 	write(t, root, "upstream/mcp.json", `{"mcpServers":{"probe":{"command":"python3","cwd":".","tool_timeout_sec":3}}}`, 0o644)
 	s := domain.NativePluginSelection{Root: root, Package: domain.NativePlugin{Harness: domain.HarnessCodex, Format: CodexLegacy, Name: "fixture", Marketplace: "owned", ConverterVersion: ConverterVersion,
@@ -112,6 +137,9 @@ func TestGenericMCPRetainsNativeTimeout(t *testing.T) {
 }
 
 func TestPortableStartupTimeoutPolicy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, test := range []struct {
 		name, policy, seconds string
 		target                domain.Harness
@@ -168,6 +196,9 @@ func TestPortableStartupTimeoutPolicy(t *testing.T) {
 }
 
 func TestCodexMCPToClaude(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, format := range []string{CodexLegacy, AgentPlugins} {
 		t.Run(format, func(t *testing.T) {
 			source, pack, runtimeData := t.TempDir(), t.TempDir(), t.TempDir()

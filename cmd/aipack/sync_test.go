@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -91,8 +92,12 @@ func TestRunSync_DryRunShowsRemovedAndDisabledContent(t *testing.T) {
 					t.Run(fmt.Sprintf("%s/%s/%s/auto=%t", hid, scope, action, autoSync), func(t *testing.T) {
 						home, cfg, project := writeSyncFixture(t)
 						t.Setenv("HOME", home)
+						t.Setenv("USERPROFILE", home)
 						for _, key := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG_DIR", "CLINE_DIR", "CLINE_DATA_DIR"} {
 							t.Setenv(key, "")
+						}
+						if runtime.GOOS == "windows" && hid == domain.HarnessCline {
+							t.Setenv("CLINE_DIR", filepath.Join(home, "Documents", "Cline"))
 						}
 						t.Chdir(project)
 						sc, err := config.LoadSyncConfig(config.SyncConfigPath(cfg))

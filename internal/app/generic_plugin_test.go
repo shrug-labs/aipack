@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -20,6 +21,9 @@ import (
 )
 
 func TestGenericDeliveryRetainsTargetData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, hid := range []domain.Harness{domain.HarnessOpenCode, domain.HarnessClaudeCode} {
 		if hid == domain.HarnessClaudeCode && os.Getenv("AIPACK_TEST_CLAUDE_NATIVE") != "1" {
 			continue
@@ -209,6 +213,9 @@ func TestGenericDeliveryRetainsTargetData(t *testing.T) {
 // Profile policies that need native delivery exercise transitions to and from
 // the ordinary converter without changing the installed source.
 func TestGenericMCPTransitionRollback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, hid := range []domain.Harness{domain.HarnessOpenCode, domain.HarnessClaudeCode} {
 		if hid == domain.HarnessClaudeCode && os.Getenv("AIPACK_TEST_CLAUDE_NATIVE") != "1" {
 			continue
@@ -320,6 +327,9 @@ func TestGenericMCPTransitionRollback(t *testing.T) {
 }
 
 func TestGenericContentRefusesForeignDelivery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, hid := range []domain.Harness{domain.HarnessOpenCode, domain.HarnessCline} {
 		for _, format := range []string{plugin.CodexLegacy, plugin.AgentPlugins} {
 			t.Run(string(hid)+"/"+format, func(t *testing.T) {
@@ -529,6 +539,9 @@ func TestGenericSkillsRefuseForeignClaudeInstallation(t *testing.T) {
 }
 
 func TestGenericMCPUsesOrdinaryPackDelivery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, hid := range []domain.Harness{domain.HarnessCline, domain.HarnessClaudeCode, domain.HarnessOpenCode} {
 		for _, format := range []string{plugin.AgentPlugins} {
 			t.Run(string(hid)+"/"+format, func(t *testing.T) {
@@ -1028,7 +1041,11 @@ func TestImportedSkillsUseOrdinaryPackDelivery(t *testing.T) {
 				}
 				disabled = true
 				cfg.Packs[1].MCP["unused"] = config.MCPServerConfig{Enabled: &disabled, StartupTimeout: "strict"}
-				if _, _, err := RunSync(context.Background(), eng, resolve(), req, reg, nil, nil); err == nil || !strings.Contains(err.Error(), "startup_timeout_sec") {
+				reason := "startup_timeout_sec"
+				if runtime.GOOS == "windows" {
+					reason = "POSIX shell"
+				}
+				if _, _, err := RunSync(context.Background(), eng, resolve(), req, reg, nil, nil); err == nil || !strings.Contains(err.Error(), reason) {
 					t.Fatal("selected unsupported MCP content was silently dropped", err)
 				}
 				disabled = false

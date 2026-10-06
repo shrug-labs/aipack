@@ -48,10 +48,10 @@ func (s *sseFakeServer) streamHandler(postPath string) http.HandlerFunc {
 		s.mu.Lock()
 		s.writer = w
 		s.flusher = flusher
-		s.mu.Unlock()
 
 		fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postPath)
 		flusher.Flush()
+		s.mu.Unlock()
 
 		close(s.connected)
 		<-r.Context().Done()

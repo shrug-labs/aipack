@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -171,6 +172,9 @@ func TestImportedPackLinkReplacementPreservesLocalChanges(t *testing.T) {
 func TestImportedPackReplacementPreservesLocalChanges(t *testing.T) {
 	for _, change := range []string{"modified", "added", "git", "nested-git", "git-file", "removed", "mode", "manifest", "missing-baseline", "ordinary-pack", "unchanged"} {
 		t.Run(change, func(t *testing.T) {
+			if change == "mode" && runtime.GOOS == "windows" {
+				t.Skip("POSIX executable bits are not represented on Windows")
+			}
 			configDir := t.TempDir()
 			dest := filepath.Join(PacksDir(configDir), "probe")
 			writeFile(t, filepath.Join(dest, "pack.json"), `{"schema_version":1,"name":"probe","root":"."}`)

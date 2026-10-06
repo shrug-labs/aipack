@@ -540,7 +540,12 @@ func TestPluginPackCompatibilityCLI(t *testing.T) {
 						if format == plugin.CodexLegacy && c.Target == domain.HarnessClaudeCode {
 							want = append([]string{"hooks/codex-stop"}, want...)
 						}
-						if c.Delivery != "portable" || !slices.Equal(c.Supported, want) || len(c.Unsupported) != unsupported {
+						wantUnsupported := unsupported
+						if runtime.GOOS == "windows" && format == plugin.AgentPlugins {
+							want = []string{"skills/probe"}
+							wantUnsupported = 1
+						}
+						if c.Delivery != "portable" || !slices.Equal(c.Supported, want) || len(c.Unsupported) != wantUnsupported {
 							t.Fatalf("portable report silently drops components: %+v", c)
 						}
 						if format == plugin.CodexLegacy && c.Target != domain.HarnessClaudeCode && len(c.Warnings) == 0 {
@@ -919,7 +924,8 @@ func TestPluginPackNativeAgentSources(t *testing.T) {
 		t.Fatal("update dry-run indexed uninstalled candidate content")
 	}
 	run("pack", "update", "alias")
-	if got := run("search", "UPDATED_AGENT", "--kind", "agent", "--pack", "alias", "--json"); !strings.Contains(got, "second/reviewer.md") {
+	var updatedAgents []struct{ Path string }
+	if err := json.Unmarshal([]byte(run("search", "UPDATED_AGENT", "--kind", "agent", "--pack", "alias", "--json")), &updatedAgents); err != nil || len(updatedAgents) != 1 || filepath.Base(filepath.Dir(updatedAgents[0].Path)) != "second" {
 		t.Fatal("update did not refresh the alternate agent source")
 	}
 	if err := os.Remove(filepath.Join(configDir, "index.db")); err != nil {

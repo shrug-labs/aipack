@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -164,6 +165,9 @@ func claudeScanFixture(t *testing.T, source, kind string) (path, commandID, agen
 }
 
 func TestClaudeCrossCategoryScans(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native Claude scans retain POSIX directory permissions")
+	}
 	for _, kind := range []string{"default-command", "default-command-link", "default-command-dir", "default-command-file-alias", "default-command-directory-alias", "default-agent", "default-agent-link", "default-agent-dir", "explicit-agent-link", "explicit-agent-dir", "explicit-skill", "command-alias-original", "command-alias-file", "command-alias-directory", "command-alias-file-only", "command-alias-directory-only", "catalog-default-command", "catalog-default-agent", "catalog-default-command-dir", "catalog-default-agent-dir"} {
 		t.Run(kind, func(t *testing.T) {
 			scanKind := strings.TrimPrefix(kind, "catalog-")

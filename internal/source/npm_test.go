@@ -113,7 +113,7 @@ func TestNPMSourceBoundary(t *testing.T) {
 				return
 			}
 			info, statErr := os.Stat(filepath.Join(destination, entry.name))
-			if err != nil || statErr != nil || info.Mode().Perm() != 0o755 {
+			if err != nil || statErr != nil || !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
 				t.Fatalf("executable mode not retained: %v %v", err, statErr)
 			}
 		})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/shrug-labs/aipack/internal/domain"
@@ -13,6 +14,9 @@ import (
 func TestPackageWriteLifecycle(t *testing.T) {
 	for _, name := range []string{"disk", "memory"} {
 		t.Run(name, func(t *testing.T) {
+			if name == "disk" && runtime.GOOS == "windows" {
+				t.Skip("POSIX permission preservation requires a POSIX filesystem")
+			}
 			var fileSystem FS = OSFS{}
 			if name == "memory" {
 				fileSystem = NewMemFS()

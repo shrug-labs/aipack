@@ -25,6 +25,19 @@ func TestIsRepositoryURL(t *testing.T) {
 	}
 }
 
+func TestFileURL(t *testing.T) {
+	t.Parallel()
+	for path, want := range map[string]string{
+		"/:repo":                   "file:///:repo",
+		"/repo/path with spaces":   "file:///repo/path%20with%20spaces",
+		"C:/repo/path with spaces": "file:///C:/repo/path%20with%20spaces",
+	} {
+		if got := FileURL(path); got != want {
+			t.Errorf("FileURL(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestProbePackURL_GitHubRepo(t *testing.T) {
 	t.Parallel()
 	info, err := ProbePackURL("https://github.com/acme/my-pack")

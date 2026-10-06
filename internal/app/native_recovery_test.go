@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -120,6 +121,7 @@ func TestNativePayloadLayoutCleanup(t *testing.T) {
 			sibling.CachePath = filepath.Join(home, "plugins/cache/market/sibling/version")
 			sibling.SettingsPath = filepath.Join(home, "project/.claude/settings.local.json")
 			sibling.PayloadPath, _ = filepath.Rel(view, kept)
+			sibling.PayloadPath = filepath.ToSlash(sibling.PayloadPath)
 			writeFile(t, filepath.Join(kept, "marker"), "sibling")
 			other := domain.NewLedger()
 			other.NativePlugins = map[string]domain.NativePluginRecord{"sibling@market": sibling}
@@ -375,6 +377,9 @@ func TestNativeConfigHomeChangeRequiresCleanup(t *testing.T) {
 }
 
 func TestNativeOperationRecovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native plugin delivery is unsupported on Windows")
+	}
 	for _, committed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "before-ledger", true: "after-ledger"}[committed], func(t *testing.T) {
 			configDir, home := t.TempDir(), t.TempDir()
@@ -494,6 +499,9 @@ func TestNativeRecoveryPreservesGitMetadata(t *testing.T) {
 }
 
 func TestNativeCacheRecoveryRejectsChangedSnapshots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native plugin delivery is unsupported on Windows")
+	}
 	configDir, home := t.TempDir(), t.TempDir()
 	configHome := filepath.Join(home, ".codex")
 	cache := filepath.Join(configHome, "plugins/cache/market/probe/version/marker")
@@ -527,6 +535,9 @@ func TestNativeCacheRecoveryRejectsChangedSnapshots(t *testing.T) {
 }
 
 func TestNativeRecoveryRejectsUnownedConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native plugin delivery is unsupported on Windows")
+	}
 	configDir, home := t.TempDir(), t.TempDir()
 	view := filepath.Join(configDir, "rendered-plugins/codex/market")
 	configPath := filepath.Join(home, ".codex/config.toml")
@@ -562,6 +573,9 @@ func TestNativeRecoveryRejectsUnownedConfig(t *testing.T) {
 }
 
 func TestNativeRecoveryRejectsUnownedOrdinaryMCP(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native plugin delivery is unsupported on Windows")
+	}
 	for _, scenario := range []string{"path", "section", "name", "symlink"} {
 		t.Run(scenario, func(t *testing.T) {
 			cfgDir, home, outside := t.TempDir(), t.TempDir(), t.TempDir()
@@ -610,6 +624,9 @@ func TestNativeRecoveryRejectsUnownedOrdinaryMCP(t *testing.T) {
 }
 
 func TestNativeSetupRecoveryRejectsInvalidSnapshots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native plugin delivery is unsupported on Windows")
+	}
 	configDir, home := t.TempDir(), t.TempDir()
 	configHome := filepath.Join(home, ".claude")
 	plan := domain.Plan{Ledger: engine.LedgerPath(configDir, domain.ScopeGlobal, "", domain.HarnessClaudeCode), NativePlugins: []domain.NativePluginAction{{
@@ -649,6 +666,9 @@ func TestNativeSetupRecoveryRejectsInvalidSnapshots(t *testing.T) {
 }
 
 func TestNativePermissionRecoveryRejectsUnownedRules(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native plugin delivery is unsupported on Windows")
+	}
 	configDir, home := t.TempDir(), t.TempDir()
 	configHome := filepath.Join(home, ".claude")
 	path := filepath.Join(configHome, "settings.json")

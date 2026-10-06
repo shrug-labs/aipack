@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -19,6 +20,9 @@ import (
 )
 
 func TestPortableRecoveryProtectsOwnedState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, scenario := range []string{"cold-partial-package", "update-partial-package", "user-edits", "edited-activation", "changed-snapshot", "unowned-path", "unsafe-active-path"} {
 		t.Run(scenario, func(t *testing.T) {
 			root, err := filepath.EvalSymlinks(t.TempDir())
@@ -203,6 +207,9 @@ func (f portablePackageFailure) WritePackage(path string, files []domain.NativeP
 }
 
 func TestPortableRemovalRecovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, kind := range []string{"clean", "delete"} {
 		for _, phase := range []string{"settings", "payload", "ledger", "before-ledger", "after-ledger", "payload-edit", "activation-edit", "foreign", "missing-owner", "native-owner", "sibling-edit", "handover"} {
 			if kind == "clean" && phase == "sibling-edit" {

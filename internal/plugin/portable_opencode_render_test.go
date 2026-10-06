@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -12,6 +13,9 @@ import (
 )
 
 func TestCodexOpenCodeRendering(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, format := range []string{CodexLegacy, AgentPlugins} {
 		t.Run(format, func(t *testing.T) {
 			source, pack, target, data := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
@@ -86,6 +90,9 @@ func TestCodexOpenCodeRendering(t *testing.T) {
 }
 
 func TestCodexOpenCodeRefusals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, test := range []struct{ name, fields, reason string }{
 		{"startup", `"startup_timeout_sec":0`, "positive finite"},
 		{"tool-timeout", `"tool_timeout_sec":3`, "tool_timeout_sec"},

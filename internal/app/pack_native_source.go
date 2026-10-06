@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -66,7 +65,7 @@ func withPluginGitRepository(ctx context.Context, configDir string, plugin *doma
 	if !util.IsWithinDir(abs, boundary) {
 		return fmt.Errorf("relative git source escapes the marketplace root")
 	}
-	return use((&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String())
+	return use(source.FileURL(abs))
 }
 
 func clonePluginGitRepository(ctx context.Context, configDir string, plugin *domain.PluginSource, repo, dst, ref string, runGit func(context.Context, ...string) error) error {

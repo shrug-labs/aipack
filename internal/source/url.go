@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	pathpkg "path"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -18,6 +19,15 @@ type PackURLInfo struct {
 	PackURL string
 	Ref     string
 	SubPath string
+}
+
+// FileURL encodes an absolute native path for Git's file transport.
+func FileURL(path string) string {
+	path = filepath.ToSlash(path)
+	if len(path) > 1 && path[0] != '/' && path[1] == ':' {
+		path = "/" + path
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
 }
 
 // ProbePackURL resolves a raw URL into its repository, pack.json, and ref components.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ import (
 )
 
 func TestPortableProcessLoss(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, operation := range []string{"sync", "clean", "delete"} {
 		for _, boundary := range []string{"before", "after"} {
 			t.Run(operation+"/"+boundary, func(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ import (
 )
 
 func TestPortableOpenCodeScopes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign stdio MCP delivery requires POSIX")
+	}
 	for _, format := range []string{plugin.CodexLegacy, plugin.AgentPlugins} {
 		for _, mode := range []string{"default", "custom"} {
 			t.Run(format+"/"+mode, func(t *testing.T) {

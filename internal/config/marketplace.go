@@ -314,9 +314,9 @@ func codexGitRepo(repo string, marketplace RegistrySourceEntry) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String(), nil
+		return sourcepkg.FileURL(abs), nil
 	case filepath.IsAbs(repo):
-		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(repo)}).String(), nil
+		return sourcepkg.FileURL(repo), nil
 	case strings.HasPrefix(repo, "file://"), strings.HasPrefix(repo, "ssh://"), strings.HasPrefix(repo, "git@") && strings.Contains(repo, ":"):
 		return repo, nil
 	default:
@@ -353,7 +353,7 @@ func LocalRegistrySource(path string) (RegistrySourceEntry, error) {
 	root := filepath.Dir(abs)
 	for _, rel := range []string{".agents/plugins/marketplace.json", ".agents/plugins/api_marketplace.json", ".claude-plugin/marketplace.json", ".cursor-plugin/marketplace.json"} {
 		if strings.HasSuffix(filepath.ToSlash(abs), "/"+rel) {
-			root = strings.TrimSuffix(filepath.ToSlash(abs), "/"+rel)
+			root = filepath.FromSlash(strings.TrimSuffix(filepath.ToSlash(abs), "/"+rel))
 			break
 		}
 	}

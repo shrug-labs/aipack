@@ -305,9 +305,13 @@ func (m *MemFS) MkdirAll(path string, _ os.FileMode) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	path = filepath.Clean(path)
-	for path != "." && path != string(filepath.Separator) {
+	for path != "." {
 		m.dirs[path] = true
-		path = filepath.Dir(path)
+		parent := filepath.Dir(path)
+		if parent == path {
+			break
+		}
+		path = parent
 	}
 	return nil
 }

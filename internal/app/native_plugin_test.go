@@ -174,7 +174,11 @@ func TestRelativePluginGitSourceBoundary(t *testing.T) {
 			err := withPluginGitRepository(context.Background(), configDir, &domain.PluginSource{MarketplaceURL: "https://example.invalid/market.git"}, repo, runGit, func(actual string) error {
 				called = true
 				parsed, err := url.Parse(actual)
-				if err != nil || parsed.Scheme != "file" || parsed.Path != canonicalPath(expected) {
+				wantPath := filepath.ToSlash(canonicalPath(expected))
+				if runtime.GOOS == "windows" {
+					wantPath = "/" + wantPath
+				}
+				if err != nil || parsed.Scheme != "file" || parsed.Host != "" || parsed.Path != wantPath {
 					t.Fatalf("unexpected resolved source: %s (%v)", actual, err)
 				}
 				return nil

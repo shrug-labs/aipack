@@ -1424,7 +1424,7 @@ else console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow',
 		if err := os.WriteFile(wrapper, []byte(renderClinePowerShellWrapper(handlers)), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if out := run("context"); out["cancel"] != false || !strings.Contains(diagnostics, "hook "+stream+" exceeded") {
+		if out := run("context"); out["cancel"] != false || !strings.Contains(strings.Join(strings.Fields(diagnostics), " "), "hook "+stream+" exceeded") {
 			t.Fatalf("oversized %s output was accepted without a diagnostic: %+v %s", stream, out, diagnostics)
 		}
 	}
