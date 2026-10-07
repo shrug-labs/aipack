@@ -162,9 +162,7 @@ This example selects one skill from the upstream Superpowers Codex plugin:
 
 ```bash
 # Register the Codex marketplace.
-aipack registry fetch https://github.com/obra/superpowers.git \
-  --path .agents/plugins/marketplace.json --format codex-legacy \
-  --name superpowers-upstream
+aipack registry fetch https://github.com/obra/superpowers.git
 
 # Install into a named profile with content initially unselected.
 aipack profile create debugging
@@ -798,6 +796,15 @@ Use the destination assistant's normal login flow for protected services and app
 #### Ownership and scopes
 
 Existing native installations remain managed by their assistant. If one conflicts with an import, sync identifies it in the error. Remove the conflicting installation or registration through that assistant before syncing. Renaming a pack keeps its plugin identity.
+
+For Codex, remove each plugin you are moving, then its marketplace:
+
+```bash
+codex plugin remove example-plugin@example-marketplace
+codex plugin marketplace remove example-marketplace
+```
+
+Replace both names with the existing native identities before installing through AIPack.
 
 Shared native installations and overlapping OpenCode scopes use matching sources and component selections. If selections conflict, sync the other scope with the plugin disabled or clean that scope first. Profile edits take effect at sync. Independent installations can use separate AIPack and assistant configuration directories.
 

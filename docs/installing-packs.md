@@ -55,20 +55,27 @@ Import an existing Claude or Codex marketplace through the registry, then use th
 Local plugin directories can also be inspected and installed directly with `pack inspect ./plugin` and `pack install ./plugin --add`. Imports are copied and retain the nearest matching marketplace catalog's identity and policy.
 
 ```bash
-aipack registry fetch https://github.com/org/marketplace.git \
-  --path .agents/plugins/marketplace.json --format codex-legacy
-aipack registry list
+aipack registry fetch https://github.com/org/marketplace.git
 aipack pack install example-plugin --add
 aipack sync
 ```
 
-Replace the example URL and catalog path with your marketplace's values, and `example-plugin` with a name from `registry list`. Catalog formats are `claude`, `codex-legacy`, and `agent-plugins`. The format is saved for future refreshes; it can be omitted when the source format is detected automatically.
+Replace the repository URL and plugin name with your source. AIPack discovers the catalog path and format automatically.
+
+To install one plugin directly, give its repository and subdirectory:
+
+```bash
+aipack pack install https://github.com/org/marketplace.git \
+  --path plugins/example-plugin --add
+aipack sync
+```
+
+This does not register or cache the marketplace. The plugin retains its colocated catalog's identity and policy, and `pack update` tracks its original source.
 
 To start with a subset of components, add `--quiet` to the install command. Use `pack show example-plugin` to find their IDs, then include the ones you need:
 
 ```bash
 aipack profile include debugging --kind skill --pack example-plugin
-aipack sync --harness claudecode --dry-run
 aipack sync --harness claudecode
 ```
 

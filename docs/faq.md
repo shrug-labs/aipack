@@ -93,11 +93,11 @@ Yes. A pack is a directory with a `pack.json` manifest and content files (rules,
 
 ### How do packs get updated?
 
-`aipack pack update --all` pulls the latest version of every installed pack from its source repo. Then `aipack sync` materializes the updates into your harness. Registry sources refresh with `aipack registry fetch`.
+`aipack pack update --all` checks each installed pack's recorded source for updates and respects its version pin. Then `aipack sync` delivers the updated content to your harness. Registry listings refresh with `aipack registry fetch`.
 
 ### Can I pin a pack to a specific version?
 
-You can pin to a git ref at install time — `aipack pack install --url <url> --ref v1.2.0` installs from a specific tag, branch, or commit. Registry entries also carry a `ref` field. Since packs are git-native, the version mechanism is git tags: tag your pack repo at release points, and consumers can install from a specific tag.
+For Git sources, use `--ref` to select a tag, branch or commit. Imported npm plugins use `--ref` for a package version, range or tag. `aipack pack versions <name>` lists available versions for these sources, and `--ref latest` resumes tracking. Static archives do not use Git or npm version selectors.
 
 ### Who maintains the packs?
 
