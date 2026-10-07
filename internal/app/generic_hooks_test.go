@@ -356,6 +356,9 @@ func TestPortableDeleteFailurePreservesSharedHooks(t *testing.T) {
 }
 
 func TestGenericImportedPackLifecycleReferences(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("generic stdio MCP translation requires POSIX")
 	}
@@ -601,6 +604,9 @@ func TestGenericHooksRefuseForeignInstallation(t *testing.T) {
 }
 
 func TestGenericImportedHookLifecycle(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
 	for _, target := range []domain.Harness{domain.HarnessOpenCode, domain.HarnessCline} {
 		t.Run(string(target), func(t *testing.T) {
 			if runtime.GOOS == "windows" && target == domain.HarnessCline {

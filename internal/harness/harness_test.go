@@ -14,6 +14,9 @@ import (
 
 func TestHookTimeoutStopsSubprocesses(t *testing.T) {
 	t.Parallel()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix process groups; Windows uses taskkill")
 	}
@@ -44,6 +47,9 @@ await new Promise((resolve, reject) => { child.on("close", resolve); child.on("e
 }
 
 func TestImportedHookRuntimeContract(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
 	cmd := exec.Command("node", "--input-type=module", "-e", PluginHookRuntime+`
 import assert from 'node:assert/strict';
 const handler = {pluginEvent:'PreToolUse',label:'owned'};
