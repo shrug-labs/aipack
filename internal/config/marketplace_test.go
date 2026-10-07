@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -173,7 +174,11 @@ func TestCodexGitURLBoundary(t *testing.T) {
 	}
 	for _, repo := range []string{"./repo", `.\repo`} {
 		actual, err := codexGitRepo(repo, RegistrySourceEntry{URL: root})
-		if err != nil || actual != "file://"+filepath.ToSlash(filepath.Join(root, "repo")) {
+		prefix := "file://"
+		if runtime.GOOS == "windows" {
+			prefix += "/"
+		}
+		if err != nil || actual != prefix+filepath.ToSlash(filepath.Join(root, "repo")) {
 			t.Fatalf("local Git source lost root: %s %v", actual, err)
 		}
 		if actual, err := codexGitRepo(repo, RegistrySourceEntry{URL: "https://catalog.invalid/market.git"}); err != nil || actual != "./repo" {

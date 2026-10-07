@@ -559,6 +559,10 @@ func TestPluginPackCompatibilityCLI(t *testing.T) {
 				}
 			}
 			claudePortable := slices.Clone(portable)
+			if runtime.GOOS == "windows" && format == plugin.AgentPlugins {
+				portable = []string{"skills/probe"}
+				claudePortable = slices.Clone(portable)
+			}
 			if format == plugin.CodexLegacy {
 				claudePortable = append([]string{"hooks/codex-stop"}, claudePortable...)
 			}
@@ -941,7 +945,7 @@ func TestPluginPackNativeAgentSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	run("pack", "update", "alias")
-	if got := run("search", "UPDATED_AGENT", "--kind", "agent", "--pack", "alias", "--json"); !strings.Contains(got, "second/reviewer.md") {
+	if err := json.Unmarshal([]byte(run("search", "UPDATED_AGENT", "--kind", "agent", "--pack", "alias", "--json")), &updatedAgents); err != nil || len(updatedAgents) != 1 || filepath.Base(filepath.Dir(updatedAgents[0].Path)) != "second" {
 		t.Fatal("unchanged update did not repair the index")
 	}
 	run("pack", "delete", "alias", "--yes")

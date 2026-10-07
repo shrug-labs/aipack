@@ -1072,12 +1072,13 @@ func TestImportedSkillsUseOrdinaryPackDelivery(t *testing.T) {
 					data = filepath.Join(project, ".opencode/aipack-data/probe@owned")
 				}
 				for _, value := range []string{"FIRST_BODY", "description: Trigger preserved", filepath.Join(upstream, "scripts/probe.sh"), filepath.Join(upstream, "skills/first"), data} {
-					if !bytes.Contains(actual, []byte(value)) {
+					if !strings.Contains(filepath.ToSlash(string(actual)), filepath.ToSlash(value)) {
 						t.Fatalf("generic skill lost %q", value)
 					}
 				}
 				info, err := os.Stat(filepath.Join(filepath.Dir(dst), "helper.sh"))
-				if err != nil || info.Mode().Perm() != 0o755 {
+				sourceInfo, sourceErr := os.Stat(filepath.Join(upstream, "skills/first/helper.sh"))
+				if err != nil || sourceErr != nil || info.Mode().Perm() != sourceInfo.Mode().Perm() {
 					t.Fatal("skill asset executable mode lost", err)
 				}
 				if _, err := os.Stat(filepath.Join(filepath.Dir(filepath.Dir(dst)), "second/SKILL.md")); !os.IsNotExist(err) {

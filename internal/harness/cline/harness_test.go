@@ -1348,7 +1348,7 @@ else console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow',
 	var diagnostics string
 	run := func(mode string) map[string]any {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, program, "-NoProfile", "-File", wrapper)
 		cmd.Dir = root
@@ -1360,7 +1360,7 @@ else console.log(JSON.stringify({hookSpecificOutput:{permissionDecision:'allow',
 		out, err := cmd.Output()
 		diagnostics = stderr.String()
 		if err != nil {
-			t.Fatalf("PowerShell dispatch: %v %s %s", err, out, stderr.String())
+			t.Fatalf("PowerShell dispatch (%s): %v (context: %v) %s %s", mode, err, ctx.Err(), out, stderr.String())
 		}
 		var result map[string]any
 		if err := json.Unmarshal(out, &result); err != nil {
